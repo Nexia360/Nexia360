@@ -13,7 +13,6 @@
 #include <cstring>
 #include <future>
 #include <queue>
-#include <set>
 
 #include "xenia/base/byte_order.h"
 #include "xenia/kernel/xobject.h"
@@ -117,11 +116,20 @@ static_assert_size(XWSABUF, 0x8);
 struct XWSAOVERLAPPED {
   xe::be<uint32_t> internal;       // Status Code
   xe::be<uint32_t> internal_high;  // The amount of bytes sent/recv
-  xe::be<uint32_t> offset;         // Flags
+  xe::be<uint32_t> offset;         // Flags maybe?
   xe::be<uint32_t> offset_high;
   xe::be<uint32_t> event_handle;
 };
 static_assert_size(XWSAOVERLAPPED, 0x14);
+
+struct WSASendToData {
+  std::shared_ptr<XWSABUF[]> buffers;
+  uint32_t num_buffers;
+  uint32_t* num_bytes_sent;
+  XSOCKADDR_IN* to;
+  int to_len;
+  XWSAOVERLAPPED* overlapped;
+};
 
 struct WSARecvFromData {
   std::shared_ptr<XWSABUF> buffers;
@@ -196,10 +204,6 @@ class XSocket : public XObject {
                 XSOCKADDR_IN* to_ptr, uint32_t to_len,
                 XWSAOVERLAPPED* overlapped_ptr);
 
-  int WSAPollWrite(bool wait, X_WSA_ERROR* error);
-
-  int WSAPollRead(bool wait, X_WSA_ERROR* error);
-
   int WSARecvFrom(XWSABUF* buffers, uint32_t num_buffers,
                   xe::be<uint32_t>* num_bytes_recv_ptr,
                   xe::be<uint32_t>* flags_ptr, XSOCKADDR_IN* from_ptr,
@@ -251,16 +255,28 @@ class XSocket : public XObject {
   std::mutex incoming_packet_mutex_;
   std::queue<uint8_t*> incoming_packets_;
 
-  std::future<int> polling_task_;
+  std::future<int> send_polling_task_;
+  std::mutex send_completion_mutex_;
+  std::condition_variable send_cv_;
+  std::mutex send_socket_mutex_;
 
+  std::future<int> receive_polling_task_;
   std::mutex receive_completion_mutex_;
   std::condition_variable receive_cv_;
   std::mutex receive_socket_mutex_;
 
   std::atomic<bool> cancel_overlapped_ = false;
-  std::set<XWSAOVERLAPPED*> pending_overlapped_io_;
 
-  int PollWSARecvFrom(bool wait, WSARecvFromData data);
+  // True is WSASendTo, false is WSARecvFrom
+  std::map<XWSAOVERLAPPED*, bool> pending_overlapped_io_;
+
+  int WSAPollWrite(bool wait, X_WSA_ERROR* error);
+
+  int PollWSASendTo(bool wait, WSASendToData send_async_data);
+
+  int WSAPollRead(bool wait, X_WSA_ERROR* error);
+
+  int PollWSARecvFrom(bool wait, WSARecvFromData receive_async_data);
 
   void XWSASetLastError(X_WSA_ERROR) const;
 };
