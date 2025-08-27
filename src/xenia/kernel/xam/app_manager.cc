@@ -69,16 +69,29 @@ X_HRESULT AppManager::DispatchMessageAsync(uint32_t app_id, uint32_t message,
 
   auto post = [memory, buffer_in]() { memory->SystemHeapFree(buffer_in); };
 
-  auto run = [it, message, buffer_in, buffer_length]() -> X_RESULT {
-    return it->second->DispatchMessageSync(message, buffer_in, buffer_length);
+  auto run = [it, message, buffer_in, buffer_length](
+                 uint32_t& extended_error, uint32_t& length) -> X_RESULT {
+    // XStorageDownloadToMemory:
+    // 41560817, 545107D1 (TU0), 4D5307D6
+    //
+    // Expects X_ONLINE_E_STORAGE_FILE_NOT_FOUND as extended error and
+    // X_ERROR_FUNCTION_FAILED as result
+
+    extended_error =
+        it->second->DispatchMessageSync(message, buffer_in, buffer_length);
+
+    return extended_error == X_ERROR_SUCCESS ? X_ERROR_SUCCESS
+                                             : X_ERROR_FUNCTION_FAILED;
   };
 
   if (overlapped_ptr) {
-    it->second->kernel_state_->CompleteOverlappedDeferred(run, overlapped_ptr,
-                                                          nullptr, post);
+    it->second->kernel_state_->CompleteOverlappedDeferredEx(run, overlapped_ptr,
+                                                            nullptr, post);
     return X_ERROR_IO_PENDING;
   };
 
+  // Sync will return extended error codes.
+  // Add extended error parameter to apps?
   const X_HRESULT result =
       DispatchMessageSync(app_id, message, buffer_in, buffer_length);
   post();

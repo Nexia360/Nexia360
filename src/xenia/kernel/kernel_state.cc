@@ -1008,6 +1008,10 @@ void KernelState::CompleteOverlapped(uint32_t overlapped_ptr, X_RESULT result) {
 void KernelState::CompleteOverlappedEx(uint32_t overlapped_ptr, X_RESULT result,
                                        uint32_t extended_error,
                                        uint32_t length) {
+  if (result != 0) {
+    result = X_ERROR_FUNCTION_FAILED;
+  }
+
   auto ptr = memory()->TranslateVirtual(overlapped_ptr);
   XOverlappedSetResult(ptr, result);
   XOverlappedSetExtendedError(ptr, extended_error);
@@ -1121,8 +1125,10 @@ void KernelState::CompleteOverlappedDeferredEx(
      Small delay fixes it e.g. 25ms.
     */
     xe::threading::Sleep(kDeferredOverlappedDelayMillis);
-    uint32_t extended_error, length;
-    auto result = completion_callback(extended_error, length);
+    uint32_t extended_error = 0;
+    uint32_t length = 0;
+    uint32_t result = completion_callback(extended_error, length);
+
     CompleteOverlappedEx(overlapped_ptr, result, extended_error, length);
     if (post_callback) {
       post_callback();

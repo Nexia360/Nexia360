@@ -292,6 +292,7 @@ uint32_t XamUserReadProfileSettingsEx(uint32_t title_id, uint32_t user_index,
 
     if (!user_profile && !xuids) {
       extended_error = X_E_NO_SUCH_USER;
+      return X_ERROR_FUNCTION_FAILED;
     }
 
     if (xuids) {
@@ -303,6 +304,7 @@ uint32_t XamUserReadProfileSettingsEx(uint32_t title_id, uint32_t user_index,
 
       if (!kernel_state()->xam_state()->IsUserSignedIn(user_xuid)) {
         extended_error = X_E_NO_SUCH_USER;
+        return X_ERROR_FUNCTION_FAILED;
       }
 
       user_profile = kernel_state()->xam_state()->GetUserProfileAny(user_xuid);
@@ -310,11 +312,6 @@ uint32_t XamUserReadProfileSettingsEx(uint32_t title_id, uint32_t user_index,
 
     if (!user_profile) {
       extended_error = X_E_NO_SUCH_USER;
-    }
-
-    // 584109B1 checks failure with (return & 0x80000000) != 0
-    if (extended_error) {
-      length = 0;
       return X_ERROR_FUNCTION_FAILED;
     }
 
@@ -367,17 +364,15 @@ uint32_t XamUserReadProfileSettingsEx(uint32_t title_id, uint32_t user_index,
       ++out_setting;
     }
 
-    extended_error = X_ERROR_SUCCESS;
-    length = 0;
-    return extended_error == X_ERROR_SUCCESS ? X_ERROR_SUCCESS
-                                             : X_ERROR_FUNCTION_FAILED;
+    return X_ERROR_SUCCESS;
   };
 
   if (!overlapped_ptr) {
     uint32_t extended_error, length;
     X_RESULT result = run(extended_error, length);
 
-    return result == X_ERROR_SUCCESS ? result : extended_error;
+    return result == X_ERROR_SUCCESS ? X_ERROR_SUCCESS
+                                     : X_ERROR_FUNCTION_FAILED;
   }
 
   kernel_state()->CompleteOverlappedDeferredEx(run, overlapped_ptr);
