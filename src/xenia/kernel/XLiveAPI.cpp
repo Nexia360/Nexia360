@@ -1066,6 +1066,29 @@ void XLiveAPI::SessionWriteStats(uint64_t sessionId, XGI_STATS_WRITE stats) {
   std::vector<XSESSION_VIEW_PROPERTIES> properties(
       view_properties, view_properties + stats.num_views);
 
+  const auto stats_view_query = kernel_state()
+                                    ->emulator()
+                                    ->game_info_database()
+                                    ->GetXLast()
+                                    ->GetStatsViewQuery();
+
+  const size_t num_view = properties.size();
+  for (uint32_t i = 0; i < num_view; i++) {
+    XSESSION_VIEW_PROPERTIES property = properties[i];
+
+    if (!stats_view_query->GetStatsViewNode(property.view_id)) {
+      std::erase_if(properties, [property](XSESSION_VIEW_PROPERTIES prop) {
+        return prop.view_id == property.view_id;
+      });
+
+      XELOGI("Stats View ID: {} not found!", property.view_id.get());
+    }
+  }
+
+  if (properties.empty()) {
+    return;
+  }
+
   LeaderboardObjectJSON* leaderboard =
       new LeaderboardObjectJSON(stats, properties);
 
