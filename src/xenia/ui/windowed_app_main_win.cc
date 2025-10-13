@@ -361,46 +361,46 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE hinstance_prev,
       return EXIT_FAILURE;
     }
 
-    std::unique_ptr<xe::ui::WindowedApp> app =
-        xe::ui::GetWindowedAppCreator()(app_context);
+      std::unique_ptr<xe::ui::WindowedApp> app =
+          xe::ui::GetWindowedAppCreator()(app_context);
 
-    if (!xe::ParseWin32LaunchArguments(false, app->GetPositionalOptionsUsage(),
-                                       app->GetPositionalOptions(), nullptr)) {
+      if (!xe::ParseWin32LaunchArguments(false, app->GetPositionalOptionsUsage(),
+                                         app->GetPositionalOptions(), nullptr)) {
       return EXIT_FAILURE;
-    }
+      }
 
     // Initialize COM on the UI thread with the apartment-threaded concurrency
     // model, so dialogs can be used.
-    if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) {
+      if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) {
       return EXIT_FAILURE;
-    }
-
-    xe::InitializeWin32App(app->GetName());
-
-    if (app->OnInitialize()) {
-#if XE_ARCH_AMD64 == 1
-      if (cvars::enable_rdrand_ntdll_patch) {
-        do_ntdll_hack_this_process();
       }
+
+      xe::InitializeWin32App(app->GetName());
+
+      if (app->OnInitialize()) {
+#if XE_ARCH_AMD64 == 1
+        if (cvars::enable_rdrand_ntdll_patch) {
+          do_ntdll_hack_this_process();
+        }
 #endif
       // TODO(Triang3l): Rework this, need to initialize the console properly,
       // disable has_console_attached_ by default in windowed apps, and attach
       // only if needed.
-      if (cvars::enable_console) {
-        xe::AttachConsole();
+        if (cvars::enable_console) {
+          xe::AttachConsole();
+        }
+        result = app_context.RunMainMessageLoop();
+      } else {
+        result = EXIT_FAILURE;
       }
-      result = app_context.RunMainMessageLoop();
-    } else {
-      result = EXIT_FAILURE;
-    }
 
-    app->InvokeOnDestroy();
+      app->InvokeOnDestroy();
   }
 
   // Logging may still be needed in the destructors.
-  xe::ShutdownWin32App();
+      xe::ShutdownWin32App();
 
-  CoUninitialize();
+      CoUninitialize();
 
   return result;
 }

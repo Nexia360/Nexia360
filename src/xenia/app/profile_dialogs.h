@@ -101,7 +101,7 @@ class UpdaterDialog final : public ui::ImGuiDialog {
   bool show_replace_dialog_ = false;
   bool replace_file_ = false;
   std::filesystem::path downloaded_file_path_;
-  const std::string windows_artifact_name_ = "xenia_canary_netplay_windows.zip";
+  const std::string windows_artifact_name_ = "Nexia360_windows.zip";
   std::string latest_commit_hash_ = "";
   std::string latest_commit_date_ = "";
   std::vector<std::string> commit_messages_ = {};

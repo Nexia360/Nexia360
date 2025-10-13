@@ -793,33 +793,14 @@ int InstrEmit_ldarx(PPCHIRBuilder& f, const InstrData& i) {
 }
 
 int InstrEmit_lwarx(PPCHIRBuilder& f, const InstrData& i) {
-  // if RA = 0 then
-  //   b <- 0
-  // else
-  //   b <- (RA)
-  // EA <- b + (RB)
-  // RESERVE <- 1
-  // RESERVE_LENGTH <- 4
-  // RESERVE_ADDR <- real_addr(EA)
-  // RT <- i32.0 || MEM(EA, 4)
-
-  // NOTE: we assume we are within a global lock.
-  // We could assert here that the block (or its parent) has taken a global lock
-  // already, but I haven't see anything but interrupt callbacks (which are
-  // always under a global lock) do that yet.
-  // We issue a memory barrier here to make sure that we get good values.
-
   Value* ea = CalculateEA_0(f, i.X.RA, i.X.RB);
   if (cvars::no_reserved_ops) {
-    f.StoreGPR(i.X.RT,
-               f.ZeroExtend(f.ByteSwap(f.Load(ea, INT32_TYPE)), INT64_TYPE));
-
+    Value* v_be = f.ByteSwap(f.Load(ea, INT32_TYPE));
+    f.StoreGPR(i.X.RT, f.ZeroExtend(v_be, INT64_TYPE));
   } else {
-    f.MemoryBarrier();
-
-    Value* rt =
-        f.ZeroExtend(f.ByteSwap(f.LoadWithReserve(ea, INT32_TYPE)), INT64_TYPE);
-    f.StoreGPR(i.X.RT, rt);
+    Value* v_be = f.ByteSwap(f.LoadWithReserve(ea, INT32_TYPE));
+    f.StoreGPR(i.X.RT, f.ZeroExtend(v_be, INT64_TYPE));
+    f.MemoryBarrier();  // acts as acquire
   }
   return 0;
 }
@@ -866,47 +847,24 @@ int InstrEmit_stdcx(PPCHIRBuilder& f, const InstrData& i) {
 }
 
 int InstrEmit_stwcx(PPCHIRBuilder& f, const InstrData& i) {
-  // if RA = 0 then
-  //   b <- 0
-  // else
-  //   b <- (RA)
-  // EA <- b + (RB)
-  // RESERVE stuff...
-  // MEM(EA, 4) <- (RS)[32:63]
-  // n <- 1 if store performed
-  // CR0[LT GT EQ SO] = 0b00 || n || XER[SO]
-
-  // NOTE: we assume we are within a global lock.
-  // As we have been exclusively executing this entire time, we assume that no
-  // one else could have possibly touched the memory and must always succeed.
-  // We use atomic compare exchange here to support reserved load/store without
-  // being under the global lock (flag disable_global_lock - see mtmsr/mtmsrd).
-  // This will always succeed if under the global lock, however.
-
   Value* ea = CalculateEA_0(f, i.X.RA, i.X.RB);
-
-  Value* rt = f.ByteSwap(f.Truncate(f.LoadGPR(i.X.RT), INT32_TYPE));
+  Value* rs_le = f.ByteSwap(f.Truncate(f.LoadGPR(i.X.RT), INT32_TYPE));
 
   if (cvars::no_reserved_ops) {
-    f.Store(ea, rt);
-
-    f.StoreContext(offsetof(PPCContext, cr0.cr0_eq), f.LoadConstantInt8(1));
-  } else {
-    Value* v = f.StoreWithReserve(ea, rt, INT64_TYPE);
-    f.StoreContext(offsetof(PPCContext, cr0.cr0_eq), v);
+    f.StoreContext(offsetof(PPCContext, cr0.cr0_eq), f.LoadZeroInt8());
+    f.StoreContext(offsetof(PPCContext, cr0.cr0_lt), f.LoadZeroInt8());
+    f.StoreContext(offsetof(PPCContext, cr0.cr0_gt), f.LoadZeroInt8());
+    return 0;
   }
 
+  Value* success = f.StoreWithReserve(ea, rs_le, INT32_TYPE);
+  f.StoreContext(offsetof(PPCContext, cr0.cr0_eq), success);
   f.StoreContext(offsetof(PPCContext, cr0.cr0_lt), f.LoadZeroInt8());
   f.StoreContext(offsetof(PPCContext, cr0.cr0_gt), f.LoadZeroInt8());
-
-  // Issue memory barrier for when we go out of lock and want others to see our
-  // updates.
-  if (!cvars::no_reserved_ops) {
-    f.MemoryBarrier();
-  }
-
+  f.MemoryBarrier();  // acts as release
   return 0;
 }
+
 // Floating-point load (A-19)
 
 int InstrEmit_lfd(PPCHIRBuilder& f, const InstrData& i) {
