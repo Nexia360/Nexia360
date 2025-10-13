@@ -98,6 +98,13 @@ void XLiveAPI::IpGetConsoleXnAddr(XNADDR* XnAddr_ptr) {
     XnAddr_ptr->wPortOnline = GetPlayerPort();
   }
 
+  // Secure Address
+  XnAddr_ptr->inaOnline.S_un.S_un_b.s_b1 = 0;
+  XnAddr_ptr->inaOnline.S_un.S_un_b.s_b2 = 0;
+
+  XnAddr_ptr->ina.S_un.S_un_b.s_b1 = 0;
+  XnAddr_ptr->ina.S_un.S_un_b.s_b2 = 0;
+
   XnAddr_ptr->abOnline.platform_type = PLATFORM_TYPE::Xbox360;
 
   memcpy(XnAddr_ptr->abEnet, mac_address_->raw(), sizeof(MacAddress));

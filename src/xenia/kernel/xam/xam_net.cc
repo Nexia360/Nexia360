@@ -39,6 +39,9 @@
 
 #include "xenia/kernel/XLiveAPI.h"
 
+DEFINE_string(remote_ip, "0.0.0.0", "Remote IP -> Secure IP Experimenting",
+              "Live");
+
 DECLARE_bool(logging);
 
 DECLARE_bool(log_mask_ips);
@@ -177,6 +180,64 @@ static void InitalizeSockaddr(XSOCKADDR_IN* sockaddr_ptr) {
     sockaddr_ptr->address_family = XSocket::AddressFamily::X_AF_INET;
   }
 }
+
+// in_addr -> XNADDR
+// IN_ADDR or SOCKADDR_IN
+// Virtual address used by Secure Network Library (SNL)
+/*
+    Systemlink
+    415607D1 - Call of Duty 2
+    415607E6 - Call of Duty 4 Modern Warfare
+    415607FF - Quantum of Solace
+
+    Systemlink & Xbox Live
+    4D5307E6 - Halo 3
+    4D53085B - Halo Reach
+    4D530919 - Halo 4
+*/
+
+#define IP_SECURE htonl(0x00000000)
+#define IP_SECURE_MASK htonl(0xFF000000)
+
+inline bool IsSecure(in_addr addr) {
+  return (addr.s_addr && (addr.s_addr & IP_SECURE_MASK) == IP_SECURE);
+}
+
+// 0.0.rnd.SecureSlot
+// SecureSlot = slot/index into cfgSecRegMax
+inline uint8_t GetSecureSlot(in_addr addr) { return (addr.s_addr >> 24); }
+
+inline void GenerateSecureInAddr(in_addr* addr) {
+  const auto our_ip = XLiveAPI::OnlineIP().sin_addr;
+  const auto remote = ip_to_in_addr(cvars::remote_ip);
+
+  if (addr->s_addr == our_ip.s_addr) {
+    addr->S_un.S_un_b.s_b1 = 0;
+    addr->S_un.S_un_b.s_b2 = 0;
+  }
+
+  if (addr->s_addr == remote.s_addr) {
+    addr->S_un.S_un_b.s_b1 = 0;
+    addr->S_un.S_un_b.s_b2 = 0;
+  }
+}
+
+inline void GetActualAddressFromVirtualInAddr(in_addr* addr) {
+  const auto our_ip = XLiveAPI::OnlineIP().sin_addr;
+  const auto remote = ip_to_in_addr(cvars::remote_ip);
+
+  if (addr->S_un.S_un_b.s_b4 == our_ip.S_un.S_un_b.s_b4) {
+    addr->S_un.S_un_b.s_b1 = our_ip.S_un.S_un_b.s_b1;
+    addr->S_un.S_un_b.s_b2 = our_ip.S_un.S_un_b.s_b2;
+  }
+
+  if (addr->S_un.S_un_b.s_b4 == remote.S_un.S_un_b.s_b4) {
+    addr->S_un.S_un_b.s_b1 = remote.S_un.S_un_b.s_b1;
+    addr->S_un.S_un_b.s_b2 = remote.S_un.S_un_b.s_b2;
+  }
+}
+
+// inline void GetActualAddressFromVirtualInAddr(sockaddr* addr) { }
 
 XNetStartupParams xnet_startup_params{};
 
@@ -449,6 +510,8 @@ dword_result_t NetDll_WSARecvFrom_entry(
            from_ptr->address_ip.S_un.S_un_b.s_b4);
   }
 
+  // GenerateSecureInAddr(&from_ptr->address_ip);
+
   return ret;
 }
 DECLARE_XAM_EXPORT2(NetDll_WSARecvFrom, kNetworking, kImplemented,
@@ -495,6 +558,8 @@ dword_result_t NetDll_WSASendTo_entry(
     return -1;
   }
 
+  // GetActualAddressFromVirtualInAddr(&to_ptr->address_ip);
+
   // Our sockets implementation doesn't support multiple buffers, so we need
   // to combine the buffers the game has given us!
   std::vector<uint8_t> combined_buffer_mem;
@@ -529,6 +594,8 @@ dword_result_t NetDll_WSASendTo_entry(
     *num_bytes_sent = result;
   }
   // TODO: Instantly complete overlapped
+
+  // GenerateSecureInAddr(&to_ptr->address_ip);
 
   return 0;
 }
@@ -744,6 +811,8 @@ dword_result_t NetDll_XNetServerToInAddr_entry(dword_t caller,
 
   pina->s_addr = htonl(server_addr);
 
+  // GenerateSecureInAddr(pina);
+
   XELOGI("Server IP: {}", ip_to_string(*pina));
 
   return X_ERROR_SUCCESS;
@@ -829,6 +898,9 @@ dword_result_t NetDll_XNetXnAddrToInAddr_entry(dword_t caller,
     in_addr->s_addr = xn_addr->inaOnline.s_addr;
   }
 
+  // 4D5307E6 - Halo 3 expects secure in_addr?
+  // GetActualAddressFromVirtualInAddr(in_addr);
+
   return X_ERROR_SUCCESS;
 }
 DECLARE_XAM_EXPORT1(NetDll_XNetXnAddrToInAddr, kNetworking, kSketchy);
@@ -859,10 +931,17 @@ dword_result_t NetDll_XNetInAddrToXnAddr_entry(dword_t caller, dword_t in_addr,
   xn_addr->inaOnline.s_addr = ntohl(in_addr);
   xn_addr->wPortOnline = XLiveAPI::GetPlayerPort();
 
+  // Secure Address
+  // in_addr -> XNADDR
+  GenerateSecureInAddr(&xn_addr->inaOnline);
+
   // Find cached online IP?
   if (XLiveAPI::macAddressCache.find(xn_addr->inaOnline.s_addr) ==
       XLiveAPI::macAddressCache.end()) {
-    const auto player = XLiveAPI::FindPlayer(ip_to_string(xn_addr->inaOnline));
+    ::in_addr online_ip = {};
+    online_ip.s_addr = ntohl(in_addr);
+
+    const auto player = XLiveAPI::FindPlayer(ip_to_string(online_ip));
 
     // FIXME
     if (!XLiveAPI::systemlink_id || EXPLICIT_XBOXLIVE_KEY) {
@@ -1884,6 +1963,8 @@ dword_result_t NetDll_recvfrom_entry(dword_t caller, dword_t socket_handle,
            from_ptr->address_ip.S_un.S_un_b.s_b4);
   }
 
+  GenerateSecureInAddr(&from_ptr->address_ip);
+
   return ret;
 }
 DECLARE_XAM_EXPORT1(NetDll_recvfrom, kNetworking, kImplemented);
@@ -1918,6 +1999,8 @@ dword_result_t NetDll_sendto_entry(dword_t caller, dword_t socket_handle,
     return -1;
   }
 
+  GetActualAddressFromVirtualInAddr(&to_ptr->address_ip);
+
   int ret = socket->SendTo(buf_ptr, buf_len, flags, to_ptr, to_len);
   if (ret < 0) {
     XThread::SetLastError(socket->GetLastWSAError());
@@ -1928,6 +2011,8 @@ dword_result_t NetDll_sendto_entry(dword_t caller, dword_t socket_handle,
            to_ptr->address_ip.S_un.S_un_b.s_b3,
            to_ptr->address_ip.S_un.S_un_b.s_b4);
   }
+
+  GenerateSecureInAddr(&to_ptr->address_ip);
 
   return ret;
 }
