@@ -601,26 +601,27 @@ dword_result_t NetDll_WSASendTo_entry(
 #endif
 
   if (overlapped) {
-    int ret = socket->WSASendTo(buffers, num_buffers, num_bytes_sent, flags,
-                                to_ptr, to_len, overlapped);
-
-    if (ret == SOCKET_ERROR) {
-#ifdef XE_PLATFORM_WIN32
-      auto err = WSAGetLastError();
-      if (cvars::network_mode >= 2 && err == WSAECONNRESET) {
-        // Swallow a stray ICMP error; report as transient/no-bytes.
-        XThread::SetLastError(0);
-        if (num_bytes_sent) *num_bytes_sent = 0;
-        return 0;
+    int ret;
+    int retry_count = 3;
+    do {
+      ret = socket->WSASendTo(buffers, num_buffers, num_bytes_sent, flags,
+                              to_ptr, to_len, overlapped);
+      if (ret == SOCKET_ERROR) {
+        auto err = WSAGetLastError();
+        if (err == WSAEWOULDBLOCK || err == WSAECONNRESET) {
+          // Retry on non-fatal errors
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+          continue;
+        }
+        XThread::SetLastError(err);
+        return ret;
       }
-#endif
-      XELOGI("WSAGetLastError: {}", WSAGetLastError());
-    } else {
-      XELOGI("NetDll_WSASendTo: Send {} bytes", (uint32_t)*num_bytes_sent);
+      break;
+    } while (--retry_count > 0);
+    XELOGI("NetDll_WSASendTo: Send {} bytes", (uint32_t)*num_bytes_sent);
 
-      if (overlapped->event_handle) {
-        xboxkrnl::xeNtSetEvent(overlapped->event_handle, nullptr);
-      }
+    if (overlapped->event_handle) {
+      xboxkrnl::xeNtSetEvent(overlapped->event_handle, nullptr);
     }
     return ret;
   }
