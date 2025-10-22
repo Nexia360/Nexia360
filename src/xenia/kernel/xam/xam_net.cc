@@ -539,7 +539,12 @@ dword_result_t NetDll_WSARecvFrom_entry(
       return 0;
     }
 #endif
-    XThread::SetLastError(socket->GetLastWSAError());
+    auto err = socket->GetLastWSAError();
+    if (err == X_WSAError::X_WSAEWOULDBLOCK || err == X_WSAError::X_WSA_IO_PENDING) {
+      XThread::SetLastError(err);
+    } else {
+      XThread::SetLastError(0);
+    }
     return ret;
   }
 
@@ -613,7 +618,11 @@ dword_result_t NetDll_WSASendTo_entry(
           std::this_thread::sleep_for(std::chrono::milliseconds(100));
           continue;
         }
-        XThread::SetLastError(err);
+        if (err == X_WSAError::X_WSAEWOULDBLOCK || err == X_WSAError::X_WSA_IO_PENDING) {
+          XThread::SetLastError(err);
+        } else {
+          XThread::SetLastError(0);
+        }
         return ret;
       }
       break;
