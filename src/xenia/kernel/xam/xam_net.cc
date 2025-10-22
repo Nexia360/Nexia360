@@ -531,20 +531,22 @@ dword_result_t NetDll_WSARecvFrom_entry(
                               from_ptr, fromlen_ptr, overlapped_ptr);
     if (ret < 0) {
       auto err = socket->GetLastWSAError();
-      if (err != 0) {
-        // Retry on any error
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        continue;
+      if (err == static_cast<uint32_t>(X_WSAError::X_WSAEWOULDBLOCK) || 
+          err == static_cast<uint32_t>(X_WSAError::X_WSA_IO_PENDING)) {
+        XThread::SetLastError(err);
+        return ret;
+      } else if (err != static_cast<uint32_t>(X_WSAError::X_WSAENOTSOCK) &&
+                 err != static_cast<uint32_t>(X_WSAError::X_WSA_INVALID_PARAMETER)) {
+        XThread::SetLastError(0);
+      } else {
+        XThread::SetLastError(err);
       }
-      XThread::SetLastError(err);
       return ret;
     }
     break;
   } while (--retry_count > 0);
 
-  if (ret >= 0) {
-    XThread::SetLastError(0);
-  }
+  XThread::SetLastError(0);
 
   if (!cvars::log_mask_ips && from_ptr) {
     XELOGD("NetDll_WSARecvFrom: {} bytes from {}.{}.{}.{}",
@@ -611,20 +613,22 @@ dword_result_t NetDll_WSASendTo_entry(
                               to_ptr, to_len, overlapped);
       if (ret == SOCKET_ERROR) {
         auto err = WSAGetLastError();
-        if (err != 0) {
-          // Retry on any error
-          std::this_thread::sleep_for(std::chrono::milliseconds(100));
-          continue;
+        if (err == static_cast<uint32_t>(X_WSAError::X_WSAEWOULDBLOCK) || 
+            err == static_cast<uint32_t>(X_WSAError::X_WSA_IO_PENDING)) {
+          XThread::SetLastError(err);
+          return ret;
+        } else if (err != static_cast<uint32_t>(X_WSAError::X_WSAENOTSOCK) &&
+                   err != static_cast<uint32_t>(X_WSAError::X_WSA_INVALID_PARAMETER)) {
+          XThread::SetLastError(0);
+        } else {
+          XThread::SetLastError(err);
         }
-        XThread::SetLastError(err);
         return ret;
       }
       break;
     } while (--retry_count > 0);
 
-    if (ret >= 0) {
-      XThread::SetLastError(0);
-    }
+    XThread::SetLastError(0);
     XELOGI("NetDll_WSASendTo: Send {} bytes", (uint32_t)*num_bytes_sent);
 
     if (overlapped->event_handle) {
