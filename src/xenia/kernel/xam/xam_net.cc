@@ -536,13 +536,15 @@ dword_result_t NetDll_WSARecvFrom_entry(
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         continue;
       }
-      XThread::SetLastError(0);
+      XThread::SetLastError(err);
       return ret;
     }
     break;
   } while (--retry_count > 0);
 
-  XThread::SetLastError(0);
+  if (ret >= 0) {
+    XThread::SetLastError(0);
+  }
 
   if (!cvars::log_mask_ips && from_ptr) {
     XELOGD("NetDll_WSARecvFrom: {} bytes from {}.{}.{}.{}",
@@ -614,12 +616,15 @@ dword_result_t NetDll_WSASendTo_entry(
           std::this_thread::sleep_for(std::chrono::milliseconds(100));
           continue;
         }
-        XThread::SetLastError(0);
+        XThread::SetLastError(err);
         return ret;
       }
       break;
     } while (--retry_count > 0);
-    XThread::SetLastError(0);
+
+    if (ret >= 0) {
+      XThread::SetLastError(0);
+    }
     XELOGI("NetDll_WSASendTo: Send {} bytes", (uint32_t)*num_bytes_sent);
 
     if (overlapped->event_handle) {
