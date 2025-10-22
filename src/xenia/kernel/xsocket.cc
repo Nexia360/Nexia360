@@ -50,7 +50,7 @@ X_STATUS XSocket::Initialize(AddressFamily af, Type type, Protocol proto) {
 }
 
 X_STATUS XSocket::Close() {
-  std::unique_lock send_lock(receive_mutex_);
+  std::unique_lock send_lock(send_mutex_);
   if (send_active_overlapped_ &&
       !(send_active_overlapped_->offset_high & (uint32_t)WSAInfo::complete)) {
     send_active_overlapped_->offset_high |= (uint32_t)WSAInfo::closed;
@@ -75,8 +75,14 @@ X_STATUS XSocket::Close() {
   receive_socket_lock.unlock();
 
   if (ret != 0) {
+    XELOGE("Failed to close socket with error: {}", GetLastWSAError());
     return X_STATUS_UNSUCCESSFUL;
   }
+
+  // Ensure the socket is unbound and resources are released
+  native_handle_ = -1;
+  bound_ = false;
+  bound_port_ = 0;
 
   return X_STATUS_SUCCESS;
 }
