@@ -537,6 +537,7 @@ dword_result_t NetDll_WSARecvFrom_entry(
         return ret;
       } else if (err != static_cast<uint32_t>(X_WSAError::X_WSAENOTSOCK) &&
                  err != static_cast<uint32_t>(X_WSAError::X_WSA_INVALID_PARAMETER)) {
+        XELOGI("Non-critical error occurred: {}", err);
         XThread::SetLastError(0);
       } else {
         XThread::SetLastError(err);
@@ -619,6 +620,7 @@ dword_result_t NetDll_WSASendTo_entry(
           return ret;
         } else if (err != static_cast<uint32_t>(X_WSAError::X_WSAENOTSOCK) &&
                    err != static_cast<uint32_t>(X_WSAError::X_WSA_INVALID_PARAMETER)) {
+          XELOGI("Non-critical error occurred: {}", err);
           XThread::SetLastError(0);
         } else {
           XThread::SetLastError(err);
