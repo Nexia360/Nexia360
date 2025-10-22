@@ -542,6 +542,8 @@ dword_result_t NetDll_WSARecvFrom_entry(
     break;
   } while (--retry_count > 0);
 
+  XThread::SetLastError(0);
+
   if (!cvars::log_mask_ips && from_ptr) {
     XELOGD("NetDll_WSARecvFrom: {} bytes from {}.{}.{}.{}",
            static_cast<uint32_t>(*num_bytes_recv_ptr),
@@ -617,6 +619,7 @@ dword_result_t NetDll_WSASendTo_entry(
       }
       break;
     } while (--retry_count > 0);
+    XThread::SetLastError(0);
     XELOGI("NetDll_WSASendTo: Send {} bytes", (uint32_t)*num_bytes_sent);
 
     if (overlapped->event_handle) {
