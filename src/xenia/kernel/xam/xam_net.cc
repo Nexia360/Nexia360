@@ -524,29 +524,23 @@ dword_result_t NetDll_WSARecvFrom_entry(
   }
 #endif
 
-  int ret =
-      socket->WSARecvFrom(buffers, num_buffers, num_bytes_recv_ptr, flags_ptr,
-                          from_ptr, fromlen_ptr, overlapped_ptr);
-
-  if (ret < 0) {
-#ifdef XE_PLATFORM_WIN32
-    auto err = socket->GetLastWSAError();
-    if (cvars::network_mode >= 2 && err == WSAECONNRESET) {
-      // Swallow the ICMP “port unreachable” reset once and keep going.
-      // Treat this as “no data available” for the caller.
+  int ret;
+  int retry_count = 3;
+  do {
+    ret = socket->WSARecvFrom(buffers, num_buffers, num_bytes_recv_ptr, flags_ptr,
+                              from_ptr, fromlen_ptr, overlapped_ptr);
+    if (ret < 0) {
+      auto err = socket->GetLastWSAError();
+      if (err == X_WSAError::X_WSAEWOULDBLOCK || err == X_WSAError::X_WSA_IO_PENDING) {
+        // Retry on non-fatal errors
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        continue;
+      }
       XThread::SetLastError(0);
-      if (num_bytes_recv_ptr) *num_bytes_recv_ptr = 0;
-      return 0;
+      return ret;
     }
-#endif
-    auto err = socket->GetLastWSAError();
-    if (err == X_WSAError::X_WSAEWOULDBLOCK || err == X_WSAError::X_WSA_IO_PENDING) {
-      XThread::SetLastError(err);
-    } else {
-      XThread::SetLastError(0);
-    }
-    return ret;
-  }
+    break;
+  } while (--retry_count > 0);
 
   if (!cvars::log_mask_ips && from_ptr) {
     XELOGD("NetDll_WSARecvFrom: {} bytes from {}.{}.{}.{}",
