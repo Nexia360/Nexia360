@@ -95,7 +95,7 @@ jobs:
     name: Create release
     needs: [lint, build]
     if: |
-      github.repository == 'xenia-canary/xenia-canary' &&
+      github.repository == 'Nexia360/xenia-canary' &&
       github.event.action != 'pull_request' &&
       github.ref == 'refs/heads/canary_experimental'
     uses: ./.github/workflows/Create_release.yml
