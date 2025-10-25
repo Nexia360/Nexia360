@@ -146,7 +146,7 @@ void MaybeYield() {
 #endif
 #endif
   // memorybarrier is really not necessary here...
-   MemoryBarrier();
+  MemoryBarrier();
 }
 void NanoSleep(int64_t ns) {
   // nanosleep is done in 100 nanosecond increments
@@ -336,11 +336,11 @@ class Win32Event : public Win32Handle<Event> {
 
   EventInfo Query() override {
     EventInfo result{};
-    #if XE_USE_NTDLL_FUNCTIONS == 1
+#if XE_USE_NTDLL_FUNCTIONS == 1
     NtQueryEventPointer.invoke(handle_, 0, &result, sizeof(EventInfo), nullptr);
-    #else
+#else
     assert_always();
-    #endif
+#endif
     return result;
   }
 };

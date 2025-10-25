@@ -23,8 +23,8 @@
 #if XE_PLATFORM_WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include <cstdint>
 #include <chrono>
+#include <cstdint>
 #endif
 
 namespace xe {
@@ -34,22 +34,22 @@ namespace x64 {
 
 #if XE_PLATFORM_WIN32
 // Reasonable stack size for a leaf-ish worker that just calls the thunk.
-static constexpr SIZE_T kFiberCommitBytes  = 1ull << 22;  // 4 MB
+static constexpr SIZE_T kFiberCommitBytes = 1ull << 22;   // 4 MB
 static constexpr SIZE_T kFiberReserveBytes = 1ull << 26;  // 64 MB
 
 // Stubs that are extremely hot and/or spinny in your trace — avoid fibers.
 static constexpr uint32_t kDenylistedFns[] = {
     0x8209CC88,  // seen hammering
     0x82487FD0,  // seen hammering
-    // add more here if needed
+                 // add more here if needed
 };
 
 struct FiberCallCtx {
   uint8_t* code_ptr = nullptr;
-  void*    thunk_ptr = nullptr;     // X64Backend::host_to_guest_thunk
+  void* thunk_ptr = nullptr;  // X64Backend::host_to_guest_thunk
   xe::cpu::ppc::PPCContext* ctx = nullptr;
-  uint32_t return_address = 0;      // forwarded verbatim
-  bool     has_work = false;
+  uint32_t return_address = 0;  // forwarded verbatim
+  bool has_work = false;
 };
 
 struct ThreadFiberEnv {
@@ -64,8 +64,8 @@ struct CallWatchdog {
 };
 
 static thread_local ThreadFiberEnv tl_env{};
-static thread_local FiberCallCtx   tl_call_ctx{};
-static thread_local CallWatchdog   tl_watchdog{};
+static thread_local FiberCallCtx tl_call_ctx{};
+static thread_local CallWatchdog tl_watchdog{};
 
 static inline bool LooksPoison(uint32_t ra) {
   switch (ra) {
@@ -92,9 +92,8 @@ static inline bool IsDenylisted(uint32_t fn) {
 
 // Worker runs the thunk once per posted call and yields back.
 static VOID WINAPI WorkerFiberEntry(void* /*param*/) {
-  XELOGD("[FBR ] entry worker={} main={} tid={}",
-         tl_env.worker_fiber, tl_env.main_fiber,
-         static_cast<unsigned long>(GetCurrentThreadId()));
+  XELOGD("[FBR ] entry worker={} main={} tid={}", tl_env.worker_fiber,
+         tl_env.main_fiber, static_cast<unsigned long>(GetCurrentThreadId()));
 
   using ThunkFn = void (*)(uint8_t*, xe::cpu::ppc::PPCContext*, void*);
   for (;;) {
@@ -109,27 +108,25 @@ static VOID WINAPI WorkerFiberEntry(void* /*param*/) {
       continue;
     }
 
-    auto code  = tl_call_ctx.code_ptr;
+    auto code = tl_call_ctx.code_ptr;
     auto thunk = reinterpret_cast<ThunkFn>(tl_call_ctx.thunk_ptr);
-    auto ctx   = tl_call_ctx.ctx;
+    auto ctx = tl_call_ctx.ctx;
     uint32_t ra = tl_call_ctx.return_address;
 
     if (LooksPoison(ra)) {
       // Should be rare now — we prefilter in CallImpl — but keep telemetry.
-      XELOGD("[FBR ] NOTE: suspicious RA observed: {:#010X} (forwarding as-is)", ra);
+      XELOGD("[FBR ] NOTE: suspicious RA observed: {:#010X} (forwarding as-is)",
+             ra);
     }
 
     XELOGD("[FBR ] call  code={} worker={} tid={} ra={:#010X}",
-           static_cast<const void*>(code),
-           tl_env.worker_fiber,
-           static_cast<unsigned long>(GetCurrentThreadId()),
-           ra);
+           static_cast<const void*>(code), tl_env.worker_fiber,
+           static_cast<unsigned long>(GetCurrentThreadId()), ra);
 
     thunk(code, ctx, reinterpret_cast<void*>(uintptr_t(ra)));
 
     XELOGD("[FBR ] ret   code={} worker={} tid={}",
-           static_cast<const void*>(code),
-           tl_env.worker_fiber,
+           static_cast<const void*>(code), tl_env.worker_fiber,
            static_cast<unsigned long>(GetCurrentThreadId()));
 
     tl_call_ctx.has_work = false;
@@ -154,8 +151,7 @@ void X64Function::Setup(uint8_t* machine_code, size_t machine_code_length) {
   machine_code_length_ = machine_code_length;
 }
 
-bool X64Function::CallImpl(ThreadState* thread_state,
-                           uint32_t return_address) {
+bool X64Function::CallImpl(ThreadState* thread_state, uint32_t return_address) {
   auto backend =
       reinterpret_cast<X64Backend*>(thread_state->processor()->backend());
   auto thunk = backend->host_to_guest_thunk();
@@ -164,7 +160,8 @@ bool X64Function::CallImpl(ThreadState* thread_state,
 #if XE_PLATFORM_WIN32
   const uint32_t fn_addr = address();
 
-  // Conservative prefilter: if RA is poison or function is denylisted, skip fiber.
+  // Conservative prefilter: if RA is poison or function is denylisted, skip
+  // fiber.
   if (LooksPoison(return_address) || IsDenylisted(fn_addr)) {
     if (LooksPoison(return_address)) {
       XELOGD("[CALL] poison RA {:#010X} -> direct thunk (fn={:#010X})",
@@ -182,14 +179,12 @@ bool X64Function::CallImpl(ThreadState* thread_state,
   if (!tl_env.main_fiber) {
     if (current_fiber) {
       tl_env.main_fiber = current_fiber;
-      XELOGD("[CALL] adopt main fiber cur={} tid={}",
-             tl_env.main_fiber,
+      XELOGD("[CALL] adopt main fiber cur={} tid={}", tl_env.main_fiber,
              static_cast<unsigned long>(GetCurrentThreadId()));
     } else {
       tl_env.main_fiber =
           ConvertThreadToFiberEx(nullptr, FIBER_FLAG_FLOAT_SWITCH);
-      XELOGD("[CALL] convert thread to fiber rc={} tid={}",
-             tl_env.main_fiber,
+      XELOGD("[CALL] convert thread to fiber rc={} tid={}", tl_env.main_fiber,
              static_cast<unsigned long>(GetCurrentThreadId()));
       if (!tl_env.main_fiber) {
         XELOGD("[CALL] convert failed, falling back to direct thunk");
@@ -200,7 +195,8 @@ bool X64Function::CallImpl(ThreadState* thread_state,
     }
   }
 
-  // If already on a non-main fiber (re-entrant from worker), just call directly.
+  // If already on a non-main fiber (re-entrant from worker), just call
+  // directly.
   if (current_fiber && current_fiber != tl_env.main_fiber) {
     XELOGD("[CALL] on foreign fiber cur={} main={} tid={}, direct thunk",
            current_fiber, tl_env.main_fiber,
@@ -212,11 +208,10 @@ bool X64Function::CallImpl(ThreadState* thread_state,
 
   // Create per-thread worker fiber once.
   if (!tl_env.worker_fiber) {
-    tl_env.worker_fiber = CreateFiberEx(
-        kFiberCommitBytes, kFiberReserveBytes,
-        FIBER_FLAG_FLOAT_SWITCH, &WorkerFiberEntry, nullptr);
-    XELOGD("[CALL] create worker fiber={} tid={}",
-           tl_env.worker_fiber,
+    tl_env.worker_fiber =
+        CreateFiberEx(kFiberCommitBytes, kFiberReserveBytes,
+                      FIBER_FLAG_FLOAT_SWITCH, &WorkerFiberEntry, nullptr);
+    XELOGD("[CALL] create worker fiber={} tid={}", tl_env.worker_fiber,
            static_cast<unsigned long>(GetCurrentThreadId()));
     if (!tl_env.worker_fiber) {
       XELOGD("[CALL] CreateFiberEx failed, direct thunk");
@@ -253,23 +248,20 @@ bool X64Function::CallImpl(ThreadState* thread_state,
   tl_call_ctx.has_work = true;
 
   XELOGD("[CALL] enter fn={:#010X} tid={} cur={} main={} worker={} ra={:#010X}",
-         fn_addr,
-         static_cast<unsigned long>(GetCurrentThreadId()),
+         fn_addr, static_cast<unsigned long>(GetCurrentThreadId()),
          current_fiber, tl_env.main_fiber, tl_env.worker_fiber, return_address);
 
   SwitchToFiber(tl_env.worker_fiber);
 
-  XELOGD("[CALL] exit  fn={:#010X} tid={} cur={} main={} worker={}",
-         fn_addr,
-         static_cast<unsigned long>(GetCurrentThreadId()),
-         GetCurrentFiber(), tl_env.main_fiber, tl_env.worker_fiber);
+  XELOGD("[CALL] exit  fn={:#010X} tid={} cur={} main={} worker={}", fn_addr,
+         static_cast<unsigned long>(GetCurrentThreadId()), GetCurrentFiber(),
+         tl_env.main_fiber, tl_env.worker_fiber);
 
   return true;
 
 #else
   XELOGD("[CALL] non-Win32 direct thunk fn={:#010X}", address());
-  thunk(machine_code_, ctx,
-        reinterpret_cast<void*>(uintptr_t(return_address)));
+  thunk(machine_code_, ctx, reinterpret_cast<void*>(uintptr_t(return_address)));
   return true;
 #endif
 }

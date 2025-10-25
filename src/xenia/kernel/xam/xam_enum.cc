@@ -41,8 +41,9 @@ struct EnumeratorHandlePool {
     if (initialized) return;
     auto* ot = ks->object_table();
 
-    // Seed kPoolSize distinct *guest* handles by creating temporary guest enumerators.
-    // We use XStaticUntypedEnumerator to guarantee guest handle allocation.
+    // Seed kPoolSize distinct *guest* handles by creating temporary guest
+    // enumerators. We use XStaticUntypedEnumerator to guarantee guest handle
+    // allocation.
     for (size_t i = 0; i < kPoolSize; ++i) {
       auto tmp = object_ref<XStaticUntypedEnumerator>(
           new XStaticUntypedEnumerator(ks, /*item_count=*/0, /*extra_size=*/0));
@@ -310,7 +311,6 @@ dword_result_t XamCreateEnumeratorHandle_entry(
   return X_ERROR_SUCCESS;
 }
 DECLARE_XAM_EXPORT1(XamCreateEnumeratorHandle, kNone, kImplemented);
-
 
 dword_result_t XamGetPrivateEnumStructureFromHandle_entry(
     dword_t handle, lpdword_t out_object_ptr) {

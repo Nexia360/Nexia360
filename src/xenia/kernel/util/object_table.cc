@@ -24,14 +24,14 @@ namespace kernel {
 namespace util {
 
 // Fixed-size pools sized for common titles; tune if needed.
-static constexpr uint32_t kInitGuestCap = 65536;  // guest-visible handles
-static constexpr uint32_t kInitHostCap  = 4096;   // host-only objects
-static constexpr uint32_t kHostReservedSlot0 = 0; // never use host slot 0
+static constexpr uint32_t kInitGuestCap = 65536;   // guest-visible handles
+static constexpr uint32_t kInitHostCap = 4096;     // host-only objects
+static constexpr uint32_t kHostReservedSlot0 = 0;  // never use host slot 0
 
 // Recycle FIFO hysteresis (enable using recycled slots at >= HIGH,
 // keep using until size drops to <= LOW)
 static constexpr size_t kRecycleHighWatermark = 16;
-static constexpr size_t kRecycleLowWatermark  = 8;
+static constexpr size_t kRecycleLowWatermark = 8;
 
 ObjectTable::ObjectTable() {
   auto global_lock = global_critical_region_.Acquire();
@@ -56,8 +56,8 @@ ObjectTable::ObjectTable() {
   recycle_fifo_guest_.clear();
   recycle_fifo_host_.clear();
 
-  XELOGI("ObjectTable: preallocated guest={} host={}",
-         table_capacity_, host_table_capacity_);
+  XELOGI("ObjectTable: preallocated guest={} host={}", table_capacity_,
+         host_table_capacity_);
 }
 
 ObjectTable::~ObjectTable() { Reset(); }
@@ -131,7 +131,8 @@ X_STATUS ObjectTable::FindFreeSlot(uint32_t* out_slot, bool host) {
 
       if (host) {
         last_free_host_entry_ = (slot + 1) % capacity;
-        if (last_free_host_entry_ == kHostReservedSlot0) last_free_host_entry_ = 1;
+        if (last_free_host_entry_ == kHostReservedSlot0)
+          last_free_host_entry_ = 1;
       } else {
         last_free_entry_ = (slot + 1) % capacity;
       }
@@ -204,7 +205,8 @@ bool ObjectTable::TryPopRecycledSlot(bool host, uint32_t& out_slot) {
     }
 
     ObjectTableEntry& entry = host ? host_table_[slot] : table_[slot];
-    if (!entry.in_use && entry.object == nullptr && entry.handle_ref_count == 0) {
+    if (!entry.in_use && entry.object == nullptr &&
+        entry.handle_ref_count == 0) {
       entry.in_use = true;
       out_slot = slot;
 
@@ -259,10 +261,10 @@ X_STATUS ObjectTable::AddHandle(XObject* object, X_HANDLE* out_handle) {
     handle = (slot << 2);
     if (!host_object) {
       if (object->type() != XObject::Type::Socket) {
-        handle += XObject::kHandleBase;       // 0xF8000000
+        handle += XObject::kHandleBase;  // 0xF8000000
       }
     } else {
-      handle += XObject::kHandleHostBase;     // 0x01000000
+      handle += XObject::kHandleHostBase;  // 0x01000000
     }
     object->handles().push_back(handle);
 
@@ -413,9 +415,8 @@ X_STATUS ObjectTable::RemoveHandle(X_HANDLE handle) {
   const uint32_t slot = GetHandleSlot(handle, is_host);
 
   // If pinned: detach object but keep slot reserved.
-  bool pinned = is_host
-                    ? (slot < pinned_host_.size() && pinned_host_[slot])
-                    : (slot < pinned_guest_.size() && pinned_guest_[slot]);
+  bool pinned = is_host ? (slot < pinned_host_.size() && pinned_host_[slot])
+                        : (slot < pinned_guest_.size() && pinned_guest_[slot]);
 
   XObject* object = entry->object;
 
@@ -425,9 +426,11 @@ X_STATUS ObjectTable::RemoveHandle(X_HANDLE handle) {
     entry->in_use = true;  // reserved
 
     if (object) {
-      auto it = std::find(object->handles().begin(), object->handles().end(), handle);
+      auto it =
+          std::find(object->handles().begin(), object->handles().end(), handle);
       if (it != object->handles().end()) object->handles().erase(it);
-      XELOGI("Removed (detached, pinned) handle:{:08X} for {}", handle, typeid(*object).name());
+      XELOGI("Removed (detached, pinned) handle:{:08X} for {}", handle,
+             typeid(*object).name());
       if (!object->name().empty()) {
         RemoveNameMapping(object->name());
       }
@@ -442,7 +445,8 @@ X_STATUS ObjectTable::RemoveHandle(X_HANDLE handle) {
   entry->in_use = false;
 
   if (object) {
-    auto it = std::find(object->handles().begin(), object->handles().end(), handle);
+    auto it =
+        std::find(object->handles().begin(), object->handles().end(), handle);
     if (it != object->handles().end()) object->handles().erase(it);
 
     XELOGI("Removed handle:{:08X} for {}", handle, typeid(*object).name());
@@ -495,7 +499,8 @@ void ObjectTable::PurgeAllObjects() {
       e.object->Release();
       e.object = nullptr;
     }
-    e.in_use = (slot < pinned_guest_.size() && pinned_guest_[slot]) ? true : false;
+    e.in_use =
+        (slot < pinned_guest_.size() && pinned_guest_[slot]) ? true : false;
   }
   for (uint32_t slot = 0; slot < host_table_capacity_; ++slot) {
     auto& e = host_table_[slot];
@@ -504,7 +509,8 @@ void ObjectTable::PurgeAllObjects() {
       e.object->Release();
       e.object = nullptr;
     }
-    e.in_use = (slot < pinned_host_.size() && pinned_host_[slot]) ? true : false;
+    e.in_use =
+        (slot < pinned_host_.size() && pinned_host_[slot]) ? true : false;
   }
 
   recycle_fifo_guest_.clear();
@@ -594,11 +600,11 @@ void ObjectTable::GetObjectsByType(XObject::Type type,
 
 X_HANDLE ObjectTable::TranslateHandle(X_HANDLE handle) const {
   // Likely case: not a special handle.
-  XE_LIKELY_IF(handle < 0xFFFFFFFE) {
-    return handle;
-  } else if (handle == 0xFFFFFFFF) {
+  XE_LIKELY_IF(handle < 0xFFFFFFFE) { return handle; }
+  else if (handle == 0xFFFFFFFF) {
     return 0;
-  } else {
+  }
+  else {
     return XThread::GetCurrentThreadHandle();
   }
 }

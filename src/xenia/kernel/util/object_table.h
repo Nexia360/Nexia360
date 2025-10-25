@@ -128,8 +128,8 @@ class ObjectTable {
   // State
   xe::global_critical_region global_critical_region_;
 
-  uint32_t table_capacity_ = 0;        // guest-visible table
-  uint32_t host_table_capacity_ = 0;   // host-only table
+  uint32_t table_capacity_ = 0;       // guest-visible table
+  uint32_t host_table_capacity_ = 0;  // host-only table
 
   ObjectTableEntry* table_ = nullptr;
   ObjectTableEntry* host_table_ = nullptr;

@@ -15,7 +15,7 @@
 #include "xenia/kernel/xam/xam_module.h"
 #include "xenia/kernel/xam/xam_net.h"
 #include "xenia/kernel/xam/xam_private.h"
-//#include "xenia/kernel/xam/nexiahub_transport.h"
+// #include "xenia/kernel/xam/nexiahub_transport.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_error.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_modules.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_threading.h"
@@ -174,10 +174,12 @@ static_assert_size(XNQOSLISTENSTATS, 0x1C);
 // --- Cross-platform helpers (Windows / Linux/macOS) ---
 static inline bool IpToString(uint32_t ip_be, char out[32]) {
 #ifdef _WIN32
-  IN_ADDR a{}; a.S_un.S_addr = ip_be;
+  IN_ADDR a{};
+  a.S_un.S_addr = ip_be;
   return InetNtopA(AF_INET, &a, out, 32) != nullptr;
 #else
-  in_addr a{}; a.s_addr = ip_be;
+  in_addr a{};
+  a.s_addr = ip_be;
   return inet_ntop(AF_INET, &a, out, 32) != nullptr;
 #endif
 }
@@ -191,7 +193,7 @@ static inline bool StringToIp(const char* s, uint32_t& ip_be_out) {
 #else
   in_addr a{};
   if (inet_pton(AF_INET, s, &a) != 1) return false;
-  ip_be_out = a.s_addr;       // network order
+  ip_be_out = a.s_addr;  // network order
   return true;
 #endif
 }
@@ -199,37 +201,43 @@ static inline bool StringToIp(const char* s, uint32_t& ip_be_out) {
 // Try to get the OS UDP port for an XSocket (native fd or SOCKET).
 static inline uint16_t GetLocalUdpPortFor(XSocket* xs) {
   if (!xs) return 0;
-  sockaddr_in sin{}; socklen_t slen = sizeof(sin);
+  sockaddr_in sin{};
+  socklen_t slen = sizeof(sin);
 #ifdef _WIN32
   SOCKET h = xs->native_handle();  // Xenia provides this on Windows
   if (h == INVALID_SOCKET) return 0;
-  if (::getsockname((SOCKET)h, reinterpret_cast<sockaddr*>(&sin), (int*)&slen) != 0) return 0;
+  if (::getsockname((SOCKET)h, reinterpret_cast<sockaddr*>(&sin),
+                    (int*)&slen) != 0)
+    return 0;
 #else
-  // On POSIX builds, XSocket exposes a platform handle; Xenia commonly exposes fd()
-  // If your XSocket doesn't, add a getter or use socket->platform_handle().
-  int fd = xs->platform_handle();  // <-- if your build uses a different name, adjust here
+  // On POSIX builds, XSocket exposes a platform handle; Xenia commonly exposes
+  // fd() If your XSocket doesn't, add a getter or use
+  // socket->platform_handle().
+  int fd = xs->platform_handle();  // <-- if your build uses a different name,
+                                   // adjust here
   if (fd < 0) return 0;
-  if (::getsockname(fd, reinterpret_cast<sockaddr*>(&sin), &slen) != 0) return 0;
+  if (::getsockname(fd, reinterpret_cast<sockaddr*>(&sin), &slen) != 0)
+    return 0;
 #endif
   return ntohs(sin.sin_port);
 }
 
 // RFC1918/loopback check — helps decide local vs remote route.
 static inline bool IsLocalOrRFC1918(uint32_t ip_be) {
-  uint32_t ip = xe::byte_swap(ip_be); // to host order if your value is BE
+  uint32_t ip = xe::byte_swap(ip_be);  // to host order if your value is BE
   uint8_t a = (ip >> 24) & 0xFF;
   uint8_t b = (ip >> 16) & 0xFF;
-  if (a == 127) return true;                                // loopback
-  if (a == 10) return true;                                 // 10.0.0.0/8
-  if (a == 172 && (b >= 16 && b <= 31)) return true;        // 172.16/12
-  if (a == 192 && b == 168) return true;                    // 192.168/16
+  if (a == 127) return true;                          // loopback
+  if (a == 10) return true;                           // 10.0.0.0/8
+  if (a == 172 && (b >= 16 && b <= 31)) return true;  // 172.16/12
+  if (a == 192 && b == 168) return true;              // 192.168/16
   return false;
 }
 
-
 #ifdef XE_PLATFORM_WIN32
-#define SIO_UDP_CONNRESET 0x9800000C // from mstcpip.h
-// Turn off the “ICMP Port Unreachable ⇒ WSAECONNRESET on next recvfrom” behavior.
+#define SIO_UDP_CONNRESET 0x9800000C  // from mstcpip.h
+// Turn off the “ICMP Port Unreachable ⇒ WSAECONNRESET on next recvfrom”
+// behavior.
 static void DisableUdpConnReset(SOCKET s) {
   // BOOL FALSE == disable the behavior.
   BOOL new_behavior = FALSE;
@@ -237,13 +245,8 @@ static void DisableUdpConnReset(SOCKET s) {
   // SIO_UDP_CONNRESET is 0x9800000C on Win; included via mstcpip.h usually,
   // but we avoid the include and call the code directly via WSAIoctl symbol.
   // If this fails (old OS), it’s safe to ignore.
-  (void)WSAIoctl(
-      s,
-      SIO_UDP_CONNRESET,
-      &new_behavior, sizeof(new_behavior),
-      nullptr, 0,
-      &bytes_returned,
-      nullptr, nullptr);
+  (void)WSAIoctl(s, SIO_UDP_CONNRESET, &new_behavior, sizeof(new_behavior),
+                 nullptr, 0, &bytes_returned, nullptr, nullptr);
 }
 #endif
 
@@ -450,17 +453,15 @@ dword_result_t NetDll_WSAStartup_entry(dword_t caller, word_t version,
       const char* stun_host = "107.155.85.242";
       const uint16_t stun_port = 3478;
 
-      if (!nh.Configure(rendezvous_host, rendezvous_port, stun_host, stun_port)) {
-        XELOGW("NexiaHub: Configure failed ({}:{}, {}:{})",
-               rendezvous_host, (uint32_t)rendezvous_port,
-               stun_host, (uint32_t)stun_port);
-      } else {
+      if (!nh.Configure(rendezvous_host, rendezvous_port, stun_host, stun_port))
+  { XELOGW("NexiaHub: Configure failed ({}:{}, {}:{})", rendezvous_host,
+  (uint32_t)rendezvous_port, stun_host, (uint32_t)stun_port); } else {
         std::string obs_host;
         uint16_t obs_port = 0;
         if (nh.GetObservedAddr(obs_host, obs_port)) {
-          XELOGI("NexiaHub: observed address {}:{}", obs_host, (uint32_t)obs_port);
-        } else {
-          XELOGW("NexiaHub: failed to obtain observed address (STUN-like probe).");
+          XELOGI("NexiaHub: observed address {}:{}", obs_host,
+  (uint32_t)obs_port); } else { XELOGW("NexiaHub: failed to obtain observed
+  address (STUN-like probe).");
         }
         XELOGI("NexiaHub: bootstrap complete (rendezvous {}:{}, stun {}:{})",
                rendezvous_host, (uint32_t)rendezvous_port,
@@ -527,17 +528,18 @@ dword_result_t NetDll_WSARecvFrom_entry(
   int ret;
   int retry_count = 3;
   do {
-    ret = socket->WSARecvFrom(buffers, num_buffers, num_bytes_recv_ptr, flags_ptr,
-                              from_ptr, fromlen_ptr, overlapped_ptr);
+    ret = socket->WSARecvFrom(buffers, num_buffers, num_bytes_recv_ptr,
+                              flags_ptr, from_ptr, fromlen_ptr, overlapped_ptr);
     if (ret < 0) {
       auto err = socket->GetLastWSAError();
-      if (err == static_cast<uint32_t>(X_WSAError::X_WSAEWOULDBLOCK) || 
+      if (err == static_cast<uint32_t>(X_WSAError::X_WSAEWOULDBLOCK) ||
           err == static_cast<uint32_t>(X_WSAError::X_WSA_IO_PENDING)) {
-            if(err !=0)XELOGI("WSARecvFrom Unhandled error occurred: {}", err);
+        if (err != 0) XELOGI("WSARecvFrom Unhandled error occurred: {}", err);
         XThread::SetLastError(err);
         return ret;
       } else if (err != static_cast<uint32_t>(X_WSAError::X_WSAENOTSOCK) &&
-                 err != static_cast<uint32_t>(X_WSAError::X_WSA_INVALID_PARAMETER)) {
+                 err != static_cast<uint32_t>(
+                            X_WSAError::X_WSA_INVALID_PARAMETER)) {
         XELOGI("Non-critical error occurred: {}", err);
         XThread::SetLastError(0);
       } else {
@@ -616,13 +618,14 @@ dword_result_t NetDll_WSASendTo_entry(
                               to_ptr, to_len, overlapped);
       if (ret == SOCKET_ERROR) {
         auto err = WSAGetLastError();
-        
-        if (err == static_cast<uint32_t>(X_WSAError::X_WSAEWOULDBLOCK) || 
+
+        if (err == static_cast<uint32_t>(X_WSAError::X_WSAEWOULDBLOCK) ||
             err == static_cast<uint32_t>(X_WSAError::X_WSA_IO_PENDING)) {
           XThread::SetLastError(err);
           return ret;
         } else if (err != static_cast<uint32_t>(X_WSAError::X_WSAENOTSOCK) &&
-                   err != static_cast<uint32_t>(X_WSAError::X_WSA_INVALID_PARAMETER)) {
+                   err != static_cast<uint32_t>(
+                              X_WSAError::X_WSA_INVALID_PARAMETER)) {
           XELOGI("Non-critical error occurred: {}", err);
           XThread::SetLastError(0);
         } else {
@@ -675,8 +678,7 @@ dword_result_t NetDll_WSASendTo_entry(
     XThread::SetLastError(socket->GetLastWSAError());
     return result;
   } else if (result != -1 && to_ptr && !cvars::log_mask_ips) {
-    XELOGD("NetDll_WSASendTo: sent {} bytes to {}.{}.{}.{}",
-           result,
+    XELOGD("NetDll_WSASendTo: sent {} bytes to {}.{}.{}.{}", result,
            to_ptr->address_ip.S_un.S_un_b.s_b1,
            to_ptr->address_ip.S_un.S_un_b.s_b2,
            to_ptr->address_ip.S_un.S_un_b.s_b3,

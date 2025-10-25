@@ -19,10 +19,8 @@ namespace app {
 
 class EmulatorWindow;  // Forward declaration due to circular dependency
 
-constexpr std::string_view windows_artifact_name_ =
-    "Nexia360_windows.zip";
-constexpr std::string_view linux_artifact_name_ =
-    "Nexia360_linux.tar.xz";
+constexpr std::string_view windows_artifact_name_ = "Nexia360_windows.zip";
+constexpr std::string_view linux_artifact_name_ = "Nexia360_linux.tar.xz";
 
 class UpdaterDialog final : public ui::ImGuiDialog {
  public:

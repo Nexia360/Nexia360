@@ -201,12 +201,12 @@ EmulatorWindow::EmulatorWindow(Emulator* emulator,
                 " ("
 #ifdef XE_BUILD_IS_PR
                 "PR#" XE_BUILD_PR_NUMBER " " XE_BUILD_PR_REPO
-                " " XE_BUILD_PR_BRANCH "@" XE_BUILD_PR_COMMIT_SHORT " against "
+                " " XE_BUILD_PR_BRANCH "@" XE_BUILD_PR_COMMIT_SHORT
+                " against "
 #endif
-                "Nexia360 @ e4e8d3e on " XE_BUILD_DATE
-                ")";
+                "Nexia360 @ e4e8d3e on " XE_BUILD_DATE ")";
 
-  //updater_ = new Updater("AdrianCassar", "xenia-canary");
+  // updater_ = new Updater("AdrianCassar", "xenia-canary");
 
   LoadRecentlyLaunchedTitles();
 }
@@ -891,10 +891,10 @@ bool EmulatorWindow::Initialize() {
         MenuItem::Create(MenuItem::Type::kString, "Xbox Live", "",
                          std::bind(&EmulatorWindow::SetNetworkMode, this,
                                    xe::kernel::NETWORK_MODE::XBOXLIVE)));
-    Network_mode_menu->AddChild(
-        MenuItem::Create(MenuItem::Type::kString, "Nexia Hub (experimental)", "",
-                         std::bind(&EmulatorWindow::SetNetworkMode, this,
-                                   xe::kernel::NETWORK_MODE::NEXIAHUB)));
+    Network_mode_menu->AddChild(MenuItem::Create(
+        MenuItem::Type::kString, "Nexia Hub (experimental)", "",
+        std::bind(&EmulatorWindow::SetNetworkMode, this,
+                  xe::kernel::NETWORK_MODE::NEXIAHUB)));
 
     Netplay_menu->AddChild(std::move(API_list_menu));
     Netplay_menu->AddChild(std::move(Network_interfaces_menu));
