@@ -141,7 +141,10 @@ bool PPCHIRBuilder::Emit(GuestFunction* function, uint32_t flags) {
         AnnotateLabel(address, label);
       }
       comment_buffer_.Reset();
-      comment_buffer_.AppendFormat("{:08X} {:08X} ", address, code);
+      comment_buffer_.AppendHexUInt32(address);
+      comment_buffer_.Append(' ');
+      comment_buffer_.AppendHexUInt32(code);
+      comment_buffer_.Append(' ');
       DisasmPPC(address, code, &comment_buffer_);
       Comment(comment_buffer_);
       first_instr = last_instr();

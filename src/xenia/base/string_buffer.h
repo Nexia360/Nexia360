@@ -38,7 +38,10 @@ class StringBuffer {
     auto s = fmt::format(fmt::runtime(format), args...);
     Append(s.c_str());
   }
-
+  void AppendHexUInt64(uint64_t value);
+  void AppendHexUInt32(uint32_t value);
+  void AppendParenthesizedHexUInt32(uint32_t value);
+  void AppendParenthesizedHexUInt64(uint64_t value);
   void AppendVarargs(const char* format, va_list args);
   void AppendBytes(const uint8_t* buffer, size_t length);
 

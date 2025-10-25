@@ -1185,7 +1185,12 @@ static bool IsPossibleMMIOInstruction(X64Emitter& e, const hir::Instr* i) {
     return false;
   }
 
-  auto flags = e.GuestModule()->GetInstructionAddressFlags(guestaddr);
+  auto guest_module = e.GuestModule();
+  if (!guest_module) {
+    return false;
+  }
+
+  auto flags = guest_module->GetInstructionAddressFlags(guestaddr);
 
   return flags && flags->accessed_mmio;
 }

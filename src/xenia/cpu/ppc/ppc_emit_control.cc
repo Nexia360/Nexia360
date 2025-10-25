@@ -430,6 +430,26 @@ int InstrEmit_mcrf(PPCHIRBuilder& f, const InstrData& i) {
   return 0;
 }
 
+int InstrEmit_mcrxr(PPCHIRBuilder& f, const InstrData& i) {
+  // CR[4*CRFD:4*CRFD+3] <- XER[0:3]
+  // XER[0:3] <- 0
+  // XER bits: SO (bit 31), OV (bit 30), CA (bit 29), reserved (bit 28)
+
+  uint32_t crfd = i.X.RT >> 2;
+  Value* xer = f.LoadXER();
+
+  // Extract XER[0:3] which are bits 31-28
+  Value* xer_bits = f.And(f.Shr(xer, 28), f.LoadConstantUint64(0xF));
+
+  // Store to CR field
+  f.StoreCR(crfd, f.Shl(xer_bits, 4 * (7 - crfd)));
+
+  // Clear XER[0:3] (bits 31-28)
+  f.StoreXER(f.And(xer, f.LoadConstantUint64(~(0xFULL << 28))));
+
+  return 0;
+}
+
 // System linkage (A-24)
 
 int InstrEmit_sc(PPCHIRBuilder& f, const InstrData& i) {
@@ -831,6 +851,7 @@ void RegisterEmitCategoryControl() {
   XEREGISTERINSTR(crorc);
   XEREGISTERINSTR(crxor);
   XEREGISTERINSTR(mcrf);
+  XEREGISTERINSTR(mcrxr);
   XEREGISTERINSTR(sc);
   XEREGISTERINSTR(td);
   XEREGISTERINSTR(tdi);

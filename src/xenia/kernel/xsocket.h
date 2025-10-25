@@ -52,12 +52,6 @@ enum class X_WSAError : uint32_t {
   X_WSAEADDRINUSE = 0x2740,
 };
 
-/*
- * Option flags per-socket.
- */
-#define SO_MARKINSECURE 0x5801  // bool TRUE for insecure
-#define SO_PRIVATE 0x5802       // bool TRUE for private
-
 struct XSOCKADDR {
   xe::be<uint16_t> address_family;
   char sa_data[14];
@@ -123,6 +117,13 @@ class XSocket : public XObject {
     X_IPPROTO_VDP = 254,
   };
 
+  enum WSAInfo {
+    sendto_flag = 1,
+    recvfrom_flag = 2,
+    complete = 4,
+    closed = 8,
+  };
+
   XSocket(KernelState* kernel_state);
   ~XSocket();
 
@@ -134,9 +135,9 @@ class XSocket : public XObject {
 
   X_STATUS GetOption(uint32_t level, uint32_t optname, void* optval_ptr,
                      uint32_t* optlen);
-  int SetOption(uint32_t level, uint32_t optname, void* optval_ptr,
-                uint32_t optlen);
-  X_STATUS IOControl(uint32_t cmd, uint32_t* arg_ptr);
+  X_STATUS SetOption(uint32_t level, uint32_t optname, void* optval_ptr,
+                     uint32_t optlen);
+  X_STATUS IOControl(uint32_t cmd, uint8_t* arg_ptr);
 
   X_STATUS Connect(const XSOCKADDR_IN* name, int name_len);
   X_STATUS Bind(const XSOCKADDR_IN* name, int name_len);
@@ -156,6 +157,11 @@ class XSocket : public XObject {
 
   int WSAEventSelect(uint64_t socket_handle, uint64_t event_handle,
                      uint32_t flags);
+
+  int WSASendTo(XWSABUF* buffers, uint32_t num_buffers,
+                xe::be<uint32_t>* num_bytes_sent_ptr, uint32_t flags,
+                XSOCKADDR_IN* to_ptr, uint32_t to_len,
+                XWSAOVERLAPPED* overlapped_ptr);
 
   int WSARecvFrom(XWSABUF* buffers, uint32_t num_buffers,
                   xe::be<uint32_t>* num_bytes_recv_ptr,
@@ -203,12 +209,20 @@ class XSocket : public XObject {
   std::mutex incoming_packet_mutex_;
   std::queue<uint8_t*> incoming_packets_;
 
+  std::future<int> send_task_;
+  std::mutex send_mutex_;
+  std::condition_variable send_cv_;
+  std::mutex send_socket_mutex_;
+  XWSAOVERLAPPED* send_active_overlapped_ = nullptr;
+
   std::future<int> polling_task_;
 
   std::mutex receive_mutex_;
   std::condition_variable receive_cv_;
   std::mutex receive_socket_mutex_;
-  XWSAOVERLAPPED* active_overlapped_ = nullptr;
+  XWSAOVERLAPPED* receive_active_overlapped_ = nullptr;
+
+  int PushWSASendTo(bool wait, struct WSASendToData send_async_data);
 
   int PollWSARecvFrom(bool wait, struct WSARecvFromData data);
 

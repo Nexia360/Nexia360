@@ -231,7 +231,13 @@ bool X64Emitter::Emit(HIRBuilder* builder, EmitFunctionInfo& func_info) {
     locals_page_delta_ = 0;
   }
 
-  assert_true((stack_size + 8) % 16 == 0);
+  // Ensure that after we SUB the stack_size, RSP is 16-byte aligned.
+  // On function entry, RSP is misaligned by 8 (due to CALL pushing return
+  // address). So we need stack_size to be 8 mod 16, not 0 mod 16.
+  if ((stack_size % 16) == 0) {
+    stack_size += 8;  // Make it 8 mod 16
+  }
+  assert_true((stack_size % 16) == 8);  // Should be 8 mod 16 for alignment
   func_info.stack_size = stack_size;
   stack_size_ = stack_size;
 
@@ -431,15 +437,22 @@ uint64_t TrapDebugPrint(void* raw_context, uint64_t address) {
   auto thread_state =
       reinterpret_cast<ppc::PPCContext_s*>(raw_context)->thread_state;
   uint32_t str_ptr = uint32_t(thread_state->context()->r[3]);
-  // uint16_t str_len = uint16_t(thread_state->context()->r[4]);
+  uint32_t str_length = uint32_t(thread_state->context()->r[4]);
+
   auto str = thread_state->memory()->TranslateVirtual<const char*>(str_ptr);
-  // TODO(benvanik): truncate to length?
-  XELOGD("(DebugPrint) {}", str);
+
+  // Allocate temporary buffer and null-terminate to respect length parameter
+  char* string_tmp = new char[str_length + 1];
+  std::memcpy(string_tmp, str, str_length);
+  string_tmp[str_length] = 0;
+
+  XELOGD("(DebugPrint) {}", string_tmp);
 
   if (cvars::debugprint_trap_log) {
-    debugging::DebugPrint("(DebugPrint) {}", str);
+    debugging::DebugPrint("(DebugPrint) {}", string_tmp);
   }
 
+  delete[] string_tmp;
   return 0;
 }
 

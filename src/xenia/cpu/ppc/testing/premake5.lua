@@ -7,17 +7,25 @@ project("xenia-cpu-ppc-tests")
   kind("ConsoleApp")
   language("C++")
   links({
-    "capstone", -- cpu-backend-x64
-    "fmt",
-    "mspack",
-    "imgui",
+    "xenia-apu",
+    "xenia-apu-nop",
+    "xenia-base",
     "xenia-core",
     "xenia-cpu",
     "xenia-gpu",
-    "xenia-base",
+    "xenia-gpu-null",
+    "xenia-hid",
+    "xenia-hid-nop",
     "xenia-kernel",
     "xenia-patcher",
-    "xenia-hid-skylander",
+    "xenia-ui",
+    "xenia-vfs",
+  })
+  links({
+    "capstone",
+    "fmt",
+    "imgui",
+    "mspack",
   })
   files({
     "ppc_testing_main.cc",
@@ -41,10 +49,7 @@ project("xenia-cpu-ppc-tests")
       "1>scratch/stdout-testing.txt",
     })
 
-    -- xenia-base needs this
-    links({
-      "xenia-ui",
-    })
+  filter({})
 
 if ARCH == "ppc64" or ARCH == "powerpc64" then
 

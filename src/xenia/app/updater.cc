@@ -67,7 +67,7 @@ bool Updater::StartupUpdateCheck(std::string* commit_hash,
                                  uint32_t* response_code) {
   const std::string endpoint =
       "https://xenia-manager.github.io/database/data/version.json";
-
+  return false;
   const std::string _func_ = __func__;
   auto fallback = [&, _func_](const char* reason) {
     XELOGW("{}: {}, falling back to GitHub API", _func_, reason);
@@ -720,7 +720,7 @@ bool Updater::UpdateAndRestart(const std::filesystem::path& zip_path) {
       "EXECUTABLE_NAME=\"{0}\"                    # final executable name\n"
       "EXECUTABLE_PATH=\"$(dirname \"$(realpath \"$0\")\")/$EXECUTABLE_NAME\"\n"
       "ARCHIVE_FILE=\"{1}\"          # archive file\n"
-      "INNER_PATH=\"build/bin/Linux/Release/xenia_canary_netplay\" # path "
+      "INNER_PATH=\"build/bin/Linux/Release/Nexia360\" # path "
       "inside archive\n"
       "LOG_FILE=\"$(dirname \"$(realpath \"$0\")\")/{2}\"\n"
       "BACKUP_DIR=\"$(dirname \"$(realpath \"$0\")\")/{3}\"\n"

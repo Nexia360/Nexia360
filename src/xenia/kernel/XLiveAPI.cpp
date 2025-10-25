@@ -32,8 +32,8 @@ DEFINE_bool(logging, false, "Log Network Activity & Stats", "Live");
 DEFINE_bool(log_mask_ips, true, "Do not include P2P IPs inside the log",
             "Live");
 
-DEFINE_int32(network_mode, 2,
-             "Network mode types: 0 - Offline, 1 - Systemlink, 2 - Xbox Live.",
+DEFINE_int32(network_mode, 3,
+             "Network mode types: 0 - Offline, 1 - Systemlink, 2 - Xbox Live, 3 - Nexia Hub",
              "Live");
 
 DEFINE_bool(xlink_kai_systemlink_hack, false,
@@ -94,7 +94,7 @@ void XLiveAPI::IpGetConsoleXnAddr(XNADDR* XnAddr_ptr) {
     }
   }
 
-  if (cvars::network_mode == NETWORK_MODE::XBOXLIVE) {
+  if (cvars::network_mode >= NETWORK_MODE::XBOXLIVE) {
     XnAddr_ptr->wPortOnline = GetPlayerPort();
   }
 
@@ -309,7 +309,10 @@ std::string XLiveAPI::GetApiAddress() {
   } else {
     cvars::api_address = api_addresses.front();
   }
-
+  if(cvars::network_mode == NETWORK_MODE::NEXIAHUB)
+  {
+    cvars::api_address = "107.155.85.242:36000/";
+  }
   // Add forward slash if not already added
   if (cvars::api_address.back() != '/') {
     cvars::api_address = cvars::api_address + '/';

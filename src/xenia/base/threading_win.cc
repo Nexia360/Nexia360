@@ -146,7 +146,7 @@ void MaybeYield() {
 #endif
 #endif
   // memorybarrier is really not necessary here...
-  // MemoryBarrier();
+   MemoryBarrier();
 }
 void NanoSleep(int64_t ns) {
   // nanosleep is done in 100 nanosecond increments
@@ -157,7 +157,11 @@ void NanoSleep(int64_t ns) {
     in_nt_increments = 1;
   }
   in_nt_increments = -in_nt_increments;
+#if defined(XE_USE_NTDLL_FUNCTIONS)
   NtDelayExecutionPointer.invoke(0, &in_nt_increments);
+#else
+  ::Sleep(static_cast<DWORD>((-in_nt_increments) / 10000LL));
+#endif
 }
 void SyncMemory() { MemoryBarrier(); }
 
@@ -332,7 +336,11 @@ class Win32Event : public Win32Handle<Event> {
 
   EventInfo Query() override {
     EventInfo result{};
+    #if XE_USE_NTDLL_FUNCTIONS == 1
     NtQueryEventPointer.invoke(handle_, 0, &result, sizeof(EventInfo), nullptr);
+    #else
+    assert_always();
+    #endif
     return result;
   }
 };
@@ -610,8 +618,8 @@ std::unique_ptr<Thread> Thread::Create(CreationParameters params,
                                        std::function<void()> start_routine) {
   auto start_data = new ThreadStartData({std::move(start_routine)});
   HANDLE handle =
-      CreateThread(NULL, params.stack_size, ThreadStartRoutine, start_data,
-                   params.create_suspended ? CREATE_SUSPENDED : 0, NULL);
+      CreateThread(NULL, params.stack_size * 2, ThreadStartRoutine, start_data,
+                   0 /*params.create_suspended ? CREATE_SUSPENDED : 0*/, NULL);
   if (handle) {
     return std::make_unique<Win32Thread>(handle);
   } else {

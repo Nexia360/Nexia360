@@ -208,7 +208,8 @@ struct PPCOpcodeBits {
       uint32_t VD128h : 2;
       uint32_t : 1;
       uint32_t VA128h : 1;
-      uint32_t : 4;
+      uint32_t VC : 3;
+      uint32_t : 1;
       uint32_t VA128H : 1;
       uint32_t VB128l : 5;
       uint32_t VA128l : 5;

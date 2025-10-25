@@ -413,8 +413,10 @@ void Value::MulHi(Value* other, bool is_unsigned) {
 #else
       if (is_unsigned) {
         constant.i64 = static_cast<uint64_t>(
-            (static_cast<unsigned __int128>(constant.i64) *
-             static_cast<unsigned __int128>(other->constant.i64)) >>
+            (static_cast<unsigned __int128>(
+                 static_cast<uint64_t>(constant.i64)) *
+             static_cast<unsigned __int128>(
+                 static_cast<uint64_t>(other->constant.i64))) >>
             64);
       } else {
         constant.i64 = static_cast<uint64_t>(

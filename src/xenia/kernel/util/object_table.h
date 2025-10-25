@@ -1,15 +1,17 @@
 /**
  ******************************************************************************
- * Xenia : Xbox 360 Emulator Research Project                                 *
+ * Xenia : Xbox 360 Emulator Research Project
  ******************************************************************************
- * Copyright 2020 Ben Vanik. All rights reserved.                             *
- * Released under the BSD license - see LICENSE in the root for more details. *
+ * Copyright 2020 Ben Van...
+ * Released under the BSD license - see LICENSE in the root for more details.
  ******************************************************************************
  */
 
 #ifndef XENIA_KERNEL_UTIL_OBJECT_TABLE_H_
 #define XENIA_KERNEL_UTIL_OBJECT_TABLE_H_
 
+#include <cstdint>
+#include <deque>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -44,22 +46,19 @@ class ObjectTable {
   bool Save(ByteStream* stream);
   bool Restore(ByteStream* stream);
 
-  // Restores a XObject reference with a handle. Mainly for internal use - do
-  // not use.
+  // Restore a specific handle->object binding (used for save/restore).
   X_STATUS RestoreHandle(X_HANDLE handle, XObject* object);
+
+  // ---------- Lookup / enumeration ----------
   template <typename T>
   object_ref<T> LookupObject(X_HANDLE handle, bool already_locked = false) {
     auto object = LookupObject(handle, already_locked);
     if (object) {
       assert_true(object->type() == T::kObjectType);
     }
-    auto result = object_ref<T>(reinterpret_cast<T*>(object));
-    return result;
+    return object_ref<T>(reinterpret_cast<T*>(object));
   }
 
-  X_STATUS AddNameMapping(const std::string_view name, X_HANDLE handle);
-  void RemoveNameMapping(const std::string_view name);
-  X_STATUS GetObjectByName(const std::string_view name, X_HANDLE* out_handle);
   template <typename T>
   std::vector<object_ref<T>> GetObjectsByType(XObject::Type type) {
     std::vector<object_ref<T>> results;
@@ -78,38 +77,82 @@ class ObjectTable {
   }
 
   std::vector<object_ref<XObject>> GetAllObjects();
-  void PurgeAllObjects();  // Purges the object table of all guest objects
+  void PurgeAllObjects();
+
+  // ---------- Name table ----------
+  X_STATUS AddNameMapping(const std::string_view name, X_HANDLE handle);
+  void RemoveNameMapping(const std::string_view name);
+  X_STATUS GetObjectByName(const std::string_view name, X_HANDLE* out_handle);
+
+  // ---------- Pinned / pooled handle helpers ----------
+  // Prevents Remove/Release from freeing the slot; allows rebind into same
+  // logical handle without racing with the recycler.
+  void SetPinned(X_HANDLE handle, bool pinned);
+  bool IsPinned(X_HANDLE handle) const;
+
+  // Atomically rebind a *pinned* slot to a new object, keeping the same handle.
+  // Returns X_STATUS_INVALID_HANDLE if the slot isn't pinned / out of range.
+  X_STATUS RebindPinned(X_HANDLE handle, XObject* object);
 
  private:
   struct ObjectTableEntry {
-    int handle_ref_count = 0;
+    uint16_t handle_ref_count = 0;
     XObject* object = nullptr;
+    bool in_use = false;
   };
-  ObjectTableEntry* LookupTableInLock(X_HANDLE handle);
+
+  // Lookup helpers
   ObjectTableEntry* LookupTable(X_HANDLE handle);
+  ObjectTableEntry* LookupTableInLock(X_HANDLE handle);
   XObject* LookupObject(X_HANDLE handle, bool already_locked);
   void GetObjectsByType(XObject::Type type,
                         std::vector<object_ref<XObject>>* results);
 
-  X_HANDLE TranslateHandle(X_HANDLE handle);
+  // Handle helpers
+  X_HANDLE TranslateHandle(X_HANDLE handle) const;
+
+  // NOTE: Handles encode slot<<2 plus a base. (Slots are 4-byte aligned.)
   static constexpr uint32_t GetHandleSlot(X_HANDLE handle, bool host) {
-    handle &= host ? ~XObject::kHandleHostBase : ~XObject::kHandleBase;
-    return handle >> 2;
+    uint32_t h = static_cast<uint32_t>(handle);
+    h &= host ? ~XObject::kHandleHostBase : ~XObject::kHandleBase;
+    return h >> 2;
   }
+
   X_STATUS FindFreeSlot(uint32_t* out_slot, bool host);
   bool Resize(uint32_t new_capacity, bool host);
 
+  // Recycle FIFO (with hysteresis).
+  bool TryPopRecycledSlot(bool host, uint32_t& out_slot);
+  void PushRecycledSlot(bool host, uint32_t slot);
+
+  // State
   xe::global_critical_region global_critical_region_;
-  uint32_t table_capacity_ = 0;
-  uint32_t host_table_capacity_ = 0;
+
+  uint32_t table_capacity_ = 0;        // guest-visible table
+  uint32_t host_table_capacity_ = 0;   // host-only table
+
   ObjectTableEntry* table_ = nullptr;
   ObjectTableEntry* host_table_ = nullptr;
+
+  // Circular scan cursors
   uint32_t last_free_entry_ = 0;
   uint32_t last_free_host_entry_ = 0;
+
+  // Recycle FIFOs (guest/host) and enable flags.
+  std::deque<uint32_t> recycle_fifo_guest_;
+  std::deque<uint32_t> recycle_fifo_host_;
+  bool recycle_enabled_guest_ = false;
+  bool recycle_enabled_host_ = false;
+
+  // Pinned slot bitmaps (0/1). Size tracks capacity.
+  std::vector<uint8_t> pinned_guest_;
+  std::vector<uint8_t> pinned_host_;
+
+  // Name map
   std::unordered_map<string_key_case, X_HANDLE> name_table_;
 };
 
-// Generic lookup
+// Generic lookup specialization (non-template overload)
 template <>
 object_ref<XObject> ObjectTable::LookupObject<XObject>(X_HANDLE handle,
                                                        bool already_locked);

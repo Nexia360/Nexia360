@@ -411,7 +411,10 @@ bool DiscoverTests(std::wstring& test_path,
   for (auto& file_info : file_infos) {
     if (file_info.name != L"." && file_info.name != L".." &&
         file_info.name.rfind(L".s") == file_info.name.size() - 2) {
-      test_files.push_back(xe::join_paths(test_path, file_info.name));
+      // Only include test files (instr_*.s), not helper files
+      if (file_info.name.find(L"instr_") == 0) {
+        test_files.push_back(xe::join_paths(test_path, file_info.name));
+      }
     }
   }
   return true;

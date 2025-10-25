@@ -425,12 +425,13 @@ void XmaContextOld::Decode(XMA_CONTEXT_DATA* data) {
 
     BitStream stream(current_input_buffer, current_input_size * 8);
     stream.SetOffset(data->input_buffer_read_offset);
-
+    
     if (data->input_buffer_read_offset > current_input_size * 8) {
       XELOGE(
           "XmaContext {}: Error - Provided input offset exceed input buffer "
           "size! ({} > {})",
           id(), data->input_buffer_read_offset, current_input_size * 8);
+          data->input_buffer_read_offset = (current_input_size * 8);
       SwapInputBuffer(data);
       return;
     }

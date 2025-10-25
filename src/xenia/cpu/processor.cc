@@ -703,6 +703,12 @@ bool Processor::OnUnhandledException(Exception* ex) {
     return false;
   }
 
+  // Only pause on exceptions when debugging is explicitly enabled.
+  // Without --debug flag, let the exception propagate normally.
+  if (!cvars::debug) {
+    return false;
+  }
+
   // If this isn't a managed thread, fail - let VS handle it for now.
   if (!Thread::IsInThread()) {
     return false;

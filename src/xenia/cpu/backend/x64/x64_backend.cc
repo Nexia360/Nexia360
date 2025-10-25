@@ -693,10 +693,14 @@ HostToGuestThunk X64HelperEmitter::EmitHostToGuestThunk() {
   EmitSaveNonvolatileRegs();
 
   mov(rax, rdi);
-  // mov(rsi, rsi);   // context
+  // Save context register (RSI is volatile on Linux/Mac System V ABI, but we
+  // need it preserved)
+  mov(qword[rsp + offsetof(StackLayout::Thunk, xmm[0])], rsi);
   mov(rdi, ptr[rsi + offsetof(ppc::PPCContext, virtual_membase)]);  // membase
   mov(rcx, rdx);  // return address
   call(rax);
+  // Restore context register
+  mov(rsi, qword[rsp + offsetof(StackLayout::Thunk, xmm[0])]);
 
   EmitLoadNonvolatileRegs();
 

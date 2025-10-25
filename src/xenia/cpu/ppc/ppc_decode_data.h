@@ -487,6 +487,7 @@ struct PPCDecodeData {
       return bits_.VA128l | (bits_.VA128h << 5) | (bits_.VA128H << 6);
     }
     uint32_t VB() const { return bits_.VB128l | (bits_.VB128h << 5); }
+    uint32_t VC() const { return bits_.VC; }
 
    private:
     XE_MAYBE_UNUSED
@@ -498,7 +499,8 @@ struct PPCDecodeData {
         uint32_t VD128h : 2;
         uint32_t : 1;
         uint32_t VA128h : 1;
-        uint32_t : 4;
+        uint32_t VC : 3;
+        uint32_t : 1;
         uint32_t VA128H : 1;
         uint32_t VB128l : 5;
         uint32_t VA128l : 5;

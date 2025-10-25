@@ -2,7 +2,7 @@
  ******************************************************************************
  * Xenia : Xbox 360 Emulator Research Project                                 *
  ******************************************************************************
- * Copyright 2022 Ben Vanik. All rights reserved.                             *
+ * Copyright 2022 Ben Van...
  * Released under the BSD license - see LICENSE in the root for more details. *
  ******************************************************************************
  */
@@ -18,9 +18,90 @@
 
 #include "xenia/kernel/XLiveAPI.h"
 
+#include <array>
+
 namespace xe {
 namespace kernel {
 namespace xam {
+
+//------------------------------------------------------------------------------
+// EnumeratorHandlePool
+// - Seeds a fixed set of *guest* (0100xxxx) handles and hands them out FIFO.
+// - Ensures enumerators always use guest-visible handles (titles expect this).
+//------------------------------------------------------------------------------
+
+struct EnumeratorHandlePool {
+  static constexpr size_t kPoolSize = 128;
+
+  bool initialized = false;
+  std::array<X_HANDLE, kPoolSize> handles{};  // pre-seeded guest handles
+  size_t next = 0;
+
+  void Init(xe::kernel::KernelState* ks) {
+    if (initialized) return;
+    auto* ot = ks->object_table();
+
+    // Seed kPoolSize distinct *guest* handles by creating temporary guest enumerators.
+    // We use XStaticUntypedEnumerator to guarantee guest handle allocation.
+    for (size_t i = 0; i < kPoolSize; ++i) {
+      auto tmp = object_ref<XStaticUntypedEnumerator>(
+          new XStaticUntypedEnumerator(ks, /*item_count=*/0, /*extra_size=*/0));
+
+      X_HANDLE h = tmp->handle();
+      handles[i] = h;
+
+      // Free table slot but remember handle value.
+      ot->RemoveHandle(h);
+
+      // Pin this pooled handle so general code cannot remove it.
+      ot->SetPinned(h, true);
+    }
+
+    initialized = true;
+  }
+
+  // Rebind 'obj' to the next pooled handle (FIFO; evicts existing occupant).
+  X_HANDLE AssignNext(xe::kernel::KernelState* ks, xe::kernel::XObject* obj) {
+    Init(ks);
+    auto* ot = ks->object_table();
+    const size_t idx = next;
+    next = (next + 1) % kPoolSize;
+
+    const X_HANDLE pooled = handles[idx];
+
+    // Keep obj alive throughout.
+    auto strong = retain_object(obj);
+
+    // Temporarily unpin pooled handle to evict whatever is there.
+    ot->SetPinned(pooled, false);
+    ot->RemoveHandle(pooled);
+
+    // Remove the object's current handle (created in ctor), if different.
+    {
+      X_HANDLE current = obj->handle();
+      if (current && current != pooled) {
+        ot->RemoveHandle(current);
+      }
+    }
+
+    // Bind object to pooled *guest* handle/slot.
+    obj->handles().clear();
+    obj->handles().push_back(pooled);
+    ot->RestoreHandle(pooled, obj);
+
+    // Re-pin pooled handle so general code cannot remove it.
+    ot->SetPinned(pooled, true);
+
+    XELOGI("EnumeratorPool(FIFO): assigned idx={} handle={:08X}", idx, pooled);
+    return pooled;
+  }
+};
+
+static EnumeratorHandlePool g_enum_pool;
+
+//------------------------------------------------------------------------------
+// Common enumerate path
+//------------------------------------------------------------------------------
 
 uint32_t xeXamEnumerate(uint32_t handle, uint32_t flags, lpvoid_t buffer_ptr,
                         uint32_t buffer_size, uint32_t* items_returned,
@@ -79,7 +160,10 @@ dword_result_t XamEnumerate_entry(dword_t handle, dword_t flags,
 }
 DECLARE_XAM_EXPORT1(XamEnumerate, kNone, kImplemented);
 
-// Enumerate security gateways
+//------------------------------------------------------------------------------
+// Specific enumerators
+//------------------------------------------------------------------------------
+
 static uint32_t XTitleServerCreateEnumerator(
     uint32_t user_index, uint32_t app_id, uint32_t open_message,
     uint32_t close_message, uint32_t extra_size, uint32_t item_count,
@@ -98,13 +182,12 @@ static uint32_t XTitleServerCreateEnumerator(
 
   for (const auto& server : servers) {
     X_TITLE_SERVER* item = e->AppendItem();
-
     *item = server;
   }
 
   XELOGI("{}: added {} items to enumerator", __func__, e->item_count());
 
-  *out_handle = e->handle();
+  *out_handle = g_enum_pool.AssignNext(kernel_state(), e.get());
   return X_ERROR_SUCCESS;
 }
 
@@ -117,22 +200,19 @@ static uint32_t XMarketplaceCreateOfferEnumerator(
 
   auto result = e->Initialize(user_index, app_id, open_message, close_message,
                               flags, extra_size, nullptr);
-
   if (XFAILED(result)) {
     return result;
   }
 
   std::vector<X_MARKETPLACE_CONTENTOFFER_INFO> content_offers = {};
-
   for (const auto& content : content_offers) {
     X_MARKETPLACE_CONTENTOFFER_INFO* item = e->AppendItem();
-
     *item = content;
   }
 
   XELOGI("{}: added {} items to enumerator", __func__, e->item_count());
 
-  *out_handle = e->handle();
+  *out_handle = g_enum_pool.AssignNext(kernel_state(), e.get());
   return X_ERROR_SUCCESS;
 }
 
@@ -145,22 +225,19 @@ static uint32_t XMarketplaceCreateAssetEnumerator(
 
   auto result = e->Initialize(user_index, app_id, open_message, close_message,
                               flags, extra_size, nullptr);
-
   if (XFAILED(result)) {
     return result;
   }
 
   std::vector<X_MARKETPLACE_ASSET_ENUMERATE_REPLY> marketplace_assets = {};
-
   for (const auto& asset : marketplace_assets) {
     X_MARKETPLACE_ASSET_ENUMERATE_REPLY* item = e->AppendItem();
-
     *item = asset;
   }
 
   XELOGI("{}: added {} items to enumerator", __func__, e->item_count());
 
-  *out_handle = e->handle();
+  *out_handle = g_enum_pool.AssignNext(kernel_state(), e.get());
   return X_ERROR_SUCCESS;
 }
 
@@ -183,42 +260,38 @@ dword_result_t XamCreateEnumeratorHandle_entry(
       auto result = XTitleServerCreateEnumerator(
           user_index, app_id, open_message, close_message, extra_size,
           item_count, flags, &out_handle_ptr);
-
       if (XFAILED(result)) {
         return result;
       }
-
       *out_handle = out_handle_ptr;
     } break;
+
     case XMarketplaceCreateOfferEnumeratorMessage: {
       auto result = XMarketplaceCreateOfferEnumerator(
           user_index, app_id, open_message, close_message, extra_size,
           item_count, flags, &out_handle_ptr);
-
       if (XFAILED(result)) {
         return result;
       }
-
       *out_handle = out_handle_ptr;
     } break;
+
     case XMarketplaceCreateAssetEnumeratorMessage: {
       auto result = XMarketplaceCreateAssetEnumerator(
           user_index, app_id, open_message, close_message, extra_size,
           item_count, flags, &out_handle_ptr);
-
       if (XFAILED(result)) {
         return result;
       }
-
       *out_handle = out_handle_ptr;
     } break;
+
     default: {
       std::string enumerator_log = fmt::format(
           "Unimplemented XamCreateEnumeratorHandle app={:04X}, "
           "open_message={:04X}, close_message={:04X}, flags={:04X}",
           app_id.value(), open_message.value(), close_message.value(),
           flags.value());
-
       XELOGI(enumerator_log);
 
       auto e = object_ref<XStaticUntypedEnumerator>(
@@ -226,18 +299,18 @@ dword_result_t XamCreateEnumeratorHandle_entry(
 
       auto result =
           e->Initialize(user_index, app_id, open_message, close_message, flags);
-
       if (XFAILED(result)) {
         return result;
       }
 
-      *out_handle = e->handle();
+      *out_handle = g_enum_pool.AssignNext(kernel_state(), e.get());
     } break;
   }
 
   return X_ERROR_SUCCESS;
 }
 DECLARE_XAM_EXPORT1(XamCreateEnumeratorHandle, kNone, kImplemented);
+
 
 dword_result_t XamGetPrivateEnumStructureFromHandle_entry(
     dword_t handle, lpdword_t out_object_ptr) {
@@ -267,7 +340,6 @@ dword_result_t XamProfileCreateEnumerator_entry(dword_t device_id,
   auto e = new XStaticEnumerator<X_PROFILEENUMRESULT>(kernel_state(), 1);
 
   auto result = e->Initialize(XUserIndexAny, 0xFE, 0x23001, 0x23003, 0);
-
   if (XFAILED(result)) {
     return result;
   }
@@ -286,7 +358,8 @@ dword_result_t XamProfileCreateEnumerator_entry(dword_t device_id,
         profile->account.gamertag, account.gamertag, sizeof(account.gamertag));
   }
 
-  *handle_ptr = e->handle();
+  *handle_ptr = g_enum_pool.AssignNext(kernel_state(), e);
+
   return X_ERROR_SUCCESS;
 }
 DECLARE_XAM_EXPORT1(XamProfileCreateEnumerator, kNone, kImplemented);

@@ -177,7 +177,7 @@ using namespace xe::hid;
 using namespace xe::gpu;
 
 constexpr std::string_view kRecentlyPlayedTitlesFilename = "recent.toml";
-constexpr std::string_view kBaseTitle = "Xenia-canary-netplay";
+constexpr std::string_view kBaseTitle = "Nexia360";
 
 EmulatorWindow::EmulatorWindow(Emulator* emulator,
                                ui::WindowedAppContext& app_context,
@@ -203,10 +203,10 @@ EmulatorWindow::EmulatorWindow(Emulator* emulator,
                 "PR#" XE_BUILD_PR_NUMBER " " XE_BUILD_PR_REPO
                 " " XE_BUILD_PR_BRANCH "@" XE_BUILD_PR_COMMIT_SHORT " against "
 #endif
-                XE_BUILD_BRANCH "@" XE_BUILD_COMMIT_SHORT " on " XE_BUILD_DATE
+                "Nexia360 @ e4e8d3e on " XE_BUILD_DATE
                 ")";
 
-  updater_ = new Updater("AdrianCassar", "xenia-canary");
+  //updater_ = new Updater("AdrianCassar", "xenia-canary");
 
   LoadRecentlyLaunchedTitles();
 }
@@ -891,6 +891,10 @@ bool EmulatorWindow::Initialize() {
         MenuItem::Create(MenuItem::Type::kString, "Xbox Live", "",
                          std::bind(&EmulatorWindow::SetNetworkMode, this,
                                    xe::kernel::NETWORK_MODE::XBOXLIVE)));
+    Network_mode_menu->AddChild(
+        MenuItem::Create(MenuItem::Type::kString, "Nexia Hub (experimental)", "",
+                         std::bind(&EmulatorWindow::SetNetworkMode, this,
+                                   xe::kernel::NETWORK_MODE::NEXIAHUB)));
 
     Netplay_menu->AddChild(std::move(API_list_menu));
     Netplay_menu->AddChild(std::move(Network_interfaces_menu));
@@ -1642,6 +1646,10 @@ void EmulatorWindow::SetNetworkMode(uint32_t mode) {
     case xe::kernel::NETWORK_MODE::XBOXLIVE: {
       mode_desc = "Xbox Live";
     } break;
+    case xe::kernel::NETWORK_MODE::NEXIAHUB: {
+      mode_desc = "Nexdia Hub (experimental)";
+      cvars::api_address = "https://nexia360hub.com/";
+    } break;
   }
 
   if (cvars::network_mode == mode) {
@@ -2281,6 +2289,9 @@ void EmulatorWindow::NetplayStatus() {
     } break;
     case xe::kernel::NETWORK_MODE::XBOXLIVE: {
       network_mode = "Xbox Live";
+    } break;
+    case xe::kernel::NETWORK_MODE::NEXIAHUB: {
+      network_mode = "Nexia Hub";
     } break;
   }
 
