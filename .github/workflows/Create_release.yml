@@ -1,0 +1,102 @@
+name: Create release
+
+on:
+  workflow_call:
+    inputs:
+      artifact_name:
+        description: Name of the artifact previously uploaded with actions/upload-artifact
+        type: string
+        required: true
+      asset_filename:
+        description: Desired filename for the asset in the GitHub release
+        type: string
+        required: true
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: dist
+
+      - name: Validate single file
+        id: filecheck
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=($(find dist -maxdepth 1 -type f))
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::No files found in artifact '${{ inputs.artifact_name }}'"
+            exit 1
+          fi
+          if [ ${#files[@]} -gt 1 ]; then
+            echo "::error::Expected exactly one file in artifact '${{ inputs.artifact_name }}', found ${#files[@]}"
+            printf '%s\n' "${files[@]}"
+            exit 1
+          fi
+          echo "file=${files[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Compute tags and notes
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHORT_SHA="${GITHUB_SHA::7}"
+          BRANCH_TAG="${GITHUB_REF_NAME}"
+          NOTES="${{ github.event.head_commit.message || '' }}"
+          if [ -z "$NOTES" ]; then
+            NOTES="Automated build from ${BRANCH_TAG} (${SHORT_SHA})"
+          fi
+          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "branch_tag=$BRANCH_TAG" >> "$GITHUB_OUTPUT"
+          printf '%s' "$NOTES" > notes.txt
+
+      - name: Rename asset to desired filename
+        shell: bash
+        run: |
+          set -euo pipefail
+          mv "${{ steps.filecheck.outputs.file }}" "dist/${{ inputs.asset_filename }}"
+          ls -l dist/
+
+      - name: Ensure gh is installed
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gh
+
+      - name: Auth gh using RELEASE_TOKEN env
+        env:
+          GH_TOKEN: ${{ env.RELEASE_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::RELEASE_TOKEN env var is not set in the caller workflow."
+            exit 1
+          fi
+          gh auth status || echo "$GH_TOKEN" | gh auth login --with-token
+
+      - name: Release for short SHA tag
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ env.RELEASE_TOKEN }}
+        with:
+          tag_name: ${{ steps.meta.outputs.short_sha }}
+          name: ${{ steps.meta.outputs.short_sha }}_${{ steps.meta.outputs.branch_tag }}
+          body_path: notes.txt
+          target_commitish: ${{ github.sha }}
+          files: dist/${{ inputs.asset_filename }}
+
+      - name: Release for branch tag
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ env.RELEASE_TOKEN }}
+        with:
+          tag_name: ${{ steps.meta.outputs.branch_tag }}
+          name: ${{ steps.meta.outputs.branch_tag }}
+          body_path: notes.txt
+          target_commitish: ${{ github.sha }}
+          files: dist/${{ inputs.asset_filename }}
