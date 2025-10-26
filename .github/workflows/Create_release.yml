@@ -1,39 +1,24 @@
-
 name: Create release (reusable)
 
 on:
   workflow_call:
     inputs:
-<<<<<<< HEAD
       artifact_name:
         description: Name of the artifact previously uploaded with actions/upload-artifact
         type: string
         required: true
       asset_filename:
         description: Desired filename for the asset in the GitHub release
-=======
-      os:
-        description: Target OS string (e.g., windows, linux)
         type: string
-        required: true
-      artifact_name:
-        description: Filename to upload to the release (path relative to repo root)
->>>>>>> 24de1d5334c77d6d5adfb8b27ed77f426b93b441
-        type: string
-        required: true
-    secrets:
-      RELEASE_TOKEN:
         required: true
 
 jobs:
-  create-release:
-    name: Create or update release
+  release:
+    name: Release
     runs-on: ubuntu-latest
     permissions:
       contents: write
-
     steps:
-<<<<<<< HEAD
       - name: Download artifact
         uses: actions/download-artifact@v4
         with:
@@ -45,23 +30,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          count=$(find dist -type f | wc -l)
-          if [ "$count" -eq 0 ]; then
-            echo "::error::No files found in downloaded artifact '${{ inputs.artifact_name }}'"
+          files=($(find dist -maxdepth 1 -type f))
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "::error::No files found in artifact '${{ inputs.artifact_name }}'"
             exit 1
           fi
-          if [ "$count" -gt 1 ]; then
-            echo "::error::Expected a single file in artifact '${{ inputs.artifact_name }}', found $count"
-            find dist -type f -maxdepth 1 -printf "%p\n" || true
+          if [ ${#files[@]} -gt 1 ]; then
+            echo "::error::Expected exactly one file in artifact '${{ inputs.artifact_name }}', found ${#files[@]}"
+            printf '%s\n' "${files[@]}"
             exit 1
           fi
-          file=$(find dist -type f -maxdepth 1 | head -n 1)
-          echo "file=$file" >> "$GITHUB_OUTPUT"
-          ls -l "$file"
-          if [ ! -s "$file" ]; then
-            echo "::error::Downloaded file is empty"
-            exit 1
-          fi
+          echo "file=${files[0]}" >> "$GITHUB_OUTPUT"
 
       - name: Compute tags and notes
         id: meta
@@ -76,7 +55,7 @@ jobs:
           fi
           echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
           echo "branch_tag=$BRANCH_TAG" >> "$GITHUB_OUTPUT"
-          printf "%s" "$NOTES" > notes.txt
+          printf '%s' "$NOTES" > notes.txt
 
       - name: Rename asset to desired filename
         shell: bash
@@ -85,86 +64,39 @@ jobs:
           mv "${{ steps.filecheck.outputs.file }}" "dist/${{ inputs.asset_filename }}"
           ls -l dist/
 
-      - name: Install gh
+      - name: Ensure gh is installed
         run: |
           sudo apt-get update
           sudo apt-get install -y gh
 
-      - name: Auth gh with provided token
-=======
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Ensure tools (gh, zip, xz)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gh zip xz-utils
-
-      # If you need to build or package here, do it now. Otherwise,
-      # ensure the artifact exists at the path given by inputs.artifact_name.
-
-      - name: Auth gh
->>>>>>> 24de1d5334c77d6d5adfb8b27ed77f426b93b441
+      - name: Auth gh using RELEASE_TOKEN env
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GH_TOKEN: ${{ env.RELEASE_TOKEN }}
         run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::RELEASE_TOKEN env var is not set in the caller workflow."
+            exit 1
+          fi
           gh auth status || echo "$GH_TOKEN" | gh auth login --with-token
 
-<<<<<<< HEAD
-      - name: Create/Edit release for short SHA tag
+      - name: Release for short SHA tag
+        uses: softprops/action-gh-release@v2
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-        run: |
-          set -euo pipefail
-          tag="${{ steps.meta.outputs.short_sha }}"
-          title="${{ steps.meta.outputs.short_sha }}_${{ steps.meta.outputs.branch_tag }}"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            gh release edit "$tag" -t "$title" -n "$(cat notes.txt)"
-            gh release upload "$tag" "dist/${{ inputs.asset_filename }}" --clobber
-          else:
-            gh release create "$tag" "dist/${{ inputs.asset_filename }}"               --target "${GITHUB_SHA}"               -t "$title"               -n "$(cat notes.txt)"
-          fi
+          GITHUB_TOKEN: ${{ env.RELEASE_TOKEN }}
+        with:
+          tag_name: ${{ steps.meta.outputs.short_sha }}
+          name: ${{ steps.meta.outputs.short_sha }}_${{ steps.meta.outputs.branch_tag }}
+          body_path: notes.txt
+          target_commitish: ${{ github.sha }}
+          files: dist/${{ inputs.asset_filename }}
 
-      - name: Create/Edit release for branch tag
+      - name: Release for branch tag
+        uses: softprops/action-gh-release@v2
         env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-        run: |
-          set -euo pipefail
-          tag="${{ steps.meta.outputs.branch_tag }}"
-          title="${{ steps.meta.outputs.branch_tag }}"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            gh release edit "$tag" -t "$title" -n "$(cat notes.txt)"
-            gh release upload "$tag" "dist/${{ inputs.asset_filename }}" --clobber
-          else:
-            gh release create "$tag" "dist/${{ inputs.asset_filename }}"               --target "${GITHUB_SHA}"               -t "$title"               -n "$(cat notes.txt)"
-          fi
-=======
-      - name: Create / edit release and upload asset
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-          ASSET_PATH: ${{ inputs.artifact_name }}
-        run: |
-          set -euo pipefail
-
-          NOTES_FALLBACK="Automated build from ${GITHUB_REF_NAME}"
-          notes="$(jq -r '.head_commit.message // empty' <<<"${GITHUB_EVENT_PATH:+$(cat "$GITHUB_EVENT_PATH")}")"
-          RELEASE_NOTES="${notes:-$NOTES_FALLBACK}"
-
-          SHORT_SHA="${GITHUB_SHA::7}"
-          BRANCH_TAG="${GITHUB_REF_NAME}"
-
-          create_or_edit_release() {
-            local tag="$1"
-            local title="$2"
-            if gh release view "$tag" >/dev/null 2>&1; then
-              gh release edit "$tag" -t "$title" -n "$RELEASE_NOTES"
-              gh release upload "$tag" "$ASSET_PATH" --clobber
-            else
-              gh release create "$tag" "$ASSET_PATH"                 --target "$GITHUB_SHA"                 -t "$title"                 -n "$RELEASE_NOTES"
-            fi
-          }
-
-          create_or_edit_release "$SHORT_SHA" "${SHORT_SHA}_${BRANCH_TAG}"
-          create_or_edit_release "$BRANCH_TAG" "$BRANCH_TAG"
->>>>>>> 24de1d5334c77d6d5adfb8b27ed77f426b93b441
+          GITHUB_TOKEN: ${{ env.RELEASE_TOKEN }}
+        with:
+          tag_name: ${{ steps.meta.outputs.branch_tag }}
+          name: ${{ steps.meta.outputs.branch_tag }}
+          body_path: notes.txt
+          target_commitish: ${{ github.sha }}
+          files: dist/${{ inputs.asset_filename }}

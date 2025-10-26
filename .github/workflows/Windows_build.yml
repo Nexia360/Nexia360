@@ -1,4 +1,3 @@
-
 name: Windows build
 
 on:
@@ -30,7 +29,6 @@ on:
       - '.drone.star'
       - '.gitattributes'
       - '.gitignore'
-      - '.gdbinit'
       - '.github/*'
       - '.github/workflows/Linux_build.yml'
       - '.github/*_TEMPLATE/**'
@@ -48,6 +46,12 @@ on:
       - 'LICENSE'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
+env:
+  RELEASE_TOKEN: ${{ vars.RELEASE_TOKEN }}
+
 jobs:
   lint:
     name: Lint
@@ -55,18 +59,18 @@ jobs:
     env:
       POWERSHELL_TELEMETRY_OPTOUT: 1
     steps:
-      - uses: actions/checkout@main
+      - uses: actions/checkout@v4
       - name: Lint
         run: python xenia-build.py lint --all
 
   build:
     name: Build
     needs: lint
-    runs-on: windows-2025
+    runs-on: windows-latest
     env:
       POWERSHELL_TELEMETRY_OPTOUT: 1
     steps:
-      - uses: actions/checkout@main
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - name: Setup
@@ -74,7 +78,7 @@ jobs:
       - name: Build
         run: python xenia-build.py build --no_premake --config=Release --target=src\xenia-app
       - name: Prepare artifacts
-        id: prep
+        id: prepare_artifacts
         shell: pwsh
         run: |
           $binary = 'build\bin\Windows\Release\Nexia360.exe'
@@ -87,31 +91,23 @@ jobs:
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
           Copy-Item -Force $binary artifacts\
           Copy-Item -Force LICENSE artifacts\
-          Compress-Archive -Path artifacts\* -DestinationPath artifacts\Nexia360_windows.zip -Force
-      - name: Upload artifact
-        if: always()
+          Compress-Archive -Path artifacts\* -DestinationPath artifacts\xenia_canary_windows.zip -Force
+      - name: Upload windows artifact
+        if: steps.prepare_artifacts.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: release-asset-windows
-          path: artifacts/Nexia360_windows.zip
+          path: artifacts/xenia_canary_windows.zip
           if-no-files-found: error
 
   create-release:
     name: Create release
     needs: [lint, build]
     if: |
-<<<<<<< HEAD
+      github.repository == 'xenia-canary/xenia-canary' &&
       github.event_name != 'pull_request' &&
-      github.ref == 'refs/heads/canary_experimental' &&
-      github.repository == 'xenia-canary/xenia-canary'
-=======
-      github.repository == 'Nexia360/Nexia360' &&
-      github.event.action != 'pull_request' &&
-      github.ref == 'refs/heads/Nexia-Origin'
->>>>>>> 24de1d5334c77d6d5adfb8b27ed77f426b93b441
+      github.ref == 'refs/heads/canary_experimental'
     uses: ./.github/workflows/Create_release.yml
     with:
       artifact_name: release-asset-windows
       asset_filename: xenia_canary_windows.zip
-    secrets:
-      RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
