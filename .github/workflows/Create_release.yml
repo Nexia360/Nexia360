@@ -1,11 +1,17 @@
-name: Create release
+
+name: Create release (reusable)
 
 on:
   workflow_call:
     inputs:
-      os:
-        required: true
+      artifact_name:
+        description: Name of the artifact previously uploaded with actions/upload-artifact
         type: string
+        required: true
+      asset_filename:
+        description: Desired filename for the asset in the GitHub release
+        type: string
+        required: true
     secrets:
       RELEASE_TOKEN:
         required: true
@@ -15,45 +21,92 @@ jobs:
     name: Release
     runs-on: ubuntu-latest
     steps:
-      #- uses: actions/checkout@main
-      #  with:
-      #    repository: ${{ github.repository_owner }}/xenia-canary-releases
-      - uses: actions/download-artifact@main
-      - name: Release
-        env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-          GH_REPO: ${{ github.repository_owner }}/xenia-canary-releases
-          notes: ${{ github.event.head_commit.message }}
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: dist
+
+      - name: Validate single file
+        id: filecheck
+        shell: bash
         run: |
-          case ${{ inputs.os }} in
-            windows)
-              asset=xenia_canary_${{ inputs.os }}.zip
-              7z a $asset -xr!'*.pdb' -mx9 -bb3
-              ;;
-            linux)
-              asset=xenia_canary_${{ inputs.os }}.tar.xz
-              ;;
-          esac
-          if [ ! -f $asset ]; then
-            ls -R
-            echo "::error::$asset doesn't exist!"
+          set -euo pipefail
+          count=$(find dist -type f | wc -l)
+          if [ "$count" -eq 0 ]; then
+            echo "::error::No files found in downloaded artifact '${{ inputs.artifact_name }}'"
             exit 1
           fi
-          if [ $(stat -c%s $asset) -lt 100000 ]; then
-            ls -R
-            echo "::error::$asset is too small!"
+          if [ "$count" -gt 1 ]; then
+            echo "::error::Expected a single file in artifact '${{ inputs.artifact_name }}', found $count"
+            find dist -type f -maxdepth 1 -printf "%p\n" || true
             exit 1
           fi
-          create_or_edit_release() {
-            local tag=$1
-            local title=$2
-            if gh release view $tag; then
-              gh release edit $tag -t $title -n "$notes"
-              gh release upload $tag $asset --clobber
-            else
-              gh release create $tag $asset --target 925ed98d5dce604b651027c36fb522dc1ff0fa55 -t $title -n "$notes"
-            fi
-          }
-          tag=${GITHUB_SHA::7}
-          create_or_edit_release $tag ${tag}_$GITHUB_REF_NAME
-          create_or_edit_release $GITHUB_REF_NAME $tag
+          file=$(find dist -type f -maxdepth 1 | head -n 1)
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+          ls -l "$file"
+          if [ ! -s "$file" ]; then
+            echo "::error::Downloaded file is empty"
+            exit 1
+          fi
+
+      - name: Compute tags and notes
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHORT_SHA="${GITHUB_SHA::7}"
+          BRANCH_TAG="${GITHUB_REF_NAME}"
+          NOTES="${{ github.event.head_commit.message || '' }}"
+          if [ -z "$NOTES" ]; then
+            NOTES="Automated build from ${BRANCH_TAG} (${SHORT_SHA})"
+          fi
+          echo "short_sha=$SHORT_SHA" >> "$GITHUB_OUTPUT"
+          echo "branch_tag=$BRANCH_TAG" >> "$GITHUB_OUTPUT"
+          printf "%s" "$NOTES" > notes.txt
+
+      - name: Rename asset to desired filename
+        shell: bash
+        run: |
+          set -euo pipefail
+          mv "${{ steps.filecheck.outputs.file }}" "dist/${{ inputs.asset_filename }}"
+          ls -l dist/
+
+      - name: Install gh
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gh
+
+      - name: Auth gh with provided token
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          gh auth status || echo "$GH_TOKEN" | gh auth login --with-token
+
+      - name: Create/Edit release for short SHA tag
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${{ steps.meta.outputs.short_sha }}"
+          title="${{ steps.meta.outputs.short_sha }}_${{ steps.meta.outputs.branch_tag }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" -t "$title" -n "$(cat notes.txt)"
+            gh release upload "$tag" "dist/${{ inputs.asset_filename }}" --clobber
+          else:
+            gh release create "$tag" "dist/${{ inputs.asset_filename }}"               --target "${GITHUB_SHA}"               -t "$title"               -n "$(cat notes.txt)"
+          fi
+
+      - name: Create/Edit release for branch tag
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${{ steps.meta.outputs.branch_tag }}"
+          title="${{ steps.meta.outputs.branch_tag }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" -t "$title" -n "$(cat notes.txt)"
+            gh release upload "$tag" "dist/${{ inputs.asset_filename }}" --clobber
+          else:
+            gh release create "$tag" "dist/${{ inputs.asset_filename }}"               --target "${GITHUB_SHA}"               -t "$title"               -n "$(cat notes.txt)"
+          fi

@@ -1,3 +1,4 @@
+
 name: Windows build
 
 on:
@@ -73,33 +74,38 @@ jobs:
       - name: Build
         run: python xenia-build.py build --no_premake --config=Release --target=src\xenia-app
       - name: Prepare artifacts
-        id: prepare_artifacts
+        id: prep
+        shell: pwsh
         run: |
-          foreach ($file in 'build\bin\Windows\Release\Nexia360.exe') {
-            if ((get-item $file).Length -le 100000) {
-              echo "::error::$file is too small."
-            }
+          $binary = 'build\bin\Windows\Release\Nexia360.exe'
+          if (-not (Test-Path $binary)) {
+            Write-Error "$binary not found"; exit 1
           }
-          robocopy . build\bin\Windows\Release                                                            LICENSE /r:0 /w:0
-          robocopy   build\bin\Windows\Release artifacts\Nexia360   Nexia360.exe  LICENSE /r:0 /w:0
-          If ($LastExitCode -le 7) { echo "LastExitCode = $LastExitCode";$LastExitCode = 0 }
-      - name: Upload xenia canary artifacts
-        if: steps.prepare_artifacts.outcome == 'success'
-        uses: actions/upload-artifact@main
+          if ((Get-Item $binary).Length -le 100000) {
+            Write-Error "$binary is too small."; exit 1
+          }
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          Copy-Item -Force $binary artifacts\
+          Copy-Item -Force LICENSE artifacts\
+          Compress-Archive -Path artifacts\* -DestinationPath artifacts\Nexia360_windows.zip -Force
+      - name: Upload artifact
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: Nexia360_windows
-          path: artifacts\Nexia360
+          name: release-asset-windows
+          path: artifacts/Nexia360_windows.zip
           if-no-files-found: error
 
   create-release:
     name: Create release
     needs: [lint, build]
     if: |
-      github.repository == 'xenia-canary/xenia-canary' &&
-      github.event.action != 'pull_request' &&
-      github.ref == 'refs/heads/canary_experimental'
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/canary_experimental' &&
+      github.repository == 'xenia-canary/xenia-canary'
     uses: ./.github/workflows/Create_release.yml
     with:
-      os: windows
+      artifact_name: release-asset-windows
+      asset_filename: xenia_canary_windows.zip
     secrets:
       RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}

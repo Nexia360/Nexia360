@@ -1,3 +1,4 @@
+
 name: Linux build
 
 on:
@@ -46,17 +47,16 @@ jobs:
     name: Lint
     runs-on: ubuntu-24.04
     outputs:
-      #LLVM_VERSION: ${{ steps.setup.outputs.LLVM_VERSION }}
       UBUNTU_BASE: ${{ steps.setup.outputs.UBUNTU_BASE }}
     steps:
-      - uses: actions/checkout@main
-      - name: Setup
+      - uses: actions/checkout@v4
+      - name: Setup LLVM repo (clang-format 19)
         id: setup
         env:
-          LLVM_VERSION: 19 # Same as Windows
+          LLVM_VERSION: 19
         run: |
+          set -euo pipefail
           UBUNTU_BASE=$(lsb_release -cs)
-          #echo "LLVM_VERSION=$LLVM_VERSION" >> "$GITHUB_OUTPUT"
           echo "UBUNTU_BASE=$UBUNTU_BASE" >> "$GITHUB_OUTPUT"
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
           sudo apt-add-repository "deb http://apt.llvm.org/${UBUNTU_BASE}/ llvm-toolchain-${UBUNTU_BASE}-$LLVM_VERSION main"
@@ -72,16 +72,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        LLVM_VERSION: [20] # '${{ needs.lint.outputs.LLVM_VERSION }}'
+        LLVM_VERSION: [20]
     steps:
-      - uses: actions/checkout@main
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Setup
+      - name: Setup toolchain and deps
         env:
           UBUNTU_BASE: ${{ needs.lint.outputs.UBUNTU_BASE }}
         run: |
+          set -euo pipefail
           wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+          sudo apt-add-repository "deb http://apt.llvm.org/${UBUNTU_BASE}/ llvm-toolchain-${{ matrix.LLVM_VERSION }} main" || true
           sudo apt-add-repository "deb http://apt.llvm.org/${UBUNTU_BASE}/ llvm-toolchain-${UBUNTU_BASE}-${{ matrix.LLVM_VERSION }} main"
           sudo apt-get -y update
           sudo apt-get -y install mesa-vulkan-drivers valgrind libc++-dev libc++abi-dev libgtk-3-dev libsdl2-dev libvulkan-dev libx11-xcb-dev clang-${{ matrix.LLVM_VERSION }} ninja-build
@@ -91,72 +93,39 @@ jobs:
           CC: clang-${{ matrix.LLVM_VERSION }}
           CXX: clang++-${{ matrix.LLVM_VERSION }}
         run: ./xenia-build.py build --config=Release
-      - name: Prepare artifacts
-        id: prepare_artifacts
+      - name: Prepare artifact
+        id: prep
         run: |
+          set -euo pipefail
           binary=build/bin/Linux/Release/Nexia360
-          if [ $(stat -c%s $binary) -le 100000 ]; then
-            echo "::error::Binary is too small."
+          if [ ! -f "$binary" ]; then
+            echo "::error::Binary $binary not found"; exit 1
           fi
-          chmod +x $binary
+          if [ $(stat -c%s "$binary") -le 100000 ]; then
+            echo "::error::Binary is too small."
+            exit 1
+          fi
+          chmod +x "$binary"
           mkdir -p artifacts
-          XZ_OPT=-e9 tar cJvpf artifacts/Nexia360_linux.tar.xz $binary LICENSE
-      - name: Upload xenia canary artifacts
-        if: steps.prepare_artifacts.outcome == 'success'
-        uses: actions/upload-artifact@main
+          XZ_OPT=-e9 tar cJf artifacts/Nexia360_linux.tar.xz "$binary" LICENSE
+      - name: Upload artifact
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: Nexia360_linux
-          path: artifacts
+          name: release-asset-linux
+          path: artifacts/Nexia360_linux.tar.xz
           if-no-files-found: error
-
-#  build-gcc:
-#    name: Build (GCC ${{ matrix.GCC_VERSION }})
-#    needs: lint
-#    runs-on: ubuntu-24.04
-#    strategy:
-#      fail-fast: false
-#      matrix:
-#        GCC_VERSION: [14]
-#    steps:
-#      - uses: actions/checkout@main
-#        with:
-#          fetch-depth: 0
-#      - name: Setup
-#        run: |
-#          sudo apt-get -y update
-#          sudo apt-get -y install mesa-vulkan-drivers valgrind libc++-dev libc++abi-dev libgtk-3-dev libsdl2-dev libvulkan-dev libx11-xcb-dev g++-${{ matrix.GCC_VERSION }}
-#          ./xenia-build.py setup
-#      - name: Build
-#        env:
-#          CC: gcc-${{ matrix.GCC_VERSION }}
-#          CXX: g++-${{ matrix.GCC_VERSION }}
-#        #  AR: ar
-#        run: ./xenia-build.py build --config=Release
-#      - name: Prepare artifacts
-#        id: prepare_artifacts
-#        run: |
-#          if [ $(stat -c %s build/bin/Linux/Release/xenia_canary) -le 100000 ]; then
-#            echo "::error::Binary is too small."
-#          fi
-#          mkdir -p artifacts
-#          cp -r build/bin/Linux/Release/xenia_canary LICENSE artifacts
-#      - name: Upload xenia canary artifacts
-#        if: steps.prepare_artifacts.outcome == 'success'
-#        uses: actions/upload-artifact@main
-#        with:
-#          name: xenia_canary_linux_gcc
-#          path: artifacts
-#          if-no-files-found: error
 
   create-release:
     name: Create release
-    needs: [lint, build-clang] #build-gcc
+    needs: [lint, build-clang]
     if: |
-      github.repository == 'xenia-canary/xenia-canary' &&
-      github.event.action != 'pull_request' &&
-      github.ref == 'refs/heads/canary_experimental'
+      github.event_name != 'pull_request' &&
+      github.ref == 'refs/heads/canary_experimental' &&
+      github.repository == 'xenia-canary/xenia-canary'
     uses: ./.github/workflows/Create_release.yml
     with:
-      os: linux
+      artifact_name: release-asset-linux
+      asset_filename: xenia_canary_linux.tar.xz
     secrets:
       RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
