@@ -1,79 +1,70 @@
-  - name: Ensure tools (gh, zip, xz)
-    run: |
-      sudo apt-get update
-      sudo apt-get install -y gh zip xz-utils
+name: Reusable - Create release
 
-  - name: Package asset
-    shell: bash
-    env:
-      OS: ${{ inputs.os }}
-      ARTIFACT_NAME: ${{ inputs.artifact_name }}
-    run: |
-      set -euo pipefail
-      os="$OS"
-      case "$os" in
-        windows)
-          ART_DIR="downloads/Nexia360_windows"
-          ASSET="${ARTIFACT_NAME}.zip"
-          cd "$ART_DIR"
-          find . -type f ! -iname '*.pdb' -print0 | xargs -0 zip -r "../$ASSET" --filesync --quiet
-          cd - >/dev/null
-          ASSET_PATH="downloads/$ASSET"
-          ;;
-        linux)
-          ART_DIR="downloads/xenia_linux"
-          ASSET="xenia_canary_linux.tar.xz"
-          tar -C "$ART_DIR" -cJf "downloads/$ASSET" .
-          ASSET_PATH="downloads/$ASSET"
-          ;;
-        *)
-          echo "::error::Unsupported OS input: $os"
-          exit 1
-          ;;
-      esac
-      if [ ! -f "$ASSET_PATH" ]; then
-        ls -R downloads || true
-        echo "::error::Asset $ASSET_PATH doesn't exist!"
-        exit 1
-      fi
-      echo "ASSET_PATH=$ASSET_PATH" >> "$GITHUB_ENV"
-      echo "ASSET_NAME=$ASSET" >> "$GITHUB_ENV"
+on:
+  workflow_call:
+    inputs:
+      os:
+        description: Target OS string (e.g., windows, linux)
+        type: string
+        required: true
+      artifact_name:
+        description: Filename to upload to the release (path relative to repo root)
+        type: string
+        required: true
+    secrets:
+      RELEASE_TOKEN:
+        required: true
 
-  - name: Authenticate GH CLI
-    env:
-      GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-    run: |
-      # Authenticate gh using the provided token
-      echo "$GITHUB_TOKEN" | gh auth login --with-token
-      # set default repo to current repository
-      gh repo set-default "${{ github.repository }}"
+jobs:
+  create-release:
+    name: Create or update release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
-  - name: Create or update release
-    shell: bash
-    env:
-      RELEASE_NOTES: ${{ inputs.notes_fallback }}
-      GH_REPO: ${{ github.repository }}
-      ASSET_PATH: ${{ env.ASSET_PATH }}
-      GITHUB_SHA: ${{ github.sha }}
-      GITHUB_REF_NAME: ${{ github.ref_name }}
-    run: |
-      set -euo pipefail
-      RELEASE_NOTES="${RELEASE_NOTES:-}"
-      SHORT_SHA="${GITHUB_SHA::7}"
-      BRANCH_TAG="${GITHUB_REF_NAME:-${GITHUB_REF#refs/heads/}}"
-      create_or_edit_release() {
-        local tag="$1"
-        local title="$2"
-        if gh release view "$tag" --repo "$GH_REPO" >/dev/null 2>&1; then
-          gh release edit "$tag" -t "$title" -n "$RELEASE_NOTES" --repo "$GH_REPO"
-          gh release upload "$tag" "$ASSET_PATH" --clobber --repo "$GH_REPO"
-        else
-          gh release create "$tag" "$ASSET_PATH" \
-            --target "$GITHUB_SHA" \
-            -t "$title" \
-            -n "$RELEASE_NOTES" \
-            --repo "$GH_REPO"
-        fi
-      }
-      create_or_edit_release "$SHORT_SHA" "${SHORT_SHA}_${BRANCH_TAG}"
-      create_or_edit_release "$BRANCH_TAG" "$BRANCH_TAG"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure tools (gh, zip, xz)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gh zip xz-utils
+
+      # If you need to build or package here, do it now. Otherwise,
+      # ensure the artifact exists at the path given by inputs.artifact_name.
+
+      - name: Auth gh
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          gh auth status || echo "$GH_TOKEN" | gh auth login --with-token
+
+      - name: Create / edit release and upload asset
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          ASSET_PATH: ${{ inputs.artifact_name }}
+        run: |
+          set -euo pipefail
+
+          NOTES_FALLBACK="Automated build from ${GITHUB_REF_NAME}"
+          notes="$(jq -r '.head_commit.message // empty' <<<"${GITHUB_EVENT_PATH:+$(cat "$GITHUB_EVENT_PATH")}")"
+          RELEASE_NOTES="${notes:-$NOTES_FALLBACK}"
+
+          SHORT_SHA="${GITHUB_SHA::7}"
+          BRANCH_TAG="${GITHUB_REF_NAME}"
+
+          create_or_edit_release() {
+            local tag="$1"
+            local title="$2"
+            if gh release view "$tag" >/dev/null 2>&1; then
+              gh release edit "$tag" -t "$title" -n "$RELEASE_NOTES"
+              gh release upload "$tag" "$ASSET_PATH" --clobber
+            else
+              gh release create "$tag" "$ASSET_PATH"                 --target "$GITHUB_SHA"                 -t "$title"                 -n "$RELEASE_NOTES"
+            fi
+          }
+
+          create_or_edit_release "$SHORT_SHA" "${SHORT_SHA}_${BRANCH_TAG}"
+          create_or_edit_release "$BRANCH_TAG" "$BRANCH_TAG"
