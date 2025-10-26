@@ -14,46 +14,107 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
+    env:
+      # gh CLI picks this up automatically
+      GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+      # publish releases to the external repo
+      GH_REPO: ${{ github.repository_owner }}/xenia-canary-releases
+      # fallback notes if head_commit is unavailable (e.g. manual dispatch upstream)
+      NOTES_FALLBACK: "Automated release"
     steps:
-      #- uses: actions/checkout@main
-      #  with:
-      #    repository: ${{ github.repository_owner }}/xenia-canary-releases
-      - uses: actions/download-artifact@main
-      - name: Release
-        env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-          GH_REPO: ${{ github.repository_owner }}/xenia-canary-releases
-          notes: ${{ github.event.head_commit.message }}
+      # Download the artifact produced by the Windows build job
+      # Windows build uploaded:
+      #   name: Nexia360_windows
+      #   path: artifacts\Nexia360
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: Nexia360_windows
+          path: downloads/Nexia360_windows
+
+      - name: Package asset
+        shell: bash
         run: |
-          case ${{ inputs.os }} in
+          set -euo pipefail
+          os="${{ inputs.os }}"
+
+          # Decide artifact dir & output asset name based on OS
+          case "$os" in
             windows)
-              asset=xenia_canary_${{ inputs.os }}.zip
-              7z a $asset -xr!'*.pdb' -mx9 -bb3
+              ART_DIR="downloads/Nexia360_windows"
+              ASSET="Nexia360_windows.zip"
+              # Zip the folder contents (no PDBs if present)
+              cd "$ART_DIR"
+              find . -type f ! -iname '*.pdb' -print0 | xargs -0 zip -r "../$ASSET" --filesync --quiet
+              cd - >/dev/null
+              ASSET_PATH="downloads/$ASSET"
               ;;
             linux)
-              asset=xenia_canary_${{ inputs.os }}.tar.xz
+              ART_DIR="downloads/xenia_linux"
+              ASSET="xenia_canary_linux.tar.xz"
+              tar -C "$ART_DIR" -cJf "downloads/$ASSET" .
+              ASSET_PATH="downloads/$ASSET"
+              ;;
+            *)
+              echo "::error::Unsupported OS input: $os"
+              exit 1
               ;;
           esac
-          if [ ! -f $asset ]; then
-            ls -R
-            echo "::error::$asset doesn't exist!"
+
+          # Basic existence & size checks
+          if [ ! -f "$ASSET_PATH" ]; then
+            echo "::group::Directory listing"
+            ls -R downloads || true
+            echo "::endgroup::"
+            echo "::error::Asset $ASSET_PATH doesn't exist!"
             exit 1
           fi
-          if [ $(stat -c%s $asset) -lt 100000 ]; then
-            ls -R
-            echo "::error::$asset is too small!"
+
+          if [ "$(stat -c%s "$ASSET_PATH")" -lt 100000 ]; then
+            echo "::group::Directory listing"
+            ls -R downloads || true
+            echo "::endgroup::"
+            echo "::error::Asset $ASSET_PATH is too small!"
             exit 1
           fi
+
+          # Export for next step
+          echo "ASSET_PATH=$ASSET_PATH" >> "$GITHUB_ENV"
+          echo "ASSET_NAME=$ASSET" >> "$GITHUB_ENV"
+
+      - name: Create or update release
+        shell: bash
+        env:
+          notes: ${{ github.event.head_commit.message }}
+        run: |
+          set -euo pipefail
+
+          # Prefer head_commit message when present, else fallback
+          RELEASE_NOTES="${notes:-$NOTES_FALLBACK}"
+
+          # Two tags:
+          #  1) short SHA tag (eg. abcdef1), title: "<shortsha>_<branch>"
+          #  2) branch tag (eg. Nexia-Origin), title: "<branch>"
+          SHORT_SHA="${GITHUB_SHA::7}"
+          BRANCH_TAG="${GITHUB_REF_NAME}"
+
           create_or_edit_release() {
-            local tag=$1
-            local title=$2
-            if gh release view $tag; then
-              gh release edit $tag -t $title -n "$notes"
-              gh release upload $tag $asset --clobber
+            local tag="$1"
+            local title="$2"
+            if gh release view "$tag" >/dev/null 2>&1; then
+              gh release edit "$tag" -t "$title" -n "$RELEASE_NOTES"
+              gh release upload "$tag" "$ASSET_PATH" --clobber
             else
-              gh release create $tag $asset --target 925ed98d5dce604b651027c36fb522dc1ff0fa55 -t $title -n "$notes"
+              # Target the current commit in the calling repo
+              gh release create "$tag" "$ASSET_PATH" \
+                --target "$GITHUB_SHA" \
+                -t "$title" \
+                -n "$RELEASE_NOTES"
             fi
           }
-          tag=${GITHUB_SHA::7}
-          create_or_edit_release $tag ${tag}_$GITHUB_REF_NAME
-          create_or_edit_release $GITHUB_REF_NAME $tag
+
+          # 1) short SHA tag
+          create_or_edit_release "$SHORT_SHA" "${SHORT_SHA}_${BRANCH_TAG}"
+
+          # 2) branch tag
+          create_or_edit_release "$BRANCH_TAG" "$BRANCH_TAG"
