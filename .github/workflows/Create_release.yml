@@ -1,31 +1,13 @@
-name: Create release
-
-on:
-  workflow_call:
-    inputs:
-      os:
-        required: true
-        type: string
-    secrets:
-      RELEASE_TOKEN:
-        required: true
-
 jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
     env:
-      # gh CLI picks this up automatically
-      GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
-      # publish releases to the external repo
+      # gh CLI requires GH_TOKEN (not GITHUB_TOKEN)
+      GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
       GH_REPO: ${{ github.repository_owner }}/xenia-canary-releases
-      # fallback notes if head_commit is unavailable (e.g. manual dispatch upstream)
       NOTES_FALLBACK: "Automated release"
     steps:
-      # Download the artifact produced by the Windows build job
-      # Windows build uploaded:
-      #   name: Nexia360_windows
-      #   path: artifacts\Nexia360
       - name: Download build artifact
         uses: actions/download-artifact@v4
         with:
@@ -37,13 +19,10 @@ jobs:
         run: |
           set -euo pipefail
           os="${{ inputs.os }}"
-
-          # Decide artifact dir & output asset name based on OS
           case "$os" in
             windows)
               ART_DIR="downloads/Nexia360_windows"
               ASSET="Nexia360_windows.zip"
-              # Zip the folder contents (no PDBs if present)
               cd "$ART_DIR"
               find . -type f ! -iname '*.pdb' -print0 | xargs -0 zip -r "../$ASSET" --filesync --quiet
               cd - >/dev/null
@@ -60,25 +39,16 @@ jobs:
               exit 1
               ;;
           esac
-
-          # Basic existence & size checks
           if [ ! -f "$ASSET_PATH" ]; then
-            echo "::group::Directory listing"
             ls -R downloads || true
-            echo "::endgroup::"
             echo "::error::Asset $ASSET_PATH doesn't exist!"
             exit 1
           fi
-
           if [ "$(stat -c%s "$ASSET_PATH")" -lt 100000 ]; then
-            echo "::group::Directory listing"
             ls -R downloads || true
-            echo "::endgroup::"
             echo "::error::Asset $ASSET_PATH is too small!"
             exit 1
           fi
-
-          # Export for next step
           echo "ASSET_PATH=$ASSET_PATH" >> "$GITHUB_ENV"
           echo "ASSET_NAME=$ASSET" >> "$GITHUB_ENV"
 
@@ -88,13 +58,7 @@ jobs:
           notes: ${{ github.event.head_commit.message }}
         run: |
           set -euo pipefail
-
-          # Prefer head_commit message when present, else fallback
           RELEASE_NOTES="${notes:-$NOTES_FALLBACK}"
-
-          # Two tags:
-          #  1) short SHA tag (eg. abcdef1), title: "<shortsha>_<branch>"
-          #  2) branch tag (eg. Nexia-Origin), title: "<branch>"
           SHORT_SHA="${GITHUB_SHA::7}"
           BRANCH_TAG="${GITHUB_REF_NAME}"
 
@@ -105,7 +69,6 @@ jobs:
               gh release edit "$tag" -t "$title" -n "$RELEASE_NOTES"
               gh release upload "$tag" "$ASSET_PATH" --clobber
             else
-              # Target the current commit in the calling repo
               gh release create "$tag" "$ASSET_PATH" \
                 --target "$GITHUB_SHA" \
                 -t "$title" \
@@ -113,8 +76,5 @@ jobs:
             fi
           }
 
-          # 1) short SHA tag
           create_or_edit_release "$SHORT_SHA" "${SHORT_SHA}_${BRANCH_TAG}"
-
-          # 2) branch tag
           create_or_edit_release "$BRANCH_TAG" "$BRANCH_TAG"
