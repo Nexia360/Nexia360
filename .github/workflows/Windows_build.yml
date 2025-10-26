@@ -100,9 +100,15 @@ jobs:
     name: Create release
     needs: [lint, build]
     if: |
+<<<<<<< HEAD
       github.event_name != 'pull_request' &&
       github.ref == 'refs/heads/canary_experimental' &&
       github.repository == 'xenia-canary/xenia-canary'
+=======
+      github.repository == 'Nexia360/Nexia360' &&
+      github.event.action != 'pull_request' &&
+      github.ref == 'refs/heads/Nexia-Origin'
+>>>>>>> 24de1d5334c77d6d5adfb8b27ed77f426b93b441
     uses: ./.github/workflows/Create_release.yml
     with:
       artifact_name: release-asset-windows

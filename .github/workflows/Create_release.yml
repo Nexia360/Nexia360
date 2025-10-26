@@ -4,12 +4,21 @@ name: Create release (reusable)
 on:
   workflow_call:
     inputs:
+<<<<<<< HEAD
       artifact_name:
         description: Name of the artifact previously uploaded with actions/upload-artifact
         type: string
         required: true
       asset_filename:
         description: Desired filename for the asset in the GitHub release
+=======
+      os:
+        description: Target OS string (e.g., windows, linux)
+        type: string
+        required: true
+      artifact_name:
+        description: Filename to upload to the release (path relative to repo root)
+>>>>>>> 24de1d5334c77d6d5adfb8b27ed77f426b93b441
         type: string
         required: true
     secrets:
@@ -17,10 +26,14 @@ on:
         required: true
 
 jobs:
-  release:
-    name: Release
+  create-release:
+    name: Create or update release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
     steps:
+<<<<<<< HEAD
       - name: Download artifact
         uses: actions/download-artifact@v4
         with:
@@ -78,11 +91,26 @@ jobs:
           sudo apt-get install -y gh
 
       - name: Auth gh with provided token
+=======
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure tools (gh, zip, xz)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gh zip xz-utils
+
+      # If you need to build or package here, do it now. Otherwise,
+      # ensure the artifact exists at the path given by inputs.artifact_name.
+
+      - name: Auth gh
+>>>>>>> 24de1d5334c77d6d5adfb8b27ed77f426b93b441
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
           gh auth status || echo "$GH_TOKEN" | gh auth login --with-token
 
+<<<<<<< HEAD
       - name: Create/Edit release for short SHA tag
         env:
           GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
@@ -110,3 +138,33 @@ jobs:
           else:
             gh release create "$tag" "dist/${{ inputs.asset_filename }}"               --target "${GITHUB_SHA}"               -t "$title"               -n "$(cat notes.txt)"
           fi
+=======
+      - name: Create / edit release and upload asset
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          ASSET_PATH: ${{ inputs.artifact_name }}
+        run: |
+          set -euo pipefail
+
+          NOTES_FALLBACK="Automated build from ${GITHUB_REF_NAME}"
+          notes="$(jq -r '.head_commit.message // empty' <<<"${GITHUB_EVENT_PATH:+$(cat "$GITHUB_EVENT_PATH")}")"
+          RELEASE_NOTES="${notes:-$NOTES_FALLBACK}"
+
+          SHORT_SHA="${GITHUB_SHA::7}"
+          BRANCH_TAG="${GITHUB_REF_NAME}"
+
+          create_or_edit_release() {
+            local tag="$1"
+            local title="$2"
+            if gh release view "$tag" >/dev/null 2>&1; then
+              gh release edit "$tag" -t "$title" -n "$RELEASE_NOTES"
+              gh release upload "$tag" "$ASSET_PATH" --clobber
+            else
+              gh release create "$tag" "$ASSET_PATH"                 --target "$GITHUB_SHA"                 -t "$title"                 -n "$RELEASE_NOTES"
+            fi
+          }
+
+          create_or_edit_release "$SHORT_SHA" "${SHORT_SHA}_${BRANCH_TAG}"
+          create_or_edit_release "$BRANCH_TAG" "$BRANCH_TAG"
+>>>>>>> 24de1d5334c77d6d5adfb8b27ed77f426b93b441
