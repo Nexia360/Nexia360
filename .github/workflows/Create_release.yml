@@ -1,5 +1,13 @@
+  - name: Ensure tools (gh, zip, xz)
+    run: |
+      sudo apt-get update
+      sudo apt-get install -y gh zip xz-utils
+
   - name: Package asset
     shell: bash
+    env:
+      OS: ${{ inputs.os }}
+      ARTIFACT_NAME: ${{ inputs.artifact_name }}
     run: |
       set -euo pipefail
       os="$OS"
@@ -31,15 +39,28 @@
       echo "ASSET_PATH=$ASSET_PATH" >> "$GITHUB_ENV"
       echo "ASSET_NAME=$ASSET" >> "$GITHUB_ENV"
 
+  - name: Authenticate GH CLI
+    env:
+      GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+    run: |
+      # Authenticate gh using the provided token
+      echo "$GITHUB_TOKEN" | gh auth login --with-token
+      # set default repo to current repository
+      gh repo set-default "${{ github.repository }}"
+
   - name: Create or update release
     shell: bash
     env:
-      RELEASE_NOTES: ${{ env.RELEASE_NOTES_INPUT }}
+      RELEASE_NOTES: ${{ inputs.notes_fallback }}
+      GH_REPO: ${{ github.repository }}
+      ASSET_PATH: ${{ env.ASSET_PATH }}
+      GITHUB_SHA: ${{ github.sha }}
+      GITHUB_REF_NAME: ${{ github.ref_name }}
     run: |
       set -euo pipefail
-      RELEASE_NOTES="${RELEASE_NOTES:-$NOTES_FALLBACK}"
+      RELEASE_NOTES="${RELEASE_NOTES:-}"
       SHORT_SHA="${GITHUB_SHA::7}"
-      BRANCH_TAG="${GITHUB_REF_NAME:-${{ github.ref_name }}}"
+      BRANCH_TAG="${GITHUB_REF_NAME:-${GITHUB_REF#refs/heads/}}"
       create_or_edit_release() {
         local tag="$1"
         local title="$2"
