@@ -651,9 +651,12 @@ int XSocket::WSARecvFrom(XWSABUF* buffers, uint32_t num_buffers,
 
     *flags_ptr = receive_async_data.overlapped->offset;
   }
-  if (receive_async_data.overlapped->internal_high.get() != 0) return ret;
-  else if (ret >= 0) return ret;
-  else return 0;
+  if (receive_async_data.overlapped->internal_high.get() != 0)
+    return ret;
+  else if (ret >= 0)
+    return ret;
+  else
+    return 0;
 }
 
 bool XSocket::WSAGetOverlappedResult(XWSAOVERLAPPED* overlapped_ptr,

@@ -11,17 +11,17 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#include <mstcpip.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
-#include <mstcpip.h>
 #pragma comment(lib, "ws2_32.lib")
 #else
+#include <arpa/inet.h>
 #include <fcntl.h>
+#include <netdb.h>
+#include <netinet/tcp.h>
 #include <sys/select.h>
 #include <sys/socket.h>
-#include <netinet/tcp.h>
-#include <arpa/inet.h>
-#include <netdb.h>
 #include <unistd.h>
 #endif
 
@@ -98,9 +98,13 @@ bool NexiaHubTransport::ReadU32BE(int fd, uint32_t& out) {
   return true;
 }
 
-bool NexiaHubTransport::TcpConnect(const std::string& host, uint16_t port, int& out_fd) {
+bool NexiaHubTransport::TcpConnect(const std::string& host, uint16_t port,
+                                   int& out_fd) {
 #ifdef _WIN32
-  static bool wsa_ok = [](){ WSADATA d; return WSAStartup(MAKEWORD(2,2), &d) == 0; }();
+  static bool wsa_ok = []() {
+    WSADATA d;
+    return WSAStartup(MAKEWORD(2, 2), &d) == 0;
+  }();
   (void)wsa_ok;
 #endif
   addrinfo hints{};
@@ -148,12 +152,17 @@ bool NexiaHubTransport::TcpPost(const char* host, uint16_t port,
   req += path;
   req += " HTTP/1.1\r\nHost: ";
   req += hosthdr;
-  req += "\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: ";
+  req +=
+      "\r\nConnection: close\r\nContent-Type: "
+      "application/json\r\nContent-Length: ";
   req += clen;
   req += "\r\n\r\n";
   req += body;
 
-  if (!WriteAll(s, req.data(), req.size())) { closesock_int(s); return false; }
+  if (!WriteAll(s, req.data(), req.size())) {
+    closesock_int(s);
+    return false;
+  }
 
   // Read everything
   std::string resp;
@@ -169,7 +178,8 @@ bool NexiaHubTransport::TcpPost(const char* host, uint16_t port,
   }
   closesock_int(s);
 
-  if (resp.rfind("HTTP/1.1 200", 0) != 0 && resp.rfind("HTTP/1.0 200", 0) != 0) {
+  if (resp.rfind("HTTP/1.1 200", 0) != 0 &&
+      resp.rfind("HTTP/1.0 200", 0) != 0) {
     return false;
   }
   resp_out.swap(resp);
@@ -180,17 +190,22 @@ bool NexiaHubTransport::TcpPost(const char* host, uint16_t port,
 // Public API
 //------------------------------------------------------------------------------
 
-bool NexiaHubTransport::Configure(const std::string& rendezvous_host, uint16_t rendezvous_port,
-                                  const std::string& stun_host, uint16_t stun_port) {
-  rendezvous_.host = rendezvous_host.empty() ? "107.155.85.242" : rendezvous_host;
+bool NexiaHubTransport::Configure(const std::string& rendezvous_host,
+                                  uint16_t rendezvous_port,
+                                  const std::string& stun_host,
+                                  uint16_t stun_port) {
+  rendezvous_.host =
+      rendezvous_host.empty() ? "107.155.85.242" : rendezvous_host;
   rendezvous_.port = rendezvous_port ? rendezvous_port : 8088;
-  stun_.host       = stun_host.empty() ? rendezvous_.host : stun_host;
-  stun_.port       = stun_port ? stun_port : 3478;
+  stun_.host = stun_host.empty() ? rendezvous_.host : stun_host;
+  stun_.port = stun_port ? stun_port : 3478;
   return true;
 }
 
-bool NexiaHubTransport::GetObservedAddr(std::string& out_host, uint16_t& out_port) {
-  // If your server has /whoami, wire it here. For now, return cached/placeholder.
+bool NexiaHubTransport::GetObservedAddr(std::string& out_host,
+                                        uint16_t& out_port) {
+  // If your server has /whoami, wire it here. For now, return
+  // cached/placeholder.
   if (!observed_host_.empty() && observed_port_) {
     out_host = observed_host_;
     out_port = observed_port_;
@@ -207,7 +222,8 @@ bool NexiaHubTransport::Rendezvous(const std::string& room_key,
   // Legacy rendezvous contract: POST /rendezvous {"room_id": "..."}
   std::string body = std::string("{\"room_id\":\"") + room_key + "\"}";
   std::string resp;
-  if (!TcpPost(rendezvous_.host.c_str(), rendezvous_.port, "/rendezvous", body, resp)) {
+  if (!TcpPost(rendezvous_.host.c_str(), rendezvous_.port, "/rendezvous", body,
+               resp)) {
     return false;
   }
   size_t hend = resp.find("\r\n\r\n");
@@ -234,11 +250,13 @@ bool NexiaHubTransport::Rendezvous(const std::string& room_key,
   while (r < json.size() && (json[r] == ' ' || json[r] == '\t')) ++r;
   if (r >= json.size()) return false;
 
-  other_port = static_cast<uint16_t>(std::strtoul(json.c_str() + r, nullptr, 10));
+  other_port =
+      static_cast<uint16_t>(std::strtoul(json.c_str() + r, nullptr, 10));
   return true;
 }
 
-bool NexiaHubTransport::RegisterSelf(const std::string& room_key, uint16_t udp_port) {
+bool NexiaHubTransport::RegisterSelf(const std::string& room_key,
+                                     uint16_t udp_port) {
   // Optional registration kept for compatibility.
   std::string body;
   body.reserve(64 + room_key.size());
@@ -249,7 +267,8 @@ bool NexiaHubTransport::RegisterSelf(const std::string& room_key, uint16_t udp_p
   body += "}";
 
   std::string resp;
-  if (!TcpPost(rendezvous_.host.c_str(), rendezvous_.port, "/rendezvous", body, resp)) {
+  if (!TcpPost(rendezvous_.host.c_str(), rendezvous_.port, "/rendezvous", body,
+               resp)) {
     return false;
   }
   return true;
@@ -264,7 +283,8 @@ bool NexiaHubTransport::ConnectTcpTunnel(const std::string& relay_host,
   if (!TcpConnect(relay_host, relay_port, s)) return false;
 
   // Handshake JSON (newline-terminated)
-  std::string hello = std::string("{\"room_id\":\"") + room_id + "\",\"role\":\"";
+  std::string hello =
+      std::string("{\"room_id\":\"") + room_id + "\",\"role\":\"";
   hello += (role ? role : "sender");
   hello += "\"";
   if (udp_port_hint) {
@@ -274,7 +294,10 @@ bool NexiaHubTransport::ConnectTcpTunnel(const std::string& relay_host,
   hello += "}\n";
 
   // Send handshake (blocking just for this tiny write)
-  if (!WriteAll(s, hello.data(), hello.size())) { closesock_int(s); return false; }
+  if (!WriteAll(s, hello.data(), hello.size())) {
+    closesock_int(s);
+    return false;
+  }
 
   // Make the tunnel socket non-blocking and low-latency
 #ifdef _WIN32
@@ -302,7 +325,7 @@ bool NexiaHubTransport::ConnectTcpTunnel(const std::string& relay_host,
     setsockopt(s, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
   }
   {
-    timeval tv{0, 100 * 1000}; // 100ms
+    timeval tv{0, 100 * 1000};  // 100ms
     setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
   }
@@ -320,12 +343,13 @@ bool NexiaHubTransport::ConnectTcpTunnel(const std::string& relay_host,
   return true;
 }
 
-// 4-arg back-compat overload: (host, port, role, udp_port_hint) -> default room "xenia".
+// 4-arg back-compat overload: (host, port, role, udp_port_hint) -> default room
+// "xenia".
 bool NexiaHubTransport::ConnectTcpTunnel(const std::string& relay_host,
-                                         uint16_t relay_port,
-                                         const char* role,
+                                         uint16_t relay_port, const char* role,
                                          uint16_t udp_port_hint) {
-  return ConnectTcpTunnel(relay_host, relay_port, /*room_id*/ "xenia", role, udp_port_hint);
+  return ConnectTcpTunnel(relay_host, relay_port, /*room_id*/ "xenia", role,
+                          udp_port_hint);
 }
 
 int NexiaHubTransport::TunnelSend(const void* data, size_t size) {
@@ -334,23 +358,25 @@ int NexiaHubTransport::TunnelSend(const void* data, size_t size) {
 
   // Try a cheap space check first
   int avail = bytes_available(tunnel_sock_);
-  (void)avail; // not reliable for write space; still proceed
+  (void)avail;  // not reliable for write space; still proceed
 
-  // Best-effort: write length and payload; if the OS send returns <=0, treat as “try again”
+  // Best-effort: write length and payload; if the OS send returns <=0, treat as
+  // “try again”
   uint32_t be_len = htonl((uint32_t)size);
 #ifdef _WIN32
   int n1 = ::send(tunnel_sock_, reinterpret_cast<const char*>(&be_len), 4, 0);
 #else
   ssize_t n1 = ::send(tunnel_sock_, &be_len, 4, 0);
 #endif
-  if (n1 != 4) return 0; // would block / partial; caller can retry later
+  if (n1 != 4) return 0;  // would block / partial; caller can retry later
 
 #ifdef _WIN32
-  int n2 = ::send(tunnel_sock_, reinterpret_cast<const char*>(data), (int)size, 0);
+  int n2 =
+      ::send(tunnel_sock_, reinterpret_cast<const char*>(data), (int)size, 0);
 #else
   ssize_t n2 = ::send(tunnel_sock_, data, size, 0);
 #endif
-  if (n2 <= 0) return 0; // would block; caller retries later
+  if (n2 <= 0) return 0;  // would block; caller retries later
 
   return (int)n2;
 }
@@ -369,32 +395,33 @@ int NexiaHubTransport::TunnelRecv(std::string& host_out, uint16_t& port_out,
   }
   if (s < 0) return -1;
 
-  // Non-blocking: only proceed if we have enough bytes buffered for a full frame.
-  // Frame format: [u32_be length] [payload...]
+  // Non-blocking: only proceed if we have enough bytes buffered for a full
+  // frame. Frame format: [u32_be length] [payload...]
   int avail = bytes_available(s);
   if (avail == 0) {
     return nonblock ? 0 : 0;  // don’t block here; caller can poll again
   }
   if (avail < 0) {
-    return -1; // socket error
+    return -1;  // socket error
   }
   if (avail < 4) {
-    return nonblock ? 0 : 0; // not enough to read the length yet
+    return nonblock ? 0 : 0;  // not enough to read the length yet
   }
 
-  // Peek the 4-byte length without consuming (so we can ensure full frame present)
+  // Peek the 4-byte length without consuming (so we can ensure full frame
+  // present)
 #ifdef _WIN32
   uint32_t be_len = 0;
   // MSG_PEEK is supported on Windows too.
   int pn = ::recv(s, reinterpret_cast<char*>(&be_len), 4, MSG_PEEK);
-  if (pn <= 0) return 0; // closed or temp no data
+  if (pn <= 0) return 0;  // closed or temp no data
 #else
   uint32_t be_len = 0;
   ssize_t pn = ::recv(s, &be_len, 4, MSG_PEEK);
   if (pn <= 0) return 0;
 #endif
   if (pn < 4) {
-    return nonblock ? 0 : 0; // not a full length yet
+    return nonblock ? 0 : 0;  // not a full length yet
   }
   uint32_t want = ntohl(be_len);
   if (want == 0) {
@@ -413,7 +440,8 @@ int NexiaHubTransport::TunnelRecv(std::string& host_out, uint16_t& port_out,
     return nonblock ? 0 : 0;
   }
 
-  // Now actually consume: first the length header, then the payload (bounded by buf_cap)
+  // Now actually consume: first the length header, then the payload (bounded by
+  // buf_cap)
   uint32_t drop_len = 0;
   if (!ReadAll(s, &drop_len, 4)) return -1;
 
@@ -441,7 +469,6 @@ int NexiaHubTransport::TunnelRecv(std::string& host_out, uint16_t& port_out,
   return 1;
 }
 
-
 bool NexiaHubTransport::IsPrivateIPv4(uint32_t be_addr) {
   uint32_t host = ntohl(be_addr);
   uint8_t a = (host >> 24) & 0xFF;
@@ -450,8 +477,8 @@ bool NexiaHubTransport::IsPrivateIPv4(uint32_t be_addr) {
   if (a == 10) return true;
   if (a == 172 && (b >= 16 && b <= 31)) return true;
   if (a == 192 && b == 168) return true;
-  if (a == 100 && (b >= 64 && b <= 127)) return true;   // CGNAT
-  if (a == 169 && b == 254) return true;                 // link-local
+  if (a == 100 && (b >= 64 && b <= 127)) return true;  // CGNAT
+  if (a == 169 && b == 254) return true;               // link-local
   return false;
 }
 

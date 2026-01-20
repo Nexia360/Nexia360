@@ -22,7 +22,8 @@ namespace xe {
 namespace kernel {
 namespace xam {
 
-// Track last enumerator handles to auto-close on re-creation (handles game leaks).
+// Track last enumerator handles to auto-close on re-creation (handles game
+// leaks).
 static X_HANDLE g_last_title_server_enumerator = X_INVALID_HANDLE_VALUE;
 static X_HANDLE g_last_marketplace_offer_enumerator = X_INVALID_HANDLE_VALUE;
 static X_HANDLE g_last_marketplace_asset_enumerator = X_INVALID_HANDLE_VALUE;
@@ -90,7 +91,8 @@ static uint32_t XTitleServerCreateEnumerator(
     uint32_t flags, uint32_t* out_handle) {
   // Close previous enumerator if game didn't (handle leak mitigation).
   if (g_last_title_server_enumerator != X_INVALID_HANDLE_VALUE) {
-    kernel_state()->object_table()->RemoveHandle(g_last_title_server_enumerator);
+    kernel_state()->object_table()->RemoveHandle(
+        g_last_title_server_enumerator);
     g_last_title_server_enumerator = X_INVALID_HANDLE_VALUE;
   }
 
@@ -125,7 +127,8 @@ static uint32_t XMarketplaceCreateOfferEnumerator(
     uint32_t flags, uint32_t* out_handle) {
   // Close previous enumerator if game didn't (handle leak mitigation).
   if (g_last_marketplace_offer_enumerator != X_INVALID_HANDLE_VALUE) {
-    kernel_state()->object_table()->RemoveHandle(g_last_marketplace_offer_enumerator);
+    kernel_state()->object_table()->RemoveHandle(
+        g_last_marketplace_offer_enumerator);
     g_last_marketplace_offer_enumerator = X_INVALID_HANDLE_VALUE;
   }
 
@@ -160,7 +163,8 @@ static uint32_t XMarketplaceCreateAssetEnumerator(
     uint32_t flags, uint32_t* out_handle) {
   // Close previous enumerator if game didn't (handle leak mitigation).
   if (g_last_marketplace_asset_enumerator != X_INVALID_HANDLE_VALUE) {
-    kernel_state()->object_table()->RemoveHandle(g_last_marketplace_asset_enumerator);
+    kernel_state()->object_table()->RemoveHandle(
+        g_last_marketplace_asset_enumerator);
     g_last_marketplace_asset_enumerator = X_INVALID_HANDLE_VALUE;
   }
 

@@ -72,14 +72,14 @@ X_STATUS ObjectTable::FindFreeSlot(uint32_t* out_slot, bool host) {
   // Table full - try to expand, but cap at reasonable limit to catch leaks.
   constexpr uint32_t kMaxTableCapacity = 64 * 1024;
   if (capacity >= kMaxTableCapacity) {
-    XELOGE("ObjectTable: hit maximum capacity {} - possible handle leak!", 
+    XELOGE("ObjectTable: hit maximum capacity {} - possible handle leak!",
            kMaxTableCapacity);
     return X_STATUS_NO_MEMORY;
   }
 
   // Table out of slots, expand.
-  uint32_t new_table_capacity = std::min(kMaxTableCapacity, 
-                                          std::max(16 * 1024u, capacity * 2));
+  uint32_t new_table_capacity =
+      std::min(kMaxTableCapacity, std::max(16 * 1024u, capacity * 2));
   if (!Resize(new_table_capacity, host)) {
     return X_STATUS_NO_MEMORY;
   }
