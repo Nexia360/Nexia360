@@ -31,10 +31,12 @@ namespace xe {
 
 // https://github.com/davispuh/XLiveServices/blob/master/lib/xlive_services/hresult.rb
 
-#define X_ONLINE_E_LOGON_NOT_LOGGED_ON                      static_cast<X_HRESULT>(0x80151802L) // ERROR_SERVICE_NOT_FOUND
-#define X_ONLINE_E_LOGON_SERVICE_TEMPORARILY_UNAVAILABLE    static_cast<X_HRESULT>(0x80151102L) // ERROR_CONNECTION_INVALID
-#define X_ONLINE_E_LOGON_SERVICE_NOT_REQUESTED              static_cast<X_HRESULT>(0x80151100L) // ERROR_SERVICE_SPECIFIC_ERROR
+#define X_ONLINE_E_BASE                                     static_cast<X_HRESULT>(0x80150000L)
+
+#define X_ONLINE_E_LOGON_NOT_LOGGED_ON                      static_cast<X_HRESULT>(0x80151802L) // ERROR_CONNECTION_INVALID
+#define X_ONLINE_E_LOGON_SERVICE_NOT_REQUESTED              static_cast<X_HRESULT>(0x80151100L) // ERROR_SERVICE_NOT_FOUND
 #define X_ONLINE_E_LOGON_LOGON_SERVICE_NOT_AUTHORIZED       static_cast<X_HRESULT>(0x80151101L) // ERROR_NOT_AUTHENTICATED
+#define X_ONLINE_E_LOGON_SERVICE_TEMPORARILY_UNAVAILABLE    static_cast<X_HRESULT>(0x80151102L)
 #define X_ONLINE_E_LOGON_NO_NETWORK_CONNECTION              static_cast<X_HRESULT>(0x80151000L)
 #define X_ONLINE_S_LOGON_CONNECTION_ESTABLISHED             static_cast<X_HRESULT>(0x001510F0L)
 #define X_ONLINE_S_LOGON_DISCONNECTED                       static_cast<X_HRESULT>(0x001510F1L)
@@ -81,7 +83,17 @@ namespace xe {
 #define X_ONLINE_FRIENDSTATE_FLAG_NONE                      0x00000000
 #define X_ONLINE_FRIENDSTATE_FLAG_ONLINE                    0x00000001
 #define X_ONLINE_FRIENDSTATE_FLAG_PLAYING                   0x00000002
+#define X_ONLINE_FRIENDSTATE_FLAG_VOICE                     0x00000008
 #define X_ONLINE_FRIENDSTATE_FLAG_JOINABLE                  0x00000010
+#define X_ONLINE_FRIENDSTATE_MASK_GUESTS                    0x00000060
+#define X_ONLINE_FRIENDSTATE_FLAG_RESERVED0                 0x00000080
+#define X_ONLINE_FRIENDSTATE_FLAG_JOINABLE_FRIENDS_ONLY     0x00000100
+#define X_ONLINE_FRIENDSTATE_FLAG_SENTINVITE                0x04000000
+#define X_ONLINE_FRIENDSTATE_FLAG_RECEIVEDINVITE            0x08000000
+#define X_ONLINE_FRIENDSTATE_FLAG_INVITEACCEPTED            0x10000000
+#define X_ONLINE_FRIENDSTATE_FLAG_INVITEREJECTED            0x20000000
+#define X_ONLINE_FRIENDSTATE_FLAG_SENTREQUEST               0x40000000
+#define X_ONLINE_FRIENDSTATE_FLAG_RECEIVEDREQUEST           0x80000000
 
 #define X_ONLINE_FRIENDSTATE_FLAG_INVITEACCEPTED            0x10000000
 #define X_ONLINE_FRIENDSTATE_FLAG_SENTINVITE                0x04000000
@@ -90,6 +102,11 @@ namespace xe {
 #define X_ONLINE_FRIENDSTATE_ENUM_AWAY                      0x00010000
 #define X_ONLINE_FRIENDSTATE_ENUM_BUSY                      0x00020000
 #define X_ONLINE_FRIENDSTATE_MASK_USER_STATE                0x000F0000
+#define X_ONLINE_FRIENDSTATE_ENUM_CONSOLE_XBOX1             0x00000000
+#define X_ONLINE_FRIENDSTATE_ENUM_CONSOLE_XBOX360           0x00001000
+#define X_ONLINE_FRIENDSTATE_ENUM_CONSOLE_WINPC             0x00002000
+#define X_ONLINE_FRIENDSTATE_ENUM_CONSOLE_DURANGO           0x00003000
+#define X_ONLINE_FRIENDSTATE_MASK_CONSOLE_TYPE              0x00007000
 
 #define X_ONLINE_MAX_FRIENDS                                100
 #define X_ONLINE_PEER_SUBSCRIPTIONS                         400
@@ -104,6 +121,10 @@ namespace xe {
 #define X_ONLINE_MAX_STATS_ESTIMATE_RATING_COUNT            101
 
 #define X_PARTY_MAX_USERS                                   32
+#define X_PARTY_USER_ISLOCAL                                0x00000001
+#define X_PARTY_USER_ISINPARTYVOICE                         0x00000002
+#define X_PARTY_USER_ISTALKING                              0x00000004
+#define X_PARTY_USER_ISINGAMESESSION                        0x00000008
 
 #define X_MARKETPLACE_CONTENT_ID_LEN                        20
 #define X_MARKETPLACE_ASSET_SIGNATURE_SIZE                  256
@@ -114,6 +135,9 @@ namespace xe {
 
 #define X_CONTEXT_GAME_TYPE_RANKED                          0x0
 #define X_CONTEXT_GAME_TYPE_STANDARD                        0x1
+
+#define X_SESSION_CREATE_USES_MASK                          0x0000003F
+#define X_SESSION_CREATE_MODIFIERS_MASK                     0x00000F80  // Including SOCIAL_MATCHMAKING_ALLOWED
 
 #define MAX_FIRSTNAME_SIZE                                  64
 #define MAX_LASTNAME_SIZE                                   64
@@ -143,6 +167,10 @@ namespace xe {
 #define X_ONLINE_LSP_ATTRIBUTE_PARAM_USER                   0x02100004
 
 #define X_ONLINE_LSP_DEFAULT_DATASET_ID                     0xAAAA
+
+constexpr bool IsOnlineError(uint32_t error) {
+  return (error & 0xFFFF0000) == X_ONLINE_E_BASE;
+}
 
 constexpr uint32_t PropertyID(bool system_property,
                               kernel::xam::X_USER_DATA_TYPE type, uint16_t id) {
@@ -267,7 +295,7 @@ constexpr uint32_t kTMSTitleMaxSize = 1048576 * 5;  // 5 MB
 constexpr uint32_t kTMSClipMaxSize = 1048576 * 11;  // 11 MB
 constexpr uint32_t kTMSFileMaxSize = 1048576 * 20;  // 20 MB (Custom)
 
-enum NETWORK_MODE : uint32_t { OFFLINE, LAN, XBOXLIVE };
+enum NETWORK_MODE : uint32_t { OFFLINE, LAN, XBOXLIVE, NEXIAHUB };
 
 enum X_USER_AGE_GROUP : uint32_t { CHILD, TEEN, ADULT };
 
@@ -326,7 +354,8 @@ struct SGADDR {
   in_addr ina;                                  // IP address of the SG for the client
   xe::be<uint32_t> security_parameter_index;    // Pseudo-random identifier assigned by the SG
   xe::be<uint64_t> xbox_id;                     // Unique identifier of client machine account - machine id?
-  uint8_t reserved[4];
+  uint8_t platform_type;
+  uint8_t reserved[3];
 };
 static_assert_size(SGADDR, 0x14);
 
@@ -833,28 +862,28 @@ static_assert_size(FIND_USERS_RESPONSE, 0x8);
 
 struct X_ADDRESS_INFO {
   xe::be<uint16_t> street_1_length;
-  xe::be<uint32_t> street_1;  // uint16_t*
+  xe::be<uint32_t> street_1;  // char16_t*
   xe::be<uint16_t> street_2_length;
-  xe::be<uint32_t> street_2;  // uint16_t*
+  xe::be<uint32_t> street_2;  // char16_t*
   xe::be<uint16_t> city_length;
-  xe::be<uint32_t> city;  // uint16_t*
+  xe::be<uint32_t> city;  // char16_t*
   xe::be<uint16_t> district_length;
-  xe::be<uint32_t> district;  // uint16_t*
+  xe::be<uint32_t> district;  // char16_t*
   xe::be<uint16_t> state_length;
-  xe::be<uint32_t> state;  // uint16_t*
+  xe::be<uint32_t> state;  // char16_t*
   xe::be<uint16_t> postal_code_length;
-  xe::be<uint32_t> postal_code;  // uint16_t*
+  xe::be<uint32_t> postal_code;  // char16_t*
 };
 static_assert_size(X_ADDRESS_INFO, 0x24);
 
 struct X_GET_USER_INFO_RESPONSE {
   xe::be<uint16_t> first_name_length;
-  xe::be<uint32_t> first_name;  // uint16_t*
+  xe::be<uint32_t> first_name;  // char16_t*
   xe::be<uint16_t> last_name_length;
-  xe::be<uint32_t> last_name;  // uint16_t*
+  xe::be<uint32_t> last_name;  // char16_t*
   X_ADDRESS_INFO address_info;
   xe::be<uint16_t> email_length;
-  xe::be<uint32_t> email;  // uint16_t*
+  xe::be<uint32_t> email;  // char16_t*
   xe::be<uint16_t> language_id;
   xe::be<uint8_t> country_id;
   xe::be<uint8_t> msft_optin;

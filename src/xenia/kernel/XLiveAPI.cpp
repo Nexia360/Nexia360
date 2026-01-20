@@ -7,7 +7,9 @@
  ******************************************************************************
  */
 
+#include <mutex>
 #include <random>
+#include <thread>
 
 #include "third_party/rapidcsv/src/rapidcsv.h"
 
@@ -80,6 +82,10 @@ using namespace rapidjson;
 // https://patents.google.com/patent/US20060287099A1
 namespace xe {
 namespace kernel {
+
+// QoS lookup cache - only fetch from server once per session
+static std::unordered_map<uint64_t, std::vector<uint8_t>> qos_lookup_cache_;
+static std::mutex qos_lookup_cache_mutex_;
 
 void XLiveAPI::IpGetConsoleXnAddr(XNADDR* XnAddr_ptr) {
   memset(XnAddr_ptr, 0, sizeof(XNADDR));
@@ -809,8 +815,42 @@ void XLiveAPI::QoSPost(uint64_t sessionId, uint8_t* qosData, size_t qosLength) {
   XELOGI("Sent QoS data.");
 }
 
-// Get QoS binary data from the server
+// Get QoS binary data from the server (cached, with async background refresh)
 response_data XLiveAPI::QoSGet(uint64_t sessionId) {
+  // Check cache first
+  {
+    std::lock_guard<std::mutex> lock(qos_lookup_cache_mutex_);
+    auto it = qos_lookup_cache_.find(sessionId);
+    if (it != qos_lookup_cache_.end() && !it->second.empty()) {
+      // Return cached data immediately
+      response_data cached_response{};
+      cached_response.http_code = HTTP_STATUS_CODE::HTTP_OK;
+      cached_response.response = reinterpret_cast<char*>(it->second.data());
+      cached_response.size = it->second.size();
+
+      // Trigger async background refresh
+      std::thread([sessionId]() {
+        std::string endpoint = fmt::format("title/{:08X}/sessions/{:016x}/qos",
+                                           kernel_state()->title_id(), sessionId);
+        std::unique_ptr<HTTPResponseObjectJSON> response = Get(endpoint);
+
+        if (response->StatusCode() == HTTP_STATUS_CODE::HTTP_OK) {
+          auto raw = response->RawResponse();
+          if (raw.size > 0) {
+            std::lock_guard<std::mutex> lock(qos_lookup_cache_mutex_);
+            qos_lookup_cache_[sessionId].assign(
+                reinterpret_cast<const uint8_t*>(raw.response),
+                reinterpret_cast<const uint8_t*>(raw.response) + raw.size);
+          }
+        }
+      }).detach();
+
+      XELOGI("Returning cached QoS data.");
+      return cached_response;
+    }
+  }
+
+  // No cache - fetch synchronously
   std::string endpoint = fmt::format("title/{:08X}/sessions/{:016x}/qos",
                                      kernel_state()->title_id(), sessionId);
 
@@ -822,6 +862,15 @@ response_data XLiveAPI::QoSGet(uint64_t sessionId) {
     assert_always();
 
     return response->RawResponse();
+  }
+
+  // Cache the result
+  auto raw = response->RawResponse();
+  if (raw.size > 0) {
+    std::lock_guard<std::mutex> lock(qos_lookup_cache_mutex_);
+    qos_lookup_cache_[sessionId].assign(
+        reinterpret_cast<const uint8_t*>(raw.response),
+        reinterpret_cast<const uint8_t*>(raw.response) + raw.size);
   }
 
   XELOGI("Requesting QoS data.");
@@ -1109,6 +1158,12 @@ void XLiveAPI::DeleteSession(uint64_t sessionId) {
 
   clearXnaddrCache();
   qos_payload_cache.erase(sessionId);
+
+  // Clear QoS lookup cache
+  {
+    std::lock_guard<std::mutex> lock(qos_lookup_cache_mutex_);
+    qos_lookup_cache_.erase(sessionId);
+  }
 }
 
 void XLiveAPI::DeleteAllSessionsByMac() {

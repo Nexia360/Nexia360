@@ -77,6 +77,7 @@ object_ref<XSemaphore> XSemaphore::Restore(KernelState* kernel_state,
   sem->kernel_state_ = kernel_state;
 
   if (!sem->RestoreObject(stream)) {
+    delete sem;
     return nullptr;
   }
 

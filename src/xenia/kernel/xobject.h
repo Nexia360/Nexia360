@@ -2,7 +2,7 @@
  ******************************************************************************
  * Xenia : Xbox 360 Emulator Research Project                                 *
  ******************************************************************************
- * Copyright 2013 Ben Vanik. All rights reserved.                             *
+ * Copyright 2013 Ben Vanik. All rights reserved.
  * Released under the BSD license - see LICENSE in the root for more details. *
  ******************************************************************************
  */
@@ -16,6 +16,7 @@
 #include <string>
 
 #include "xenia/base/threading.h"
+//#include "xenia/kernel/kernel.h"
 #include "xenia/memory.h"
 #include "xenia/xbox.h"
 
@@ -57,8 +58,7 @@ typedef struct {
   };
 
   xe::be<uint32_t> signal_state;
-  xe::be<uint32_t> wait_list_flink;
-  xe::be<uint32_t> wait_list_blink;
+  X_LIST_ENTRY wait_list;
 } X_DISPATCH_HEADER;
 static_assert_size(X_DISPATCH_HEADER, 0x10);
 
@@ -170,7 +170,11 @@ class XObject {
   Type type() const;
 
   // Returns the primary handle of this object.
-  X_HANDLE handle() const { return handles_[0]; }
+  // Lazily allocates handle on first access.
+  X_HANDLE handle();
+
+  // Check if handle has been allocated without triggering allocation.
+  bool has_handle() const { return !handles_.empty(); }
 
   // Returns all associated handles with this object.
   std::vector<X_HANDLE> handles() const { return handles_; }
@@ -245,8 +249,8 @@ class XObject {
 
   // Stash native pointer into X_DISPATCH_HEADER
   static void StashHandle(X_DISPATCH_HEADER* header, uint32_t handle) {
-    header->wait_list_flink = kXObjSignature;
-    header->wait_list_blink = handle;
+    header->wait_list.flink_ptr = kXObjSignature;
+    header->wait_list.blink_ptr = handle;
   }
 
   static uint32_t TimeoutTicksToMs(int64_t timeout_ticks);

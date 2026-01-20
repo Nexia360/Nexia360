@@ -22,6 +22,11 @@ namespace xe {
 namespace kernel {
 namespace xam {
 
+// Track last enumerator handles to auto-close on re-creation (handles game leaks).
+static X_HANDLE g_last_title_server_enumerator = X_INVALID_HANDLE_VALUE;
+static X_HANDLE g_last_marketplace_offer_enumerator = X_INVALID_HANDLE_VALUE;
+static X_HANDLE g_last_marketplace_asset_enumerator = X_INVALID_HANDLE_VALUE;
+
 uint32_t xeXamEnumerate(uint32_t handle, uint32_t flags, lpvoid_t buffer_ptr,
                         uint32_t buffer_size, uint32_t* items_returned,
                         uint32_t overlapped_ptr) {
@@ -83,6 +88,12 @@ static uint32_t XTitleServerCreateEnumerator(
     uint32_t user_index, uint32_t app_id, uint32_t open_message,
     uint32_t close_message, uint32_t extra_size, uint32_t item_count,
     uint32_t flags, uint32_t* out_handle) {
+  // Close previous enumerator if game didn't (handle leak mitigation).
+  if (g_last_title_server_enumerator != X_INVALID_HANDLE_VALUE) {
+    kernel_state()->object_table()->RemoveHandle(g_last_title_server_enumerator);
+    g_last_title_server_enumerator = X_INVALID_HANDLE_VALUE;
+  }
+
   auto e = make_object<XStaticEnumerator<X_TITLE_SERVER>>(kernel_state(),
                                                           item_count);
 
@@ -104,6 +115,7 @@ static uint32_t XTitleServerCreateEnumerator(
   XELOGI("{}: added {} items to enumerator", __func__, e->item_count());
 
   *out_handle = e->handle();
+  g_last_title_server_enumerator = *out_handle;
   return X_ERROR_SUCCESS;
 }
 
@@ -111,6 +123,12 @@ static uint32_t XMarketplaceCreateOfferEnumerator(
     uint32_t user_index, uint32_t app_id, uint32_t open_message,
     uint32_t close_message, uint32_t extra_size, uint32_t item_count,
     uint32_t flags, uint32_t* out_handle) {
+  // Close previous enumerator if game didn't (handle leak mitigation).
+  if (g_last_marketplace_offer_enumerator != X_INVALID_HANDLE_VALUE) {
+    kernel_state()->object_table()->RemoveHandle(g_last_marketplace_offer_enumerator);
+    g_last_marketplace_offer_enumerator = X_INVALID_HANDLE_VALUE;
+  }
+
   auto e = make_object<XStaticEnumerator<X_MARKETPLACE_CONTENTOFFER_INFO>>(
       kernel_state(), item_count);
 
@@ -132,6 +150,7 @@ static uint32_t XMarketplaceCreateOfferEnumerator(
   XELOGI("{}: added {} items to enumerator", __func__, e->item_count());
 
   *out_handle = e->handle();
+  g_last_marketplace_offer_enumerator = *out_handle;
   return X_ERROR_SUCCESS;
 }
 
@@ -139,6 +158,12 @@ static uint32_t XMarketplaceCreateAssetEnumerator(
     uint32_t user_index, uint32_t app_id, uint32_t open_message,
     uint32_t close_message, uint32_t extra_size, uint32_t item_count,
     uint32_t flags, uint32_t* out_handle) {
+  // Close previous enumerator if game didn't (handle leak mitigation).
+  if (g_last_marketplace_asset_enumerator != X_INVALID_HANDLE_VALUE) {
+    kernel_state()->object_table()->RemoveHandle(g_last_marketplace_asset_enumerator);
+    g_last_marketplace_asset_enumerator = X_INVALID_HANDLE_VALUE;
+  }
+
   auto e = make_object<XStaticEnumerator<X_MARKETPLACE_ASSET_ENUMERATE_REPLY>>(
       kernel_state(), item_count);
 
@@ -160,6 +185,7 @@ static uint32_t XMarketplaceCreateAssetEnumerator(
   XELOGI("{}: added {} items to enumerator", __func__, e->item_count());
 
   *out_handle = e->handle();
+  g_last_marketplace_asset_enumerator = *out_handle;
   return X_ERROR_SUCCESS;
 }
 

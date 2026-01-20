@@ -878,11 +878,13 @@ object_ref<XThread> XThread::Restore(KernelState* kernel_state,
   thread->kernel_state_ = kernel_state;
 
   if (!thread->RestoreObject(stream)) {
+    delete thread;
     return nullptr;
   }
 
   if (stream->Read<uint32_t>() != kThreadSaveSignature) {
     XELOGE("Could not restore XThread - invalid magic!");
+    delete thread;
     return nullptr;
   }
 

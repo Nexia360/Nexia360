@@ -106,7 +106,10 @@ object_ref<XNotifyListener> XNotifyListener::Restore(KernelState* kernel_state,
   auto notify = new XNotifyListener(nullptr);
   notify->kernel_state_ = kernel_state;
 
-  notify->RestoreObject(stream);
+  if (!notify->RestoreObject(stream)) {
+    delete notify;
+    return nullptr;
+  }
 
   auto mask = stream->Read<uint64_t>();
   auto max_version = stream->Read<uint32_t>();

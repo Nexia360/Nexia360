@@ -110,7 +110,11 @@ object_ref<XEvent> XEvent::Restore(KernelState* kernel_state,
   auto evt = new XEvent(nullptr);
   evt->kernel_state_ = kernel_state;
 
-  evt->RestoreObject(stream);
+  if (!evt->RestoreObject(stream)) {
+    delete evt;
+    return nullptr;
+  }
+
   bool signaled = stream->Read<bool>();
   evt->manual_reset_ = stream->Read<bool>();
 

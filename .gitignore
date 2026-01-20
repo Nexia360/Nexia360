@@ -92,6 +92,7 @@ node_modules/.bin/
 # ==============================================================================
 
 .vagrant
+.aider*
 /attic/
 /content/
 /third_party/binutils/binutils-2.24.tar.gz
@@ -108,3 +109,6 @@ node_modules/.bin/
 /cache0
 /devkit
 recent.toml
+src/xenia/kernel.zip
+Xenia.zip
+Test.txt
