@@ -119,7 +119,8 @@ class NetworkService {
 
   // Create a new socket
   // Returns socket ID, or kInvalidSocketId on error
-  SocketId CreateSocket(int af, int type, int protocol, int* error_out = nullptr);
+  SocketId CreateSocket(int af, int type, int protocol,
+                        int* error_out = nullptr);
 
   // Close a socket
   bool CloseSocket(SocketId id, int* error_out = nullptr);
@@ -143,8 +144,8 @@ class NetworkService {
                  int optlen, int* error_out = nullptr);
 
   // Get socket option
-  bool GetOption(SocketId id, int level, int optname, void* optval,
-                 int* optlen, int* error_out = nullptr);
+  bool GetOption(SocketId id, int level, int optname, void* optval, int* optlen,
+                 int* error_out = nullptr);
 
   // Set socket blocking mode
   bool SetBlocking(SocketId id, bool blocking, int* error_out = nullptr);

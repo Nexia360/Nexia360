@@ -1650,7 +1650,7 @@ void EmulatorWindow::SetNetworkMode(uint32_t mode) {
 
       emulator_->kernel_state()->BroadcastNotification(
           kXNotificationLiveLinkStateChanged, 1);
-        xe::kernel::XLiveAPI::SetAPIAddress("https://nexia360hub.com/");
+      xe::kernel::XLiveAPI::SetAPIAddress("https://nexia360hub.com/");
       mode_desc = "Nexia Hub";
     } break;
   }

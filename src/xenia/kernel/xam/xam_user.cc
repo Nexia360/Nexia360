@@ -955,7 +955,8 @@ dword_result_t XamReadTileToTextureEx_entry(
 
     // If no tile available, fill with black and return success
     if (tile.empty()) {
-      std::memset(reinterpret_cast<void*>(buffer_ptr.host_address()), 0, buffer_size);
+      std::memset(reinterpret_cast<void*>(buffer_ptr.host_address()), 0,
+                  buffer_size);
       return X_ERROR_SUCCESS;
     }
 
@@ -966,7 +967,8 @@ dword_result_t XamReadTileToTextureEx_entry(
 
     // If image failed to load, fill with black and return success
     if (!imageData) {
-      std::memset(reinterpret_cast<void*>(buffer_ptr.host_address()), 0, buffer_size);
+      std::memset(reinterpret_cast<void*>(buffer_ptr.host_address()), 0,
+                  buffer_size);
       return X_ERROR_SUCCESS;
     }
 

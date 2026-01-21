@@ -22,7 +22,8 @@ namespace xe {
 namespace kernel {
 namespace xam {
 
-// Enumerator handle recycling - keeps last 64 handles, recycles oldest if closed.
+// Enumerator handle recycling - keeps last 64 handles, recycles oldest if
+// closed.
 static constexpr size_t kEnumeratorPoolSize = 64;
 static X_HANDLE g_enumerator_pool[kEnumeratorPoolSize] = {};
 static size_t g_enumerator_pool_index = 0;
@@ -32,7 +33,8 @@ static void RecycleOldEnumerator() {
   X_HANDLE old_handle = g_enumerator_pool[g_enumerator_pool_index];
   if (old_handle != X_INVALID_HANDLE_VALUE && old_handle != 0) {
     // Check if it still exists and close it
-    auto obj = kernel_state()->object_table()->LookupObject<XEnumerator>(old_handle);
+    auto obj =
+        kernel_state()->object_table()->LookupObject<XEnumerator>(old_handle);
     if (obj) {
       // Object still exists - close it
       kernel_state()->object_table()->RemoveHandle(old_handle);
@@ -43,7 +45,7 @@ static void RecycleOldEnumerator() {
 static void TrackEnumeratorHandle(X_HANDLE handle) {
   // Recycle the oldest before storing the new one
   RecycleOldEnumerator();
-  
+
   // Store new handle in circular buffer
   g_enumerator_pool[g_enumerator_pool_index] = handle;
   g_enumerator_pool_index = (g_enumerator_pool_index + 1) % kEnumeratorPoolSize;

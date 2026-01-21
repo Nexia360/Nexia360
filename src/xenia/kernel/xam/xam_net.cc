@@ -532,19 +532,18 @@ dword_result_t NetDll_WSARecvFrom_entry(
                               flags_ptr, from_ptr, fromlen_ptr, overlapped_ptr);
     if (ret < 0) {
       auto err = socket->GetLastWSAError();
-      //if (err == static_cast<uint32_t>(X_WSAError::X_WSAEWOULDBLOCK) ||
-      //    err == static_cast<uint32_t>(X_WSAError::X_WSA_IO_PENDING)) {
-        if (err != 0) XELOGI("WSARecvFrom Unhandled error occurred: {}", err);
-        //XThread::SetLastError(err);
-        //return ret;
+      // if (err == static_cast<uint32_t>(X_WSAError::X_WSAEWOULDBLOCK) ||
+      //     err == static_cast<uint32_t>(X_WSAError::X_WSA_IO_PENDING)) {
+      if (err != 0) XELOGI("WSARecvFrom Unhandled error occurred: {}", err);
+      // XThread::SetLastError(err);
+      // return ret;
       if (err == static_cast<uint32_t>(X_WSAError::X_WSAENOTSOCK) ||
-                 err == static_cast<uint32_t>(X_WSAError::X_WSA_INVALID_PARAMETER)) {
-                XThread::SetLastError(err);
-                return ret;
+          err == static_cast<uint32_t>(X_WSAError::X_WSA_INVALID_PARAMETER)) {
+        XThread::SetLastError(err);
+        return ret;
       }
       if (err != static_cast<uint32_t>(X_WSAError::X_WSAENOTSOCK) &&
-                 err != static_cast<uint32_t>(
-                            X_WSAError::X_WSA_INVALID_PARAMETER)) {
+          err != static_cast<uint32_t>(X_WSAError::X_WSA_INVALID_PARAMETER)) {
         XELOGI("Non-critical error occurred: {}", err);
         XThread::SetLastError(0);
       } else {
@@ -624,19 +623,17 @@ dword_result_t NetDll_WSASendTo_entry(
       if (ret == SOCKET_ERROR) {
         auto err = WSAGetLastError();
 
-        //if (err == static_cast<uint32_t>(X_WSAError::X_WSAEWOULDBLOCK) ||
-        //    err == static_cast<uint32_t>(X_WSAError::X_WSA_IO_PENDING)) {
-        //  XThread::SetLastError(err);
-        //  return ret;
+        // if (err == static_cast<uint32_t>(X_WSAError::X_WSAEWOULDBLOCK) ||
+        //     err == static_cast<uint32_t>(X_WSAError::X_WSA_IO_PENDING)) {
+        //   XThread::SetLastError(err);
+        //   return ret;
         if (err == static_cast<uint32_t>(X_WSAError::X_WSAENOTSOCK) ||
-                 err == static_cast<uint32_t>(
-                            X_WSAError::X_WSA_INVALID_PARAMETER)) {
-                  XThread::SetLastError(err);
-                  return ret;
+            err == static_cast<uint32_t>(X_WSAError::X_WSA_INVALID_PARAMETER)) {
+          XThread::SetLastError(err);
+          return ret;
         }
         if (err != static_cast<uint32_t>(X_WSAError::X_WSAENOTSOCK) &&
-                   err != static_cast<uint32_t>(
-                              X_WSAError::X_WSA_INVALID_PARAMETER)) {
+            err != static_cast<uint32_t>(X_WSAError::X_WSA_INVALID_PARAMETER)) {
           XELOGI("Non-critical error occurred: {}", err);
           XThread::SetLastError(0);
         } else {

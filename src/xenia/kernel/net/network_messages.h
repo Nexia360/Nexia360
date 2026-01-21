@@ -34,8 +34,8 @@ using ResponseCallback = std::function<void(const NetworkResponse&)>;
 // Message types for the network service
 enum class NetMessageType : uint8_t {
   // === TX Operations (fire and forget) ===
-  Send,      // Send on connected socket
-  SendTo,    // Send to specific address (UDP)
+  Send,    // Send on connected socket
+  SendTo,  // Send to specific address (UDP)
 
   // === RX Operations (results go to per-socket RX queue) ===
   // These are internal - RX thread handles them automatically
@@ -62,10 +62,10 @@ enum class NetMessageType : uint8_t {
 
 // Address structure (matches Xbox SOCKADDR_IN layout in concept)
 struct NetAddress {
-  uint16_t family = 0;      // AF_INET = 2
-  uint16_t port = 0;        // Network byte order
-  uint32_t addr = 0;        // Network byte order (IPv4)
-  uint8_t zero[8] = {0};    // Padding
+  uint16_t family = 0;    // AF_INET = 2
+  uint16_t port = 0;      // Network byte order
+  uint32_t addr = 0;      // Network byte order (IPv4)
+  uint8_t zero[8] = {0};  // Padding
 
   void Clear() {
     family = 0;
@@ -105,11 +105,11 @@ struct NetBuffer {
 
 // Response from control operations
 struct NetworkResponse {
-  int32_t result = 0;       // 0 = success, -1 = error
-  int32_t error_code = 0;   // Platform error code
+  int32_t result = 0;                     // 0 = success, -1 = error
+  int32_t error_code = 0;                 // Platform error code
   SocketId socket_id = kInvalidSocketId;  // For CreateSocket
-  NetAddress address;       // For GetSockName/GetPeerName
-  NetBuffer buffer;         // For GetOption
+  NetAddress address;                     // For GetSockName/GetPeerName
+  NetBuffer buffer;                       // For GetOption
   uint32_t bytes_transferred = 0;
 };
 
@@ -117,9 +117,9 @@ struct NetworkResponse {
 struct TxMessage {
   SocketId socket_id;
   NetBuffer buffer;
-  NetAddress to;          // For SendTo; ignored for Send
+  NetAddress to;  // For SendTo; ignored for Send
   uint32_t flags = 0;
-  bool has_destination;   // true = SendTo, false = Send
+  bool has_destination;  // true = SendTo, false = Send
 
   static TxMessage MakeSend(SocketId id, const uint8_t* data, size_t len,
                             uint32_t flags = 0) {
@@ -147,9 +147,9 @@ struct TxMessage {
 struct RxMessage {
   SocketId socket_id;
   NetBuffer buffer;
-  NetAddress from;        // Source address (for RecvFrom)
+  NetAddress from;  // Source address (for RecvFrom)
   uint32_t flags = 0;
-  int32_t error_code = 0; // Non-zero if error occurred
+  int32_t error_code = 0;  // Non-zero if error occurred
 
   bool HasError() const { return error_code != 0; }
 };
@@ -261,7 +261,8 @@ struct ControlMessage {
     msg.sockopt.level = level;
     msg.sockopt.optname = optname;
     if (optval && optlen > 0) {
-      msg.sockopt.optval = NetBuffer(static_cast<const uint8_t*>(optval), optlen);
+      msg.sockopt.optval =
+          NetBuffer(static_cast<const uint8_t*>(optval), optlen);
     }
     msg.callback = std::move(cb);
     return msg;
@@ -289,7 +290,8 @@ struct ControlMessage {
     return msg;
   }
 
-  static ControlMessage MakeShutdown(SocketId id, int how, ResponseCallback cb) {
+  static ControlMessage MakeShutdown(SocketId id, int how,
+                                     ResponseCallback cb) {
     ControlMessage msg;
     msg.type = NetMessageType::Shutdown;
     msg.socket_id = id;
