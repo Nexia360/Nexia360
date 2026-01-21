@@ -405,6 +405,20 @@ void XLiveAPI::Init() {
 
   // Delete sessions on start-up.
   DeleteAllSessions();
+
+  // Start QoS flush timer - periodically re-post cached QoS data
+  static bool qos_timer_started = false;
+  if (!qos_timer_started) {
+    qos_timer_started = true;
+    std::thread([]() {
+      while (GetInitState() == InitState::Success) {
+        std::this_thread::sleep_for(std::chrono::seconds(30));
+        if (!qos_payload_cache.empty()) {
+          QoSFlushCache();
+        }
+      }
+    }).detach();
+  }
 }
 
 void XLiveAPI::clearXnaddrCache() {
@@ -688,12 +702,16 @@ std::unique_ptr<HTTPResponseObjectJSON> XLiveAPI::RegisterPlayer() {
 
   const auto user_profile = kernel_state()->xam_state()->GetUserProfile(index);
 
-  if (cvars::network_mode == NETWORK_MODE::XBOXLIVE &&
+  if (cvars::network_mode >= NETWORK_MODE::XBOXLIVE &&
       !user_profile->IsLiveEnabled()) {
     XELOGE("Cancelled registering profile, profile is not live enabled!");
     return response;
   }
-
+  if (cvars::network_mode == NETWORK_MODE::NEXIAHUB &&
+      !user_profile->IsLiveEnabled()) {
+    XELOGE("Cancelled registering profile, profile is not live enabled!");
+    return response;
+  }
   uint64_t xuid = user_profile->GetOnlineXUID();
 
   // Register offline profile for systemlink usage
@@ -813,6 +831,15 @@ void XLiveAPI::QoSPost(uint64_t sessionId, uint8_t* qosData, size_t qosLength) {
   }
 
   XELOGI("Sent QoS data.");
+}
+
+// Re-post all cached QoS data to server
+void XLiveAPI::QoSFlushCache() {
+  for (const auto& [sessionId, qosData] : qos_payload_cache) {
+    if (!qosData.empty()) {
+      QoSPost(sessionId, const_cast<uint8_t*>(qosData.data()), qosData.size());
+    }
+  }
 }
 
 // Get QoS binary data from the server (cached, with async background refresh)

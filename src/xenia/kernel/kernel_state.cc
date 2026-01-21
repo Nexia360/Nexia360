@@ -917,7 +917,7 @@ void KernelState::RegisterNotifyListener(XNotifyListener* listener) {
 
   if (listener->mask() & kXNotifyLive) {
     const uint32_t live_connection_state =
-        cvars::network_mode == NETWORK_MODE::XBOXLIVE
+        cvars::network_mode >= NETWORK_MODE::XBOXLIVE
             ? X_ONLINE_S_LOGON_CONNECTION_ESTABLISHED
             : X_ONLINE_S_LOGON_DISCONNECTED;
 

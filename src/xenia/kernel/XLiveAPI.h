@@ -103,6 +103,8 @@ class XLiveAPI {
 
   static void QoSPost(uint64_t sessionId, uint8_t* qosData, size_t qosLength);
 
+  static void QoSFlushCache();
+
   static response_data QoSGet(uint64_t sessionId);
 
   static void SessionModify(uint64_t sessionId, XGI_SESSION_MODIFY* data);

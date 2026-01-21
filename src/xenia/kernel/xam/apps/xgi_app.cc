@@ -857,14 +857,16 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
              buffer_length);
       return X_E_SUCCESS;
     }
-    default: {
+    default:
+    {
       XELOGE(
-          "Unimplemented XGI message app={:08X}, msg={:08X}, arg1={:08X}, "
-          "arg2={:08X}",
-          app_id(), message, buffer_ptr, buffer_length);
+      "Unimplemented XGI message app={:08X}, msg={:08X}, arg1={:08X}, "
+      "arg2={:08X}",
+      app_id(), message, buffer_ptr, buffer_length);
       return X_E_FAIL;
     }
   }
+  
 }
 
 }  // namespace apps

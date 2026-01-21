@@ -858,6 +858,10 @@ bool EmulatorWindow::Initialize() {
         MenuItem::Create(MenuItem::Type::kString, "Xbox Live", "",
                          std::bind(&EmulatorWindow::SetNetworkMode, this,
                                    xe::kernel::NETWORK_MODE::XBOXLIVE)));
+    Network_mode_menu->AddChild(
+        MenuItem::Create(MenuItem::Type::kString, "Nexia Hub", "",
+                         std::bind(&EmulatorWindow::SetNetworkMode, this,
+                                   xe::kernel::NETWORK_MODE::NEXIAHUB)));
 
     Netplay_menu->AddChild(std::move(API_list_menu));
     Netplay_menu->AddChild(std::move(Network_interfaces_menu));
@@ -1596,6 +1600,9 @@ void EmulatorWindow::SetNetworkMode(uint32_t mode) {
     case xe::kernel::NETWORK_MODE::XBOXLIVE: {
       mode_desc = "Xbox Live";
     } break;
+    case xe::kernel::NETWORK_MODE::NEXIAHUB: {
+      mode_desc = "Nexia Hub";
+    } break;
   }
 
   if (cvars::network_mode == mode) {
@@ -1635,6 +1642,16 @@ void EmulatorWindow::SetNetworkMode(uint32_t mode) {
           kXNotificationLiveLinkStateChanged, 1);
 
       mode_desc = "Xbox Live";
+    } break;
+    case xe::kernel::NETWORK_MODE::NEXIAHUB: {
+      emulator_->kernel_state()->BroadcastNotification(
+          kXNotificationLiveConnectionChanged,
+          X_ONLINE_S_LOGON_CONNECTION_ESTABLISHED);
+
+      emulator_->kernel_state()->BroadcastNotification(
+          kXNotificationLiveLinkStateChanged, 1);
+        xe::kernel::XLiveAPI::SetAPIAddress("https://nexia360hub.com/");
+      mode_desc = "Nexia Hub";
     } break;
   }
 
@@ -2210,6 +2227,9 @@ void EmulatorWindow::NetplayStatus() {
     } break;
     case xe::kernel::NETWORK_MODE::XBOXLIVE: {
       network_mode = "Xbox Live";
+    } break;
+    case xe::kernel::NETWORK_MODE::NEXIAHUB: {
+      network_mode = "Nexia Hub";
     } break;
   }
 

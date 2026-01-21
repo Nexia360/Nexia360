@@ -26,11 +26,15 @@ namespace net {
 // Global singleton
 static NetworkService* g_network_service = nullptr;
 
-NetworkService* GetNetworkService() { return g_network_service; }
+NetworkService* GetNetworkService() {
+  return g_network_service;
+}
 
 NetworkService::NetworkService() = default;
 
-NetworkService::~NetworkService() { Shutdown(); }
+NetworkService::~NetworkService() {
+  Shutdown();
+}
 
 bool NetworkService::Initialize() {
   if (initialized_.load()) {
@@ -116,7 +120,7 @@ NetworkResponse NetworkService::ExecuteControl(ControlMessage msg) {
 }
 
 SocketId NetworkService::CreateSocket(int af, int type, int protocol,
-                                      int* error_out) {
+                                       int* error_out) {
   auto response = ExecuteControl(
       ControlMessage::MakeCreateSocket(af, type, protocol, nullptr));
 
@@ -163,8 +167,9 @@ SocketId NetworkService::Accept(SocketId id, NetAddress* addr_out,
   sockaddr_in sa = {};
   int sa_len = sizeof(sa);
 
-  NativeSocket new_native = SocketAccept(
-      state->native_handle, reinterpret_cast<sockaddr*>(&sa), &sa_len);
+  NativeSocket new_native =
+      SocketAccept(state->native_handle, reinterpret_cast<sockaddr*>(&sa),
+                   &sa_len);
 
   if (new_native == kInvalidSocket) {
     if (error_out) *error_out = GetLastSocketError();
@@ -192,8 +197,8 @@ SocketId NetworkService::Accept(SocketId id, NetAddress* addr_out,
 
 bool NetworkService::SetOption(SocketId id, int level, int optname,
                                const void* optval, int optlen, int* error_out) {
-  auto response = ExecuteControl(ControlMessage::MakeSetOption(
-      id, level, optname, optval, optlen, nullptr));
+  auto response = ExecuteControl(
+      ControlMessage::MakeSetOption(id, level, optname, optval, optlen, nullptr));
   if (error_out) *error_out = response.error_code;
   return response.result == 0;
 }
@@ -204,8 +209,7 @@ bool NetworkService::GetOption(SocketId id, int level, int optname,
       ControlMessage::MakeGetOption(id, level, optname, *optlen, nullptr));
 
   if (response.result == 0 && optval && optlen) {
-    size_t copy_len =
-        std::min(static_cast<size_t>(*optlen), response.buffer.Size());
+    size_t copy_len = std::min(static_cast<size_t>(*optlen), response.buffer.Size());
     std::memcpy(optval, response.buffer.Data(), copy_len);
     *optlen = static_cast<int>(copy_len);
   }
@@ -230,7 +234,8 @@ bool NetworkService::ShutdownSocket(SocketId id, int how, int* error_out) {
 
 bool NetworkService::GetSockName(SocketId id, NetAddress* addr_out,
                                  int* error_out) {
-  auto response = ExecuteControl(ControlMessage::MakeGetSockName(id, nullptr));
+  auto response =
+      ExecuteControl(ControlMessage::MakeGetSockName(id, nullptr));
   if (addr_out && response.result == 0) {
     *addr_out = response.address;
   }
@@ -240,7 +245,8 @@ bool NetworkService::GetSockName(SocketId id, NetAddress* addr_out,
 
 bool NetworkService::GetPeerName(SocketId id, NetAddress* addr_out,
                                  int* error_out) {
-  auto response = ExecuteControl(ControlMessage::MakeGetPeerName(id, nullptr));
+  auto response =
+      ExecuteControl(ControlMessage::MakeGetPeerName(id, nullptr));
   if (addr_out && response.result == 0) {
     *addr_out = response.address;
   }
@@ -249,7 +255,7 @@ bool NetworkService::GetPeerName(SocketId id, NetAddress* addr_out,
 }
 
 SocketId NetworkService::RegisterSocket(NativeSocket native, int af, int type,
-                                        int protocol, int* error_out) {
+                                         int protocol, int* error_out) {
   auto response = ExecuteControl(
       ControlMessage::MakeRegisterSocket(native, af, type, protocol, nullptr));
   if (error_out) *error_out = response.error_code;
@@ -348,7 +354,9 @@ void NetworkService::RemoveSocket(SocketId id) {
   sockets_.erase(id);
 }
 
-SocketId NetworkService::NextSocketId() { return next_socket_id_.fetch_add(1); }
+SocketId NetworkService::NextSocketId() {
+  return next_socket_id_.fetch_add(1);
+}
 
 // =============================================================================
 // TX Thread
@@ -431,8 +439,8 @@ void NetworkService::ProcessControlMessage(ControlMessage& msg) {
 
   switch (msg.type) {
     case NetMessageType::CreateSocket: {
-      NativeSocket native = SocketCreate(msg.create.af, msg.create.sock_type,
-                                         msg.create.protocol);
+      NativeSocket native =
+          SocketCreate(msg.create.af, msg.create.sock_type, msg.create.protocol);
 
       if (native == kInvalidSocket) {
         response.result = -1;
@@ -493,8 +501,7 @@ void NetworkService::ProcessControlMessage(ControlMessage& msg) {
           if (state->bound_port == 0) {
             int len = sizeof(sa);
             if (SocketGetSockName(state->native_handle,
-                                  reinterpret_cast<sockaddr*>(&sa),
-                                  &len) == 0) {
+                                  reinterpret_cast<sockaddr*>(&sa), &len) == 0) {
               state->bound_port = ntohs(sa.sin_port);
             }
           }
@@ -579,8 +586,8 @@ void NetworkService::ProcessControlMessage(ControlMessage& msg) {
         response.result = -1;
         response.error_code = GetLastSocketError();
       } else {
-        if (SocketSetBlocking(state->native_handle,
-                              msg.set_blocking.blocking) != 0) {
+        if (SocketSetBlocking(state->native_handle, msg.set_blocking.blocking) !=
+            0) {
           response.result = -1;
           response.error_code = GetLastSocketError();
         }
@@ -669,8 +676,7 @@ void NetworkService::ProcessControlMessage(ControlMessage& msg) {
 
 void NetworkService::PollSockets() {
   // Gather all active sockets for polling
-  std::vector<std::pair<SocketId, std::shared_ptr<SocketState>>>
-      sockets_to_poll;
+  std::vector<std::pair<SocketId, std::shared_ptr<SocketState>>> sockets_to_poll;
   {
     std::lock_guard<std::mutex> lock(sockets_mutex_);
     for (auto& pair : sockets_) {
@@ -695,8 +701,8 @@ void NetworkService::PollSockets() {
   }
 
   // Poll
-  int ready = SocketPoll(poll_results.data(),
-                         static_cast<int>(poll_results.size()), kPollTimeoutMs);
+  int ready = SocketPoll(poll_results.data(), static_cast<int>(poll_results.size()),
+                         kPollTimeoutMs);
 
   if (ready <= 0) {
     return;  // Timeout or error
@@ -716,9 +722,9 @@ void NetworkService::PollSockets() {
     sockaddr_in from = {};
     int from_len = sizeof(from);
 
-    int received =
-        SocketRecvFrom(state->native_handle, buffer, sizeof(buffer), 0,
-                       reinterpret_cast<sockaddr*>(&from), &from_len);
+    int received = SocketRecvFrom(
+        state->native_handle, buffer, sizeof(buffer), 0,
+        reinterpret_cast<sockaddr*>(&from), &from_len);
 
     if (received > 0) {
       RxMessage rx_msg;

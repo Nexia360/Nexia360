@@ -69,17 +69,8 @@ X_STATUS ObjectTable::FindFreeSlot(uint32_t* out_slot, bool host) {
     }
   }
 
-  // Table full - try to expand, but cap at reasonable limit to catch leaks.
-  constexpr uint32_t kMaxTableCapacity = 64 * 1024;
-  if (capacity >= kMaxTableCapacity) {
-    XELOGE("ObjectTable: hit maximum capacity {} - possible handle leak!",
-           kMaxTableCapacity);
-    return X_STATUS_NO_MEMORY;
-  }
-
   // Table out of slots, expand.
-  uint32_t new_table_capacity =
-      std::min(kMaxTableCapacity, std::max(16 * 1024u, capacity * 2));
+  uint32_t new_table_capacity = std::max(16 * 1024u, capacity * 2);
   if (!Resize(new_table_capacity, host)) {
     return X_STATUS_NO_MEMORY;
   }
@@ -230,7 +221,7 @@ X_STATUS ObjectTable::RemoveHandle(X_HANDLE handle) {
     assert_zero(entry->handle_ref_count);
     entry->handle_ref_count = 0;
 
-    // Update last_free_entry_ to this slot for O(1) reuse on next allocation.
+    // Update last_free_entry_ to this slot for faster reuse on next allocation.
     const bool is_host_object = XObject::is_handle_host_object(handle);
     uint32_t slot = GetHandleSlot(handle, is_host_object);
     if (is_host_object) {

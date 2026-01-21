@@ -47,7 +47,9 @@ int SocketBind(NativeSocket s, const sockaddr* addr, int addrlen) {
   return ::bind(s, addr, addrlen);
 }
 
-int SocketListen(NativeSocket s, int backlog) { return ::listen(s, backlog); }
+int SocketListen(NativeSocket s, int backlog) {
+  return ::listen(s, backlog);
+}
 
 NativeSocket SocketAccept(NativeSocket s, sockaddr* addr, int* addrlen) {
 #ifdef XE_PLATFORM_WIN32
@@ -102,7 +104,8 @@ int SocketGetOpt(NativeSocket s, int level, int optname, void* optval,
   return ::getsockopt(s, level, optname, static_cast<char*>(optval), optlen);
 #else
   socklen_t len = optlen ? *optlen : 0;
-  int result = ::getsockopt(s, level, optname, optval, optlen ? &len : nullptr);
+  int result =
+      ::getsockopt(s, level, optname, optval, optlen ? &len : nullptr);
   if (optlen) *optlen = len;
   return result;
 #endif
@@ -190,7 +193,9 @@ void SetLastSocketError(int error) {
 #endif
 }
 
-int SocketShutdown(NativeSocket s, int how) { return ::shutdown(s, how); }
+int SocketShutdown(NativeSocket s, int how) {
+  return ::shutdown(s, how);
+}
 
 int SocketGetSockName(NativeSocket s, sockaddr* addr, int* addrlen) {
 #ifdef XE_PLATFORM_WIN32
