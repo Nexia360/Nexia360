@@ -1017,7 +1017,7 @@ dword_result_t NetDll_XNetInAddrToXnAddr_entry(dword_t caller, dword_t in_addr,
       XLiveAPI::macAddressCache.end()) {
     const auto player = XLiveAPI::FindPlayer(ip_to_string(xn_addr->inaOnline));
 
-    // FIXME
+    // FIXME: systemlink_id usage
     if (!XLiveAPI::systemlink_id || EXPLICIT_XBOXLIVE_KEY) {
       IsValidXNKID(player->SessionID());
 
