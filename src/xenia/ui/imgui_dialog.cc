@@ -63,24 +63,52 @@ class MessageBoxDialog final : public ImGuiDialog {
       ImGui::OpenPopup(title_.c_str());
       has_opened_ = true;
     }
-    if (ImGui::BeginPopupModal(title_.c_str(), nullptr,
+    
+    // Wait for button release before closing
+    if (pending_close_) {
+      if (!ImGui::IsKeyDown(ImGuiKey_GamepadFaceUp) &&
+          !ImGui::IsKeyDown(ImGuiKey_GamepadBack) &&
+          !ImGui::IsKeyDown(ImGuiKey_GamepadFaceRight)) {
+        pending_close_ = false;
+        Close();
+      }
+      return;
+    }
+    
+    bool popup_open = true;
+    if (ImGui::BeginPopupModal(title_.c_str(), &popup_open,
                                ImGuiWindowFlags_AlwaysAutoResize)) {
       char* text = const_cast<char*>(body_.c_str());
       ImGui::InputTextMultiline(
           "##body", text, body_.size() + 1, ImVec2(600, 0),
           ImGuiInputTextFlags_AutoSelectAll | ImGuiInputTextFlags_ReadOnly);
-      if (ImGui::Button("OK")) {
+      
+      // Handle OK button - can be activated by clicking, Enter, or gamepad A
+      if (ImGui::Button("OK") || 
+          ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp) ||
+          ImGui::IsKeyPressed(ImGuiKey_Enter)) {
         ImGui::CloseCurrentPopup();
-        Close();
+        pending_close_ = true;
       }
+      
+      // Back or B button closes dialog (has close button so this is safe)
+      if (ImGui::IsKeyPressed(ImGuiKey_GamepadBack) ||
+          ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight)) {
+        popup_open = false;
+        pending_close_ = true;
+      }
+      
       ImGui::EndPopup();
-    } else {
-      Close();
+    }
+    
+    if (!popup_open) {
+      pending_close_ = true;
     }
   }
 
  private:
   bool has_opened_ = false;
+  bool pending_close_ = false;
   std::string title_;
   std::string body_;
 };

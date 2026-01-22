@@ -23,6 +23,12 @@
 #include "xenia/ui/imgui_drawer.h"
 #include "xenia/ui/imgui_guest_notification.h"
 #include "xenia/ui/imgui_host_notification.h"
+#include "xenia/ui/keyboard_ui.h"
+
+#if XE_PLATFORM_WIN32
+#include <Xinput.h>
+#pragma comment(lib, "xinput.lib")
+#endif
 
 #include "xenia/kernel/xam/ui/community_sessions_ui.h"
 #include "xenia/kernel/xam/ui/create_profile_ui.h"
@@ -242,12 +248,58 @@ X_RESULT xeXamDispatchHeadlessAsync(std::function<void()> run_callback) {
 }
 
 void MessageBoxDialog::OnDraw(ImGuiIO& io) {
+  // Poll XInput for controller state
+#if XE_PLATFORM_WIN32
+  for (DWORD i = 0; i < XUSER_MAX_COUNT; ++i) {
+    XINPUT_STATE state;
+    if (XInputGetState(i, &state) == ERROR_SUCCESS) {
+      const auto& pad = state.Gamepad;
+      
+      // Map buttons to ImGui - A=FaceUp for activation
+      io.AddKeyEvent(ImGuiKey_GamepadFaceUp, (pad.wButtons & XINPUT_GAMEPAD_A) != 0);
+      io.AddKeyEvent(ImGuiKey_GamepadFaceRight, (pad.wButtons & XINPUT_GAMEPAD_B) != 0);
+      io.AddKeyEvent(ImGuiKey_GamepadDpadLeft, (pad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT) != 0);
+      io.AddKeyEvent(ImGuiKey_GamepadDpadRight, (pad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) != 0);
+      io.AddKeyEvent(ImGuiKey_GamepadDpadUp, (pad.wButtons & XINPUT_GAMEPAD_DPAD_UP) != 0);
+      io.AddKeyEvent(ImGuiKey_GamepadDpadDown, (pad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN) != 0);
+      io.AddKeyEvent(ImGuiKey_GamepadBack, (pad.wButtons & XINPUT_GAMEPAD_BACK) != 0);
+      break;
+    }
+  }
+#endif
+
+  // Check if waiting to close
+  if (pending_close_) {
+    bool a_pressed = ImGui::IsKeyDown(ImGuiKey_GamepadFaceUp);
+    bool back_pressed = ImGui::IsKeyDown(ImGuiKey_GamepadBack);
+    if (!a_pressed && !back_pressed) {
+      pending_close_ = false;
+      Close();
+    }
+    return;
+  }
+
   bool first_draw = false;
   if (!has_opened_) {
     ImGui::OpenPopup(title_.c_str());
     has_opened_ = true;
     first_draw = true;
   }
+
+  // Enable gamepad navigation
+  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+  io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+  io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
+
+  // Handle Back button to close (select first/cancel button)
+  if (ImGui::IsKeyPressed(ImGuiKey_GamepadBack)) {
+    // Select first button (usually Cancel) or last button
+    chosen_button_ = 0;
+    ImGui::CloseCurrentPopup();
+    pending_close_ = true;
+    return;
+  }
+
   if (ImGui::BeginPopupModal(title_.c_str(), nullptr,
                              ImGuiWindowFlags_AlwaysAutoResize)) {
     if (description_.size()) {
@@ -260,7 +312,8 @@ void MessageBoxDialog::OnDraw(ImGuiIO& io) {
       if (ImGui::Button(buttons_[i].c_str())) {
         chosen_button_ = static_cast<uint32_t>(i);
         ImGui::CloseCurrentPopup();
-        Close();
+        // Don't close immediately - wait for A button release
+        pending_close_ = true;
       }
       ImGui::SameLine();
     }
@@ -309,24 +362,144 @@ void KeyboardInputDialog::OnDraw(ImGuiIO& io) {
       ImGui::CloseCurrentPopup();
       Close();
     }
-    if (ImGui::Button("OK")) {
+    
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    
+    // On-screen keyboard for controller support
+    DrawOnScreenKeyboard();
+    
+    ImGui::Spacing();
+    
+    if (ImGui::Button("OK") || ImGui::IsKeyPressed(ImGuiKey_GamepadStart)) {
       text_ = std::string(text_buffer_.data(), text_buffer_.size());
       cancelled_ = false;
       ImGui::CloseCurrentPopup();
       Close();
     }
     ImGui::SameLine();
-    if (ImGui::Button("Cancel")) {
+    if (ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight)) {
       text_ = "";
       cancelled_ = true;
       ImGui::CloseCurrentPopup();
       Close();
     }
+    
+    // Show controller hints
+    ImGui::Spacing();
+    ImGui::TextDisabled("Controller: A=Select Key  B=Cancel  X=Backspace  Y=Space  Start=OK");
+    
     ImGui::Spacing();
     ImGui::EndPopup();
   } else {
     Close();
   }
+}
+
+void KeyboardInputDialog::DrawOnScreenKeyboard() {
+  // Keyboard layouts
+  static const char* kLowerKeys[] = {
+    "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", nullptr,
+    "q", "w", "e", "r", "t", "y", "u", "i", "o", "p", nullptr,
+    "a", "s", "d", "f", "g", "h", "j", "k", "l", nullptr,
+    "z", "x", "c", "v", "b", "n", "m", nullptr,
+    nullptr
+  };
+  
+  static const char* kUpperKeys[] = {
+    "!", "@", "#", "$", "%", "^", "&", "*", "(", ")", nullptr,
+    "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P", nullptr,
+    "A", "S", "D", "F", "G", "H", "J", "K", "L", nullptr,
+    "Z", "X", "C", "V", "B", "N", "M", nullptr,
+    nullptr
+  };
+  
+  const char** keys = keyboard_shift_ ? kUpperKeys : kLowerKeys;
+  
+  const float key_size = 40.0f;
+  const float key_spacing = 4.0f;
+  
+  ImGui::BeginGroup();
+  
+  int row = 0;
+  int col = 0;
+  float row_offsets[] = {0.0f, 0.0f, key_size * 0.25f, key_size * 0.5f};
+  
+  // Indent for row offset
+  if (row < 4) {
+    ImGui::Indent(row_offsets[row]);
+  }
+  
+  for (int i = 0; keys[i] != nullptr || keys[i+1] != nullptr; ++i) {
+    if (keys[i] == nullptr) {
+      // New row
+      row++;
+      col = 0;
+      if (row < 4) {
+        ImGui::Unindent(row_offsets[row-1]);
+        ImGui::Indent(row_offsets[row]);
+      }
+      continue;
+    }
+    
+    if (col > 0) {
+      ImGui::SameLine(0, key_spacing);
+    }
+    
+    ImGui::PushID(i);
+    if (ImGui::Button(keys[i], ImVec2(key_size, key_size))) {
+      // Append character to buffer
+      size_t len = strlen(text_buffer_.data());
+      if (len < text_buffer_.size() - 1) {
+        text_buffer_[len] = keys[i][0];
+        text_buffer_[len + 1] = '\0';
+      }
+      // Auto-unshift after typing
+      if (keyboard_shift_ && !keyboard_caps_) {
+        keyboard_shift_ = false;
+      }
+    }
+    ImGui::PopID();
+    col++;
+  }
+  
+  // Unindent last row
+  if (row < 4) {
+    ImGui::Unindent(row_offsets[row]);
+  }
+  
+  // Bottom row with special keys
+  ImGui::Spacing();
+  
+  // Shift button
+  if (ImGui::Button(keyboard_shift_ ? "SHIFT*" : "Shift", ImVec2(key_size * 1.5f, key_size)) ||
+      ImGui::IsKeyPressed(ImGuiKey_GamepadR1)) {
+    keyboard_shift_ = !keyboard_shift_;
+  }
+  ImGui::SameLine(0, key_spacing);
+  
+  // Space bar
+  if (ImGui::Button("Space", ImVec2(key_size * 4.0f, key_size)) ||
+      ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp)) {  // Y button
+    size_t len = strlen(text_buffer_.data());
+    if (len < text_buffer_.size() - 1) {
+      text_buffer_[len] = ' ';
+      text_buffer_[len + 1] = '\0';
+    }
+  }
+  ImGui::SameLine(0, key_spacing);
+  
+  // Backspace
+  if (ImGui::Button("<-", ImVec2(key_size * 1.5f, key_size)) ||
+      ImGui::IsKeyPressed(ImGuiKey_GamepadFaceLeft)) {  // X button
+    size_t len = strlen(text_buffer_.data());
+    if (len > 0) {
+      text_buffer_[len - 1] = '\0';
+    }
+  }
+  
+  ImGui::EndGroup();
 }
 
 static dword_result_t XamShowMessageBoxUi(
@@ -479,33 +652,35 @@ dword_result_t XamShowKeyboardUI_entry(
     };
     result = xeXamDispatchHeadless(run, overlapped);
   } else {
-    auto close = [buffer, buffer_length](KeyboardInputDialog* dialog,
+    const Emulator* emulator = kernel_state()->emulator();
+    xe::ui::ImGuiDrawer* imgui_drawer = emulator->imgui_drawer();
+
+    std::string title_str = title ? xe::to_utf8(title.value()) : "Enter Text";
+    std::string def_text_str =
+        default_text ? xe::to_utf8(default_text.value()) : "";
+
+    // Use the new KeyboardDialog from keyboard_ui
+    auto close = [buffer, buffer_length](xe::ui::KeyboardDialog* dialog,
                                          uint32_t& extended_error,
                                          uint32_t& length) -> X_RESULT {
-      if (dialog->cancelled()) {
+      if (dialog->was_cancelled()) {
         extended_error = X_ERROR_CANCELLED;
         length = 0;
         return X_ERROR_SUCCESS;
       } else {
-        // Zero the output buffer.
-        auto text = xe::to_utf16(dialog->text());
+        auto text = xe::to_utf16(dialog->result_text());
         string_util::copy_and_swap_truncating(buffer, text, buffer_length);
         extended_error = X_ERROR_SUCCESS;
         length = 0;
         return X_ERROR_SUCCESS;
       }
     };
-    const Emulator* emulator = kernel_state()->emulator();
-    xe::ui::ImGuiDrawer* imgui_drawer = emulator->imgui_drawer();
 
-    std::string title_str = title ? xe::to_utf8(title.value()) : "";
-    std::string desc_str = description ? xe::to_utf8(description.value()) : "";
-    std::string def_text_str =
-        default_text ? xe::to_utf8(default_text.value()) : "";
-
-    result = xeXamDispatchDialogEx<KeyboardInputDialog>(
-        new KeyboardInputDialog(imgui_drawer, title_str, desc_str, def_text_str,
-                                buffer_length),
+    result = xeXamDispatchDialogEx<xe::ui::KeyboardDialog>(
+        xe::ui::KeyboardDialog::ShowKeyboard(
+            imgui_drawer, title_str, def_text_str,
+            xe::ui::KeyboardDialog::InputType::kText,
+            nullptr),  // Callback not used - we use close callback instead
         close, overlapped);
   }
   return result;
@@ -1812,11 +1987,13 @@ X_RESULT xeXamShowSigninUI(uint32_t user_index, uint32_t users_needed,
 
   auto close = [](ui::SigninUI* dialog) -> void {};
 
-  const Emulator* emulator = kernel_state()->emulator();
+  Emulator* emulator = kernel_state()->emulator();
   xe::ui::ImGuiDrawer* imgui_drawer = emulator->imgui_drawer();
+  xe::ui::Window* window = emulator->display_window();
   return xeXamDispatchDialogAsync<ui::SigninUI>(
       new ui::SigninUI(
-          imgui_drawer, kernel_state()->xam_state()->profile_manager(),
+          window, imgui_drawer, kernel_state(),
+          kernel_state()->xam_state()->profile_manager(),
           emulator->input_system()->GetLastUsedSlot(), users_needed, flags),
       close);
 }

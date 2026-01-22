@@ -8,16 +8,24 @@
  */
 
 #include "xenia/kernel/xam/ui/signin_ui.h"
+#include "xenia/kernel/xam/ui/gamercard_ui.h"
+
+#if XE_PLATFORM_WIN32
+#include <Xinput.h>
+#pragma comment(lib, "xinput.lib")
+#endif
 
 namespace xe {
 namespace kernel {
 namespace xam {
 namespace ui {
 
-SigninUI::SigninUI(xe::ui::ImGuiDrawer* imgui_drawer,
-                   ProfileManager* profile_manager, uint32_t last_used_slot,
-                   uint32_t users_needed, uint32_t flags)
+SigninUI::SigninUI(xe::ui::Window* window, xe::ui::ImGuiDrawer* imgui_drawer,
+                   KernelState* kernel_state, ProfileManager* profile_manager,
+                   uint32_t last_used_slot, uint32_t users_needed, uint32_t flags)
     : XamDialog(imgui_drawer),
+      window_(window),
+      kernel_state_(kernel_state),
       profile_manager_(profile_manager),
       last_user_(last_used_slot),
       users_needed_(users_needed),
@@ -29,6 +37,52 @@ SigninUI::SigninUI(xe::ui::ImGuiDrawer* imgui_drawer,
 }
 
 void SigninUI::OnDraw(ImGuiIO& io) {
+  // Poll XInput for controller state
+#if XE_PLATFORM_WIN32
+  for (DWORD i = 0; i < XUSER_MAX_COUNT; ++i) {
+    XINPUT_STATE state;
+    if (XInputGetState(i, &state) == ERROR_SUCCESS) {
+      const auto& pad = state.Gamepad;
+      
+      // Map buttons to ImGui
+      io.AddKeyEvent(ImGuiKey_GamepadFaceUp, (pad.wButtons & XINPUT_GAMEPAD_A) != 0);
+      io.AddKeyEvent(ImGuiKey_GamepadFaceRight, (pad.wButtons & XINPUT_GAMEPAD_B) != 0);
+      io.AddKeyEvent(ImGuiKey_GamepadDpadLeft, (pad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT) != 0);
+      io.AddKeyEvent(ImGuiKey_GamepadDpadRight, (pad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) != 0);
+      io.AddKeyEvent(ImGuiKey_GamepadDpadUp, (pad.wButtons & XINPUT_GAMEPAD_DPAD_UP) != 0);
+      io.AddKeyEvent(ImGuiKey_GamepadDpadDown, (pad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN) != 0);
+      io.AddKeyEvent(ImGuiKey_GamepadBack, (pad.wButtons & XINPUT_GAMEPAD_BACK) != 0);
+      io.AddKeyEvent(ImGuiKey_GamepadStart, (pad.wButtons & XINPUT_GAMEPAD_START) != 0);
+      
+      // Track A button for long press detection
+      bool a_currently_pressed = (pad.wButtons & XINPUT_GAMEPAD_A) != 0;
+      if (a_currently_pressed && !a_button_was_pressed_) {
+        a_button_press_time_ = GetTickCount64();
+        long_press_triggered_ = false;
+      }
+      a_button_was_pressed_ = a_currently_pressed;
+      
+      break;
+    }
+  }
+#endif
+
+  // Check if waiting to close (for button release)
+  if (pending_close_) {
+    bool a_pressed = ImGui::IsKeyDown(ImGuiKey_GamepadFaceUp);
+    bool back_pressed = ImGui::IsKeyDown(ImGuiKey_GamepadBack);
+    if (!a_pressed && !back_pressed) {
+      pending_close_ = false;
+      Close();
+    }
+    return;
+  }
+
+  // Enable gamepad navigation
+  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+  io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+  io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
+
   bool first_draw = false;
   if (!has_opened_) {
     ImGui::OpenPopup(title_.c_str());
@@ -36,8 +90,21 @@ void SigninUI::OnDraw(ImGuiIO& io) {
     first_draw = true;
     ReloadProfiles(true, flags_);
   }
+
+  // Handle Back button to close
+  if (ImGui::IsKeyPressed(ImGuiKey_GamepadBack)) {
+    ImGui::CloseCurrentPopup();
+    pending_close_ = true;
+    return;
+  }
+
   if (ImGui::BeginPopupModal(title_.c_str(), nullptr,
                              ImGuiWindowFlags_AlwaysAutoResize)) {
+    // Set focus to first item on open
+    if (first_draw) {
+      ImGui::SetKeyboardFocusHere();
+    }
+
     for (uint32_t i = 0; i < users_needed_; i++) {
       ImGui::BeginGroup();
 
@@ -129,6 +196,17 @@ void SigninUI::OnDraw(ImGuiIO& io) {
       } else {
         xeDrawProfileContent(imgui_drawer(), xuid, slot, account, nullptr, {},
                              {}, nullptr);
+        
+        // Check for long A press on profile to open modify dialog
+        if (ImGui::IsItemFocused() && a_button_was_pressed_) {
+          uint64_t press_duration = GetTickCount64() - a_button_press_time_;
+          if (press_duration >= kLongPressMs && !long_press_triggered_) {
+            long_press_triggered_ = true;
+            // Open GamercardUI for this profile
+            imgui_drawer()->AddDialog(
+                new GamercardUI(window_, imgui_drawer(), kernel_state_, xuid));
+          }
+        }
       }
 
       ImGui::EndGroup();
@@ -183,7 +261,7 @@ void SigninUI::OnDraw(ImGuiIO& io) {
         ImGui::EndDisabled();
         ImGui::SameLine();
 
-        if (ImGui::Button("Cancel")) {
+        if (ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_GamepadBack)) {
           std::fill(std::begin(gamertag_), std::end(gamertag_), '\0');
           ImGui::CloseCurrentPopup();
           creating_profile_ = false;
@@ -207,14 +285,18 @@ void SigninUI::OnDraw(ImGuiIO& io) {
       profile_manager_->LoginMultiple(profile_map);
 
       ImGui::CloseCurrentPopup();
-      Close();
+      pending_close_ = true;
     }
     ImGui::SameLine();
 
     if (ImGui::Button("Cancel")) {
       ImGui::CloseCurrentPopup();
-      Close();
+      pending_close_ = true;
     }
+
+    // Show controller hints
+    ImGui::Spacing();
+    ImGui::TextDisabled("A: Select | Hold A: Modify Profile | Back: Close");
 
     ImGui::Spacing();
     ImGui::Spacing();
@@ -225,7 +307,7 @@ void SigninUI::OnDraw(ImGuiIO& io) {
 }
 
 void SigninUI::ReloadProfiles(bool first_draw, uint32_t flags) {
-  auto profile_manager = kernel_state()->xam_state()->profile_manager();
+  auto profile_manager = kernel_state_->xam_state()->profile_manager();
   auto profiles = profile_manager->GetAccounts();
 
   profile_data_.clear();

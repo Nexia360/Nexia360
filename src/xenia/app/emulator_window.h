@@ -115,6 +115,8 @@ class EmulatorWindow {
     ToggleLogging,
     IncTitleSelect,
     DecTitleSelect,
+    ToggleProfileMenu,
+    ToggleFriendsManager,
     Unknown
   };
 
@@ -309,6 +311,11 @@ class EmulatorWindow {
   std::unique_ptr<UpdaterDialog> updater_dialog_;
 
   std::vector<RecentTitleEntry> recently_launched_titles_;
+  
+  // Guide button tracking for long press detection
+  bool guide_button_was_pressed_[XUserMaxUserCount] = {};
+  uint64_t guide_button_press_time_[XUserMaxUserCount] = {};
+  static constexpr uint64_t kGuideLongPressMs = 500;  // 500ms for long press
 };
 
 }  // namespace app

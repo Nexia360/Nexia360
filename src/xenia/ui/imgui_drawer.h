@@ -1,10 +1,10 @@
 /**
- ******************************************************************************
+ *******************************************************************************
  * Xenia : Xbox 360 Emulator Research Project                                 *
- ******************************************************************************
+ *******************************************************************************
  * Copyright 2022 Ben Vanik. All rights reserved.                             *
  * Released under the BSD license - see LICENSE in the root for more details. *
- ******************************************************************************
+ *******************************************************************************
  */
 
 #ifndef XENIA_UI_IMGUI_DRAWER_H_
@@ -12,6 +12,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -33,6 +34,7 @@ namespace ui {
 
 class ImGuiDialog;
 class ImGuiNotification;
+class KeyboardDialog;
 class Window;
 
 using IconsData = std::map<uint32_t, std::span<const uint8_t>>;
@@ -89,6 +91,13 @@ class ImGuiDrawer : public WindowInputListener, public UIDrawer {
     return GetIO().Fonts->Fonts[1];
   }
 
+  // Controller navigation support
+  bool IsControllerNavigationEnabled() const { return controller_navigation_enabled_; }
+  void SetControllerNavigationEnabled(bool enabled) { controller_navigation_enabled_ = enabled; }
+  
+  // Show on-screen keyboard for text input fields when using controller
+  void CheckAndShowKeyboardForTextInput();
+
  protected:
   void OnKeyDown(KeyEvent& e) override;
   void OnKeyUp(KeyEvent& e) override;
@@ -121,6 +130,10 @@ class ImGuiDrawer : public WindowInputListener, public UIDrawer {
   void DetachIfLastWindowRemoved();
 
   std::optional<ImGuiKey> VirtualKeyToImGuiKey(VirtualKey vkey);
+
+  // Controller support
+  bool IsControllerKey(VirtualKey vkey) const;
+  void PollXInput();
 
   Window* window_;
   size_t z_order_;
@@ -163,6 +176,29 @@ class ImGuiDrawer : public WindowInputListener, public UIDrawer {
   uint64_t last_frame_time_ticks_;
 
   bool are_notifications_enabled_ = true;
+  
+  // Controller navigation state
+  bool controller_navigation_enabled_ = false;
+  
+  // Active on-screen keyboard dialog (if any)
+  KeyboardDialog* active_keyboard_dialog_ = nullptr;
+  
+  // Guide button handling
+  bool guide_button_pressed_ = false;
+  uint64_t guide_button_press_time_ = 0;
+  static constexpr uint64_t kGuideLongPressMs = 500;  // 500ms for long press
+  
+  // Callbacks for guide button
+  std::function<void(uint32_t)> on_guide_short_press_;  // user_index
+  std::function<void(uint32_t)> on_guide_long_press_;   // user_index
+  
+ public:
+  void SetGuideButtonCallbacks(
+      std::function<void(uint32_t)> short_press,
+      std::function<void(uint32_t)> long_press) {
+    on_guide_short_press_ = short_press;
+    on_guide_long_press_ = long_press;
+  }
 };
 
 }  // namespace ui

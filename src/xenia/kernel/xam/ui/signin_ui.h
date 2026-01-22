@@ -19,7 +19,8 @@ namespace ui {
 
 class SigninUI final : public XamDialog {
  public:
-  SigninUI(xe::ui::ImGuiDrawer* imgui_drawer, ProfileManager* profile_manager,
+  SigninUI(xe::ui::Window* window, xe::ui::ImGuiDrawer* imgui_drawer,
+           KernelState* kernel_state, ProfileManager* profile_manager,
            uint32_t last_used_slot, uint32_t users_needed, uint32_t flags);
 
   ~SigninUI() = default;
@@ -32,9 +33,12 @@ class SigninUI final : public XamDialog {
   const std::map<uint8_t, std::string> slot_data_ = {
       {0, "Slot 0"}, {1, "Slot 1"}, {2, "Slot 2"}, {3, "Slot 3"}};
 
+  xe::ui::Window* window_ = nullptr;
+  KernelState* kernel_state_ = nullptr;
   ProfileManager* profile_manager_ = nullptr;
 
   bool has_opened_ = false;
+  bool pending_close_ = false;  // Wait for button release before closing
   std::string title_;
   uint32_t users_needed_ = 1;
   uint32_t flags_ = 0;
@@ -47,6 +51,12 @@ class SigninUI final : public XamDialog {
   bool creating_profile_ = false;
   bool live_enabled_profile_ = true;
   char gamertag_[16] = "";
+  
+  // Controller support for long press detection
+  bool a_button_was_pressed_ = false;
+  uint64_t a_button_press_time_ = 0;
+  bool long_press_triggered_ = false;
+  static constexpr uint64_t kLongPressMs = 500;  // 500ms for long press
 };
 
 }  // namespace ui

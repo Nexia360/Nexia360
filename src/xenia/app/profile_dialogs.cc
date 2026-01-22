@@ -84,6 +84,12 @@ void NoProfileDialog::OnDraw(ImGuiIO& io) {
     emulator_window_->ToggleProfilesConfigDialog();
   }
 
+  // Back or B button closes dialog (has close button)
+  if (ImGui::IsKeyPressed(ImGuiKey_GamepadBack) ||
+      ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight)) {
+    dialog_open = false;
+  }
+
   ImGui::SameLine();
   if (ImGui::Button("Close") || !dialog_open) {
     emulator_window_->SetHotkeysState(true);
@@ -358,6 +364,12 @@ void ProfileConfigDialog::OnDraw(ImGuiIO& io) {
                                          emulator_window_->emulator());
   }
 
+  // Back or B button closes dialog (has close button)
+  if (ImGui::IsKeyPressed(ImGuiKey_GamepadBack) ||
+      ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight)) {
+    dialog_open = false;
+  }
+
   ImGui::End();
 
   if (!dialog_open) {
@@ -548,6 +560,12 @@ void ManagerDialog::OnDraw(ImGuiIO& io) {
 
     xe::kernel::xam::xeDrawMyDeletedProfiles(imgui_drawer(), deletion_args,
                                              &deleted_profiles);
+
+    // Back or B button closes dialog (has close button)
+    if (ImGui::IsKeyPressed(ImGuiKey_GamepadBack) ||
+        ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight)) {
+      manager_opened_ = false;
+    }
 
     ImGui::EndPopup();
   }

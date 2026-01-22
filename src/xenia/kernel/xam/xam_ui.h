@@ -65,6 +65,7 @@ class MessageBoxDialog : public XamDialog {
 
  private:
   bool has_opened_ = false;
+  bool pending_close_ = false;  // Wait for A button release before closing
   std::string title_;
   std::string description_;
   std::vector<std::string> buttons_;
@@ -104,6 +105,8 @@ class KeyboardInputDialog : public XamDialog {
   void OnDraw(ImGuiIO& io) override;
 
  private:
+  void DrawOnScreenKeyboard();
+  
   bool has_opened_ = false;
   std::string title_;
   std::string description_;
@@ -112,6 +115,10 @@ class KeyboardInputDialog : public XamDialog {
   std::vector<char> text_buffer_;
   std::string text_ = "";
   bool cancelled_ = true;
+  
+  // On-screen keyboard state
+  bool keyboard_shift_ = false;
+  bool keyboard_caps_ = false;
 };
 
 bool xeDrawProfileContent(xe::ui::ImGuiDrawer* imgui_drawer,

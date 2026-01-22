@@ -19,6 +19,7 @@
 #include "xenia/base/math.h"
 #include "xenia/ui/imgui_dialog.h"
 #include "xenia/ui/imgui_notification.h"
+#include "xenia/ui/keyboard_ui.h"
 #include "xenia/ui/resources.h"
 #include "xenia/ui/ui_event.h"
 #include "xenia/ui/window.h"
@@ -28,6 +29,8 @@
 
 #if XE_PLATFORM_WIN32
 #include <ShlObj_core.h>
+#include <Xinput.h>
+#pragma comment(lib, "xinput.lib")
 #endif
 
 DEFINE_path(
@@ -139,6 +142,10 @@ void ImGuiDrawer::Initialize() {
   internal_state_ = ImGui::CreateContext();
   ImGui::SetCurrentContext(internal_state_);
 
+  auto& io = ImGui::GetIO();
+  // Enable keyboard navigation - this allows Tab/Enter/Escape to work
+  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+
   const float font_size = std::max((float)cvars::font_size, 8.f);
   const float title_font_size = font_size + 6.f;
 
@@ -226,6 +233,62 @@ std::optional<ImGuiKey> ImGuiDrawer::VirtualKeyToImGuiKey(VirtualKey vkey) {
       {ui::VirtualKey::kX, ImGuiKey_X},
       {ui::VirtualKey::kY, ImGuiKey_Y},
       {ui::VirtualKey::kZ, ImGuiKey_Z},
+
+      // XInput controller mappings
+      {ui::VirtualKey::kXInputPadDpadUp, ImGuiKey_GamepadDpadUp},
+      {ui::VirtualKey::kXInputPadDpadDown, ImGuiKey_GamepadDpadDown},
+      {ui::VirtualKey::kXInputPadDpadLeft, ImGuiKey_GamepadDpadLeft},
+      {ui::VirtualKey::kXInputPadDpadRight, ImGuiKey_GamepadDpadRight},
+      {ui::VirtualKey::kXInputPadA, ImGuiKey_GamepadFaceDown},
+      {ui::VirtualKey::kXInputPadB, ImGuiKey_GamepadFaceRight},
+      {ui::VirtualKey::kXInputPadX, ImGuiKey_GamepadFaceLeft},
+      {ui::VirtualKey::kXInputPadY, ImGuiKey_GamepadFaceUp},
+      {ui::VirtualKey::kXInputPadLShoulder, ImGuiKey_GamepadL1},
+      {ui::VirtualKey::kXInputPadRShoulder, ImGuiKey_GamepadR1},
+      {ui::VirtualKey::kXInputPadLTrigger, ImGuiKey_GamepadL2},
+      {ui::VirtualKey::kXInputPadRTrigger, ImGuiKey_GamepadR2},
+      {ui::VirtualKey::kXInputPadLThumbPress, ImGuiKey_GamepadL3},
+      {ui::VirtualKey::kXInputPadRThumbPress, ImGuiKey_GamepadR3},
+      {ui::VirtualKey::kXInputPadStart, ImGuiKey_GamepadStart},
+      {ui::VirtualKey::kXInputPadBack, ImGuiKey_GamepadBack},
+      // Left stick
+      {ui::VirtualKey::kXInputPadLThumbUp, ImGuiKey_GamepadLStickUp},
+      {ui::VirtualKey::kXInputPadLThumbDown, ImGuiKey_GamepadLStickDown},
+      {ui::VirtualKey::kXInputPadLThumbLeft, ImGuiKey_GamepadLStickLeft},
+      {ui::VirtualKey::kXInputPadLThumbRight, ImGuiKey_GamepadLStickRight},
+      // Right stick
+      {ui::VirtualKey::kXInputPadRThumbUp, ImGuiKey_GamepadRStickUp},
+      {ui::VirtualKey::kXInputPadRThumbDown, ImGuiKey_GamepadRStickDown},
+      {ui::VirtualKey::kXInputPadRThumbLeft, ImGuiKey_GamepadRStickLeft},
+      {ui::VirtualKey::kXInputPadRThumbRight, ImGuiKey_GamepadRStickRight},
+
+      // Xbox One controller mappings (Windows 10+)
+      {ui::VirtualKey::kXboxOneGamepadDpadUp, ImGuiKey_GamepadDpadUp},
+      {ui::VirtualKey::kXboxOneGamepadDpadDown, ImGuiKey_GamepadDpadDown},
+      {ui::VirtualKey::kXboxOneGamepadDpadLeft, ImGuiKey_GamepadDpadLeft},
+      {ui::VirtualKey::kXboxOneGamepadDpadRight, ImGuiKey_GamepadDpadRight},
+      {ui::VirtualKey::kXboxOneGamepadA, ImGuiKey_GamepadFaceDown},
+      {ui::VirtualKey::kXboxOneGamepadB, ImGuiKey_GamepadFaceRight},
+      {ui::VirtualKey::kXboxOneGamepadX, ImGuiKey_GamepadFaceLeft},
+      {ui::VirtualKey::kXboxOneGamepadY, ImGuiKey_GamepadFaceUp},
+      {ui::VirtualKey::kXboxOneGamepadLeftShoulder, ImGuiKey_GamepadL1},
+      {ui::VirtualKey::kXboxOneGamepadRightShoulder, ImGuiKey_GamepadR1},
+      {ui::VirtualKey::kXboxOneGamepadLeftTrigger, ImGuiKey_GamepadL2},
+      {ui::VirtualKey::kXboxOneGamepadRightTrigger, ImGuiKey_GamepadR2},
+      {ui::VirtualKey::kXboxOneGamepadLeftThumbstickButton, ImGuiKey_GamepadL3},
+      {ui::VirtualKey::kXboxOneGamepadRightThumbstickButton, ImGuiKey_GamepadR3},
+      {ui::VirtualKey::kXboxOneGamepadMenu, ImGuiKey_GamepadStart},
+      {ui::VirtualKey::kXboxOneGamepadView, ImGuiKey_GamepadBack},
+      // Xbox One left stick
+      {ui::VirtualKey::kXboxOneGamepadLeftThumbstickUp, ImGuiKey_GamepadLStickUp},
+      {ui::VirtualKey::kXboxOneGamepadLeftThumbstickDown, ImGuiKey_GamepadLStickDown},
+      {ui::VirtualKey::kXboxOneGamepadLeftThumbstickLeft, ImGuiKey_GamepadLStickLeft},
+      {ui::VirtualKey::kXboxOneGamepadLeftThumbstickRight, ImGuiKey_GamepadLStickRight},
+      // Xbox One right stick
+      {ui::VirtualKey::kXboxOneGamepadRightThumbstickUp, ImGuiKey_GamepadRStickUp},
+      {ui::VirtualKey::kXboxOneGamepadRightThumbstickDown, ImGuiKey_GamepadRStickDown},
+      {ui::VirtualKey::kXboxOneGamepadRightThumbstickLeft, ImGuiKey_GamepadRStickLeft},
+      {ui::VirtualKey::kXboxOneGamepadRightThumbstickRight, ImGuiKey_GamepadRStickRight},
   };
   if (auto search = map.find(vkey); search != map.end()) {
     return search->second;
@@ -470,6 +533,170 @@ void ImGuiDrawer::SetImmediateDrawer(ImmediateDrawer* new_immediate_drawer) {
   }
 }
 
+void ImGuiDrawer::PollXInput() {
+#if XE_PLATFORM_WIN32
+  auto& io = GetIO();
+  
+  // Get XInputGetStateEx for guide button support (ordinal 100)
+  // Must explicitly load the DLL since it may not be loaded yet
+  static HMODULE xinput_module = nullptr;
+  static auto XInputGetStateEx = (DWORD(WINAPI*)(DWORD, XINPUT_STATE*))nullptr;
+  static bool init_attempted = false;
+  
+  if (!init_attempted) {
+    init_attempted = true;
+    // Try to load xinput DLL explicitly
+    xinput_module = LoadLibraryA("xinput1_4.dll");
+    if (!xinput_module) {
+      xinput_module = LoadLibraryA("xinput1_3.dll");
+    }
+    if (!xinput_module) {
+      xinput_module = LoadLibraryA("xinput9_1_0.dll");
+    }
+    if (xinput_module) {
+      // Get the hidden XInputGetStateEx function (ordinal 100)
+      XInputGetStateEx = (DWORD(WINAPI*)(DWORD, XINPUT_STATE*))
+          GetProcAddress(xinput_module, (LPCSTR)100);
+    }
+  }
+  
+  // Poll all 4 controllers, use first one that's connected
+  bool found_controller = false;
+  for (DWORD i = 0; i < XUSER_MAX_COUNT; i++) {
+    XINPUT_STATE state;
+    ZeroMemory(&state, sizeof(XINPUT_STATE));
+    
+    // Use XInputGetStateEx if available (for guide button), otherwise fall back
+    DWORD result;
+    if (XInputGetStateEx) {
+      result = XInputGetStateEx(i, &state);
+    } else {
+      result = XInputGetState(i, &state);
+    }
+    
+    if (result != ERROR_SUCCESS) {
+      continue;
+    }
+    
+    found_controller = true;
+    
+    // Found a connected controller - enable gamepad navigation
+    if (!controller_navigation_enabled_) {
+      controller_navigation_enabled_ = true;
+      io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+      io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
+    }
+    
+    const XINPUT_GAMEPAD& pad = state.Gamepad;
+    
+    // Guide button handling (0x0400) - only works with XInputGetStateEx
+    if (XInputGetStateEx) {
+      const WORD XINPUT_GAMEPAD_GUIDE = 0x0400;
+      bool guide_currently_pressed = (pad.wButtons & XINPUT_GAMEPAD_GUIDE) != 0;
+      
+      if (guide_currently_pressed && !guide_button_pressed_) {
+        // Guide button just pressed - record time
+        guide_button_pressed_ = true;
+        guide_button_press_time_ = GetTickCount64();
+      } else if (!guide_currently_pressed && guide_button_pressed_) {
+        // Guide button just released - check duration
+        uint64_t press_duration = GetTickCount64() - guide_button_press_time_;
+        guide_button_pressed_ = false;
+        
+        if (press_duration >= kGuideLongPressMs) {
+          // Long press - open netplay manager
+          if (on_guide_long_press_) {
+            on_guide_long_press_(i);
+          }
+        } else {
+          // Short press - open profile menu
+          if (on_guide_short_press_) {
+            on_guide_short_press_(i);
+          }
+        }
+      }
+    }
+    
+    // Helper macro to map XInput button to ImGui key
+    #define MAP_BUTTON(XINPUT_BUTTON, IMGUI_KEY) \
+      io.AddKeyEvent(IMGUI_KEY, (pad.wButtons & XINPUT_BUTTON) != 0)
+    
+    // Digital buttons - Note: ImGui uses South/East convention where
+    // FaceDown = South = Activate. But some versions expect different mapping.
+    // Xbox: A=South, B=East, X=West, Y=North
+    MAP_BUTTON(XINPUT_GAMEPAD_START, ImGuiKey_GamepadStart);
+    MAP_BUTTON(XINPUT_GAMEPAD_BACK, ImGuiKey_GamepadBack);
+    MAP_BUTTON(XINPUT_GAMEPAD_A, ImGuiKey_GamepadFaceUp);        // A = Activate (ImGui expects FaceUp)
+    MAP_BUTTON(XINPUT_GAMEPAD_B, ImGuiKey_GamepadFaceRight);     // B = Cancel
+    MAP_BUTTON(XINPUT_GAMEPAD_X, ImGuiKey_GamepadFaceLeft);      // X
+    MAP_BUTTON(XINPUT_GAMEPAD_Y, ImGuiKey_GamepadFaceDown);      // Y
+    MAP_BUTTON(XINPUT_GAMEPAD_DPAD_LEFT, ImGuiKey_GamepadDpadLeft);
+    MAP_BUTTON(XINPUT_GAMEPAD_DPAD_RIGHT, ImGuiKey_GamepadDpadRight);
+    MAP_BUTTON(XINPUT_GAMEPAD_DPAD_UP, ImGuiKey_GamepadDpadUp);
+    MAP_BUTTON(XINPUT_GAMEPAD_DPAD_DOWN, ImGuiKey_GamepadDpadDown);
+    MAP_BUTTON(XINPUT_GAMEPAD_LEFT_SHOULDER, ImGuiKey_GamepadL1);
+    MAP_BUTTON(XINPUT_GAMEPAD_RIGHT_SHOULDER, ImGuiKey_GamepadR1);
+    MAP_BUTTON(XINPUT_GAMEPAD_LEFT_THUMB, ImGuiKey_GamepadL3);
+    MAP_BUTTON(XINPUT_GAMEPAD_RIGHT_THUMB, ImGuiKey_GamepadR3);
+    
+    #undef MAP_BUTTON
+    
+    // Triggers (analog, but treat as digital for navigation)
+    const BYTE trigger_threshold = 30;  // ~12% threshold
+    io.AddKeyEvent(ImGuiKey_GamepadL2, pad.bLeftTrigger > trigger_threshold);
+    io.AddKeyEvent(ImGuiKey_GamepadR2, pad.bRightTrigger > trigger_threshold);
+    
+    // Left stick (with deadzone)
+    const SHORT STICK_DEADZONE = 7849;  // ~24% as per XInput recommendations
+    
+    float lx = 0.0f, ly = 0.0f;
+    if (pad.sThumbLX < -STICK_DEADZONE) {
+      lx = (float)(pad.sThumbLX + STICK_DEADZONE) / (32768.0f - STICK_DEADZONE);
+    } else if (pad.sThumbLX > STICK_DEADZONE) {
+      lx = (float)(pad.sThumbLX - STICK_DEADZONE) / (32767.0f - STICK_DEADZONE);
+    }
+    if (pad.sThumbLY < -STICK_DEADZONE) {
+      ly = (float)(pad.sThumbLY + STICK_DEADZONE) / (32768.0f - STICK_DEADZONE);
+    } else if (pad.sThumbLY > STICK_DEADZONE) {
+      ly = (float)(pad.sThumbLY - STICK_DEADZONE) / (32767.0f - STICK_DEADZONE);
+    }
+    
+    // Provide analog values for navigation
+    io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickLeft, lx < 0.0f, lx < 0.0f ? -lx : 0.0f);
+    io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickRight, lx > 0.0f, lx > 0.0f ? lx : 0.0f);
+    io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickUp, ly > 0.0f, ly > 0.0f ? ly : 0.0f);
+    io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickDown, ly < 0.0f, ly < 0.0f ? -ly : 0.0f);
+    
+    // Only use first connected controller
+    break;
+  }
+  
+  // If no controller found, clear gamepad state
+  if (!found_controller && controller_navigation_enabled_) {
+    io.AddKeyEvent(ImGuiKey_GamepadStart, false);
+    io.AddKeyEvent(ImGuiKey_GamepadBack, false);
+    io.AddKeyEvent(ImGuiKey_GamepadFaceLeft, false);
+    io.AddKeyEvent(ImGuiKey_GamepadFaceRight, false);
+    io.AddKeyEvent(ImGuiKey_GamepadFaceUp, false);
+    io.AddKeyEvent(ImGuiKey_GamepadFaceDown, false);
+    io.AddKeyEvent(ImGuiKey_GamepadDpadLeft, false);
+    io.AddKeyEvent(ImGuiKey_GamepadDpadRight, false);
+    io.AddKeyEvent(ImGuiKey_GamepadDpadUp, false);
+    io.AddKeyEvent(ImGuiKey_GamepadDpadDown, false);
+    io.AddKeyEvent(ImGuiKey_GamepadL1, false);
+    io.AddKeyEvent(ImGuiKey_GamepadR1, false);
+    io.AddKeyEvent(ImGuiKey_GamepadL2, false);
+    io.AddKeyEvent(ImGuiKey_GamepadR2, false);
+    io.AddKeyEvent(ImGuiKey_GamepadL3, false);
+    io.AddKeyEvent(ImGuiKey_GamepadR3, false);
+    io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickLeft, false, 0.0f);
+    io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickRight, false, 0.0f);
+    io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickUp, false, 0.0f);
+    io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickDown, false, 0.0f);
+  }
+#endif
+}
+
 void ImGuiDrawer::Draw(UIDrawContext& ui_draw_context) {
   // Drawing of anything is initiated by the presenter.
   assert_not_null(presenter_);
@@ -486,6 +713,9 @@ void ImGuiDrawer::Draw(UIDrawContext& ui_draw_context) {
   ImGui::SetCurrentContext(internal_state_);
 
   ImGuiIO& io = ImGui::GetIO();
+
+  // Poll gamepad input directly
+  PollXInput();
 
   uint64_t current_frame_time_ticks = Clock::QueryHostTickCount();
   io.DeltaTime =
@@ -747,6 +977,16 @@ void ImGuiDrawer::ClearInput() {
 void ImGuiDrawer::OnKey(KeyEvent& e, bool is_down) {
   auto& io = GetIO();
   const VirtualKey virtual_key = e.virtual_key();
+  
+  // Check if this is a controller key and enable navigation if so
+  if (IsControllerKey(virtual_key)) {
+    if (!controller_navigation_enabled_) {
+      SetControllerNavigationEnabled(true);
+      // Enable ImGui's built-in gamepad navigation
+      io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+    }
+  }
+  
   if (auto imGuiKey = VirtualKeyToImGuiKey(virtual_key); imGuiKey) {
     io.AddKeyEvent(*imGuiKey, is_down);
   }
@@ -776,6 +1016,18 @@ void ImGuiDrawer::UpdateMousePosition(float x, float y) {
   io.MousePos.x = x * physical_to_logical;
   io.MousePos.y = y * physical_to_logical;
 }
+bool ImGuiDrawer::IsControllerKey(VirtualKey vkey) const {
+  // Check for XInput keys (0x5800+)
+  uint16_t key_value = static_cast<uint16_t>(vkey);
+  if (key_value >= 0x5800 && key_value <= 0x5840) {
+    return true;
+  }
+  // Check for Xbox One gamepad keys (0xC3-0xDA)
+  if (key_value >= 0xC3 && key_value <= 0xDA) {
+    return true;
+  }
+  return false;
+}
 
 void ImGuiDrawer::SwitchToPhysicalMouseAndUpdateMousePosition(
     const MouseEvent& e) {
@@ -790,6 +1042,41 @@ void ImGuiDrawer::SwitchToPhysicalMouseAndUpdateMousePosition(
   }
   reset_mouse_position_after_next_frame_ = false;
   UpdateMousePosition(float(e.x()), float(e.y()));
+}
+
+void ImGuiDrawer::CheckAndShowKeyboardForTextInput() {
+  // Only show keyboard when using controller navigation
+  if (!controller_navigation_enabled_) {
+    return;
+  }
+  
+  // Check if an InputText widget is active and A button was just pressed
+  auto& io = GetIO();
+  
+  // If there's already an active keyboard dialog, don't show another
+  if (active_keyboard_dialog_ != nullptr) {
+    return;
+  }
+  
+  // Check if user pressed A and ImGui wants text input (meaning a text field is active)
+  if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown) && io.WantTextInput) {
+    // Get current text from the active input (if available)
+    // Note: ImGui doesn't expose this directly, so we start with empty
+    std::string initial_text;
+    
+    // Show the on-screen keyboard
+    active_keyboard_dialog_ = KeyboardDialog::ShowKeyboard(
+        this, "Enter Text", initial_text,
+        KeyboardDialog::InputType::kText,
+        [this](const std::string& result) {
+          // When keyboard closes, inject the text as input characters
+          auto& keyboard_io = GetIO();
+          for (char c : result) {
+            keyboard_io.AddInputCharacter(static_cast<unsigned int>(c));
+          }
+          active_keyboard_dialog_ = nullptr;
+        });
+  }
 }
 
 void ImGuiDrawer::DetachIfLastWindowRemoved() {
