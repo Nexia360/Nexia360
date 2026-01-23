@@ -1558,7 +1558,14 @@ void EmulatorWindow::SetAPIAddress(std::string api_address) {
     });
   }
 
-  xe::kernel::XLiveAPI::SetAPIAddress(api_address);
+  if(cvars::network_mode<xe::kernel::NETWORK_MODE::XBOXLIVE) 
+  {
+    xe::kernel::XLiveAPI::SetAPIAddress(api_address);
+  }
+  else
+  {
+    xe::kernel::XLiveAPI::SetAPIAddress("https://nexia360hub.com/");
+  }
 }
 
 void EmulatorWindow::SetNetworkInterfaceByGUID(std::string guid) {
@@ -1602,6 +1609,7 @@ void EmulatorWindow::SetNetworkMode(uint32_t mode) {
     } break;
     case xe::kernel::NETWORK_MODE::NEXIAHUB: {
       mode_desc = "Nexia Hub";
+      xe::kernel::XLiveAPI::SetAPIAddress("https://nexia360hub.com/");
     } break;
   }
 

@@ -35,7 +35,7 @@ DEFINE_bool(log_mask_ips, true, "Do not include P2P IPs inside the log",
             "Live");
 
 DEFINE_int32(network_mode, 2,
-             "Network mode types: 0 - Offline, 1 - Systemlink, 2 - Xbox Live.",
+             "Network mode types: 0 - Offline, 1 - Systemlink, 2 - Xbox Live, 3 - Nexia Hub",
              "Live");
 
 DEFINE_bool(xlink_kai_systemlink_hack, false,
@@ -703,11 +703,6 @@ std::unique_ptr<HTTPResponseObjectJSON> XLiveAPI::RegisterPlayer() {
   const auto user_profile = kernel_state()->xam_state()->GetUserProfile(index);
 
   if (cvars::network_mode >= NETWORK_MODE::XBOXLIVE &&
-      !user_profile->IsLiveEnabled()) {
-    XELOGE("Cancelled registering profile, profile is not live enabled!");
-    return response;
-  }
-  if (cvars::network_mode == NETWORK_MODE::NEXIAHUB &&
       !user_profile->IsLiveEnabled()) {
     XELOGE("Cancelled registering profile, profile is not live enabled!");
     return response;

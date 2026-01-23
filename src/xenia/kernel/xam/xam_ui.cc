@@ -308,14 +308,28 @@ void MessageBoxDialog::OnDraw(ImGuiIO& io) {
     if (first_draw) {
       ImGui::SetKeyboardFocusHere();
     }
+    
+    // For single button dialogs, A press anywhere activates the button
+    bool a_pressed = ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp);
+    
     for (size_t i = 0; i < buttons_.size(); ++i) {
-      if (ImGui::Button(buttons_[i].c_str())) {
+      bool clicked = ImGui::Button(buttons_[i].c_str());
+      bool is_focused = ImGui::IsItemFocused();
+      
+      // A button activates: single button dialog OR focused button
+      if (a_pressed && (buttons_.size() == 1 || is_focused)) {
+        clicked = true;
+      }
+      
+      if (clicked) {
         chosen_button_ = static_cast<uint32_t>(i);
         ImGui::CloseCurrentPopup();
         // Don't close immediately - wait for A button release
         pending_close_ = true;
       }
-      ImGui::SameLine();
+      if (i < buttons_.size() - 1) {
+        ImGui::SameLine();
+      }
     }
     ImGui::Spacing();
     ImGui::Spacing();
