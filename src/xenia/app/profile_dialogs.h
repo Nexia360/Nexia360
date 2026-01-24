@@ -32,6 +32,7 @@ class NoProfileDialog final : public ui::ImGuiDialog {
  protected:
   void OnDraw(ImGuiIO& io) override;
 
+  bool pending_close_ = false;
   EmulatorWindow* emulator_window_;
 };
 
@@ -53,6 +54,7 @@ class ProfileConfigDialog final : public ui::ImGuiDialog {
   std::map<uint64_t, std::unique_ptr<ui::ImmediateTexture>> profile_icon_;
 
   uint64_t selected_xuid_ = 0;
+  bool pending_close_ = false;
   EmulatorWindow* emulator_window_;
 };
 
@@ -66,6 +68,7 @@ class ManagerDialog final : public ui::ImGuiDialog {
 
  private:
   bool manager_opened_ = false;
+  bool pending_close_ = false;
   uint64_t selected_xuid_ = 0;
   uint64_t removed_xuid_ = 0;
   xe::kernel::xam::ui::FriendsContentArgs friends_args = {};

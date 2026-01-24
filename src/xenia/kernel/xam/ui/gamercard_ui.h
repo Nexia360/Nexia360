@@ -76,6 +76,7 @@ class GamercardUI final : public XamDialog {
   const bool is_valid_gamertag_ = true;
 
   bool has_opened_ = false;
+  bool pending_close_ = false;  // Wait for button release before closing
   KernelState* kernel_state_;
   xe::ui::Window* window_;
 

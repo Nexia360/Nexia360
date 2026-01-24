@@ -11,6 +11,7 @@
 #define XENIA_KERNEL_XAM_UI_CREATE_PROFILE_UI_H_
 
 #include "xenia/kernel/xam/xam_ui.h"
+#include "xenia/ui/keyboard_ui.h"
 
 namespace xe {
 namespace kernel {
@@ -37,6 +38,13 @@ class CreateProfileUI final : public XamDialog {
   char gamertag_[16] = "";
   bool live_enabled = true;
   Emulator* emulator_;
+  
+  // Close pending flag
+  bool pending_close_ = false;
+  
+  // Keyboard focus state - don't render while keyboard has focus
+  bool keyboard_has_focus_ = false;
+  xe::ui::KeyboardDialog* keyboard_dialog_ = nullptr;
 };
 
 }  // namespace ui

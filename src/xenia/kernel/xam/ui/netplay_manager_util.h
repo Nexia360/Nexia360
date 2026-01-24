@@ -29,6 +29,7 @@ struct AddFriendArgs {
 struct FriendsContentArgs {
   bool first_draw;
   bool friends_open;
+  bool pending_close;
   bool filter_joinable;
   bool filter_title;
   bool filter_offline;
@@ -41,6 +42,7 @@ struct FriendsContentArgs {
 struct SessionsContentArgs {
   bool first_draw;
   bool sessions_open;
+  bool pending_close;
   bool filter_own;
   bool refresh_sessions;
   bool refresh_sessions_sync;
@@ -49,6 +51,7 @@ struct SessionsContentArgs {
 struct MyDeletedProfilesArgs {
   bool first_draw;
   bool deleted_profiles_open;
+  bool pending_close;
 };
 
 }  // namespace ui

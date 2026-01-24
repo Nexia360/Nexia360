@@ -59,19 +59,26 @@ class MessageBoxDialog final : public ImGuiDialog {
         body_(std::move(body)) {}
 
   void OnDraw(ImGuiIO& io) override {
+    auto* drawer = imgui_drawer();
+    
+    // Enable gamepad navigation
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+    io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
+    
     if (!has_opened_) {
       ImGui::OpenPopup(title_.c_str());
       has_opened_ = true;
     }
     
-    // Wait for button release before closing
-    if (pending_close_) {
-      if (!ImGui::IsKeyDown(ImGuiKey_GamepadFaceUp) &&
-          !ImGui::IsKeyDown(ImGuiKey_GamepadBack) &&
-          !ImGui::IsKeyDown(ImGuiKey_GamepadFaceRight)) {
-        pending_close_ = false;
-        Close();
-      }
+    // Check if should close (buttons released after close request)
+    if (drawer->ShouldCloseFromGamepad()) {
+      Close();
+      return;
+    }
+    
+    // If close pending, skip drawing
+    if (drawer->IsGamepadClosePending()) {
       return;
     }
     
@@ -83,32 +90,33 @@ class MessageBoxDialog final : public ImGuiDialog {
           "##body", text, body_.size() + 1, ImVec2(600, 0),
           ImGuiInputTextFlags_AutoSelectAll | ImGuiInputTextFlags_ReadOnly);
       
-      // Handle OK button - can be activated by clicking, Enter, or gamepad A
-      if (ImGui::Button("OK") || 
-          ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp) ||
-          ImGui::IsKeyPressed(ImGuiKey_Enter)) {
-        ImGui::CloseCurrentPopup();
-        pending_close_ = true;
+      // Handle OK button - can be activated by clicking or Enter
+      // A button is handled via imgui_drawer
+      if (ImGui::Button("OK") || ImGui::IsKeyPressed(ImGuiKey_Enter)) {
+        drawer->RequestGamepadClose();
       }
       
-      // Back or B button closes dialog (has close button so this is safe)
-      if (ImGui::IsKeyPressed(ImGuiKey_GamepadBack) ||
-          ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight)) {
-        popup_open = false;
-        pending_close_ = true;
+      // A button activates OK (drawer handles on release)
+      if (drawer->IsGamepadAPressed()) {
+        // Will close on release
+      }
+      
+      // Back or B button closes dialog
+      if (drawer->IsGamepadBackPressed() || drawer->IsGamepadBPressed()) {
+        drawer->RequestGamepadClose();
       }
       
       ImGui::EndPopup();
     }
     
+    // X button clicked (mouse)
     if (!popup_open) {
-      pending_close_ = true;
+      Close();
     }
   }
 
  private:
   bool has_opened_ = false;
-  bool pending_close_ = false;
   std::string title_;
   std::string body_;
 };

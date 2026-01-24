@@ -311,7 +311,7 @@ class EmulatorWindow {
   std::unique_ptr<UpdaterDialog> updater_dialog_;
 
   std::vector<RecentTitleEntry> recently_launched_titles_;
-  
+
   // Guide button tracking for long press detection
   bool guide_button_was_pressed_[XUserMaxUserCount] = {};
   uint64_t guide_button_press_time_[XUserMaxUserCount] = {};

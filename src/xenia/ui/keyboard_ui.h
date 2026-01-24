@@ -16,6 +16,7 @@
 
 #include "xenia/ui/imgui_dialog.h"
 #include "xenia/ui/imgui_drawer.h"
+#include "xenia/ui/ui_focus_manager.h"
 
 namespace xe {
 namespace ui {
@@ -35,7 +36,9 @@ class KeyboardDialog : public ImGuiDialog {
                                       const std::string& title,
                                       const std::string& initial_text,
                                       InputType type,
-                                      InputCallback callback);
+                                      InputCallback callback,
+                                      const std::string& focus_parent = "",
+                                      const std::string& focus_name = "");
 
   ~KeyboardDialog();
 
@@ -51,6 +54,19 @@ class KeyboardDialog : public ImGuiDialog {
   // For XAM dispatch compatibility
   void set_close_callback(std::function<void()> close_callback) {
     close_callback_ = close_callback;
+  }
+  
+  // Called BEFORE keyboard closes - use to clear parent's keyboard_has_focus
+  void set_pre_close_callback(std::function<void()> pre_close_callback) {
+    pre_close_callback_ = pre_close_callback;
+  }
+  
+  // UIFocusManager integration - set parent and focus name for this dialog
+  void set_focus_parent(const std::string& parent) {
+    focus_parent_ = parent;
+  }
+  void set_focus_name(const std::string& name) {
+    focus_name_ = name;
   }
 
  protected:
@@ -71,6 +87,11 @@ class KeyboardDialog : public ImGuiDialog {
   InputType input_type_;
   InputCallback callback_;
   std::function<void()> close_callback_ = nullptr;  // For XAM dispatch
+  std::function<void()> pre_close_callback_ = nullptr;  // Called BEFORE close
+  
+  // UIFocusManager integration
+  std::string focus_parent_;  // Parent dialog name (empty = no focus management)
+  std::string focus_name_;    // This dialog's focus name
 
   bool is_shifted_ = false;
   bool is_symbol_mode_ = false;
@@ -84,9 +105,23 @@ class KeyboardDialog : public ImGuiDialog {
   bool has_opened_ = false;
   bool needs_focus_ = true;  // Set focus to first key on open
   
+  // Input ignore delay on open (500ms)
+  uint64_t open_time_ = 0;
+  static constexpr uint64_t kInputIgnoreDelayMs = 500;
+  
   // For Cancel/Done buttons: only activate on release to prevent input bleed
   std::string pending_close_action_;  // "Done" or "Cancel" when button pressed
   bool a_was_pressed_ = false;        // Track A button state for release detection
+  
+  // B button backspace with repeat
+  bool b_was_pressed_ = false;
+  uint64_t b_press_start_time_ = 0;
+  uint64_t b_last_repeat_time_ = 0;
+  static constexpr uint64_t kBRepeatDelayMs = 500;   // Initial delay before repeat
+  static constexpr uint64_t kBRepeatIntervalMs = 100; // Repeat interval (faster than 300ms)
+  
+  // Back button cancel (wait for release)
+  bool back_was_pressed_ = false;
 };
 
 }  // namespace ui

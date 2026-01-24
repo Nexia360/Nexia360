@@ -617,37 +617,48 @@ void ImGuiDrawer::PollXInput() {
       }
     }
     
-    // Helper macro to map XInput button to ImGui key
-    #define MAP_BUTTON(XINPUT_BUTTON, IMGUI_KEY) \
-      io.AddKeyEvent(IMGUI_KEY, (pad.wButtons & XINPUT_BUTTON) != 0)
+    // Track current button states for release detection
+    bool a_pressed = (pad.wButtons & XINPUT_GAMEPAD_A) != 0;
+    bool b_pressed = (pad.wButtons & XINPUT_GAMEPAD_B) != 0;
+    bool back_pressed = (pad.wButtons & XINPUT_GAMEPAD_BACK) != 0;
+    bool start_pressed = (pad.wButtons & XINPUT_GAMEPAD_START) != 0;
+    bool x_pressed = (pad.wButtons & XINPUT_GAMEPAD_X) != 0;
+    bool y_pressed = (pad.wButtons & XINPUT_GAMEPAD_Y) != 0;
+    bool lb_pressed = (pad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0;
+    bool rb_pressed = (pad.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER) != 0;
+    bool ls_pressed = (pad.wButtons & XINPUT_GAMEPAD_LEFT_THUMB) != 0;
+    bool rs_pressed = (pad.wButtons & XINPUT_GAMEPAD_RIGHT_THUMB) != 0;
     
-    // Digital buttons - Note: ImGui uses South/East convention where
-    // FaceDown = South = Activate. But some versions expect different mapping.
-    // Xbox: A=South, B=East, X=West, Y=North
-    MAP_BUTTON(XINPUT_GAMEPAD_START, ImGuiKey_GamepadStart);
-    MAP_BUTTON(XINPUT_GAMEPAD_BACK, ImGuiKey_GamepadBack);
-    MAP_BUTTON(XINPUT_GAMEPAD_A, ImGuiKey_GamepadFaceUp);        // A = Activate (ImGui expects FaceUp)
-    MAP_BUTTON(XINPUT_GAMEPAD_B, ImGuiKey_GamepadFaceRight);     // B = Cancel
-    MAP_BUTTON(XINPUT_GAMEPAD_X, ImGuiKey_GamepadFaceLeft);      // X
-    MAP_BUTTON(XINPUT_GAMEPAD_Y, ImGuiKey_GamepadFaceDown);      // Y
-    MAP_BUTTON(XINPUT_GAMEPAD_DPAD_LEFT, ImGuiKey_GamepadDpadLeft);
-    MAP_BUTTON(XINPUT_GAMEPAD_DPAD_RIGHT, ImGuiKey_GamepadDpadRight);
-    MAP_BUTTON(XINPUT_GAMEPAD_DPAD_UP, ImGuiKey_GamepadDpadUp);
-    MAP_BUTTON(XINPUT_GAMEPAD_DPAD_DOWN, ImGuiKey_GamepadDpadDown);
-    MAP_BUTTON(XINPUT_GAMEPAD_LEFT_SHOULDER, ImGuiKey_GamepadL1);
-    MAP_BUTTON(XINPUT_GAMEPAD_RIGHT_SHOULDER, ImGuiKey_GamepadR1);
-    MAP_BUTTON(XINPUT_GAMEPAD_LEFT_THUMB, ImGuiKey_GamepadL3);
-    MAP_BUTTON(XINPUT_GAMEPAD_RIGHT_THUMB, ImGuiKey_GamepadR3);
+    // Triggers
+    const BYTE trigger_threshold = 30;
+    bool lt_pressed = pad.bLeftTrigger > trigger_threshold;
+    bool rt_pressed = pad.bRightTrigger > trigger_threshold;
     
-    #undef MAP_BUTTON
+    // Check if ANY action button is pressed
+    bool any_action_pressed = a_pressed || b_pressed || back_pressed || 
+                              start_pressed || x_pressed || y_pressed ||
+                              lb_pressed || rb_pressed || ls_pressed || rs_pressed ||
+                              lt_pressed || rt_pressed;
     
-    // Triggers (analog, but treat as digital for navigation)
-    const BYTE trigger_threshold = 30;  // ~12% threshold
-    io.AddKeyEvent(ImGuiKey_GamepadL2, pad.bLeftTrigger > trigger_threshold);
-    io.AddKeyEvent(ImGuiKey_GamepadR2, pad.bRightTrigger > trigger_threshold);
+    // Process pending callback when all buttons released
+    if (pending_gamepad_callback_) {
+      if (!any_action_pressed && gamepad_buttons_were_pressed_) {
+        // Buttons were released, fire callback
+        auto callback = std::move(pending_gamepad_callback_);
+        pending_gamepad_callback_ = nullptr;
+        callback();
+      }
+    }
+    gamepad_buttons_were_pressed_ = any_action_pressed;
     
-    // Left stick (with deadzone)
-    const SHORT STICK_DEADZONE = 7849;  // ~24% as per XInput recommendations
+    // Only register D-pad for ImGui navigation (not action buttons)
+    io.AddKeyEvent(ImGuiKey_GamepadDpadLeft, (pad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT) != 0);
+    io.AddKeyEvent(ImGuiKey_GamepadDpadRight, (pad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) != 0);
+    io.AddKeyEvent(ImGuiKey_GamepadDpadUp, (pad.wButtons & XINPUT_GAMEPAD_DPAD_UP) != 0);
+    io.AddKeyEvent(ImGuiKey_GamepadDpadDown, (pad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN) != 0);
+    
+    // Left stick (with deadzone) for navigation
+    const SHORT STICK_DEADZONE = 7849;
     
     float lx = 0.0f, ly = 0.0f;
     if (pad.sThumbLX < -STICK_DEADZONE) {
@@ -661,11 +672,41 @@ void ImGuiDrawer::PollXInput() {
       ly = (float)(pad.sThumbLY - STICK_DEADZONE) / (32767.0f - STICK_DEADZONE);
     }
     
-    // Provide analog values for navigation
     io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickLeft, lx < 0.0f, lx < 0.0f ? -lx : 0.0f);
     io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickRight, lx > 0.0f, lx > 0.0f ? lx : 0.0f);
     io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickUp, ly > 0.0f, ly > 0.0f ? ly : 0.0f);
     io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickDown, ly < 0.0f, ly < 0.0f ? -ly : 0.0f);
+    
+    // Compute "just released" flags before updating current state
+    gamepad_a_just_released_ = gamepad_a_was_pressed_ && !a_pressed;
+    gamepad_b_just_released_ = gamepad_b_was_pressed_ && !b_pressed;
+    gamepad_back_just_released_ = gamepad_back_was_pressed_ && !back_pressed;
+    
+    // Update previous frame states
+    gamepad_a_was_pressed_ = a_pressed;
+    gamepad_b_was_pressed_ = b_pressed;
+    gamepad_back_was_pressed_ = back_pressed;
+    
+    // Store current button states for dialogs to query
+    gamepad_a_pressed_ = a_pressed;
+    gamepad_b_pressed_ = b_pressed;
+    gamepad_back_pressed_ = back_pressed;
+    gamepad_start_pressed_ = start_pressed;
+    
+    // Update the focus manager with input state (including X and Y)
+    focus_manager_.UpdateInput(back_pressed, b_pressed, a_pressed, start_pressed,
+                               x_pressed, y_pressed);
+    
+    // Register A button to ImGui for combo box activation
+    // Only when focus manager has a dialog and is not cooling down
+    if (focus_manager_.HasAnyFocus()) {
+      // Get input for the focused dialog - returns kNoInput during cooldown
+      const auto& input = focus_manager_.GetInput(focus_manager_.GetFocusedDialog());
+      // If we get real input (not cooling down), send A to ImGui for widget activation
+      if (input.a_pressed || input.a_released) {
+        io.AddKeyEvent(ImGuiKey_GamepadFaceDown, a_pressed);  // A button
+      }
+    }
     
     // Only use first connected controller
     break;
@@ -673,26 +714,24 @@ void ImGuiDrawer::PollXInput() {
   
   // If no controller found, clear gamepad state
   if (!found_controller && controller_navigation_enabled_) {
-    io.AddKeyEvent(ImGuiKey_GamepadStart, false);
-    io.AddKeyEvent(ImGuiKey_GamepadBack, false);
-    io.AddKeyEvent(ImGuiKey_GamepadFaceLeft, false);
-    io.AddKeyEvent(ImGuiKey_GamepadFaceRight, false);
-    io.AddKeyEvent(ImGuiKey_GamepadFaceUp, false);
-    io.AddKeyEvent(ImGuiKey_GamepadFaceDown, false);
     io.AddKeyEvent(ImGuiKey_GamepadDpadLeft, false);
     io.AddKeyEvent(ImGuiKey_GamepadDpadRight, false);
     io.AddKeyEvent(ImGuiKey_GamepadDpadUp, false);
     io.AddKeyEvent(ImGuiKey_GamepadDpadDown, false);
-    io.AddKeyEvent(ImGuiKey_GamepadL1, false);
-    io.AddKeyEvent(ImGuiKey_GamepadR1, false);
-    io.AddKeyEvent(ImGuiKey_GamepadL2, false);
-    io.AddKeyEvent(ImGuiKey_GamepadR2, false);
-    io.AddKeyEvent(ImGuiKey_GamepadL3, false);
-    io.AddKeyEvent(ImGuiKey_GamepadR3, false);
     io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickLeft, false, 0.0f);
     io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickRight, false, 0.0f);
     io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickUp, false, 0.0f);
     io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickDown, false, 0.0f);
+    gamepad_a_pressed_ = false;
+    gamepad_b_pressed_ = false;
+    gamepad_back_pressed_ = false;
+    gamepad_start_pressed_ = false;
+    gamepad_a_just_released_ = false;
+    gamepad_b_just_released_ = false;
+    gamepad_back_just_released_ = false;
+    
+    // Clear focus manager input state
+    focus_manager_.UpdateInput(false, false, false, false);
   }
 #endif
 }

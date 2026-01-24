@@ -11,9 +11,11 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 
 #include "third_party/imgui/imgui.h"
 #include "xenia/base/logging.h"
+#include "xenia/ui/imgui_dialog.h"
 #include "xenia/ui/imgui_drawer.h"
 
 #if XE_PLATFORM_WIN32
@@ -74,7 +76,7 @@ static const std::vector<std::vector<KeyDef>> kLowercaseLayout = {
      {":", ":", 1.0f, kNormalColor}, {";", ";", 1.0f, kNormalColor},
      {"\"", "\"", 1.0f, kNormalColor}, {"?", "?", 1.0f, kNormalColor},
      {"!", "!", 1.0f, kNormalColor}, {"@", "@", 1.0f, kNormalColor},
-     {"#", "#", 1.0f, kNormalColor}, {"&", "&", 1.0f, kNormalColor}},
+     {" # ", "#", 1.0f, kNormalColor}, {"&", "&", 1.0f, kNormalColor}},
     // Row 5: Special keys
     {{"Shift", nullptr, 1.5f, kSpecialColor},
      {"Space", " ", 3.0f, kAccentColor},
@@ -86,7 +88,7 @@ static const std::vector<std::vector<KeyDef>> kLowercaseLayout = {
 static const std::vector<std::vector<KeyDef>> kUppercaseLayout = {
     // Row 0: Symbols
     {{"!", "!", 1.0f, kNormalColor}, {"@", "@", 1.0f, kNormalColor},
-     {"#", "#", 1.0f, kNormalColor}, {"$", "$", 1.0f, kNormalColor},
+     {" # ", "#", 1.0f, kNormalColor}, {"$", "$", 1.0f, kNormalColor},
      {"%", "%", 1.0f, kNormalColor}, {"^", "^", 1.0f, kNormalColor},
      {"&", "&", 1.0f, kNormalColor}, {"*", "*", 1.0f, kNormalColor},
      {"(", "(", 1.0f, kNormalColor}, {")", ")", 1.0f, kNormalColor}},
@@ -131,7 +133,7 @@ static const std::vector<std::vector<KeyDef>> kSymbolLayout = {
      {"[", "[", 1.0f, kNormalColor}, {"]", "]", 1.0f, kNormalColor}},
     // Row 1: Punctuation
     {{"!", "!", 1.0f, kNormalColor}, {"@", "@", 1.0f, kNormalColor},
-     {"#", "#", 1.0f, kNormalColor}, {"$", "$", 1.0f, kNormalColor},
+     {" # ", "#", 1.0f, kNormalColor}, {"$", "$", 1.0f, kNormalColor},
      {"%", "%", 1.0f, kNormalColor}, {"^", "^", 1.0f, kNormalColor},
      {"&", "&", 1.0f, kNormalColor}, {"*", "*", 1.0f, kNormalColor},
      {"(", "(", 1.0f, kNormalColor}, {")", ")", 1.0f, kNormalColor}},
@@ -173,8 +175,13 @@ KeyboardDialog* KeyboardDialog::ShowKeyboard(ImGuiDrawer* imgui_drawer,
                                             const std::string& title,
                                             const std::string& initial_text,
                                             InputType type,
-                                            InputCallback callback) {
-  return new KeyboardDialog(imgui_drawer, title, initial_text, type, callback);
+                                            InputCallback callback,
+                                            const std::string& focus_parent,
+                                            const std::string& focus_name) {
+  auto* dialog = new KeyboardDialog(imgui_drawer, title, initial_text, type, callback);
+  dialog->focus_parent_ = focus_parent;
+  dialog->focus_name_ = focus_name;
+  return dialog;
 }
 
 KeyboardDialog::KeyboardDialog(ImGuiDrawer* imgui_drawer,
@@ -191,31 +198,45 @@ KeyboardDialog::KeyboardDialog(ImGuiDrawer* imgui_drawer,
   if (imgui_drawer) {
     imgui_drawer->SetControllerNavigationEnabled(true);
   }
+  
+  // Record open time for input ignore delay
+  open_time_ = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
 KeyboardDialog::~KeyboardDialog() {}
 
 void KeyboardDialog::OnDraw(ImGuiIO& io) {
+  // Get current time
+  uint64_t current_time = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+  
+  // Check if we're still in the input ignore period
+  bool ignore_inputs = (current_time - open_time_) < kInputIgnoreDelayMs;
+  
   // Poll XInput for controller state - needed since keyboard is a modal popup
 #if XE_PLATFORM_WIN32
+  bool a_pressed = false;
+  bool b_pressed = false;
+  bool back_pressed = false;
+  
   for (DWORD i = 0; i < XUSER_MAX_COUNT; ++i) {
     XINPUT_STATE state;
     if (XInputGetState(i, &state) == ERROR_SUCCESS) {
       const auto& pad = state.Gamepad;
       
-      // Map buttons to ImGui - A=FaceUp for activation (matches imgui_drawer mapping)
-      io.AddKeyEvent(ImGuiKey_GamepadFaceUp, (pad.wButtons & XINPUT_GAMEPAD_A) != 0);
-      io.AddKeyEvent(ImGuiKey_GamepadFaceRight, (pad.wButtons & XINPUT_GAMEPAD_B) != 0);
-      io.AddKeyEvent(ImGuiKey_GamepadFaceLeft, (pad.wButtons & XINPUT_GAMEPAD_X) != 0);
-      io.AddKeyEvent(ImGuiKey_GamepadFaceDown, (pad.wButtons & XINPUT_GAMEPAD_Y) != 0);
+      // Track action button states (don't register with ImGui directly)
+      a_pressed = (pad.wButtons & XINPUT_GAMEPAD_A) != 0;
+      b_pressed = (pad.wButtons & XINPUT_GAMEPAD_B) != 0;
+      back_pressed = (pad.wButtons & XINPUT_GAMEPAD_BACK) != 0;
+      
+      // Only register D-pad and sticks for navigation
       io.AddKeyEvent(ImGuiKey_GamepadDpadLeft, (pad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT) != 0);
       io.AddKeyEvent(ImGuiKey_GamepadDpadRight, (pad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) != 0);
       io.AddKeyEvent(ImGuiKey_GamepadDpadUp, (pad.wButtons & XINPUT_GAMEPAD_DPAD_UP) != 0);
       io.AddKeyEvent(ImGuiKey_GamepadDpadDown, (pad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN) != 0);
       io.AddKeyEvent(ImGuiKey_GamepadL1, (pad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0);
       io.AddKeyEvent(ImGuiKey_GamepadR1, (pad.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER) != 0);
-      io.AddKeyEvent(ImGuiKey_GamepadStart, (pad.wButtons & XINPUT_GAMEPAD_START) != 0);
-      io.AddKeyEvent(ImGuiKey_GamepadBack, (pad.wButtons & XINPUT_GAMEPAD_BACK) != 0);
       
       // Left stick with deadzone
       const SHORT STICK_DEADZONE = 7849;
@@ -239,9 +260,73 @@ void KeyboardDialog::OnDraw(ImGuiIO& io) {
       break;
     }
   }
+  
+  // During ignore period, consume inputs by updating state but not acting on them
+  if (ignore_inputs) {
+    a_was_pressed_ = a_pressed;
+    b_was_pressed_ = b_pressed;
+    back_was_pressed_ = back_pressed;
+  } else {
+    // A button - activate on RELEASE (not press)
+    // This prevents the button press from bleeding through to the game
+    if (a_was_pressed_ && !a_pressed) {
+      // A was just released - send a single frame "press" to ImGui
+      io.AddKeyEvent(ImGuiKey_GamepadFaceUp, true);
+    } else {
+      io.AddKeyEvent(ImGuiKey_GamepadFaceUp, false);
+    }
+    a_was_pressed_ = a_pressed;
+    
+    // B button = backspace with repeat
+    if (b_pressed) {
+      if (!b_was_pressed_) {
+        // Just pressed - do immediate backspace
+        if (!input_text_.empty()) {
+          input_text_.pop_back();
+        }
+        b_press_start_time_ = current_time;
+        b_last_repeat_time_ = current_time;
+      } else {
+        // Held - check for repeat
+        uint64_t held_time = current_time - b_press_start_time_;
+        if (held_time >= kBRepeatDelayMs) {
+          uint64_t since_last = current_time - b_last_repeat_time_;
+          if (since_last >= kBRepeatIntervalMs) {
+            if (!input_text_.empty()) {
+              input_text_.pop_back();
+            }
+            b_last_repeat_time_ = current_time;
+          }
+        }
+      }
+    }
+    b_was_pressed_ = b_pressed;
+    
+    // Back button = cancel (wait for release)
+    if (back_pressed) {
+      if (!back_was_pressed_) {
+        // Just pressed - mark pending cancel
+        cancelled_ = true;
+        pending_close_action_ = "Back";
+      }
+    }
+    back_was_pressed_ = back_pressed;
+  }  // end if (!ignore_inputs)
 #endif
 
   if (!has_opened_) {
+    // UIFocusManager: Register as child of parent if set
+    if (!focus_name_.empty()) {
+      auto* focus_manager = imgui_drawer()->GetFocusManager();
+      if (focus_manager) {
+        if (!focus_parent_.empty()) {
+          focus_manager->UIChildFocus(focus_parent_, focus_name_);
+        } else {
+          focus_manager->UISetFocus(focus_name_);
+        }
+      }
+    }
+    
     ImGui::SetNextWindowSize(ImVec2(700, 450), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(
         ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
@@ -260,6 +345,8 @@ void KeyboardDialog::OnDraw(ImGuiIO& io) {
                            ImGuiWindowFlags_NoCollapse;
 
   bool popup_open = true;
+  bool should_close = false;
+  
   if (ImGui::BeginPopupModal(title_.c_str(), &popup_open, flags)) {
     // Draw input text field
     DrawTextInput();
@@ -270,48 +357,69 @@ void KeyboardDialog::OnDraw(ImGuiIO& io) {
 
     // Draw keyboard layout
     DrawKeyboardLayout();
-
-    // Handle gamepad B button to cancel (but not A - that's handled by buttons)
-    //if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight) ||
-        //ImGui::IsKeyPressed(ImGuiKey_Escape)) {
-      // Cancel - close without saving
-      //ImGui::CloseCurrentPopup();
-      //Close();
-    // Back button closes dialog (like X button)
-    if (ImGui::IsKeyPressed(ImGuiKey_GamepadBack)) {
-      cancelled_ = true;
-      pending_close_action_ = "Back";
+    
+    // Check if we're waiting to close (Done/Cancel/Back was pressed via gamepad)
+    // Wait until buttons are released before actually closing
+    if (!pending_close_action_.empty()) {
+#if XE_PLATFORM_WIN32
+      bool any_pressed = false;
+      for (DWORD i = 0; i < XUSER_MAX_COUNT; ++i) {
+        XINPUT_STATE state;
+        if (XInputGetState(i, &state) == ERROR_SUCCESS) {
+          const auto& pad = state.Gamepad;
+          if ((pad.wButtons & XINPUT_GAMEPAD_A) ||
+              (pad.wButtons & XINPUT_GAMEPAD_B) ||
+              (pad.wButtons & XINPUT_GAMEPAD_BACK) ||
+              (pad.wButtons & XINPUT_GAMEPAD_START)) {
+            any_pressed = true;
+          }
+          break;
+        }
+      }
+      if (!any_pressed) {
+        pending_close_action_.clear();
+        should_close = true;
+        ImGui::CloseCurrentPopup();  // Close THIS popup only
+      }
+#else
+      pending_close_action_.clear();
+      should_close = true;
+      ImGui::CloseCurrentPopup();  // Close THIS popup only
+#endif
     }
 
     ImGui::EndPopup();
-  }
-  
-  // X button clicked with mouse - close immediately (no gamepad involved)
-  if (!popup_open) {
+  } else if (!popup_open) {
+    // X button was clicked - popup already closing
     cancelled_ = true;
-    Close();
-    return;
+    should_close = true;
   }
   
-  // Check if we're waiting to close (Done/Cancel/Back was pressed via gamepad)
-  // Wait until A button AND Back button are released before actually closing
-  if (!pending_close_action_.empty()) {
-    bool a_pressed = ImGui::IsKeyDown(ImGuiKey_GamepadFaceUp);
-    bool back_pressed = ImGui::IsKeyDown(ImGuiKey_GamepadBack);
-    if (!a_pressed && !back_pressed) {
-      // Buttons released, safe to close now
-      pending_close_action_.clear();
-      Close();
-    }
+  if (should_close) {
+    Close();
   }
 }
 
 void KeyboardDialog::OnClose() {
-  // If user closed the dialog, call callback with current text
-  if (callback_) {
+  // Call pre-close callback FIRST - allows parent to clear keyboard_has_focus
+  if (pre_close_callback_) {
+    pre_close_callback_();
+  }
+  
+  // UIFocusManager: Drop focus if we were registered
+  if (!focus_name_.empty()) {
+    auto* focus_manager = imgui_drawer()->GetFocusManager();
+    if (focus_manager) {
+      focus_manager->UIDropFocus(focus_name_);
+    }
+  }
+  
+  // If user confirmed (Done), call the input callback
+  // Don't call it for Cancel - that's what cancelled_ flag is for
+  if (callback_ && !cancelled_) {
     callback_(input_text_);
   }
-  // Call XAM close callback if set
+  // Call XAM close callback if set (always, for cleanup)
   if (close_callback_) {
     close_callback_();
   }
@@ -415,7 +523,13 @@ void KeyboardDialog::DrawKeyboardLayout() {
       ImGui::PopStyleColor(3);
 
       if (pressed) {
-        ProcessKeyInput(key.label);
+        // Use value for typing, label is just for display
+        // Special keys have nullptr value
+        if (key.value) {
+          ProcessKeyInput(key.value);
+        } else {
+          ProcessKeyInput(key.label);  // Special keys like Shift, Done, Cancel
+        }
       }
 
       key_index++;
@@ -489,10 +603,8 @@ void KeyboardDialog::ProcessKeyInput(const std::string& key) {
     }
   } else if (key == "Done") {
     // Submit - but wait for A button release before closing
+    // callback_ will be called in OnClose()
     cancelled_ = false;
-    if (callback_) {
-      callback_(input_text_);
-    }
     pending_close_action_ = "Done";  // Will close when A is released
   } else if (key == "Cancel") {
     // Cancel - wait for A button release before closing

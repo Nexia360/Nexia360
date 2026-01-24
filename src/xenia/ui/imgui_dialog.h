@@ -12,12 +12,28 @@
 
 #include <memory>
 
+#include "third_party/imgui/imgui.h"
 #include "xenia/base/threading.h"
 #include "xenia/ui/imgui_drawer.h"
 #include "xenia/ui/window_listener.h"
 
 namespace xe {
 namespace ui {
+
+// Helper to check if any gamepad button is currently pressed
+// Used to wait for button release before closing dialogs
+inline bool IsAnyGamepadButtonPressed() {
+  return ImGui::IsKeyDown(ImGuiKey_GamepadFaceUp) ||
+         ImGui::IsKeyDown(ImGuiKey_GamepadFaceDown) ||
+         ImGui::IsKeyDown(ImGuiKey_GamepadFaceLeft) ||
+         ImGui::IsKeyDown(ImGuiKey_GamepadFaceRight) ||
+         ImGui::IsKeyDown(ImGuiKey_GamepadStart) ||
+         ImGui::IsKeyDown(ImGuiKey_GamepadBack) ||
+         ImGui::IsKeyDown(ImGuiKey_GamepadL1) ||
+         ImGui::IsKeyDown(ImGuiKey_GamepadR1) ||
+         ImGui::IsKeyDown(ImGuiKey_GamepadL3) ||
+         ImGui::IsKeyDown(ImGuiKey_GamepadR3);
+}
 
 class ImGuiDialog {
  public:

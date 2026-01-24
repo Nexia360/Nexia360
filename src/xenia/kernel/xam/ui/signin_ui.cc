@@ -9,11 +9,8 @@
 
 #include "xenia/kernel/xam/ui/signin_ui.h"
 #include "xenia/kernel/xam/ui/gamercard_ui.h"
-
-#if XE_PLATFORM_WIN32
-#include <Xinput.h>
-#pragma comment(lib, "xinput.lib")
-#endif
+#include "xenia/ui/imgui_dialog.h"
+#include "xenia/ui/ui_focus_manager.h"
 
 namespace xe {
 namespace kernel {
@@ -37,42 +34,13 @@ SigninUI::SigninUI(xe::ui::Window* window, xe::ui::ImGuiDrawer* imgui_drawer,
 }
 
 void SigninUI::OnDraw(ImGuiIO& io) {
-  // Poll XInput for controller state
-#if XE_PLATFORM_WIN32
-  for (DWORD i = 0; i < XUSER_MAX_COUNT; ++i) {
-    XINPUT_STATE state;
-    if (XInputGetState(i, &state) == ERROR_SUCCESS) {
-      const auto& pad = state.Gamepad;
-      
-      // Map buttons to ImGui
-      io.AddKeyEvent(ImGuiKey_GamepadFaceUp, (pad.wButtons & XINPUT_GAMEPAD_A) != 0);
-      io.AddKeyEvent(ImGuiKey_GamepadFaceRight, (pad.wButtons & XINPUT_GAMEPAD_B) != 0);
-      io.AddKeyEvent(ImGuiKey_GamepadDpadLeft, (pad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT) != 0);
-      io.AddKeyEvent(ImGuiKey_GamepadDpadRight, (pad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) != 0);
-      io.AddKeyEvent(ImGuiKey_GamepadDpadUp, (pad.wButtons & XINPUT_GAMEPAD_DPAD_UP) != 0);
-      io.AddKeyEvent(ImGuiKey_GamepadDpadDown, (pad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN) != 0);
-      io.AddKeyEvent(ImGuiKey_GamepadBack, (pad.wButtons & XINPUT_GAMEPAD_BACK) != 0);
-      io.AddKeyEvent(ImGuiKey_GamepadStart, (pad.wButtons & XINPUT_GAMEPAD_START) != 0);
-      
-      // Track A button for long press detection
-      bool a_currently_pressed = (pad.wButtons & XINPUT_GAMEPAD_A) != 0;
-      if (a_currently_pressed && !a_button_was_pressed_) {
-        a_button_press_time_ = GetTickCount64();
-        long_press_triggered_ = false;
-      }
-      a_button_was_pressed_ = a_currently_pressed;
-      
-      break;
-    }
-  }
-#endif
-
-  // Check if waiting to close (for button release)
+  auto* drawer = imgui_drawer();
+  auto* focus_manager = drawer->GetFocusManager();
+  
+  // Wait for button release before closing to prevent input bleed
   if (pending_close_) {
-    bool a_pressed = ImGui::IsKeyDown(ImGuiKey_GamepadFaceUp);
-    bool back_pressed = ImGui::IsKeyDown(ImGuiKey_GamepadBack);
-    if (!a_pressed && !back_pressed) {
-      pending_close_ = false;
+    if (!drawer->IsAnyGamepadActionPressed()) {
+      focus_manager->UIDropFocus("SigninUI");
       Close();
     }
     return;
@@ -85,14 +53,20 @@ void SigninUI::OnDraw(ImGuiIO& io) {
 
   bool first_draw = false;
   if (!has_opened_) {
+    // Register with focus manager - game dialogs take focus from everything
+    // This also starts a 500ms input cooldown
+    focus_manager->UISetFocus("SigninUI");
     ImGui::OpenPopup(title_.c_str());
     has_opened_ = true;
     first_draw = true;
     ReloadProfiles(true, flags_);
   }
-
-  // Handle Back button to close
-  if (ImGui::IsKeyPressed(ImGuiKey_GamepadBack)) {
+  
+  // Get input from focus manager (returns no input during 500ms cooldown)
+  const auto& input = focus_manager->XamInputFocus("SigninUI");
+  
+  // Handle Back/B button to close
+  if (input.ShouldClose()) {
     ImGui::CloseCurrentPopup();
     pending_close_ = true;
     return;
@@ -197,15 +171,12 @@ void SigninUI::OnDraw(ImGuiIO& io) {
         xeDrawProfileContent(imgui_drawer(), xuid, slot, account, nullptr, {},
                              {}, nullptr);
         
-        // Check for long A press on profile to open modify dialog
-        if (ImGui::IsItemFocused() && a_button_was_pressed_) {
-          uint64_t press_duration = GetTickCount64() - a_button_press_time_;
-          if (press_duration >= kLongPressMs && !long_press_triggered_) {
-            long_press_triggered_ = true;
-            // Open GamercardUI for this profile
-            imgui_drawer()->AddDialog(
-                new GamercardUI(window_, imgui_drawer(), kernel_state_, xuid));
-          }
+        // Y button opens modify profile dialog
+        if (ImGui::IsItemFocused() && input.y_released) {
+          // Open GamercardUI for this profile as child
+          focus_manager->UIChildFocus("SigninUI", "GamercardUI");
+          imgui_drawer()->AddDialog(
+              new GamercardUI(window_, imgui_drawer(), kernel_state_, xuid));
         }
       }
 
@@ -261,7 +232,7 @@ void SigninUI::OnDraw(ImGuiIO& io) {
         ImGui::EndDisabled();
         ImGui::SameLine();
 
-        if (ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_GamepadBack)) {
+        if (ImGui::Button("Cancel") || input.ShouldClose()) {
           std::fill(std::begin(gamertag_), std::end(gamertag_), '\0');
           ImGui::CloseCurrentPopup();
           creating_profile_ = false;
@@ -273,7 +244,15 @@ void SigninUI::OnDraw(ImGuiIO& io) {
       }
     }
 
-    if (ImGui::Button("OK")) {
+    bool ok_clicked = ImGui::Button("OK");
+    bool ok_focused = ImGui::IsItemFocused();
+    
+    // A button on release activates focused OK button
+    if (input.Activated() && ok_focused) {
+      ok_clicked = true;
+    }
+    
+    if (ok_clicked) {
       std::map<uint8_t, uint64_t> profile_map;
       for (uint32_t i = 0; i < users_needed_; i++) {
         uint8_t slot = chosen_slots_[i];
@@ -289,19 +268,29 @@ void SigninUI::OnDraw(ImGuiIO& io) {
     }
     ImGui::SameLine();
 
-    if (ImGui::Button("Cancel")) {
+    bool cancel_clicked = ImGui::Button("Cancel");
+    bool cancel_focused = ImGui::IsItemFocused();
+    
+    // A button on release activates focused Cancel button
+    if (input.Activated() && cancel_focused) {
+      cancel_clicked = true;
+    }
+    
+    if (cancel_clicked) {
       ImGui::CloseCurrentPopup();
       pending_close_ = true;
     }
 
     // Show controller hints
     ImGui::Spacing();
-    ImGui::TextDisabled("A: Select | Hold A: Modify Profile | Back: Close");
+    ImGui::TextDisabled("A: Select | Y: Modify Profile | B/Back: Close");
 
     ImGui::Spacing();
     ImGui::Spacing();
     ImGui::EndPopup();
   } else {
+    // BeginPopupModal returned false - popup was closed externally
+    focus_manager->UIDropFocus("SigninUI");
     Close();
   }
 }

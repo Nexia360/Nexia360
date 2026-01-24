@@ -51,12 +51,6 @@ class SigninUI final : public XamDialog {
   bool creating_profile_ = false;
   bool live_enabled_profile_ = true;
   char gamertag_[16] = "";
-  
-  // Controller support for long press detection
-  bool a_button_was_pressed_ = false;
-  uint64_t a_button_press_time_ = 0;
-  bool long_press_triggered_ = false;
-  static constexpr uint64_t kLongPressMs = 500;  // 500ms for long press
 };
 
 }  // namespace ui

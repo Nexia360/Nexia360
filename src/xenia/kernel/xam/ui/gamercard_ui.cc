@@ -10,6 +10,7 @@
 #include "xenia/kernel/xam/ui/gamercard_ui.h"
 #include "xenia/base/png_utils.h"
 #include "xenia/ui/file_picker.h"
+#include "xenia/ui/ui_focus_manager.h"
 
 namespace xe {
 namespace kernel {
@@ -532,11 +533,37 @@ void GamercardUI::DrawGpdSettings(ImGuiIO& io) {
 }
 
 void GamercardUI::OnDraw(ImGuiIO& io) {
+  auto* drawer = imgui_drawer();
+  auto* focus_manager = drawer->GetFocusManager();
+  
+  // Wait for button release before closing
+  if (pending_close_) {
+    if (!drawer->IsAnyGamepadActionPressed()) {
+      focus_manager->UIDropFocus("GamercardUI");
+      Close();
+    }
+    return;
+  }
+
+  bool first_draw = false;
   if (!has_opened_) {
+    // Register with focus manager - starts 500ms input cooldown
+    focus_manager->UISetFocus("GamercardUI");
     ImGui::OpenPopup(fmt::format("{}'s Gamercard",
                                  std::string(gamercardOriginalValues_.gamertag))
                          .c_str());
     has_opened_ = true;
+    first_draw = true;
+  }
+  
+  // Get input from focus manager (returns no input during 500ms cooldown)
+  const auto& input = focus_manager->XamInputFocus("GamercardUI");
+  
+  // Handle Back/B to close
+  if (input.ShouldClose()) {
+    ImGui::CloseCurrentPopup();
+    pending_close_ = true;
+    return;
   }
 
   bool dialog_open = true;
@@ -547,6 +574,7 @@ void GamercardUI::OnDraw(ImGuiIO& io) {
           &dialog_open,
           ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize |
               ImGuiWindowFlags_HorizontalScrollbar)) {
+    focus_manager->UIDropFocus("GamercardUI");
     Close();
     return;
   }
@@ -572,7 +600,12 @@ void GamercardUI::OnDraw(ImGuiIO& io) {
       ProfileManager::IsGamertagValid(std::string(gamercardValues_.gamertag));
 
   ImGui::BeginDisabled(!is_valid_gamertag);
-  if (ImGui::Button("Save")) {
+  bool save_clicked = ImGui::Button("Save");
+  bool save_focused = ImGui::IsItemFocused();
+  if (input.Activated() && save_focused) {
+    save_clicked = true;
+  }
+  if (save_clicked) {
     SaveProfileIcon();
     SaveSettings();
     SaveAccountData();
@@ -587,13 +620,18 @@ void GamercardUI::OnDraw(ImGuiIO& io) {
 
   ImGui::SameLine();
 
-  if (ImGui::Button("Cancel")) {
+  bool cancel_clicked = ImGui::Button("Cancel");
+  bool cancel_focused = ImGui::IsItemFocused();
+  if (input.Activated() && cancel_focused) {
+    cancel_clicked = true;
+  }
+  if (cancel_clicked) {
     dialog_open = false;
   }
 
   if (!dialog_open) {
     ImGui::CloseCurrentPopup();
-    Close();
+    pending_close_ = true;
     ImGui::EndPopup();
     return;
   }
