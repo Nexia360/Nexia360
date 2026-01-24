@@ -535,7 +535,7 @@ void GamercardUI::DrawGpdSettings(ImGuiIO& io) {
 void GamercardUI::OnDraw(ImGuiIO& io) {
   auto* drawer = imgui_drawer();
   auto* focus_manager = drawer->GetFocusManager();
-  
+
   // Wait for button release before closing
   if (pending_close_) {
     if (!drawer->IsAnyGamepadActionPressed()) {
@@ -555,10 +555,10 @@ void GamercardUI::OnDraw(ImGuiIO& io) {
     has_opened_ = true;
     first_draw = true;
   }
-  
+
   // Get input from focus manager (returns no input during 500ms cooldown)
   const auto& input = focus_manager->XamInputFocus("GamercardUI");
-  
+
   // Handle Back/B to close
   if (input.ShouldClose()) {
     ImGui::CloseCurrentPopup();

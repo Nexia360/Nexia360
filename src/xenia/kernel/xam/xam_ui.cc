@@ -253,7 +253,7 @@ X_RESULT xeXamDispatchHeadlessAsync(std::function<void()> run_callback) {
 void MessageBoxDialog::OnDraw(ImGuiIO& io) {
   auto* drawer = imgui_drawer();
   auto* focus_manager = drawer->GetFocusManager();
-  
+
   // Wait for button release before closing to prevent input bleed
   if (pending_close_) {
     if (!drawer->IsAnyGamepadActionPressed()) {
@@ -296,16 +296,16 @@ void MessageBoxDialog::OnDraw(ImGuiIO& io) {
     if (first_draw) {
       ImGui::SetKeyboardFocusHere();
     }
-    
+
     for (size_t i = 0; i < buttons_.size(); ++i) {
       bool clicked = ImGui::Button(buttons_[i].c_str());
       bool is_focused = ImGui::IsItemFocused();
-      
+
       // A button activates on release: single button dialog OR focused button
       if (input.Activated() && (buttons_.size() == 1 || is_focused)) {
         clicked = true;
       }
-      
+
       if (clicked) {
         chosen_button_ = static_cast<uint32_t>(i);
         ImGui::CloseCurrentPopup();
@@ -327,20 +327,17 @@ void MessageBoxDialog::OnDraw(ImGuiIO& io) {
 
 void KeyboardInputDialog::OnDraw(ImGuiIO& io) {
   auto* drawer = imgui_drawer();
-  
+
   if (!has_opened_) {
     // Create the KeyboardDialog from ui/keyboard_ui.h
     keyboard_dialog_ = xe::ui::KeyboardDialog::ShowKeyboard(
-        drawer,
-        title_,
-        default_text_,
-        xe::ui::KeyboardDialog::InputType::kText,
+        drawer, title_, default_text_, xe::ui::KeyboardDialog::InputType::kText,
         [this](const std::string& result) {
           // This callback is called when Done is pressed
           text_ = result;
           cancelled_ = false;
         });
-    
+
     // Set close callback to handle when keyboard closes
     keyboard_dialog_->set_close_callback([this]() {
       // Check if it was cancelled
@@ -351,19 +348,19 @@ void KeyboardInputDialog::OnDraw(ImGuiIO& io) {
         text_ = keyboard_dialog_->result_text();
         cancelled_ = false;
       }
-      
+
       // Call completion callback if set
       if (completion_callback_) {
         completion_callback_(text_, cancelled_);
       }
-      
+
       // Close this wrapper dialog
       Close();
     });
-    
+
     has_opened_ = true;
   }
-  
+
   // The KeyboardDialog handles its own drawing via the drawer's dialog system
   // We just wait for it to close
 }
@@ -1182,8 +1179,7 @@ bool xeDrawFriendContent(xe::ui::ImGuiDrawer* imgui_drawer,
 
 bool xeDrawAddFriend(xe::ui::ImGuiDrawer* imgui_drawer,
                      xe::ui::UIFocusManager* focus_manager,
-                     UserProfile* profile,
-                     ui::AddFriendArgs& args) {
+                     UserProfile* profile, ui::AddFriendArgs& args) {
   ImGuiViewport* viewport = ImGui::GetMainViewport();
   ImVec2 center = viewport->GetCenter();
 
@@ -1313,7 +1309,8 @@ bool xeDrawAddFriend(xe::ui::ImGuiDrawer* imgui_drawer,
     ImGui::SetCursorPos(drawing_end_position);
 
     ImGui::BeginDisabled(!args.valid_xuid || args.are_friends || max_friends);
-    if (ImGui::Button("Add", btn_size) || imgui_drawer->GamepadButtonActivated()) {
+    if (ImGui::Button("Add", btn_size) ||
+        imgui_drawer->GamepadButtonActivated()) {
       bool added = profile->AddFriendFromXUID(xuid);
 
       if (added) {
@@ -1364,7 +1361,7 @@ bool xeDrawFriendsContent(xe::ui::ImGuiDrawer* imgui_drawer,
 
   ImGui::SetNextWindowSizeConstraints(ImVec2(400, 205), ImVec2(400, 600));
   ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-  
+
   bool popup_open = true;
   if (ImGui::BeginPopupModal("Friends", &popup_open,
                              ImGuiWindowFlags_NoCollapse |
@@ -1574,7 +1571,8 @@ bool xeDrawFriendsContent(xe::ui::ImGuiDrawer* imgui_drawer,
       ImGui::Text(desc.c_str());
       ImGui::Separator();
 
-      if (ImGui::Button("Yes", btn_size) || imgui_drawer->GamepadButtonActivated()) {
+      if (ImGui::Button("Yes", btn_size) ||
+          imgui_drawer->GamepadButtonActivated()) {
         profile->RemoveAllFriends();
 
         *presences = {};
@@ -1596,7 +1594,7 @@ bool xeDrawFriendsContent(xe::ui::ImGuiDrawer* imgui_drawer,
 
       ImGui::SameLine();
 
-      if (ImGui::Button("Cancel", btn_size) || 
+      if (ImGui::Button("Cancel", btn_size) ||
           (ImGui::IsItemFocused() && input.Activated())) {
         ImGui::CloseCurrentPopup();
       }
@@ -1619,7 +1617,7 @@ bool xeDrawFriendsContent(xe::ui::ImGuiDrawer* imgui_drawer,
     // Popup not open - make sure we're popped
     focus_manager->DrawerStackPop("FriendsDialog");
   }
-  
+
   // X button clicked (mouse)
   if (!popup_open) {
     focus_manager->DrawerStackPop("FriendsDialog");
@@ -1736,16 +1734,14 @@ bool xeDrawSessionContent(xe::ui::ImGuiDrawer* imgui_drawer,
 }
 
 bool xeDrawSessionsContent(
-    xe::ui::ImGuiDrawer* imgui_drawer,
-    xe::ui::UIFocusManager* focus_manager,
-    UserProfile* profile,
-    ui::SessionsContentArgs& sessions_args,
+    xe::ui::ImGuiDrawer* imgui_drawer, xe::ui::UIFocusManager* focus_manager,
+    UserProfile* profile, ui::SessionsContentArgs& sessions_args,
     std::vector<std::unique_ptr<SessionObjectJSON>>* sessions) {
   ImVec2 center = ImGui::GetMainViewport()->GetCenter();
 
   ImGui::SetNextWindowSizeConstraints(ImVec2(300, 150), ImVec2(300, 600));
   ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-  
+
   bool popup_open = true;
   if (ImGui::BeginPopupModal("Sessions", &popup_open,
                              ImGuiWindowFlags_NoCollapse |
@@ -1833,7 +1829,7 @@ bool xeDrawSessionsContent(
     // Popup not open
     focus_manager->DrawerStackPop("SessionsDialog");
   }
-  
+
   // X button clicked (mouse)
   if (!popup_open) {
     focus_manager->DrawerStackPop("SessionsDialog");
@@ -1844,8 +1840,7 @@ bool xeDrawSessionsContent(
 }
 
 bool xeDrawMyDeletedProfiles(
-    xe::ui::ImGuiDrawer* imgui_drawer,
-    xe::ui::UIFocusManager* focus_manager,
+    xe::ui::ImGuiDrawer* imgui_drawer, xe::ui::UIFocusManager* focus_manager,
     ui::MyDeletedProfilesArgs& args,
     std::map<uint64_t, std::string>* deleted_profiles) {
   if (!deleted_profiles) {
@@ -1858,7 +1853,7 @@ bool xeDrawMyDeletedProfiles(
   float btn_height = 25;
   ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
   ImGui::SetNextWindowSizeConstraints(ImVec2(250, 115), ImVec2(250, 415));
-  
+
   bool popup_open = true;
   if (ImGui::BeginPopupModal("Deleted Profiles", &popup_open,
                              ImGuiWindowFlags_AlwaysAutoResize)) {
@@ -1907,7 +1902,7 @@ bool xeDrawMyDeletedProfiles(
     // Popup not open
     focus_manager->DrawerStackPop("DeletedProfilesDialog");
   }
-  
+
   // X button clicked (mouse)
   if (!popup_open) {
     focus_manager->DrawerStackPop("DeletedProfilesDialog");
@@ -1947,10 +1942,10 @@ X_RESULT xeXamShowSigninUI(uint32_t user_index, uint32_t users_needed,
   xe::ui::ImGuiDrawer* imgui_drawer = emulator->imgui_drawer();
   xe::ui::Window* window = emulator->display_window();
   return xeXamDispatchDialogAsync<ui::SigninUI>(
-      new ui::SigninUI(
-          window, imgui_drawer, kernel_state(),
-          kernel_state()->xam_state()->profile_manager(),
-          emulator->input_system()->GetLastUsedSlot(), users_needed, flags),
+      new ui::SigninUI(window, imgui_drawer, kernel_state(),
+                       kernel_state()->xam_state()->profile_manager(),
+                       emulator->input_system()->GetLastUsedSlot(),
+                       users_needed, flags),
       close);
 }
 

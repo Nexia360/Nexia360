@@ -38,10 +38,10 @@ class CreateProfileUI final : public XamDialog {
   char gamertag_[16] = "";
   bool live_enabled = true;
   Emulator* emulator_;
-  
+
   // Close pending flag
   bool pending_close_ = false;
-  
+
   // Keyboard focus state - don't render while keyboard has focus
   bool keyboard_has_focus_ = false;
   xe::ui::KeyboardDialog* keyboard_dialog_ = nullptr;

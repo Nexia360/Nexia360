@@ -19,7 +19,8 @@ namespace ui {
 
 SigninUI::SigninUI(xe::ui::Window* window, xe::ui::ImGuiDrawer* imgui_drawer,
                    KernelState* kernel_state, ProfileManager* profile_manager,
-                   uint32_t last_used_slot, uint32_t users_needed, uint32_t flags)
+                   uint32_t last_used_slot, uint32_t users_needed,
+                   uint32_t flags)
     : XamDialog(imgui_drawer),
       window_(window),
       kernel_state_(kernel_state),
@@ -36,7 +37,7 @@ SigninUI::SigninUI(xe::ui::Window* window, xe::ui::ImGuiDrawer* imgui_drawer,
 void SigninUI::OnDraw(ImGuiIO& io) {
   auto* drawer = imgui_drawer();
   auto* focus_manager = drawer->GetFocusManager();
-  
+
   // Wait for button release before closing to prevent input bleed
   if (pending_close_) {
     if (!drawer->IsAnyGamepadActionPressed()) {
@@ -61,10 +62,10 @@ void SigninUI::OnDraw(ImGuiIO& io) {
     first_draw = true;
     ReloadProfiles(true, flags_);
   }
-  
+
   // Get input from focus manager (returns no input during 500ms cooldown)
   const auto& input = focus_manager->XamInputFocus("SigninUI");
-  
+
   // Handle Back/B button to close
   if (input.ShouldClose()) {
     ImGui::CloseCurrentPopup();
@@ -170,7 +171,7 @@ void SigninUI::OnDraw(ImGuiIO& io) {
       } else {
         xeDrawProfileContent(imgui_drawer(), xuid, slot, account, nullptr, {},
                              {}, nullptr);
-        
+
         // Y button opens modify profile dialog
         if (ImGui::IsItemFocused() && input.y_released) {
           // Open GamercardUI for this profile as child
@@ -246,12 +247,12 @@ void SigninUI::OnDraw(ImGuiIO& io) {
 
     bool ok_clicked = ImGui::Button("OK");
     bool ok_focused = ImGui::IsItemFocused();
-    
+
     // A button on release activates focused OK button
     if (input.Activated() && ok_focused) {
       ok_clicked = true;
     }
-    
+
     if (ok_clicked) {
       std::map<uint8_t, uint64_t> profile_map;
       for (uint32_t i = 0; i < users_needed_; i++) {
@@ -270,12 +271,12 @@ void SigninUI::OnDraw(ImGuiIO& io) {
 
     bool cancel_clicked = ImGui::Button("Cancel");
     bool cancel_focused = ImGui::IsItemFocused();
-    
+
     // A button on release activates focused Cancel button
     if (input.Activated() && cancel_focused) {
       cancel_clicked = true;
     }
-    
+
     if (cancel_clicked) {
       ImGui::CloseCurrentPopup();
       pending_close_ = true;

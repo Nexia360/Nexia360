@@ -10,41 +10,41 @@
 /**
  * GAMEPAD INPUT HANDLING WITH UIFocusManager
  * ==========================================
- * 
+ *
  * This file demonstrates proper usage of UIFocusManager for gamepad input
  * routing in dialogs. Key patterns used here:
- * 
+ *
  * 1. REGISTRATION (static bool pattern):
  *    Each dialog uses a static bool to track if it's registered on the stack.
  *    This handles dialogs that persist across frames.
- *    
+ *
  *    static bool registered = false;
  *    if (!registered) {
  *      focus_manager->UISetFocus("MyDialog");
  *      registered = true;
  *    }
- * 
+ *
  * 2. INPUT RETRIEVAL:
  *    const auto& input = focus_manager->XamInputFocus("MyDialog");
  *    // input will be kNoInput if another dialog is on top
- * 
+ *
  * 3. BUTTON ACTIVATION (release-based):
  *    if (ImGui::Button("OK") || (ImGui::IsItemFocused() && input.Activated()))
  *    // Activated() = A button was just RELEASED
- * 
+ *
  * 4. CLOSE HANDLING:
  *    Standard dialogs: if (input.ShouldClose()) { ... }  // Back OR B
  *    Keyboard dialogs: if (input.BackClose()) { ... }    // Only Back
- * 
+ *
  * 5. CLEANUP:
  *    focus_manager->UIDropFocus("MyDialog");
  *    registered = false;
- * 
+ *
  * 6. OPENING CHILD DIALOGS:
  *    // Parent adds child to stack BEFORE creating it
  *    focus_manager->UISetFocus("ChildDialog");
  *    new ChildDialog(...);
- * 
+ *
  * See ui/ui_focus_manager.h for full documentation.
  */
 
@@ -73,7 +73,7 @@ namespace app {
 void NoProfileDialog::OnDraw(ImGuiIO& io) {
   auto* imgui_drawer = emulator_window_->imgui_drawer();
   auto* focus_manager = imgui_drawer->GetFocusManager();
-  
+
   // UIFocusManager: Register on first draw using static bool pattern
   static bool registered = false;
   if (!registered) {
@@ -128,7 +128,7 @@ void NoProfileDialog::OnDraw(ImGuiIO& io) {
       emulator_window_->emulator()->content_root());
 
   if (content_files.empty()) {
-    if (ImGui::Button("Create Profile") || 
+    if (ImGui::Button("Create Profile") ||
         (ImGui::IsItemFocused() && input.Activated())) {
       // CreateProfileUI is child of NoProfileDialog
       focus_manager->UIChildFocus("NoProfileDialog", "CreateProfileUI");
@@ -136,7 +136,7 @@ void NoProfileDialog::OnDraw(ImGuiIO& io) {
                                            emulator_window_->emulator());
     }
   } else {
-    if (ImGui::Button("Create profile & migrate data") || 
+    if (ImGui::Button("Create profile & migrate data") ||
         (ImGui::IsItemFocused() && input.Activated())) {
       focus_manager->UIChildFocus("NoProfileDialog", "CreateProfileUI");
       new kernel::xam::ui::CreateProfileUI(emulator_window_->imgui_drawer(),
@@ -145,7 +145,7 @@ void NoProfileDialog::OnDraw(ImGuiIO& io) {
   }
 
   ImGui::SameLine();
-  if (ImGui::Button("Open profile menu") || 
+  if (ImGui::Button("Open profile menu") ||
       (ImGui::IsItemFocused() && input.Activated())) {
     emulator_window_->ToggleProfilesConfigDialog();
   }
@@ -154,12 +154,12 @@ void NoProfileDialog::OnDraw(ImGuiIO& io) {
   if (ImGui::Button("Close") || (ImGui::IsItemFocused() && input.Activated())) {
     pending_close_ = true;
   }
-  
+
   // Back or B button closes
   if (input.ShouldClose()) {
     pending_close_ = true;
   }
-  
+
   if (pending_close_) {
     ImGui::End();
     focus_manager->UIDropFocus("NoProfileDialog");
@@ -168,7 +168,7 @@ void NoProfileDialog::OnDraw(ImGuiIO& io) {
     delete this;
     return;
   }
-  
+
   // X button clicked (mouse)
   if (!dialog_open) {
     focus_manager->UIDropFocus("NoProfileDialog");
@@ -440,7 +440,7 @@ void ProfileConfigDialog::OnDraw(ImGuiIO& io) {
 
     // Draw profile content manually for click/long-press handling
     const ImVec2 start_position = ImGui::GetCursorPos();
-    
+
     ImGui::BeginGroup();
     {
       if (profile_icon) {
@@ -455,19 +455,20 @@ void ProfileConfigDialog::OnDraw(ImGuiIO& io) {
           ImGui::Dummy(xe::ui::default_image_icon_size);
         }
       }
-      
+
       ImGui::SameLine();
-      
+
       ImGui::BeginGroup();
       {
         ImGui::TextUnformatted(
             fmt::format("User: {}\n", account.GetGamertagString()).c_str());
         ImGui::TextUnformatted(fmt::format("XUID: {:016X}  \n", xuid).c_str());
-        
-        const std::string live_enabled = fmt::format(
-            "Xbox Live Enabled: {}", account.IsLiveEnabled() ? "True" : "False");
+
+        const std::string live_enabled =
+            fmt::format("Xbox Live Enabled: {}",
+                        account.IsLiveEnabled() ? "True" : "False");
         ImGui::TextUnformatted(live_enabled.c_str());
-        
+
         if (user_index != XUserIndexAny) {
           ImGui::TextUnformatted(
               fmt::format("Assigned to slot: {}\n", user_index + 1).c_str());
@@ -478,14 +479,14 @@ void ProfileConfigDialog::OnDraw(ImGuiIO& io) {
       ImGui::EndGroup();
     }
     ImGui::EndGroup();
-    
+
     // Create selectable overlay for click detection
     const ImVec2 end_draw_position =
         ImVec2(ImGui::GetCursorPos().x - start_position.x,
                ImGui::GetCursorPos().y - start_position.y);
-    
+
     ImGui::SetCursorPos(start_position);
-    
+
     // Track selection and press state
     bool is_selected = (selected_xuid_ == xuid);
     if (ImGui::Selectable("##ProfileSelectable", is_selected,
@@ -493,23 +494,23 @@ void ProfileConfigDialog::OnDraw(ImGuiIO& io) {
                           end_draw_position)) {
       selected_xuid_ = xuid;
     }
-    
+
     // Handle gamepad A button for this item
     bool item_focused = ImGui::IsItemFocused();
     bool a_pressed = input.a_pressed;
     bool a_released = input.a_released;
-    
+
     // Also handle mouse click
     bool mouse_clicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
     bool mouse_released = ImGui::IsItemDeactivated();
-    
+
     // Y button opens Modify Profile when item is focused
     if (item_focused && input.y_released) {
       new kernel::xam::ui::GamercardUI(
           emulator_window_->window(), emulator_window_->imgui_drawer(),
           emulator_window_->emulator()->kernel_state(), xuid);
     }
-    
+
     // A button or mouse click toggles login state
     if ((item_focused && a_released) || (mouse_clicked && mouse_released)) {
       if (user_index == XUserIndexAny) {
@@ -526,7 +527,7 @@ void ProfileConfigDialog::OnDraw(ImGuiIO& io) {
         LoadProfileIcon(xuid);
       }
     }
-    
+
     // Right-click context menu still works
     if (!context_menu_fun()) {
       ImGui::PopID();
@@ -540,7 +541,7 @@ void ProfileConfigDialog::OnDraw(ImGuiIO& io) {
 
   ImGui::Spacing();
 
-  if (ImGui::Button("Create Profile") || 
+  if (ImGui::Button("Create Profile") ||
       (ImGui::IsItemFocused() && input.Activated())) {
     focus_manager->UISetFocus("CreateProfileUI");
     new kernel::xam::ui::CreateProfileUI(emulator_window_->imgui_drawer(),
@@ -609,7 +610,7 @@ void ManagerDialog::OnDraw(ImGuiIO& io) {
   ImVec2 center = viewport->GetCenter();
 
   ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-  
+
   bool popup_open = true;
   if (ImGui::BeginPopupModal("Manager", &popup_open,
                              ImGuiWindowFlags_AlwaysAutoResize)) {
@@ -626,7 +627,7 @@ void ManagerDialog::OnDraw(ImGuiIO& io) {
     ImGui::SetWindowFontScale(1.2f);
 
     ImGui::BeginDisabled(is_profile_signed_in);
-    if (ImGui::Button("Friends", btn_size) || 
+    if (ImGui::Button("Friends", btn_size) ||
         (ImGui::IsItemFocused() && input.Activated())) {
       focus_manager->UISetFocus("FriendsDialog");
       friends_args.friends_open = true;
@@ -638,7 +639,7 @@ void ManagerDialog::OnDraw(ImGuiIO& io) {
 
     ImGui::BeginDisabled(is_profile_signed_in ||
                          !kernel::XLiveAPI::IsConnectedToServer());
-    if (ImGui::Button("Sessions", btn_size) || 
+    if (ImGui::Button("Sessions", btn_size) ||
         (ImGui::IsItemFocused() && input.Activated())) {
       focus_manager->UISetFocus("SessionsDialog");
       sessions_args.sessions_open = true;
@@ -657,7 +658,7 @@ void ManagerDialog::OnDraw(ImGuiIO& io) {
                          0, 3.0f);
     }
 
-    if (ImGui::Button("Delete Netplay Profiles", btn_size) || 
+    if (ImGui::Button("Delete Netplay Profiles", btn_size) ||
         drawer->GamepadButtonActivated()) {
       ImGui::OpenPopup("Delete Profiles");
     }
@@ -669,7 +670,7 @@ void ManagerDialog::OnDraw(ImGuiIO& io) {
     ImGui::SameLine();
 
     ImGui::BeginDisabled(is_profile_signed_in);
-    if (ImGui::Button("Refresh Presence", btn_size) || 
+    if (ImGui::Button("Refresh Presence", btn_size) ||
         drawer->GamepadButtonActivated()) {
       emulator_window_->emulator()->kernel_state()->BroadcastNotification(
           kXNotificationFriendsPresenceChanged, user_index);
@@ -698,9 +699,11 @@ void ManagerDialog::OnDraw(ImGuiIO& io) {
       sessions.clear();
     }
 
-    xeDrawFriendsContent(imgui_drawer(), focus_manager, profile, friends_args, &presences);
+    xeDrawFriendsContent(imgui_drawer(), focus_manager, profile, friends_args,
+                         &presences);
 
-    xeDrawSessionsContent(imgui_drawer(), focus_manager, profile, sessions_args, &sessions);
+    xeDrawSessionsContent(imgui_drawer(), focus_manager, profile, sessions_args,
+                          &sessions);
 
     if (!deletion_args.deleted_profiles_open) {
       deletion_args.first_draw = false;
@@ -761,7 +764,8 @@ void ManagerDialog::OnDraw(ImGuiIO& io) {
 
       ImGui::SameLine();
 
-      if (ImGui::Button("Cancel", btn_size) || drawer->GamepadButtonActivated()) {
+      if (ImGui::Button("Cancel", btn_size) ||
+          drawer->GamepadButtonActivated()) {
         ImGui::CloseCurrentPopup();
       }
 

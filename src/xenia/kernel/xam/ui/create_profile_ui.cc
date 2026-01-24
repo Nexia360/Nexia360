@@ -20,7 +20,7 @@ namespace ui {
 void CreateProfileUI::OnDraw(ImGuiIO& io) {
   auto* drawer = imgui_drawer();
   auto* focus_manager = drawer->GetFocusManager();
-  
+
   // UIFocusManager: Wait for button release before closing
   // This prevents input bleed to the parent dialog
   if (pending_close_) {
@@ -40,7 +40,7 @@ void CreateProfileUI::OnDraw(ImGuiIO& io) {
     has_opened_ = false;
     return;
   }
-  
+
   if (!has_opened_) {
     ImGui::OpenPopup("Create Profile");
     has_opened_ = true;
@@ -64,9 +64,10 @@ void CreateProfileUI::OnDraw(ImGuiIO& io) {
   const auto& input = focus_manager->XamInputFocus("CreateProfileUI");
 
   ImGui::TextUnformatted("Gamertag:");
-  
+
   // Keyboard is a child of CreateProfileUI
-  std::string display_text = strlen(gamertag_) > 0 ? gamertag_ : "(click to enter)";
+  std::string display_text =
+      strlen(gamertag_) > 0 ? gamertag_ : "(click to enter)";
   if (ImGui::Button(display_text.c_str(), ImVec2(200, 0)) ||
       (ImGui::IsItemFocused() && input.Activated())) {
     // Open keyboard dialog
@@ -74,23 +75,21 @@ void CreateProfileUI::OnDraw(ImGuiIO& io) {
       // Set focus BEFORE opening keyboard
       keyboard_has_focus_ = true;
       XamKeyboardSetFocus(true);
-      
+
       // Keyboard is child of CreateProfileUI
       keyboard_dialog_ = xe::ui::KeyboardDialog::ShowKeyboard(
-          drawer,
-          "Enter Gamertag",
-          gamertag_,
+          drawer, "Enter Gamertag", gamertag_,
           xe::ui::KeyboardDialog::InputType::kText,
           nullptr,  // Don't use input callback - use close callback instead
           "CreateProfileUI",  // Parent
           "KeyboardDialog");  // This dialog's name
-      
+
       // Pre-close callback: clear focus BEFORE keyboard closes
       keyboard_dialog_->set_pre_close_callback([this]() {
         keyboard_has_focus_ = false;
         XamKeyboardSetFocus(false);
       });
-      
+
       // Close callback: handle result AFTER keyboard closes
       keyboard_dialog_->set_close_callback([this]() {
         if (!keyboard_dialog_->was_cancelled()) {
@@ -104,7 +103,7 @@ void CreateProfileUI::OnDraw(ImGuiIO& io) {
       });
     }
   }
-  
+
   ImGui::Spacing();
 
   ImGui::Checkbox("Xbox Live Enabled", &live_enabled);
@@ -118,7 +117,8 @@ void CreateProfileUI::OnDraw(ImGuiIO& io) {
 
   ImGui::BeginDisabled(!valid);
   // UIFocusManager: Use Activated() (A released) for button actions
-  if (ImGui::Button("Create") || (ImGui::IsItemFocused() && input.Activated())) {
+  if (ImGui::Button("Create") ||
+      (ImGui::IsItemFocused() && input.Activated())) {
     bool autologin = (profile_manager->GetAccountCount() == 0);
 
     uint32_t reserved_flags = 0;
@@ -139,19 +139,20 @@ void CreateProfileUI::OnDraw(ImGuiIO& io) {
   ImGui::EndDisabled();
   ImGui::SameLine();
 
-  if (ImGui::Button("Cancel") || (ImGui::IsItemFocused() && input.Activated())) {
+  if (ImGui::Button("Cancel") ||
+      (ImGui::IsItemFocused() && input.Activated())) {
     std::fill(std::begin(gamertag_), std::end(gamertag_), '\0');
     pending_close_ = true;
     ImGui::CloseCurrentPopup();
   }
-  
+
   // UIFocusManager: Standard close - Back OR B closes (not a keyboard dialog)
   if (input.ShouldClose()) {
     std::fill(std::begin(gamertag_), std::end(gamertag_), '\0');
     pending_close_ = true;
     ImGui::CloseCurrentPopup();
   }
-  
+
   // Show controller hints
   ImGui::Spacing();
   ImGui::TextDisabled("A: Select | B/Back: Cancel");
@@ -160,7 +161,7 @@ void CreateProfileUI::OnDraw(ImGuiIO& io) {
     pending_close_ = true;
     ImGui::CloseCurrentPopup();
   }
-  
+
   ImGui::EndPopup();
 }
 

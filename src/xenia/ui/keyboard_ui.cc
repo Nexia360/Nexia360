@@ -48,137 +48,204 @@ static const ImVec4 kDangerColor = ImVec4(0.6f, 0.1f, 0.1f, 0.80f);
 // Keyboard layouts
 static const std::vector<std::vector<KeyDef>> kLowercaseLayout = {
     // Row 0: Numbers
-    {{"1", "1", 1.0f, kNormalColor}, {"2", "2", 1.0f, kNormalColor},
-     {"3", "3", 1.0f, kNormalColor}, {"4", "4", 1.0f, kNormalColor},
-     {"5", "5", 1.0f, kNormalColor}, {"6", "6", 1.0f, kNormalColor},
-     {"7", "7", 1.0f, kNormalColor}, {"8", "8", 1.0f, kNormalColor},
-     {"9", "9", 1.0f, kNormalColor}, {"0", "0", 1.0f, kNormalColor}},
+    {{"1", "1", 1.0f, kNormalColor},
+     {"2", "2", 1.0f, kNormalColor},
+     {"3", "3", 1.0f, kNormalColor},
+     {"4", "4", 1.0f, kNormalColor},
+     {"5", "5", 1.0f, kNormalColor},
+     {"6", "6", 1.0f, kNormalColor},
+     {"7", "7", 1.0f, kNormalColor},
+     {"8", "8", 1.0f, kNormalColor},
+     {"9", "9", 1.0f, kNormalColor},
+     {"0", "0", 1.0f, kNormalColor}},
     // Row 1: QWERTY top
-    {{"q", "q", 1.0f, kNormalColor}, {"w", "w", 1.0f, kNormalColor},
-     {"e", "e", 1.0f, kNormalColor}, {"r", "r", 1.0f, kNormalColor},
-     {"t", "t", 1.0f, kNormalColor}, {"y", "y", 1.0f, kNormalColor},
-     {"u", "u", 1.0f, kNormalColor}, {"i", "i", 1.0f, kNormalColor},
-     {"o", "o", 1.0f, kNormalColor}, {"p", "p", 1.0f, kNormalColor}},
+    {{"q", "q", 1.0f, kNormalColor},
+     {"w", "w", 1.0f, kNormalColor},
+     {"e", "e", 1.0f, kNormalColor},
+     {"r", "r", 1.0f, kNormalColor},
+     {"t", "t", 1.0f, kNormalColor},
+     {"y", "y", 1.0f, kNormalColor},
+     {"u", "u", 1.0f, kNormalColor},
+     {"i", "i", 1.0f, kNormalColor},
+     {"o", "o", 1.0f, kNormalColor},
+     {"p", "p", 1.0f, kNormalColor}},
     // Row 2: QWERTY middle
-    {{"a", "a", 1.0f, kNormalColor}, {"s", "s", 1.0f, kNormalColor},
-     {"d", "d", 1.0f, kNormalColor}, {"f", "f", 1.0f, kNormalColor},
-     {"g", "g", 1.0f, kNormalColor}, {"h", "h", 1.0f, kNormalColor},
-     {"j", "j", 1.0f, kNormalColor}, {"k", "k", 1.0f, kNormalColor},
-     {"l", "l", 1.0f, kNormalColor}, {"'", "'", 1.0f, kNormalColor}},
+    {{"a", "a", 1.0f, kNormalColor},
+     {"s", "s", 1.0f, kNormalColor},
+     {"d", "d", 1.0f, kNormalColor},
+     {"f", "f", 1.0f, kNormalColor},
+     {"g", "g", 1.0f, kNormalColor},
+     {"h", "h", 1.0f, kNormalColor},
+     {"j", "j", 1.0f, kNormalColor},
+     {"k", "k", 1.0f, kNormalColor},
+     {"l", "l", 1.0f, kNormalColor},
+     {"'", "'", 1.0f, kNormalColor}},
     // Row 3: QWERTY bottom + punctuation
-    {{"z", "z", 1.0f, kNormalColor}, {"x", "x", 1.0f, kNormalColor},
-     {"c", "c", 1.0f, kNormalColor}, {"v", "v", 1.0f, kNormalColor},
-     {"b", "b", 1.0f, kNormalColor}, {"n", "n", 1.0f, kNormalColor},
-     {"m", "m", 1.0f, kNormalColor}, {",", ",", 1.0f, kNormalColor},
-     {".", ".", 1.0f, kNormalColor}, {"/", "/", 1.0f, kNormalColor}},
+    {{"z", "z", 1.0f, kNormalColor},
+     {"x", "x", 1.0f, kNormalColor},
+     {"c", "c", 1.0f, kNormalColor},
+     {"v", "v", 1.0f, kNormalColor},
+     {"b", "b", 1.0f, kNormalColor},
+     {"n", "n", 1.0f, kNormalColor},
+     {"m", "m", 1.0f, kNormalColor},
+     {",", ",", 1.0f, kNormalColor},
+     {".", ".", 1.0f, kNormalColor},
+     {"/", "/", 1.0f, kNormalColor}},
     // Row 4: More punctuation
-    {{"-", "-", 1.0f, kNormalColor}, {"_", "_", 1.0f, kNormalColor},
-     {":", ":", 1.0f, kNormalColor}, {";", ";", 1.0f, kNormalColor},
-     {"\"", "\"", 1.0f, kNormalColor}, {"?", "?", 1.0f, kNormalColor},
-     {"!", "!", 1.0f, kNormalColor}, {"@", "@", 1.0f, kNormalColor},
-     {" # ", "#", 1.0f, kNormalColor}, {"&", "&", 1.0f, kNormalColor}},
+    {{"-", "-", 1.0f, kNormalColor},
+     {"_", "_", 1.0f, kNormalColor},
+     {":", ":", 1.0f, kNormalColor},
+     {";", ";", 1.0f, kNormalColor},
+     {"\"", "\"", 1.0f, kNormalColor},
+     {"?", "?", 1.0f, kNormalColor},
+     {"!", "!", 1.0f, kNormalColor},
+     {"@", "@", 1.0f, kNormalColor},
+     {" # ", "#", 1.0f, kNormalColor},
+     {"&", "&", 1.0f, kNormalColor}},
     // Row 5: Special keys
     {{"Shift", nullptr, 1.5f, kSpecialColor},
      {"Space", " ", 3.0f, kAccentColor},
      {"<-", nullptr, 1.0f, kDangerColor},
      {"Cancel", nullptr, 1.5f, kDangerColor},
-     {"Done", nullptr, 2.0f, kAccentColor}}
-};
+     {"Done", nullptr, 2.0f, kAccentColor}}};
 
 static const std::vector<std::vector<KeyDef>> kUppercaseLayout = {
     // Row 0: Symbols
-    {{"!", "!", 1.0f, kNormalColor}, {"@", "@", 1.0f, kNormalColor},
-     {" # ", "#", 1.0f, kNormalColor}, {"$", "$", 1.0f, kNormalColor},
-     {"%", "%", 1.0f, kNormalColor}, {"^", "^", 1.0f, kNormalColor},
-     {"&", "&", 1.0f, kNormalColor}, {"*", "*", 1.0f, kNormalColor},
-     {"(", "(", 1.0f, kNormalColor}, {")", ")", 1.0f, kNormalColor}},
+    {{"!", "!", 1.0f, kNormalColor},
+     {"@", "@", 1.0f, kNormalColor},
+     {" # ", "#", 1.0f, kNormalColor},
+     {"$", "$", 1.0f, kNormalColor},
+     {"%", "%", 1.0f, kNormalColor},
+     {"^", "^", 1.0f, kNormalColor},
+     {"&", "&", 1.0f, kNormalColor},
+     {"*", "*", 1.0f, kNormalColor},
+     {"(", "(", 1.0f, kNormalColor},
+     {")", ")", 1.0f, kNormalColor}},
     // Row 1: QWERTY top uppercase
-    {{"Q", "Q", 1.0f, kNormalColor}, {"W", "W", 1.0f, kNormalColor},
-     {"E", "E", 1.0f, kNormalColor}, {"R", "R", 1.0f, kNormalColor},
-     {"T", "T", 1.0f, kNormalColor}, {"Y", "Y", 1.0f, kNormalColor},
-     {"U", "U", 1.0f, kNormalColor}, {"I", "I", 1.0f, kNormalColor},
-     {"O", "O", 1.0f, kNormalColor}, {"P", "P", 1.0f, kNormalColor}},
+    {{"Q", "Q", 1.0f, kNormalColor},
+     {"W", "W", 1.0f, kNormalColor},
+     {"E", "E", 1.0f, kNormalColor},
+     {"R", "R", 1.0f, kNormalColor},
+     {"T", "T", 1.0f, kNormalColor},
+     {"Y", "Y", 1.0f, kNormalColor},
+     {"U", "U", 1.0f, kNormalColor},
+     {"I", "I", 1.0f, kNormalColor},
+     {"O", "O", 1.0f, kNormalColor},
+     {"P", "P", 1.0f, kNormalColor}},
     // Row 2: QWERTY middle uppercase
-    {{"A", "A", 1.0f, kNormalColor}, {"S", "S", 1.0f, kNormalColor},
-     {"D", "D", 1.0f, kNormalColor}, {"F", "F", 1.0f, kNormalColor},
-     {"G", "G", 1.0f, kNormalColor}, {"H", "H", 1.0f, kNormalColor},
-     {"J", "J", 1.0f, kNormalColor}, {"K", "K", 1.0f, kNormalColor},
-     {"L", "L", 1.0f, kNormalColor}, {"\"", "\"", 1.0f, kNormalColor}},
+    {{"A", "A", 1.0f, kNormalColor},
+     {"S", "S", 1.0f, kNormalColor},
+     {"D", "D", 1.0f, kNormalColor},
+     {"F", "F", 1.0f, kNormalColor},
+     {"G", "G", 1.0f, kNormalColor},
+     {"H", "H", 1.0f, kNormalColor},
+     {"J", "J", 1.0f, kNormalColor},
+     {"K", "K", 1.0f, kNormalColor},
+     {"L", "L", 1.0f, kNormalColor},
+     {"\"", "\"", 1.0f, kNormalColor}},
     // Row 3: QWERTY bottom uppercase + punctuation
-    {{"Z", "Z", 1.0f, kNormalColor}, {"X", "X", 1.0f, kNormalColor},
-     {"C", "C", 1.0f, kNormalColor}, {"V", "V", 1.0f, kNormalColor},
-     {"B", "B", 1.0f, kNormalColor}, {"N", "N", 1.0f, kNormalColor},
-     {"M", "M", 1.0f, kNormalColor}, {"<", "<", 1.0f, kNormalColor},
-     {">", ">", 1.0f, kNormalColor}, {"?", "?", 1.0f, kNormalColor}},
+    {{"Z", "Z", 1.0f, kNormalColor},
+     {"X", "X", 1.0f, kNormalColor},
+     {"C", "C", 1.0f, kNormalColor},
+     {"V", "V", 1.0f, kNormalColor},
+     {"B", "B", 1.0f, kNormalColor},
+     {"N", "N", 1.0f, kNormalColor},
+     {"M", "M", 1.0f, kNormalColor},
+     {"<", "<", 1.0f, kNormalColor},
+     {">", ">", 1.0f, kNormalColor},
+     {"?", "?", 1.0f, kNormalColor}},
     // Row 4: More punctuation
-    {{"+", "+", 1.0f, kNormalColor}, {"=", "=", 1.0f, kNormalColor},
-     {"{", "{", 1.0f, kNormalColor}, {"}", "}", 1.0f, kNormalColor},
-     {"[", "[", 1.0f, kNormalColor}, {"]", "]", 1.0f, kNormalColor},
-     {"\\", "\\", 1.0f, kNormalColor}, {"|", "|", 1.0f, kNormalColor},
-     {"~", "~", 1.0f, kNormalColor}, {"`", "`", 1.0f, kNormalColor}},
+    {{"+", "+", 1.0f, kNormalColor},
+     {"=", "=", 1.0f, kNormalColor},
+     {"{", "{", 1.0f, kNormalColor},
+     {"}", "}", 1.0f, kNormalColor},
+     {"[", "[", 1.0f, kNormalColor},
+     {"]", "]", 1.0f, kNormalColor},
+     {"\\", "\\", 1.0f, kNormalColor},
+     {"|", "|", 1.0f, kNormalColor},
+     {"~", "~", 1.0f, kNormalColor},
+     {"`", "`", 1.0f, kNormalColor}},
     // Row 5: Special keys
     {{"Shift", nullptr, 1.5f, kSpecialColor},
      {"Space", " ", 3.0f, kAccentColor},
      {"<-", nullptr, 1.0f, kDangerColor},
      {"Cancel", nullptr, 1.5f, kDangerColor},
-     {"Done", nullptr, 2.0f, kAccentColor}}
-};
+     {"Done", nullptr, 2.0f, kAccentColor}}};
 
 static const std::vector<std::vector<KeyDef>> kSymbolLayout = {
     // Row 0: More symbols
-    {{"~", "~", 1.0f, kNormalColor}, {"`", "`", 1.0f, kNormalColor},
-     {"|", "|", 1.0f, kNormalColor}, {"\\", "\\", 1.0f, kNormalColor},
-     {"<", "<", 1.0f, kNormalColor}, {">", ">", 1.0f, kNormalColor},
-     {"{", "{", 1.0f, kNormalColor}, {"}", "}", 1.0f, kNormalColor},
-     {"[", "[", 1.0f, kNormalColor}, {"]", "]", 1.0f, kNormalColor}},
+    {{"~", "~", 1.0f, kNormalColor},
+     {"`", "`", 1.0f, kNormalColor},
+     {"|", "|", 1.0f, kNormalColor},
+     {"\\", "\\", 1.0f, kNormalColor},
+     {"<", "<", 1.0f, kNormalColor},
+     {">", ">", 1.0f, kNormalColor},
+     {"{", "{", 1.0f, kNormalColor},
+     {"}", "}", 1.0f, kNormalColor},
+     {"[", "[", 1.0f, kNormalColor},
+     {"]", "]", 1.0f, kNormalColor}},
     // Row 1: Punctuation
-    {{"!", "!", 1.0f, kNormalColor}, {"@", "@", 1.0f, kNormalColor},
-     {" # ", "#", 1.0f, kNormalColor}, {"$", "$", 1.0f, kNormalColor},
-     {"%", "%", 1.0f, kNormalColor}, {"^", "^", 1.0f, kNormalColor},
-     {"&", "&", 1.0f, kNormalColor}, {"*", "*", 1.0f, kNormalColor},
-     {"(", "(", 1.0f, kNormalColor}, {")", ")", 1.0f, kNormalColor}},
+    {{"!", "!", 1.0f, kNormalColor},
+     {"@", "@", 1.0f, kNormalColor},
+     {" # ", "#", 1.0f, kNormalColor},
+     {"$", "$", 1.0f, kNormalColor},
+     {"%", "%", 1.0f, kNormalColor},
+     {"^", "^", 1.0f, kNormalColor},
+     {"&", "&", 1.0f, kNormalColor},
+     {"*", "*", 1.0f, kNormalColor},
+     {"(", "(", 1.0f, kNormalColor},
+     {")", ")", 1.0f, kNormalColor}},
     // Row 2: More punctuation
-    {{"-", "-", 1.0f, kNormalColor}, {"=", "=", 1.0f, kNormalColor},
-     {"+", "+", 1.0f, kNormalColor}, {"_", "_", 1.0f, kNormalColor},
-     {":", ":", 1.0f, kNormalColor}, {";", ";", 1.0f, kNormalColor},
-     {"\"", "\"", 1.0f, kNormalColor}, {"'", "'", 1.0f, kNormalColor},
-     {",", ",", 1.0f, kNormalColor}, {".", ".", 1.0f, kNormalColor}},
+    {{"-", "-", 1.0f, kNormalColor},
+     {"=", "=", 1.0f, kNormalColor},
+     {"+", "+", 1.0f, kNormalColor},
+     {"_", "_", 1.0f, kNormalColor},
+     {":", ":", 1.0f, kNormalColor},
+     {";", ";", 1.0f, kNormalColor},
+     {"\"", "\"", 1.0f, kNormalColor},
+     {"'", "'", 1.0f, kNormalColor},
+     {",", ",", 1.0f, kNormalColor},
+     {".", ".", 1.0f, kNormalColor}},
     // Row 3: Extra
-    {{"?", "?", 1.0f, kNormalColor}, {"/", "/", 1.0f, kNormalColor},
-     {"", "", 1.0f, kNormalColor}, {"", "", 1.0f, kNormalColor},
-     {"", "", 1.0f, kNormalColor}, {"", "", 1.0f, kNormalColor},
-     {"", "", 1.0f, kNormalColor}, {"", "", 1.0f, kNormalColor},
-     {"", "", 1.0f, kNormalColor}, {"", "", 1.0f, kNormalColor}},
+    {{"?", "?", 1.0f, kNormalColor},
+     {"/", "/", 1.0f, kNormalColor},
+     {"", "", 1.0f, kNormalColor},
+     {"", "", 1.0f, kNormalColor},
+     {"", "", 1.0f, kNormalColor},
+     {"", "", 1.0f, kNormalColor},
+     {"", "", 1.0f, kNormalColor},
+     {"", "", 1.0f, kNormalColor},
+     {"", "", 1.0f, kNormalColor},
+     {"", "", 1.0f, kNormalColor}},
     // Row 4: Special keys
     {{"ABC", nullptr, 1.5f, kSpecialColor},
      {"Space", " ", 3.0f, kAccentColor},
      {"<-", nullptr, 1.0f, kDangerColor},
      {"Cancel", nullptr, 1.5f, kDangerColor},
-     {"Done", nullptr, 2.0f, kAccentColor}}
-};
+     {"Done", nullptr, 2.0f, kAccentColor}}};
 
 static const std::vector<std::vector<KeyDef>> kNumberLayout = {
     // Number pad style layout
-    {{"7", "7", 1.0f, kNormalColor}, {"8", "8", 1.0f, kNormalColor},
+    {{"7", "7", 1.0f, kNormalColor},
+     {"8", "8", 1.0f, kNormalColor},
      {"9", "9", 1.0f, kNormalColor}},
-    {{"4", "4", 1.0f, kNormalColor}, {"5", "5", 1.0f, kNormalColor},
+    {{"4", "4", 1.0f, kNormalColor},
+     {"5", "5", 1.0f, kNormalColor},
      {"6", "6", 1.0f, kNormalColor}},
-    {{"1", "1", 1.0f, kNormalColor}, {"2", "2", 1.0f, kNormalColor},
+    {{"1", "1", 1.0f, kNormalColor},
+     {"2", "2", 1.0f, kNormalColor},
      {"3", "3", 1.0f, kNormalColor}},
     {{"0", "0", 2.0f, kNormalColor}, {".", ".", 1.0f, kNormalColor}},
-    {{"<-", nullptr, 1.0f, kDangerColor}, 
+    {{"<-", nullptr, 1.0f, kDangerColor},
      {"Cancel", nullptr, 1.0f, kDangerColor},
-     {"Done", nullptr, 1.0f, kAccentColor}}
-};
+     {"Done", nullptr, 1.0f, kAccentColor}}};
 
-KeyboardDialog* KeyboardDialog::ShowKeyboard(ImGuiDrawer* imgui_drawer,
-                                            const std::string& title,
-                                            const std::string& initial_text,
-                                            InputType type,
-                                            InputCallback callback,
-                                            const std::string& focus_parent,
-                                            const std::string& focus_name) {
-  auto* dialog = new KeyboardDialog(imgui_drawer, title, initial_text, type, callback);
+KeyboardDialog* KeyboardDialog::ShowKeyboard(
+    ImGuiDrawer* imgui_drawer, const std::string& title,
+    const std::string& initial_text, InputType type, InputCallback callback,
+    const std::string& focus_parent, const std::string& focus_name) {
+  auto* dialog =
+      new KeyboardDialog(imgui_drawer, title, initial_text, type, callback);
   dialog->focus_parent_ = focus_parent;
   dialog->focus_name_ = focus_name;
   return dialog;
@@ -186,8 +253,7 @@ KeyboardDialog* KeyboardDialog::ShowKeyboard(ImGuiDrawer* imgui_drawer,
 
 KeyboardDialog::KeyboardDialog(ImGuiDrawer* imgui_drawer,
                                const std::string& title,
-                               const std::string& initial_text,
-                               InputType type,
+                               const std::string& initial_text, InputType type,
                                InputCallback callback)
     : ImGuiDialog(imgui_drawer),
       title_(title),
@@ -198,70 +264,88 @@ KeyboardDialog::KeyboardDialog(ImGuiDrawer* imgui_drawer,
   if (imgui_drawer) {
     imgui_drawer->SetControllerNavigationEnabled(true);
   }
-  
+
   // Record open time for input ignore delay
   open_time_ = std::chrono::duration_cast<std::chrono::milliseconds>(
-      std::chrono::steady_clock::now().time_since_epoch()).count();
+                   std::chrono::steady_clock::now().time_since_epoch())
+                   .count();
 }
 
 KeyboardDialog::~KeyboardDialog() {}
 
 void KeyboardDialog::OnDraw(ImGuiIO& io) {
   // Get current time
-  uint64_t current_time = std::chrono::duration_cast<std::chrono::milliseconds>(
-      std::chrono::steady_clock::now().time_since_epoch()).count();
-  
+  uint64_t current_time =
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now().time_since_epoch())
+          .count();
+
   // Check if we're still in the input ignore period
   bool ignore_inputs = (current_time - open_time_) < kInputIgnoreDelayMs;
-  
+
   // Poll XInput for controller state - needed since keyboard is a modal popup
 #if XE_PLATFORM_WIN32
   bool a_pressed = false;
   bool b_pressed = false;
   bool back_pressed = false;
-  
+
   for (DWORD i = 0; i < XUSER_MAX_COUNT; ++i) {
     XINPUT_STATE state;
     if (XInputGetState(i, &state) == ERROR_SUCCESS) {
       const auto& pad = state.Gamepad;
-      
+
       // Track action button states (don't register with ImGui directly)
       a_pressed = (pad.wButtons & XINPUT_GAMEPAD_A) != 0;
       b_pressed = (pad.wButtons & XINPUT_GAMEPAD_B) != 0;
       back_pressed = (pad.wButtons & XINPUT_GAMEPAD_BACK) != 0;
-      
+
       // Only register D-pad and sticks for navigation
-      io.AddKeyEvent(ImGuiKey_GamepadDpadLeft, (pad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT) != 0);
-      io.AddKeyEvent(ImGuiKey_GamepadDpadRight, (pad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) != 0);
-      io.AddKeyEvent(ImGuiKey_GamepadDpadUp, (pad.wButtons & XINPUT_GAMEPAD_DPAD_UP) != 0);
-      io.AddKeyEvent(ImGuiKey_GamepadDpadDown, (pad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN) != 0);
-      io.AddKeyEvent(ImGuiKey_GamepadL1, (pad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0);
-      io.AddKeyEvent(ImGuiKey_GamepadR1, (pad.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER) != 0);
-      
+      io.AddKeyEvent(ImGuiKey_GamepadDpadLeft,
+                     (pad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT) != 0);
+      io.AddKeyEvent(ImGuiKey_GamepadDpadRight,
+                     (pad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) != 0);
+      io.AddKeyEvent(ImGuiKey_GamepadDpadUp,
+                     (pad.wButtons & XINPUT_GAMEPAD_DPAD_UP) != 0);
+      io.AddKeyEvent(ImGuiKey_GamepadDpadDown,
+                     (pad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN) != 0);
+      io.AddKeyEvent(ImGuiKey_GamepadL1,
+                     (pad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0);
+      io.AddKeyEvent(ImGuiKey_GamepadR1,
+                     (pad.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER) != 0);
+
       // Left stick with deadzone
       const SHORT STICK_DEADZONE = 7849;
       float lx = 0.0f, ly = 0.0f;
       if (pad.sThumbLX < -STICK_DEADZONE) {
-        lx = (float)(pad.sThumbLX + STICK_DEADZONE) / (32768.0f - STICK_DEADZONE);
+        lx = (float)(pad.sThumbLX + STICK_DEADZONE) /
+             (32768.0f - STICK_DEADZONE);
       } else if (pad.sThumbLX > STICK_DEADZONE) {
-        lx = (float)(pad.sThumbLX - STICK_DEADZONE) / (32767.0f - STICK_DEADZONE);
+        lx = (float)(pad.sThumbLX - STICK_DEADZONE) /
+             (32767.0f - STICK_DEADZONE);
       }
       if (pad.sThumbLY < -STICK_DEADZONE) {
-        ly = (float)(pad.sThumbLY + STICK_DEADZONE) / (32768.0f - STICK_DEADZONE);
+        ly = (float)(pad.sThumbLY + STICK_DEADZONE) /
+             (32768.0f - STICK_DEADZONE);
       } else if (pad.sThumbLY > STICK_DEADZONE) {
-        ly = (float)(pad.sThumbLY - STICK_DEADZONE) / (32767.0f - STICK_DEADZONE);
+        ly = (float)(pad.sThumbLY - STICK_DEADZONE) /
+             (32767.0f - STICK_DEADZONE);
       }
-      io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickLeft, lx < 0.0f, lx < 0.0f ? -lx : 0.0f);
-      io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickRight, lx > 0.0f, lx > 0.0f ? lx : 0.0f);
-      io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickUp, ly > 0.0f, ly > 0.0f ? ly : 0.0f);
-      io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickDown, ly < 0.0f, ly < 0.0f ? -ly : 0.0f);
-      
+      io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickLeft, lx < 0.0f,
+                           lx < 0.0f ? -lx : 0.0f);
+      io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickRight, lx > 0.0f,
+                           lx > 0.0f ? lx : 0.0f);
+      io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickUp, ly > 0.0f,
+                           ly > 0.0f ? ly : 0.0f);
+      io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickDown, ly < 0.0f,
+                           ly < 0.0f ? -ly : 0.0f);
+
       // Only use first connected controller
       break;
     }
   }
-  
-  // During ignore period, consume inputs by updating state but not acting on them
+
+  // During ignore period, consume inputs by updating state but not acting on
+  // them
   if (ignore_inputs) {
     a_was_pressed_ = a_pressed;
     b_was_pressed_ = b_pressed;
@@ -276,7 +360,7 @@ void KeyboardDialog::OnDraw(ImGuiIO& io) {
       io.AddKeyEvent(ImGuiKey_GamepadFaceUp, false);
     }
     a_was_pressed_ = a_pressed;
-    
+
     // B button = backspace with repeat
     if (b_pressed) {
       if (!b_was_pressed_) {
@@ -301,7 +385,7 @@ void KeyboardDialog::OnDraw(ImGuiIO& io) {
       }
     }
     b_was_pressed_ = b_pressed;
-    
+
     // Back button = cancel (wait for release)
     if (back_pressed) {
       if (!back_was_pressed_) {
@@ -326,7 +410,7 @@ void KeyboardDialog::OnDraw(ImGuiIO& io) {
         }
       }
     }
-    
+
     ImGui::SetNextWindowSize(ImVec2(700, 450), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(
         ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
@@ -346,7 +430,7 @@ void KeyboardDialog::OnDraw(ImGuiIO& io) {
 
   bool popup_open = true;
   bool should_close = false;
-  
+
   if (ImGui::BeginPopupModal(title_.c_str(), &popup_open, flags)) {
     // Draw input text field
     DrawTextInput();
@@ -357,9 +441,9 @@ void KeyboardDialog::OnDraw(ImGuiIO& io) {
 
     // Draw keyboard layout
     DrawKeyboardLayout();
-    
-    // Check if we're waiting to close (Done/Cancel/Back was pressed via gamepad)
-    // Wait until buttons are released before actually closing
+
+    // Check if we're waiting to close (Done/Cancel/Back was pressed via
+    // gamepad) Wait until buttons are released before actually closing
     if (!pending_close_action_.empty()) {
 #if XE_PLATFORM_WIN32
       bool any_pressed = false;
@@ -394,7 +478,7 @@ void KeyboardDialog::OnDraw(ImGuiIO& io) {
     cancelled_ = true;
     should_close = true;
   }
-  
+
   if (should_close) {
     Close();
   }
@@ -405,7 +489,7 @@ void KeyboardDialog::OnClose() {
   if (pre_close_callback_) {
     pre_close_callback_();
   }
-  
+
   // UIFocusManager: Drop focus if we were registered
   if (!focus_name_.empty()) {
     auto* focus_manager = imgui_drawer()->GetFocusManager();
@@ -413,7 +497,7 @@ void KeyboardDialog::OnClose() {
       focus_manager->UIDropFocus(focus_name_);
     }
   }
-  
+
   // If user confirmed (Done), call the input callback
   // Don't call it for Cancel - that's what cancelled_ flag is for
   if (callback_ && !cancelled_) {
@@ -469,7 +553,8 @@ void KeyboardDialog::DrawKeyboardLayout() {
   const float key_spacing = 4.0f;
   const float row_height = key_size + key_spacing;
 
-  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(key_spacing, key_spacing));
+  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
+                      ImVec2(key_spacing, key_spacing));
   ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
 
   int key_index = 0;
@@ -516,7 +601,8 @@ void KeyboardDialog::DrawKeyboardLayout() {
         needs_focus_ = false;
       }
 
-      std::string button_id = std::string(key.label) + "##" + std::to_string(key_index);
+      std::string button_id =
+          std::string(key.label) + "##" + std::to_string(key_index);
       bool pressed = ImGui::Button(button_id.c_str(),
                                    ImVec2(key_size * key.width, key_size));
 
@@ -545,7 +631,8 @@ void KeyboardDialog::DrawKeyboardLayout() {
 
   ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.6f, 0.6f, 1.0f));
   if (input_type_ == InputType::kNumber) {
-    ImGui::TextWrapped("Use D-Pad/Left Stick to navigate, A to select, B to backspace");
+    ImGui::TextWrapped(
+        "Use D-Pad/Left Stick to navigate, A to select, B to backspace");
   } else {
     ImGui::TextWrapped(
         "D-Pad/Stick: Navigate | A: Select | B: Backspace | "
@@ -557,14 +644,14 @@ void KeyboardDialog::DrawKeyboardLayout() {
   auto& imgui_io = ImGui::GetIO();
 
   // X button = Backspace
- // if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceLeft)) {
- //   if (!input_text_.empty()) {
- //     input_text_.pop_back();
- //   }
+  // if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceLeft)) {
+  //   if (!input_text_.empty()) {
+  //     input_text_.pop_back();
+  //   }
   //}
 
   // Y button = Space
-  //if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp)) {
+  // if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp)) {
   //  input_text_ += " ";
   //}
 
