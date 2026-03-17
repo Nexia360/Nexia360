@@ -47,16 +47,24 @@ void ObjectTable::Reset() {
   table_ = nullptr;
   free(host_table_);
   host_table_ = nullptr;
+
+  // Clear recycling queues and reserved sets
+  while (!recycle_queue_.empty()) recycle_queue_.pop();
+  while (!host_recycle_queue_.empty()) host_recycle_queue_.pop();
+  reserved_slots_.clear();
+  host_reserved_slots_.clear();
 }
 
 X_STATUS ObjectTable::FindFreeSlot(uint32_t* out_slot, bool host) {
   // Find a free slot.
   uint32_t slot = host ? last_free_host_entry_ : last_free_entry_;
   uint32_t capacity = host ? host_table_capacity_ : table_capacity_;
+  const auto& reserved = host ? host_reserved_slots_ : reserved_slots_;
   uint32_t scan_count = 0;
   while (scan_count < capacity) {
     ObjectTableEntry& entry = host ? host_table_[slot] : table_[slot];
-    if (!entry.object) {
+    // Skip slots that are reserved (recently freed, waiting in recycle queue)
+    if (!entry.object && reserved.find(slot) == reserved.end()) {
       *out_slot = slot;
       return X_STATUS_SUCCESS;
     }
@@ -221,13 +229,28 @@ X_STATUS ObjectTable::RemoveHandle(X_HANDLE handle) {
     assert_zero(entry->handle_ref_count);
     entry->handle_ref_count = 0;
 
-    // Update last_free_entry_ to this slot for faster reuse on next allocation.
+    // Add slot to recycling queue - slot is reserved until 64 others are freed.
     const bool is_host_object = XObject::is_handle_host_object(handle);
     uint32_t slot = GetHandleSlot(handle, is_host_object);
+
     if (is_host_object) {
-      last_free_host_entry_ = slot;
+      host_recycle_queue_.push(slot);
+      host_reserved_slots_.insert(slot);
+      // Release oldest slot from reservation when queue is full
+      if (host_recycle_queue_.size() > kRecycleQueueSize) {
+        uint32_t released_slot = host_recycle_queue_.front();
+        host_recycle_queue_.pop();
+        host_reserved_slots_.erase(released_slot);
+      }
     } else {
-      last_free_entry_ = slot;
+      recycle_queue_.push(slot);
+      reserved_slots_.insert(slot);
+      // Release oldest slot from reservation when queue is full
+      if (recycle_queue_.size() > kRecycleQueueSize) {
+        uint32_t released_slot = recycle_queue_.front();
+        recycle_queue_.pop();
+        reserved_slots_.erase(released_slot);
+      }
     }
 
     // Walk the object's handles and remove this one.

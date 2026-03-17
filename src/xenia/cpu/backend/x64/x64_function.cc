@@ -34,7 +34,7 @@ namespace x64 {
 DEFINE_bool(fiber_poison_checks, false,
             "Checks for poison addresses and skips fiber", "CPU");
 
-DEFINE_bool(replace_thunk_call_with_fibers, true,
+DEFINE_bool(replace_thunk_call_with_fibers, false,
             "Use Windows Fibers for thread encapsulation, (Experimental)",
             "CPU");
 

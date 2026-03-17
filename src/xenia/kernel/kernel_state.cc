@@ -454,7 +454,18 @@ void KernelState::SetExecutableModule(object_ref<UserModule> module) {
             dispatch_queue_.pop_front();
             global_lock.unlock();
 
-            fn();
+            if (fn) {
+              try {
+                fn();
+              } catch (const std::exception& e) {
+                XELOGE("Kernel Dispatch: exception caught: {}", e.what());
+              } catch (...) {
+                XELOGE("Kernel Dispatch: unknown exception caught");
+              }
+            } else {
+              XELOGE(
+                  "Kernel Dispatch: null function in dispatch queue, skipping");
+            }
           }
           return 0;
         },

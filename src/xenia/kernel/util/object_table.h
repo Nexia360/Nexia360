@@ -10,8 +10,10 @@
 #ifndef XENIA_KERNEL_UTIL_OBJECT_TABLE_H_
 #define XENIA_KERNEL_UTIL_OBJECT_TABLE_H_
 
+#include <queue>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "xenia/base/mutex.h"
@@ -107,6 +109,14 @@ class ObjectTable {
   uint32_t last_free_entry_ = 0;
   uint32_t last_free_host_entry_ = 0;
   std::unordered_map<string_key_case, X_HANDLE> name_table_;
+
+  // FIFO queues for delayed handle recycling - slots aren't reused until
+  // at least kRecycleQueueSize handles have been freed first
+  static constexpr size_t kRecycleQueueSize = 64;
+  std::queue<uint32_t> recycle_queue_;
+  std::queue<uint32_t> host_recycle_queue_;
+  std::unordered_set<uint32_t> reserved_slots_;
+  std::unordered_set<uint32_t> host_reserved_slots_;
 };
 
 // Generic lookup

@@ -42,6 +42,7 @@ void CreateProfileUI::OnDraw(ImGuiIO& io) {
   }
 
   if (!has_opened_) {
+    focus_manager->UISetFocus("CreateProfileUI");
     ImGui::OpenPopup("Create Profile");
     has_opened_ = true;
   }
@@ -100,6 +101,13 @@ void CreateProfileUI::OnDraw(ImGuiIO& io) {
           }
         }
         keyboard_dialog_ = nullptr;
+
+        // Reclaim focus for CreateProfileUI after keyboard closes
+        auto* drawer = imgui_drawer();
+        auto* focus_manager = drawer->GetFocusManager();
+        if (focus_manager) {
+          focus_manager->UISetFocus("CreateProfileUI");
+        }
       });
     }
   }

@@ -35,6 +35,7 @@ struct FriendsContentArgs {
   bool filter_offline;
   bool refresh_presence;
   bool refresh_presence_sync;
+  bool find_players_open;
   AddFriendArgs add_friend_args = {};
   ImGuiTextFilter filter = {};
 };

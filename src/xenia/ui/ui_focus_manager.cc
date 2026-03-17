@@ -16,9 +16,11 @@ UIFocusManager::UIFocusManager() {}
 
 UIFocusManager::~UIFocusManager() {}
 
-void UIFocusManager::UpdateInput(bool back_pressed, bool b_pressed,
-                                 bool a_pressed, bool start_pressed,
-                                 bool x_pressed, bool y_pressed) {
+void UIFocusManager::UpdateInput(
+    bool back_pressed, bool b_pressed, bool a_pressed, bool start_pressed,
+    bool x_pressed, bool y_pressed, bool lb_pressed, bool rb_pressed,
+    bool dpad_up, bool dpad_down, bool dpad_left, bool dpad_right,
+    bool lstick_up, bool lstick_down, bool lstick_left, bool lstick_right) {
   // Detect releases (was pressed, now not pressed)
   current_input_.a_released = prev_a_ && !a_pressed;
   current_input_.b_released = prev_b_ && !b_pressed;
@@ -34,6 +36,20 @@ void UIFocusManager::UpdateInput(bool back_pressed, bool b_pressed,
   current_input_.y_pressed = y_pressed;
   current_input_.back_pressed = back_pressed;
   current_input_.start_pressed = start_pressed;
+  current_input_.lb_pressed = lb_pressed;
+  current_input_.rb_pressed = rb_pressed;
+
+  // D-pad: detect new presses (not held)
+  current_input_.dpad_up_pressed = dpad_up && !prev_dpad_up_;
+  current_input_.dpad_down_pressed = dpad_down && !prev_dpad_down_;
+  current_input_.dpad_left_pressed = dpad_left && !prev_dpad_left_;
+  current_input_.dpad_right_pressed = dpad_right && !prev_dpad_right_;
+
+  // Left stick: detect new presses (not held)
+  current_input_.lstick_up_pressed = lstick_up && !prev_lstick_up_;
+  current_input_.lstick_down_pressed = lstick_down && !prev_lstick_down_;
+  current_input_.lstick_left_pressed = lstick_left && !prev_lstick_left_;
+  current_input_.lstick_right_pressed = lstick_right && !prev_lstick_right_;
 
   // Save for next frame
   prev_a_ = a_pressed;
@@ -42,6 +58,16 @@ void UIFocusManager::UpdateInput(bool back_pressed, bool b_pressed,
   prev_y_ = y_pressed;
   prev_back_ = back_pressed;
   prev_start_ = start_pressed;
+  prev_lb_ = lb_pressed;
+  prev_rb_ = rb_pressed;
+  prev_dpad_up_ = dpad_up;
+  prev_dpad_down_ = dpad_down;
+  prev_dpad_left_ = dpad_left;
+  prev_dpad_right_ = dpad_right;
+  prev_lstick_up_ = lstick_up;
+  prev_lstick_down_ = lstick_down;
+  prev_lstick_left_ = lstick_left;
+  prev_lstick_right_ = lstick_right;
 }
 
 void UIFocusManager::UISetFocus(const std::string& name) {

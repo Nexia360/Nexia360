@@ -68,9 +68,29 @@ GamercardFromXUIDUI::GamercardFromXUIDUI(xe::ui::ImGuiDrawer* imgui_drawer,
 }
 
 void GamercardFromXUIDUI::OnDraw(ImGuiIO& io) {
+  auto* drawer = imgui_drawer();
+  auto* focus_manager = drawer->GetFocusManager();
+
+  if (pending_close_) {
+    if (!drawer->IsAnyGamepadActionPressed()) {
+      focus_manager->UIDropFocus("GamercardFromXUIDUI");
+      Close();
+    }
+    return;
+  }
+
   if (!card_opened) {
+    focus_manager->UISetFocus("GamercardFromXUIDUI");
     card_opened = true;
     ImGui::OpenPopup(title_.c_str());
+  }
+
+  const auto& input = focus_manager->XamInputFocus("GamercardFromXUIDUI");
+
+  if (input.ShouldClose()) {
+    card_opened = false;
+    pending_close_ = true;
+    return;
   }
 
   ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -104,11 +124,15 @@ void GamercardFromXUIDUI::OnDraw(ImGuiIO& io) {
 
     xeDrawFriendContent(imgui_drawer(), profile_, presence_, nullptr, nullptr);
 
+    // Show controller hints
+    ImGui::Spacing();
+    ImGui::TextDisabled("B/Back: Close");
+
     ImGui::EndPopup();
   }
 
   if (!card_opened) {
-    Close();
+    pending_close_ = true;
   }
 }
 

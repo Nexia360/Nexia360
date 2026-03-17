@@ -107,7 +107,13 @@ class KeyboardDialog : public ImGuiDialog {
 
   // For Cancel/Done buttons: only activate on release to prevent input bleed
   std::string pending_close_action_;  // "Done" or "Cancel" when button pressed
-  bool a_was_pressed_ = false;  // Track A button state for release detection
+
+  // A button: track for Done/Cancel release detection
+  bool a_was_pressed_ = false;
+  std::string a_pending_action_;  // "Done" or "Cancel" deferred until A release
+
+  // Start button = Done (release detection)
+  bool start_was_pressed_ = false;
 
   // B button backspace with repeat
   bool b_was_pressed_ = false;

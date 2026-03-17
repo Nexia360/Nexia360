@@ -76,6 +76,7 @@ namespace ui {
 
 // Gamepad input state for a focused dialog
 struct UIInput {
+  // Face buttons
   bool a_pressed = false;
   bool b_pressed = false;
   bool x_pressed = false;
@@ -83,6 +84,23 @@ struct UIInput {
   bool back_pressed = false;
   bool start_pressed = false;
 
+  // Shoulder buttons
+  bool lb_pressed = false;
+  bool rb_pressed = false;
+
+  // D-pad (press events, not held)
+  bool dpad_up_pressed = false;
+  bool dpad_down_pressed = false;
+  bool dpad_left_pressed = false;
+  bool dpad_right_pressed = false;
+
+  // Left stick (press events, not held)
+  bool lstick_up_pressed = false;
+  bool lstick_down_pressed = false;
+  bool lstick_left_pressed = false;
+  bool lstick_right_pressed = false;
+
+  // Release events
   bool a_released = false;
   bool b_released = false;
   bool x_released = false;
@@ -107,6 +125,12 @@ struct UIInput {
 
   // Returns true if Back OR B was just released (standard close behavior)
   bool ShouldClose() const { return back_released || b_released; }
+
+  // Navigation helpers - D-pad OR left stick
+  bool NavUp() const { return dpad_up_pressed || lstick_up_pressed; }
+  bool NavDown() const { return dpad_down_pressed || lstick_down_pressed; }
+  bool NavLeft() const { return dpad_left_pressed || lstick_left_pressed; }
+  bool NavRight() const { return dpad_right_pressed || lstick_right_pressed; }
 };
 
 // Empty input - returned when dialog doesn't have focus
@@ -125,8 +149,11 @@ class UIFocusManager {
    * Called once per frame from ImGuiDrawer.
    */
   void UpdateInput(bool back_pressed, bool b_pressed, bool a_pressed,
-                   bool start_pressed, bool x_pressed = false,
-                   bool y_pressed = false);
+                   bool start_pressed, bool x_pressed, bool y_pressed,
+                   bool lb_pressed, bool rb_pressed, bool dpad_up,
+                   bool dpad_down, bool dpad_left, bool dpad_right,
+                   bool lstick_up, bool lstick_down, bool lstick_left,
+                   bool lstick_right);
 
   /**
    * Set focus to a root dialog (no parent).
@@ -217,6 +244,16 @@ class UIFocusManager {
   bool prev_y_ = false;
   bool prev_back_ = false;
   bool prev_start_ = false;
+  bool prev_lb_ = false;
+  bool prev_rb_ = false;
+  bool prev_dpad_up_ = false;
+  bool prev_dpad_down_ = false;
+  bool prev_dpad_left_ = false;
+  bool prev_dpad_right_ = false;
+  bool prev_lstick_up_ = false;
+  bool prev_lstick_down_ = false;
+  bool prev_lstick_left_ = false;
+  bool prev_lstick_right_ = false;
 
   // Input cooldown - block input for 500ms after focus changes
   static constexpr uint64_t kInputCooldownMs = 500;

@@ -1034,10 +1034,18 @@ bool xeDrawFriendContent(xe::ui::ImGuiDrawer* imgui_drawer,
 
   const bool same_title = title_id == kernel_state()->title_id();
 
+  // Get input once for all buttons
+  const auto& input =
+      focus_manager->GetInput(focus_manager->GetFocusedDialog());
+
   if (!is_self) {
     ImGui::BeginDisabled(!presence.SessionID() || !same_title);
-    if (ImGui::Button(join_label.c_str(), half_width_btn) ||
-        imgui_drawer->GamepadButtonActivated()) {
+    bool join_clicked = ImGui::Button(join_label.c_str(), half_width_btn);
+    bool join_focused = ImGui::IsItemFocused();
+    if (join_focused && input.Activated()) {
+      join_clicked = true;
+    }
+    if (join_clicked) {
       X_INVITE_INFO* invite = profile->GetSelfInvite();
 
       memset(invite, 0, sizeof(X_INVITE_INFO));
@@ -1066,8 +1074,12 @@ bool xeDrawFriendContent(xe::ui::ImGuiDrawer* imgui_drawer,
   ImGui::SameLine();
 
   if (are_friends && !is_self) {
-    if (ImGui::Button(remove_label.c_str(), half_width_btn) ||
-        imgui_drawer->GamepadButtonActivated()) {
+    bool remove_clicked = ImGui::Button(remove_label.c_str(), half_width_btn);
+    bool remove_focused = ImGui::IsItemFocused();
+    if (remove_focused && input.Activated()) {
+      remove_clicked = true;
+    }
+    if (remove_clicked) {
       if (profile->RemoveFriend(friend_xuid)) {
         if (removed_xuid_) {
           *removed_xuid_ = friend_xuid;
@@ -1096,8 +1108,12 @@ bool xeDrawFriendContent(xe::ui::ImGuiDrawer* imgui_drawer,
   }
 
   if (!are_friends && !is_self) {
-    if (ImGui::Button(add_label.c_str(), half_width_btn) ||
-        imgui_drawer->GamepadButtonActivated()) {
+    bool add_clicked = ImGui::Button(add_label.c_str(), half_width_btn);
+    bool add_focused = ImGui::IsItemFocused();
+    if (add_focused && input.Activated()) {
+      add_clicked = true;
+    }
+    if (add_clicked) {
       bool added = profile->AddFriendFromXUID(friend_xuid);
 
       if (added) {
@@ -1308,9 +1324,16 @@ bool xeDrawAddFriend(xe::ui::ImGuiDrawer* imgui_drawer,
 
     ImGui::SetCursorPos(drawing_end_position);
 
+    const auto& input =
+        focus_manager->GetInput(focus_manager->GetFocusedDialog());
+
     ImGui::BeginDisabled(!args.valid_xuid || args.are_friends || max_friends);
-    if (ImGui::Button("Add", btn_size) ||
-        imgui_drawer->GamepadButtonActivated()) {
+    bool add_clicked = ImGui::Button("Add", btn_size);
+    bool add_focused = ImGui::IsItemFocused();
+    if (add_focused && input.Activated()) {
+      add_clicked = true;
+    }
+    if (add_clicked) {
       bool added = profile->AddFriendFromXUID(xuid);
 
       if (added) {
@@ -1460,16 +1483,35 @@ bool xeDrawFriendsContent(xe::ui::ImGuiDrawer* imgui_drawer,
     ImGui::Spacing();
     ImGui::Spacing();
 
-    if (ImGui::Button("Add Friend",
-                      ImVec2(ImGui::GetContentRegionAvail().x, btn_height)) ||
-        imgui_drawer->GamepadButtonActivated()) {
+    bool add_friend_clicked = ImGui::Button(
+        "Add Friend", ImVec2(ImGui::GetContentRegionAvail().x * 0.5f -
+                                 ImGui::GetStyle().ItemSpacing.x * 0.5f,
+                             btn_height));
+    if (ImGui::IsItemFocused() && input.Activated()) {
+      add_friend_clicked = true;
+    }
+    if (add_friend_clicked) {
       args.add_friend_args.add_friend_open = true;
       ImGui::OpenPopup("Add Friend");
     }
 
+    ImGui::SameLine();
+
+    bool find_players_clicked = ImGui::Button(
+        "Find Players", ImVec2(ImGui::GetContentRegionAvail().x, btn_height));
+    if (ImGui::IsItemFocused() && input.Activated()) {
+      find_players_clicked = true;
+    }
+    if (find_players_clicked) {
+      args.find_players_open = true;
+    }
+
     ImGui::BeginDisabled(!profile->GetFriendsCount());
-    if (ImGui::Button("Refresh", half_width_btn) ||
-        imgui_drawer->GamepadButtonActivated()) {
+    bool refresh_clicked = ImGui::Button("Refresh", half_width_btn);
+    if (ImGui::IsItemFocused() && input.Activated()) {
+      refresh_clicked = true;
+    }
+    if (refresh_clicked) {
       args.refresh_presence = true;
       *presences = {};
     }
@@ -1478,8 +1520,11 @@ bool xeDrawFriendsContent(xe::ui::ImGuiDrawer* imgui_drawer,
     ImGui::SameLine();
 
     ImGui::BeginDisabled(!profile->GetFriendsCount());
-    if (ImGui::Button("Remove All", half_width_btn) ||
-        imgui_drawer->GamepadButtonActivated()) {
+    bool remove_all_clicked = ImGui::Button("Remove All", half_width_btn);
+    if (ImGui::IsItemFocused() && input.Activated()) {
+      remove_all_clicked = true;
+    }
+    if (remove_all_clicked) {
       ImGui::OpenPopup("Remove All Friends");
     }
     ImGui::EndDisabled();
@@ -1572,7 +1617,7 @@ bool xeDrawFriendsContent(xe::ui::ImGuiDrawer* imgui_drawer,
       ImGui::Separator();
 
       if (ImGui::Button("Yes", btn_size) ||
-          imgui_drawer->GamepadButtonActivated()) {
+          (ImGui::IsItemFocused() && input.Activated())) {
         profile->RemoveAllFriends();
 
         *presences = {};
@@ -1703,11 +1748,28 @@ bool xeDrawSessionContent(xe::ui::ImGuiDrawer* imgui_drawer,
   ImGui::Spacing();
   ImGui::Spacing();
 
+  const auto& input =
+      focus_manager->GetInput(focus_manager->GetFocusedDialog());
+
   // What is player presence session is null?
   ImGui::BeginDisabled(!session->SessionID_UInt() || caller);
-  if (ImGui::Button(join_label.c_str(),
-                    ImVec2(ImGui::GetContentRegionAvail().x, 25)) ||
-      imgui_drawer->GamepadButtonActivated()) {
+  bool join_clicked = ImGui::Button(
+      join_label.c_str(), ImVec2(ImGui::GetContentRegionAvail().x, 25));
+  if (ImGui::IsItemFocused() && input.Activated()) {
+    join_clicked = true;
+  }
+  if (join_clicked) {
+    // Add host as friend if not already friends
+    uint64_t host_xuid = session->XUID_UInt();
+    if (host_xuid != 0 && !profile->IsFriend(host_xuid, nullptr)) {
+      bool added = profile->AddFriendFromXUID(host_xuid);
+      if (added) {
+        XLiveAPI::AddFriend(host_xuid);
+        kernel_state()->BroadcastNotification(kXNotificationFriendsFriendAdded,
+                                              user_index);
+      }
+    }
+
     X_INVITE_INFO* invite = profile->GetSelfInvite();
 
     memset(invite, 0, sizeof(X_INVITE_INFO));
@@ -1715,7 +1777,7 @@ bool xeDrawSessionContent(xe::ui::ImGuiDrawer* imgui_drawer,
     invite->from_game_invite = false;
     invite->title_id = kernel_state()->title_id();
     invite->xuid_invitee = profile->GetOnlineXUID();
-    invite->xuid_inviter = session->XUID_UInt();
+    invite->xuid_inviter = host_xuid;
 
     kernel_state()->BroadcastNotification(kXNotificationLiveInviteAccepted,
                                           user_index);

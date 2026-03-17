@@ -283,61 +283,75 @@ void KeyboardDialog::OnDraw(ImGuiIO& io) {
   // Check if we're still in the input ignore period
   bool ignore_inputs = (current_time - open_time_) < kInputIgnoreDelayMs;
 
+  // Handle actual keyboard input
+  if (!ignore_inputs) {
+    // Process text input from keyboard
+    if (io.InputQueueCharacters.Size > 0) {
+      for (int i = 0; i < io.InputQueueCharacters.Size; i++) {
+        ImWchar c = io.InputQueueCharacters[i];
+        // Filter valid characters
+        if (c >= 32 && c < 127) {  // Printable ASCII
+          // For number input, only allow digits and decimal point
+          if (input_type_ == InputType::kNumber) {
+            if ((c >= '0' && c <= '9') || c == '.') {
+              input_text_ += static_cast<char>(c);
+            }
+          } else {
+            input_text_ += static_cast<char>(c);
+          }
+        }
+      }
+    }
+
+    // Handle special keys
+    // Backspace
+    if (ImGui::IsKeyPressed(ImGuiKey_Backspace)) {
+      if (!input_text_.empty()) {
+        input_text_.pop_back();
+      }
+    }
+
+    // Delete - same as backspace for simplicity
+    if (ImGui::IsKeyPressed(ImGuiKey_Delete)) {
+      if (!input_text_.empty()) {
+        input_text_.pop_back();
+      }
+    }
+
+    // Enter/Return - confirm input
+    if (ImGui::IsKeyPressed(ImGuiKey_Enter) ||
+        ImGui::IsKeyPressed(ImGuiKey_KeypadEnter)) {
+      cancelled_ = false;
+      pending_close_action_ = "Done";
+    }
+
+    // Escape - cancel input
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+      cancelled_ = true;
+      input_text_.clear();
+      pending_close_action_ = "Cancel";
+    }
+  }
+
   // Poll XInput for controller state - needed since keyboard is a modal popup
 #if XE_PLATFORM_WIN32
   bool a_pressed = false;
   bool b_pressed = false;
   bool back_pressed = false;
+  bool start_pressed = false;
 
   for (DWORD i = 0; i < XUSER_MAX_COUNT; ++i) {
     XINPUT_STATE state;
     if (XInputGetState(i, &state) == ERROR_SUCCESS) {
       const auto& pad = state.Gamepad;
 
-      // Track action button states (don't register with ImGui directly)
+      // Track action button states for custom handling
+      // D-pad, sticks, LB, RB are already forwarded to ImGui by
+      // imgui_drawer — do NOT duplicate those events here.
       a_pressed = (pad.wButtons & XINPUT_GAMEPAD_A) != 0;
       b_pressed = (pad.wButtons & XINPUT_GAMEPAD_B) != 0;
       back_pressed = (pad.wButtons & XINPUT_GAMEPAD_BACK) != 0;
-
-      // Only register D-pad and sticks for navigation
-      io.AddKeyEvent(ImGuiKey_GamepadDpadLeft,
-                     (pad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT) != 0);
-      io.AddKeyEvent(ImGuiKey_GamepadDpadRight,
-                     (pad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) != 0);
-      io.AddKeyEvent(ImGuiKey_GamepadDpadUp,
-                     (pad.wButtons & XINPUT_GAMEPAD_DPAD_UP) != 0);
-      io.AddKeyEvent(ImGuiKey_GamepadDpadDown,
-                     (pad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN) != 0);
-      io.AddKeyEvent(ImGuiKey_GamepadL1,
-                     (pad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0);
-      io.AddKeyEvent(ImGuiKey_GamepadR1,
-                     (pad.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER) != 0);
-
-      // Left stick with deadzone
-      const SHORT STICK_DEADZONE = 7849;
-      float lx = 0.0f, ly = 0.0f;
-      if (pad.sThumbLX < -STICK_DEADZONE) {
-        lx = (float)(pad.sThumbLX + STICK_DEADZONE) /
-             (32768.0f - STICK_DEADZONE);
-      } else if (pad.sThumbLX > STICK_DEADZONE) {
-        lx = (float)(pad.sThumbLX - STICK_DEADZONE) /
-             (32767.0f - STICK_DEADZONE);
-      }
-      if (pad.sThumbLY < -STICK_DEADZONE) {
-        ly = (float)(pad.sThumbLY + STICK_DEADZONE) /
-             (32768.0f - STICK_DEADZONE);
-      } else if (pad.sThumbLY > STICK_DEADZONE) {
-        ly = (float)(pad.sThumbLY - STICK_DEADZONE) /
-             (32767.0f - STICK_DEADZONE);
-      }
-      io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickLeft, lx < 0.0f,
-                           lx < 0.0f ? -lx : 0.0f);
-      io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickRight, lx > 0.0f,
-                           lx > 0.0f ? lx : 0.0f);
-      io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickUp, ly > 0.0f,
-                           ly > 0.0f ? ly : 0.0f);
-      io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickDown, ly < 0.0f,
-                           ly < 0.0f ? -ly : 0.0f);
+      start_pressed = (pad.wButtons & XINPUT_GAMEPAD_START) != 0;
 
       // Only use first connected controller
       break;
@@ -350,16 +364,25 @@ void KeyboardDialog::OnDraw(ImGuiIO& io) {
     a_was_pressed_ = a_pressed;
     b_was_pressed_ = b_pressed;
     back_was_pressed_ = back_pressed;
+    start_was_pressed_ = start_pressed;
   } else {
-    // A button - activate on RELEASE (not press)
-    // This prevents the button press from bleeding through to the game
-    if (a_was_pressed_ && !a_pressed) {
-      // A was just released - send a single frame "press" to ImGui
-      io.AddKeyEvent(ImGuiKey_GamepadFaceUp, true);
-    } else {
-      io.AddKeyEvent(ImGuiKey_GamepadFaceUp, false);
+    // A button: character keys are handled by ImGui button activation.
+    // Done/Cancel are deferred to A release (see a_pending_action_ below).
+    if (!a_pressed && a_was_pressed_) {
+      // A just released - process any pending Done/Cancel action
+      if (!a_pending_action_.empty()) {
+        ProcessKeyInput(a_pending_action_);
+        a_pending_action_.clear();
+      }
     }
     a_was_pressed_ = a_pressed;
+
+    // Start button = Done (activate on release)
+    if (!start_pressed && start_was_pressed_) {
+      cancelled_ = false;
+      pending_close_action_ = "Done";
+    }
+    start_was_pressed_ = start_pressed;
 
     // B button = backspace with repeat
     if (b_pressed) {
@@ -387,12 +410,10 @@ void KeyboardDialog::OnDraw(ImGuiIO& io) {
     b_was_pressed_ = b_pressed;
 
     // Back button = cancel (wait for release)
-    if (back_pressed) {
-      if (!back_was_pressed_) {
-        // Just pressed - mark pending cancel
-        cancelled_ = true;
-        pending_close_action_ = "Back";
-      }
+    if (!back_pressed && back_was_pressed_) {
+      // Back just released - trigger cancel
+      cancelled_ = true;
+      pending_close_action_ = "Back";
     }
     back_was_pressed_ = back_pressed;
   }  // end if (!ignore_inputs)
@@ -609,12 +630,27 @@ void KeyboardDialog::DrawKeyboardLayout() {
       ImGui::PopStyleColor(3);
 
       if (pressed) {
-        // Use value for typing, label is just for display
-        // Special keys have nullptr value
         if (key.value) {
+          // Regular character key — activate immediately
           ProcessKeyInput(key.value);
         } else {
-          ProcessKeyInput(key.label);  // Special keys like Shift, Done, Cancel
+          std::string key_label = key.label;
+          if (key_label == "Done" || key_label == "Cancel") {
+            // Done/Cancel: defer until A button is released so the action
+            // only commits when the user lifts the button.  Mouse clicks
+            // go through immediately since A won't be held.
+            bool a_is_held =
+                ImGui::IsKeyDown(ImGuiKey_GamepadFaceDown);
+            if (a_is_held) {
+              a_pending_action_ = key_label;
+            } else {
+              // Mouse click or keyboard Enter — process immediately
+              ProcessKeyInput(key_label);
+            }
+          } else {
+            // Other special keys (Shift, ABC, etc.) — immediate
+            ProcessKeyInput(key_label);
+          }
         }
       }
 
@@ -632,11 +668,13 @@ void KeyboardDialog::DrawKeyboardLayout() {
   ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.6f, 0.6f, 1.0f));
   if (input_type_ == InputType::kNumber) {
     ImGui::TextWrapped(
-        "Use D-Pad/Left Stick to navigate, A to select, B to backspace");
+        "Keyboard: Type numbers | Enter: Done | Esc: Cancel | D-Pad: Navigate "
+        "| A: Select | B: Backspace | Start: Done");
   } else {
     ImGui::TextWrapped(
-        "D-Pad/Stick: Navigate | A: Select | B: Backspace | "
-        "LB: Symbols | RB: Shift");
+        "Keyboard: Type directly | Enter: Done | Esc: Cancel | "
+        "D-Pad: Navigate | A: Select | B: Backspace | Start: Done | LB: "
+        "Symbols | RB: Shift");
   }
   ImGui::PopStyleColor();
 

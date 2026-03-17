@@ -8,7 +8,9 @@
  */
 
 #include "xenia/kernel/xam/ui/signin_ui.h"
+#include "xenia/kernel/XLiveAPI.h"
 #include "xenia/kernel/xam/ui/gamercard_ui.h"
+#include "xenia/kernel/xam/user_profile.h"
 #include "xenia/ui/imgui_dialog.h"
 #include "xenia/ui/ui_focus_manager.h"
 
@@ -46,11 +48,6 @@ void SigninUI::OnDraw(ImGuiIO& io) {
     }
     return;
   }
-
-  // Enable gamepad navigation
-  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-  io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
-  io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
 
   bool first_draw = false;
   if (!has_opened_) {
@@ -262,7 +259,26 @@ void SigninUI::OnDraw(ImGuiIO& io) {
           profile_map[slot] = xuid;
         }
       }
+
+      // Save current network mode before login
+      int32_t saved_network_mode = cvars::network_mode;
+
+      // Set to offline before login
+      xe::kernel::XLiveAPI::SetNetworkMode(xe::kernel::NETWORK_MODE::OFFLINE);
+
+      // Login the profile(s)
       profile_manager_->LoginMultiple(profile_map);
+
+      // Restore or set network mode after login
+      // If saved mode was < 2 (OFFLINE or LAN), set to NEXIAHUB
+      // Otherwise restore to saved mode
+      if (saved_network_mode < 2) {
+        xe::kernel::XLiveAPI::SetNetworkMode(
+            xe::kernel::NETWORK_MODE::NEXIAHUB);
+      } else {
+        xe::kernel::XLiveAPI::SetNetworkMode(
+            static_cast<uint32_t>(saved_network_mode));
+      }
 
       ImGui::CloseCurrentPopup();
       pending_close_ = true;

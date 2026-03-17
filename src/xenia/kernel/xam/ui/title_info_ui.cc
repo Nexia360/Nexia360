@@ -155,6 +155,29 @@ void TitleListUI::DrawTitleEntry(ImGuiIO& io, TitleInfo& entry) {
 }
 
 void TitleListUI::OnDraw(ImGuiIO& io) {
+  auto* drawer = imgui_drawer();
+  auto* focus_manager = drawer->GetFocusManager();
+
+  if (pending_close_) {
+    if (!drawer->IsAnyGamepadActionPressed()) {
+      focus_manager->UIDropFocus("TitleListUI");
+      Close();
+    }
+    return;
+  }
+
+  if (!has_opened_) {
+    focus_manager->UISetFocus("TitleListUI");
+    has_opened_ = true;
+  }
+
+  const auto& input = focus_manager->XamInputFocus("TitleListUI");
+
+  if (input.ShouldClose()) {
+    pending_close_ = true;
+    return;
+  }
+
   ImGui::SetNextWindowPos(drawing_position_, ImGuiCond_FirstUseEver);
   const auto xenia_window_size = ImGui::GetMainViewport()->Size;
 
@@ -168,7 +191,7 @@ void TitleListUI::OnDraw(ImGuiIO& io) {
                     ImGuiWindowFlags_NoCollapse |
                         ImGuiWindowFlags_AlwaysAutoResize |
                         ImGuiWindowFlags_HorizontalScrollbar)) {
-    Close();
+    pending_close_ = true;
     ImGui::End();
     return;
   }
@@ -214,8 +237,11 @@ void TitleListUI::OnDraw(ImGuiIO& io) {
     ImGui::PopFont();
   }
 
+  ImGui::Spacing();
+  ImGui::TextDisabled("A: Select | B/Back: Close");
+
   if (!dialog_open) {
-    Close();
+    pending_close_ = true;
     ImGui::End();
     return;
   }

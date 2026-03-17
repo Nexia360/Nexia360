@@ -660,39 +660,11 @@ void ImGuiDrawer::PollXInput() {
     }
     gamepad_buttons_were_pressed_ = any_action_pressed;
 
-    // Only register D-pad for ImGui navigation (not action buttons)
-    io.AddKeyEvent(ImGuiKey_GamepadDpadLeft,
-                   (pad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT) != 0);
-    io.AddKeyEvent(ImGuiKey_GamepadDpadRight,
-                   (pad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) != 0);
-    io.AddKeyEvent(ImGuiKey_GamepadDpadUp,
-                   (pad.wButtons & XINPUT_GAMEPAD_DPAD_UP) != 0);
-    io.AddKeyEvent(ImGuiKey_GamepadDpadDown,
-                   (pad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN) != 0);
+    // D-pad and stick navigation are handled by UIFocusManager, not ImGui
+    // ImGui navigation is disabled for dialogs using UIFocusManager
 
-    // Left stick (with deadzone) for navigation
-    const SHORT STICK_DEADZONE = 7849;
-
-    float lx = 0.0f, ly = 0.0f;
-    if (pad.sThumbLX < -STICK_DEADZONE) {
-      lx = (float)(pad.sThumbLX + STICK_DEADZONE) / (32768.0f - STICK_DEADZONE);
-    } else if (pad.sThumbLX > STICK_DEADZONE) {
-      lx = (float)(pad.sThumbLX - STICK_DEADZONE) / (32767.0f - STICK_DEADZONE);
-    }
-    if (pad.sThumbLY < -STICK_DEADZONE) {
-      ly = (float)(pad.sThumbLY + STICK_DEADZONE) / (32768.0f - STICK_DEADZONE);
-    } else if (pad.sThumbLY > STICK_DEADZONE) {
-      ly = (float)(pad.sThumbLY - STICK_DEADZONE) / (32767.0f - STICK_DEADZONE);
-    }
-
-    io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickLeft, lx < 0.0f,
-                         lx < 0.0f ? -lx : 0.0f);
-    io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickRight, lx > 0.0f,
-                         lx > 0.0f ? lx : 0.0f);
-    io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickUp, ly > 0.0f,
-                         ly > 0.0f ? ly : 0.0f);
-    io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickDown, ly < 0.0f,
-                         ly < 0.0f ? -ly : 0.0f);
+    // Left stick navigation is handled by UIFocusManager
+    // No ImGui gamepad navigation - all input goes through focus manager
 
     // Compute "just released" flags before updating current state
     gamepad_a_just_released_ = gamepad_a_was_pressed_ && !a_pressed;
@@ -710,21 +682,60 @@ void ImGuiDrawer::PollXInput() {
     gamepad_back_pressed_ = back_pressed;
     gamepad_start_pressed_ = start_pressed;
 
-    // Update the focus manager with input state (including X and Y)
-    focus_manager_.UpdateInput(back_pressed, b_pressed, a_pressed,
-                               start_pressed, x_pressed, y_pressed);
+    // D-pad state
+    bool dpad_up = (pad.wButtons & XINPUT_GAMEPAD_DPAD_UP) != 0;
+    bool dpad_down = (pad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN) != 0;
+    bool dpad_left = (pad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT) != 0;
+    bool dpad_right = (pad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) != 0;
 
-    // Register A button to ImGui for combo box activation
-    // Only when focus manager has a dialog and is not cooling down
-    if (focus_manager_.HasAnyFocus()) {
-      // Get input for the focused dialog - returns kNoInput during cooldown
-      const auto& input =
-          focus_manager_.GetInput(focus_manager_.GetFocusedDialog());
-      // If we get real input (not cooling down), send A to ImGui for widget
-      // activation
-      if (input.a_pressed || input.a_released) {
-        io.AddKeyEvent(ImGuiKey_GamepadFaceDown, a_pressed);  // A button
-      }
+    // Left stick for navigation
+    float lx = pad.sThumbLX / 32767.0f;
+    float ly = pad.sThumbLY / 32767.0f;
+    const float deadzone = 0.3f;
+    bool lstick_up = ly > deadzone;
+    bool lstick_down = ly < -deadzone;
+    bool lstick_left = lx < -deadzone;
+    bool lstick_right = lx > deadzone;
+
+    // Update the focus manager with all input state
+    // UIFocusManager handles A, B, X, Y, Start, Back, LB, RB, D-pad
+    focus_manager_.UpdateInput(
+        back_pressed, b_pressed, a_pressed, start_pressed, x_pressed, y_pressed,
+        lb_pressed, rb_pressed, dpad_up, dpad_down, dpad_left, dpad_right,
+        lstick_up, lstick_down, lstick_left, lstick_right);
+
+    // Forward all gamepad input to ImGui for navigation
+    // Only if ImGui context is active (dialogs are open)
+    if (ImGui::GetCurrentContext() != nullptr) {
+      auto& imgui_io = ImGui::GetIO();
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadFaceDown, a_pressed);   // A
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadFaceRight, b_pressed);  // B
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadFaceLeft, x_pressed);   // X
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadFaceUp, y_pressed);     // Y
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadStart, start_pressed);
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadBack, back_pressed);
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadL1, lb_pressed);  // LB
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadR1, rb_pressed);  // RB
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadL2, lt_pressed);  // LT
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadR2, rt_pressed);  // RT
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadL3, ls_pressed);  // LS click
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadR3, rs_pressed);  // RS click
+
+      // D-pad
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadDpadUp, dpad_up);
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadDpadDown, dpad_down);
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadDpadLeft, dpad_left);
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadDpadRight, dpad_right);
+
+      // Left stick
+      imgui_io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickUp, lstick_up,
+                                 lstick_up ? ly : 0.0f);
+      imgui_io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickDown, lstick_down,
+                                 lstick_down ? -ly : 0.0f);
+      imgui_io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickLeft, lstick_left,
+                                 lstick_left ? -lx : 0.0f);
+      imgui_io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickRight, lstick_right,
+                                 lstick_right ? lx : 0.0f);
     }
 
     // Only use first connected controller
@@ -733,14 +744,6 @@ void ImGuiDrawer::PollXInput() {
 
   // If no controller found, clear gamepad state
   if (!found_controller && controller_navigation_enabled_) {
-    io.AddKeyEvent(ImGuiKey_GamepadDpadLeft, false);
-    io.AddKeyEvent(ImGuiKey_GamepadDpadRight, false);
-    io.AddKeyEvent(ImGuiKey_GamepadDpadUp, false);
-    io.AddKeyEvent(ImGuiKey_GamepadDpadDown, false);
-    io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickLeft, false, 0.0f);
-    io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickRight, false, 0.0f);
-    io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickUp, false, 0.0f);
-    io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickDown, false, 0.0f);
     gamepad_a_pressed_ = false;
     gamepad_b_pressed_ = false;
     gamepad_back_pressed_ = false;
@@ -750,7 +753,9 @@ void ImGuiDrawer::PollXInput() {
     gamepad_back_just_released_ = false;
 
     // Clear focus manager input state
-    focus_manager_.UpdateInput(false, false, false, false);
+    focus_manager_.UpdateInput(false, false, false, false, false, false, false,
+                               false, false, false, false, false, false, false,
+                               false, false);
   }
 #endif
 }
@@ -1043,6 +1048,11 @@ void ImGuiDrawer::OnKey(KeyEvent& e, bool is_down) {
       // Enable ImGui's built-in gamepad navigation
       io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
     }
+    // Don't forward controller keys to ImGui here — PollXInput() already
+    // polls XInput every frame and forwards all gamepad state to ImGui.
+    // Forwarding here too causes duplicate events (e.g. double character
+    // input on the on-screen keyboard when pressing A).
+    return;
   }
 
   if (auto imGuiKey = VirtualKeyToImGuiKey(virtual_key); imGuiKey) {
