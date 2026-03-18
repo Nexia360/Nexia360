@@ -76,7 +76,6 @@ void AddODDContentTest(object_ref<XStaticEnumerator<XCONTENT_AGGREGATE_DATA>> e,
   }
 }
 
-// Alias XContentCreateCrossTitleEnumerator
 dword_result_t XamContentAggregateCreateEnumerator_entry(qword_t xuid,
                                                          dword_t device_id,
                                                          dword_t content_type,

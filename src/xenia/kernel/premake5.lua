@@ -9,7 +9,7 @@ project("xenia-kernel")
   links({
     "aes_128",
     "fmt",
-    "zlib-ng",
+    "zlib",
     "pugixml",
     "libcurl",
     "miniupnp",
@@ -20,24 +20,9 @@ project("xenia-kernel")
     "xenia-vfs",
   })
   defines({
-    "X86_FEATURES",
-    "X86_HAVE_XSAVE_INTRIN",
-    "X86_SSSE3",
-    "X86_SSE42",
-    "WITH_GZFILEOP",
     "CURL_STATICLIB",
-    "MINIUPNP_STATICLIB",
+    "MINIUPNP_STATICLIB"
   })
-  if os.istarget("windows") then
-    defines({
-      "X86_SSE2",
-      "X86_AVX2",
-      "X86_AVX512",
-      "X86_AVX512VNNI",
-      "X86_PCLMULQDQ_CRC",
-      "X86_VPCLMULQDQ_CRC",
-    })
-  end
   recursive_platform_files()
   files({
     "debug_visualizers.natvis",

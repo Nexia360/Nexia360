@@ -9,4 +9,6 @@ project("xenia-patcher")
   links({
     "xenia-base"
   })
+  defines({
+  })
   recursive_platform_files()

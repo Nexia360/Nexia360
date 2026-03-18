@@ -12,6 +12,7 @@
 #include <cfloat>
 #include <cmath>
 #include <cstdint>
+#include <memory>
 
 #include "third_party/glslang/SPIRV/GLSL.std.450.h"
 #include "xenia/base/assert.h"

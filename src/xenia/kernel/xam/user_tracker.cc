@@ -10,6 +10,9 @@
 #include "xenia/emulator.h"
 #include "xenia/kernel/xam/user_profile.h"
 
+#include <ranges>
+#include <sstream>
+
 #include "third_party/fmt/include/fmt/format.h"
 #include "third_party/stb/stb_image.h"
 #include "xenia/kernel/kernel_state.h"
@@ -30,7 +33,7 @@ namespace xam {
 
 bool UserTracker::AddUser(uint64_t xuid) {
   if (IsUserTracked(xuid)) {
-    XELOGW("{}: User is already on tracking list!", __func__);
+    XELOGW("{}: User is already on tracking list!");
     return false;
   }
 
@@ -46,7 +49,7 @@ bool UserTracker::AddUser(uint64_t xuid) {
 
 bool UserTracker::RemoveUser(uint64_t xuid) {
   if (!IsUserTracked(xuid)) {
-    XELOGW("{}: User is not on tracking list!", __func__);
+    XELOGW("{}: User is not on tracking list!");
     return false;
   }
 
@@ -108,13 +111,6 @@ bool UserTracker::UnlockAchievement(uint64_t xuid, uint32_t achievement_id) {
 
   gpd_achievement->flags = gpd_achievement->flags |
                            static_cast<uint32_t>(AchievementFlags::kAchieved);
-
-  if (user->signin_state() == X_USER_SIGNIN_STATE::SignedInToLive) {
-    gpd_achievement->flags =
-        gpd_achievement->flags |
-        static_cast<uint32_t>(AchievementFlags::kAchievedOnline);
-  }
-
   gpd_achievement->unlock_time = Clock::QueryGuestSystemTime();
 
   UpdateSettingValue(xuid, kDashboardID, UserSettingId::XPROFILE_GAMERCARD_CRED,
@@ -194,19 +190,6 @@ void UserTracker::AddTitleToPlayedList(uint64_t xuid) {
   title_info->last_played = current_time;
 
   UpdateProfileGpd();
-}
-
-void UserTracker::RemoveTitleFromPlayedList(uint64_t xuid, uint32_t title_id) {
-  auto user = kernel_state()->xam_state()->GetUserProfile(xuid);
-  if (!user) {
-    return;
-  }
-
-  if (user->dashboard_gpd_.RemoveTitle(title_id)) {
-    UpdateSettingValue(xuid, kDashboardID,
-                       UserSettingId::XPROFILE_GAMERCARD_TITLES_PLAYED, -1);
-    FlushUserData(xuid);
-  }
 }
 
 void UserTracker::AddDefaultProperties() {
@@ -528,7 +511,7 @@ bool UserTracker::IsUserTracked(uint64_t xuid) const {
 std::optional<TitleInfo> UserTracker::GetUserTitleInfo(
     uint64_t xuid, uint32_t title_id) const {
   if (!IsUserTracked(xuid)) {
-    XELOGW("{}: User is not on tracking list!", __func__);
+    XELOGW("{}: User is not on tracking list!");
     return std::nullopt;
   }
 

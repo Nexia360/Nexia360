@@ -172,6 +172,26 @@ void GameAchievementsUI::DrawTitleAchievementInfo(
 }
 
 void GameAchievementsUI::OnDraw(ImGuiIO& io) {
+  auto* drawer = imgui_drawer();
+  auto* focus_manager = drawer->GetFocusManager();
+
+  // UIFocusManager: Wait for button release before closing
+  if (pending_close_) {
+    if (!drawer->IsAnyGamepadActionPressed()) {
+      focus_manager->UIDropFocus("GameAchievementsUI");
+      Close();
+    }
+    return;
+  }
+
+  if (!has_opened_) {
+    focus_manager->UISetFocus("GameAchievementsUI");
+    has_opened_ = true;
+  }
+
+  // UIFocusManager: Get input for this dialog
+  const auto& input = focus_manager->XamInputFocus("GameAchievementsUI");
+
   ImGui::SetNextWindowPos(drawing_position_, ImGuiCond_FirstUseEver);
 
   const auto xenia_window_size = ImGui::GetMainViewport()->Size;
@@ -193,7 +213,7 @@ void GameAchievementsUI::OnDraw(ImGuiIO& io) {
                     ImGuiWindowFlags_NoCollapse |
                         ImGuiWindowFlags_AlwaysAutoResize |
                         ImGuiWindowFlags_HorizontalScrollbar)) {
-    Close();
+    pending_close_ = true;
     ImGui::End();
     return;
   }
@@ -214,11 +234,21 @@ void GameAchievementsUI::OnDraw(ImGuiIO& io) {
     }
   }
 
+  // UIFocusManager: Back or B button closes
+  if (input.ShouldClose()) {
+    pending_close_ = true;
+    dialog_open = false;
+  }
+
   if (!dialog_open) {
-    Close();
+    pending_close_ = true;
     ImGui::End();
     return;
   }
+
+  // Show controller hints
+  ImGui::Spacing();
+  ImGui::TextDisabled("B/Back: Close");
 
   ImGui::End();
 };

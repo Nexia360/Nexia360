@@ -10,6 +10,8 @@
 #include "xenia/base/string.h"
 
 #include <string.h>
+#include <algorithm>
+#include <locale>
 
 #include "xenia/base/platform.h"
 #if XE_PLATFORM_WIN32
@@ -20,10 +22,7 @@
 #include <strings.h>
 #endif  // !XE_PLATFORM_WIN32
 
-// https://github.com/nemtrif/utfcpp/issues/85
-#if defined(_MSVC_LANG) && _MSVC_LANG > __cplusplus
-#define UTF_CPP_CPLUSPLUS _MSVC_LANG
-#endif
+#define UTF_CPP_CPLUSPLUS 202002L
 #include "third_party/utfcpp/source/utf8.h"
 
 namespace utfcpp = utf8;

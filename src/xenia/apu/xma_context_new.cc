@@ -10,6 +10,8 @@
 #include "xenia/apu/xma_context_new.h"
 #include "xenia/apu/xma_helpers.h"
 
+#include <algorithm>
+
 #include "xenia/base/logging.h"
 #include "xenia/base/platform.h"
 #include "xenia/base/profiling.h"

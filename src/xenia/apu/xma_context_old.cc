@@ -9,6 +9,7 @@
 
 #include "xenia/apu/xma_context_old.h"
 
+#include <algorithm>
 #include <cstring>
 
 #include "xenia/apu/xma_decoder.h"
@@ -423,15 +424,14 @@ void XmaContextOld::Decode(XMA_CONTEXT_DATA* data) {
     uint8_t* packet;
     bool frame_last_split;
 
-    BitStream stream(current_input_buffer, current_input_size * 8);
+    BitStream stream(current_input_buffer, current_input_size * 32);
     stream.SetOffset(data->input_buffer_read_offset);
 
-    if (data->input_buffer_read_offset > current_input_size * 8) {
+    if (data->input_buffer_read_offset > current_input_size * 16) {
       XELOGE(
           "XmaContext {}: Error - Provided input offset exceed input buffer "
           "size! ({} > {})",
-          id(), data->input_buffer_read_offset, current_input_size * 8);
-      data->input_buffer_read_offset = (current_input_size * 8);
+          id(), data->input_buffer_read_offset, current_input_size * 32);
       SwapInputBuffer(data);
       return;
     }

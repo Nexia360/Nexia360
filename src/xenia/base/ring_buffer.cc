@@ -8,6 +8,7 @@
  */
 
 #include "xenia/base/ring_buffer.h"
+#include <algorithm>
 #include <cstring>
 
 namespace xe {

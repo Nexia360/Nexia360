@@ -48,6 +48,7 @@ class ProfilePasscodeUI final : public XamDialog {
   void DrawPasscodeField(uint8_t key_id);
 
   bool has_opened_ = false;
+  bool pending_close_ = false;
   bool selected_signed_in_ = false;
   std::string title_;
   std::string description_;

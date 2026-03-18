@@ -9,6 +9,8 @@
 
 #include "xenia/kernel/xam/profile_manager.h"
 
+#include <filesystem>
+
 #include "xenia/base/logging.h"
 #include "xenia/emulator.h"
 #include "xenia/hid/input_system.h"
@@ -659,8 +661,8 @@ bool ProfileManager::DeleteProfile(const uint64_t xuid) {
 }
 
 bool ProfileManager::ModifyAccount(
-    const uint64_t xuid, X_XAMACCOUNTINFO* account,
-    std::function<bool(X_XAMACCOUNTINFO* account)> action) {
+    const uint64_t xuid, xe::X_XAMACCOUNTINFO* account,
+    std::function<bool(xe::X_XAMACCOUNTINFO* account)> action) {
   const uint8_t user_index = GetUserIndexAssignedToProfile(xuid);
 
   if (user_index < XUserMaxUserCount) {
@@ -693,7 +695,7 @@ bool ProfileManager::ModifyAccount(
 }
 
 bool ProfileManager::ConvertToXboxLiveEnabledProfile(const uint64_t xuid) {
-  X_XAMACCOUNTINFO* account = &accounts_[xuid];
+  xe::X_XAMACCOUNTINFO* account = &accounts_[xuid];
 
   auto run = [this, account](X_XAMACCOUNTINFO* account) {
     account->reserved_flags |=
@@ -711,7 +713,7 @@ bool ProfileManager::ConvertToXboxLiveEnabledProfile(const uint64_t xuid) {
 }
 
 bool ProfileManager::ConvertToOfflineProfile(const uint64_t xuid) {
-  X_XAMACCOUNTINFO* account = &accounts_[xuid];
+  xe::X_XAMACCOUNTINFO* account = &accounts_[xuid];
 
   auto run = [account](X_XAMACCOUNTINFO* account) {
     account->reserved_flags &=

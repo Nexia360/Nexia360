@@ -9,6 +9,9 @@
 
 #include "xenia/ui/presenter.h"
 
+#include <algorithm>
+#include <utility>
+
 #include "xenia/base/assert.h"
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"

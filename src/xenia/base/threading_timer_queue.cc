@@ -7,6 +7,7 @@
  ******************************************************************************
  */
 
+#include <algorithm>
 #include <forward_list>
 
 #include "third_party/disruptorplus/include/disruptorplus/blocking_wait_strategy.hpp"

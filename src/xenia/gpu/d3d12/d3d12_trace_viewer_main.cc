@@ -7,6 +7,9 @@
  ******************************************************************************
  */
 
+#include <memory>
+#include <string>
+
 #include "xenia/base/logging.h"
 #include "xenia/gpu/d3d12/d3d12_command_processor.h"
 #include "xenia/gpu/d3d12/d3d12_graphics_system.h"

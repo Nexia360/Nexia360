@@ -9,6 +9,8 @@
 
 #include "xenia/gpu/trace_player.h"
 
+#include <memory>
+
 #include "xenia/gpu/command_processor.h"
 #include "xenia/gpu/graphics_system.h"
 #include "xenia/gpu/registers.h"

@@ -10,6 +10,7 @@
 #include "xenia/base/exception_handler.h"
 
 #include <signal.h>
+#include <ucontext.h>
 #include <cstdint>
 
 #include "xenia/base/assert.h"

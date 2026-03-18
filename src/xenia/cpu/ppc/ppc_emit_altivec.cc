@@ -301,18 +301,19 @@ int InstrEmit_stvrxl128(PPCHIRBuilder& f, const InstrData& i) {
 }
 
 int InstrEmit_mfvscr(PPCHIRBuilder& f, const InstrData& i) {
-  // mfvscr VD - Move from VSCR to VD
-  f.StoreVR(i.VX.VD,
+  // is this the right format?
+
+  f.StoreVR(i.VX128_1.RB,
             f.LoadContext(offsetof(PPCContext, vscr_vec), VEC128_TYPE));
   return 0;
 }
 
 int InstrEmit_mtvscr(PPCHIRBuilder& f, const InstrData& i) {
-  // mtvscr VB - Move from VB to VSCR
+  // is this the right format?
   // todo: what mtvscr does with the unused bits is implementation defined,
   // figure out what it does
 
-  Value* v = f.LoadVR(i.VX.VB);
+  Value* v = f.LoadVR(i.VX128_1.RB);
 
   Value* has_njm_value = f.Extract(v, (uint8_t)3, INT32_TYPE);
 
@@ -1674,7 +1675,7 @@ int InstrEmit_vsubcuw(PPCHIRBuilder& f, const InstrData& i) {
   Value* borrow =
       f.VectorShr(underflow, f.LoadConstantVec128(vec128i(31)), INT32_TYPE);
   f.StoreVR(i.VX.VD, borrow);
-  return 0;
+  return 1;
 }
 
 int InstrEmit_vsubfp_(PPCHIRBuilder& f, uint32_t vd, uint32_t va, uint32_t vb) {

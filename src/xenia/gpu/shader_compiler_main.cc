@@ -7,10 +7,12 @@
  ******************************************************************************
  */
 
+#include <cinttypes>
 #include <cstring>
 #include <sstream>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "third_party/glslang/SPIRV/disassemble.h"
 #include "xenia/base/assert.h"

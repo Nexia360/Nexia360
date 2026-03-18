@@ -9,6 +9,7 @@
 
 #include "xenia/ui/microprofile_drawer.h"
 
+#include <algorithm>
 #include <cstdint>
 
 #include "xenia/base/math.h"

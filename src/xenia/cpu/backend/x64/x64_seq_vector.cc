@@ -935,11 +935,6 @@ struct VECTOR_SHL_V128
         e.vpmovzxbd(e.ymm2, i.src2);
         e.vpmovzxbd(e.ymm3, e.xmm3);
 
-        // Mask shift counts to 3 bits (0-7) for byte shifts
-        e.vpbroadcastd(e.ymm4, e.GetXmmConstPtr(XMMXOPByteShiftMask));
-        e.vpand(e.ymm2, e.ymm2, e.ymm4);
-        e.vpand(e.ymm3, e.ymm3, e.ymm4);
-
         e.vpsllvd(e.ymm0, e.ymm0, e.ymm2);
         e.vpsllvd(e.ymm1, e.ymm1, e.ymm3);
         e.vextracti128(e.xmm2, e.ymm0, 1);
@@ -1030,7 +1025,6 @@ struct VECTOR_SHL_V128
 
     e.L(looper);
     e.movzx(e.ecx, e.byte[e.rsp + stack_offset_src2 + e.rdx]);
-    e.and_(e.cl, 7);  // Mask shift count to 3 bits (0-7) for byte shifts
 
     e.shl(e.byte[e.rsp + stack_offset_src1 + e.rdx], e.cl);
 
@@ -1109,7 +1103,6 @@ struct VECTOR_SHL_V128
 
     e.L(looper);
     e.movzx(e.ecx, e.word[e.rsp + stack_offset_src2 + e.rdx]);
-    e.and_(e.cl, 0xF);  // Mask shift count to 4 bits (0-15) for word shifts
 
     e.shl(e.word[e.rsp + stack_offset_src1 + e.rdx], e.cl);
 
@@ -1204,7 +1197,6 @@ struct VECTOR_SHL_V128
 
       e.L(looper);
       e.mov(e.ecx, e.dword[e.rsp + stack_offset_src2 + e.rdx]);
-      e.and_(e.cl, 0x1F);  // Mask shift count to 5 bits (0-31) for dword shifts
 
       e.shl(e.dword[e.rsp + stack_offset_src1 + e.rdx], e.cl);
 
@@ -1313,7 +1305,6 @@ struct VECTOR_SHR_V128
     // movzx is to eliminate any possible dep on previous value of rcx at start
     // of loop
     e.movzx(e.ecx, e.byte[e.rsp + stack_offset_src2 + e.rdx]);
-    e.and_(e.cl, 7);  // Mask shift count to 3 bits (0-7) for byte shifts
     // maybe using a memory operand as the left side isn't the best idea lol,
     // still better than callnativesafe though agners docs have no timing info
     // on shx [m], cl so shrug
@@ -1393,7 +1384,7 @@ struct VECTOR_SHR_V128
 
     e.L(looper);
     e.movzx(e.ecx, e.word[e.rsp + stack_offset_src2 + e.rdx]);
-    e.and_(e.cl, 0xF);  // Mask shift count to 4 bits (0-15) for word shifts
+
     e.shr(e.word[e.rsp + stack_offset_src1 + e.rdx], e.cl);
 
     e.add(e.edx, 2);
@@ -1493,7 +1484,6 @@ struct VECTOR_SHR_V128
 
       e.L(looper);
       e.mov(e.ecx, e.dword[e.rsp + stack_offset_src2 + e.rdx]);
-      e.and_(e.cl, 0x1F);  // Mask shift count to 5 bits (0-31) for dword shifts
       e.shr(e.dword[e.rsp + stack_offset_src1 + e.rdx], e.cl);
 
       e.add(e.edx, 4);
@@ -1614,7 +1604,6 @@ struct VECTOR_SHA_V128
     // movzx is to eliminate any possible dep on previous value of rcx at start
     // of loop
     e.movzx(e.ecx, e.byte[e.rsp + stack_offset_src2 + e.rdx]);
-    e.and_(e.cl, 7);  // Mask shift count to 3 bits (0-7) for byte shifts
     // maybe using a memory operand as the left side isn't the best idea lol,
     // still better than callnativesafe though agners docs have no timing info
     // on shx [m], cl so shrug
@@ -1694,7 +1683,7 @@ struct VECTOR_SHA_V128
 
     e.L(looper);
     e.movzx(e.ecx, e.word[e.rsp + stack_offset_src2 + e.rdx]);
-    e.and_(e.cl, 0xF);  // Mask shift count to 4 bits (0-15) for word shifts
+
     e.sar(e.word[e.rsp + stack_offset_src1 + e.rdx], e.cl);
 
     e.add(e.edx, 2);
@@ -1778,7 +1767,6 @@ struct VECTOR_SHA_V128
 
       e.L(looper);
       e.mov(e.ecx, e.dword[e.rsp + stack_offset_src2 + e.rdx]);
-      e.and_(e.cl, 0x1F);  // Mask shift count to 5 bits (0-31) for dword shifts
       e.sar(e.dword[e.rsp + stack_offset_src1 + e.rdx], e.cl);
 
       e.add(e.edx, 4);
@@ -2729,15 +2717,11 @@ struct PACK : Sequence<PACK, I<OPCODE_PACK, V128Op, V128Op, V128Op>> {
     // http://blogs.msdn.com/b/chuckw/archive/2012/09/11/directxmath-f16c-and-fma.aspx
     // dest = [(src1.x | src1.y), 0, 0, 0]
 
-    auto src1 = GetInputRegOrConstant(e, i.src1, e.xmm3);
-
-#if XE_PLATFORM_WIN32
-    // Windows x64 ABI: __m128 is passed by implicit pointer
-    e.lea(e.GetNativeParam(0), e.StashXmm(0, src1));
-#else
-    // Linux/Mac System V ABI: __m128 passed in xmm0, return in xmm0
-    e.vmovaps(e.xmm0, src1);
-#endif
+    if (i.src1.is_constant) {
+      e.lea(e.GetNativeParam(0), e.StashConstantXmm(0, i.src1.constant()));
+    } else {
+      e.lea(e.GetNativeParam(0), e.StashXmm(0, i.src1));
+    }
     e.CallNativeSafe(reinterpret_cast<void*>(EmulateFLOAT16_2));
     e.vmovaps(i.dest, e.xmm0);
   }
@@ -2878,36 +2862,21 @@ struct PACK : Sequence<PACK, I<OPCODE_PACK, V128Op, V128Op, V128Op>> {
       if (IsPackOutUnsigned(flags)) {
         if (IsPackOutSaturate(flags)) {
           // unsigned -> unsigned + saturate
-          auto src1 = GetInputRegOrConstant(e, i.src1, e.xmm3);
-          auto src2 = GetInputRegOrConstant(e, i.src2, e.xmm4);
-
-#if XE_PLATFORM_WIN32
-          // Windows x64 ABI: __m128i is passed by implicit pointer
-          e.lea(e.GetNativeParam(0), e.StashXmm(0, src1));
-          e.lea(e.GetNativeParam(1), e.StashXmm(1, src2));
-#else
-          // Linux/Mac System V ABI: __m128i passed in xmm0/xmm1, return in xmm0
-          e.vmovaps(e.xmm0, src1);
-          e.vmovaps(e.xmm1, src2);
-#endif
+          if (i.src2.is_constant) {
+            e.lea(e.GetNativeParam(1),
+                  e.StashConstantXmm(1, i.src2.constant()));
+          } else {
+            e.lea(e.GetNativeParam(1), e.StashXmm(1, i.src2));
+          }
+          e.lea(e.GetNativeParam(0), e.StashXmm(0, i.src1));
           e.CallNativeSafe(
               reinterpret_cast<void*>(EmulatePack8_IN_16_UN_UN_SAT));
           e.vmovaps(i.dest, e.xmm0);
           e.vpshufb(i.dest, i.dest, e.GetXmmConstPtr(XMMByteOrderMask));
         } else {
           // unsigned -> unsigned
-          auto src1 = GetInputRegOrConstant(e, i.src1, e.xmm3);
-          auto src2 = GetInputRegOrConstant(e, i.src2, e.xmm4);
-
-#if XE_PLATFORM_WIN32
-          // Windows x64 ABI: __m128i is passed by implicit pointer
-          e.lea(e.GetNativeParam(0), e.StashXmm(0, src1));
-          e.lea(e.GetNativeParam(1), e.StashXmm(1, src2));
-#else
-          // Linux/Mac System V ABI: __m128i passed in xmm0/xmm1, return in xmm0
-          e.vmovaps(e.xmm0, src1);
-          e.vmovaps(e.xmm1, src2);
-#endif
+          e.lea(e.GetNativeParam(1), e.StashXmm(1, i.src2));
+          e.lea(e.GetNativeParam(0), e.StashXmm(0, i.src1));
           e.CallNativeSafe(reinterpret_cast<void*>(EmulatePack8_IN_16_UN_UN));
           e.vmovaps(i.dest, e.xmm0);
           e.vpshufb(i.dest, i.dest, e.GetXmmConstPtr(XMMByteOrderMask));
@@ -3142,15 +3111,11 @@ struct UNPACK : Sequence<UNPACK, I<OPCODE_UNPACK, V128Op, V128Op>> {
     // Also zero out the high end.
     // TODO(benvanik): special case constant unpacks that just get 0/1/etc.
 
-    auto src1 = GetInputRegOrConstant(e, i.src1, e.xmm3);
-
-#if XE_PLATFORM_WIN32
-    // Windows x64 ABI: __m128i is passed by implicit pointer
-    e.lea(e.GetNativeParam(0), e.StashXmm(0, src1));
-#else
-    // Linux/Mac System V ABI: __m128i passed in xmm0, return in xmm0
-    e.vmovaps(e.xmm0, src1);
-#endif
+    if (i.src1.is_constant) {
+      e.lea(e.GetNativeParam(0), e.StashConstantXmm(0, i.src1.constant()));
+    } else {
+      e.lea(e.GetNativeParam(0), e.StashXmm(0, i.src1));
+    }
     e.CallNativeSafe(reinterpret_cast<void*>(EmulateFLOAT16_2));
     e.vmovaps(i.dest, e.xmm0);
   }

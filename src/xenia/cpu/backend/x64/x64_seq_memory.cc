@@ -9,6 +9,7 @@
 
 #include "xenia/cpu/backend/x64/x64_sequences.h"
 
+#include <algorithm>
 #include <cstring>
 
 #include "xenia/base/cvar.h"
@@ -1185,12 +1186,7 @@ static bool IsPossibleMMIOInstruction(X64Emitter& e, const hir::Instr* i) {
     return false;
   }
 
-  auto guest_module = e.GuestModule();
-  if (!guest_module) {
-    return false;
-  }
-
-  auto flags = guest_module->GetInstructionAddressFlags(guestaddr);
+  auto flags = e.GuestModule()->GetInstructionAddressFlags(guestaddr);
 
   return flags && flags->accessed_mmio;
 }

@@ -36,52 +36,51 @@ X_HRESULT XamApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
   auto buffer = memory_->TranslateVirtual(buffer_ptr);
   switch (message) {
     case 0x0002000E: {
-      X_ENUMERATE_PARAM* data_ptr =
-          reinterpret_cast<X_ENUMERATE_PARAM*>(buffer);
-
+      struct message_data {
+        xe::be<uint32_t> user_index;
+        xe::be<uint32_t> unk_04;
+        xe::be<uint32_t> extra_ptr;
+        xe::be<uint32_t> buffer_ptr;
+        xe::be<uint32_t> buffer_size;
+        xe::be<uint32_t> unk_14;
+        xe::be<uint32_t> length_ptr;
+        xe::be<uint32_t> unk_1C;
+      }* data = reinterpret_cast<message_data*>(buffer);
       XELOGD(
-          "XEnumerateCrossTitle({:04X}, {:04X}, {:04X}, {:04X}, {}, {}, "
-          "{:04X})",
-          data_ptr->user_index.get(), data_ptr->flags.get(),
-          data_ptr->private_enum_structure_ptr.get(),
-          data_ptr->buffer_ptr.get(), data_ptr->buffer_size.get(),
-          data_ptr->items_requested.get(), data_ptr->items_returned_ptr.get());
-
-      if (!data_ptr->buffer_ptr || !data_ptr->private_enum_structure_ptr) {
+          "XamAppEnumerateContentAggregate({}, {:08X}, {:08X}, {:08X}, {}, "
+          "{:08X}, {:08X}, {:08X})",
+          (uint32_t)data->user_index, (uint32_t)data->unk_04,
+          (uint32_t)data->extra_ptr, (uint32_t)data->buffer_ptr,
+          (uint32_t)data->buffer_size, (uint32_t)data->unk_14,
+          (uint32_t)data->length_ptr, (uint32_t)data->unk_1C);
+      if (!data->buffer_ptr || !data->extra_ptr) {
         return X_E_INVALIDARG;
       }
 
-      auto enum_struct =
-          memory_->TranslateVirtual<X_KENUMERATOR_CONTENT_AGGREGATE*>(
-              data_ptr->private_enum_structure_ptr);
-
+      auto extra = memory_->TranslateVirtual<X_KENUMERATOR_CONTENT_AGGREGATE*>(
+          data->extra_ptr);
+      auto buffer = memory_->TranslateVirtual(data->buffer_ptr);
       auto e = kernel_state_->object_table()->LookupObject<XEnumerator>(
-          enum_struct->handle);
-
+          extra->handle);
       if (!e) {
         return X_E_INVALIDARG;
       }
-
-      assert_true(enum_struct->magic == kXObjSignature);
-
-      // This is a struct of XCONTENT_AGGREGATE_DATA
-      uint8_t* content_data_ptr =
-          memory_->TranslateVirtual<uint8_t*>(data_ptr->buffer_ptr);
-
-      std::memset(content_data_ptr, 0, data_ptr->buffer_size);
-
-      uint32_t item_count = 0;
-      X_RESULT result = e->WriteItems(0, content_data_ptr, &item_count);
-
-      result = X_HRESULT_FROM_WIN32(result);
-
-      if (result == X_E_SUCCESS && data_ptr->items_returned_ptr &&
-          item_count >= 1) {
-        xe::store_and_swap<uint32_t>(
-            memory_->TranslateVirtual(data_ptr->items_returned_ptr), 1);
+      assert_true(extra->magic == kXObjSignature);
+      if (data->buffer_size) {
+        std::memset(buffer, 0, data->buffer_size);
       }
+      uint32_t item_count = 0;
+      auto result = e->WriteItems(data->buffer_ptr, buffer, &item_count);
 
-      return result;
+      if (result == X_ERROR_SUCCESS && item_count >= 1) {
+        if (data->length_ptr) {
+          auto length_ptr =
+              memory_->TranslateVirtual<be<uint32_t>*>(data->length_ptr);
+          *length_ptr = 1;
+        }
+        return X_E_SUCCESS;
+      }
+      return X_E_NO_MORE_FILES;
     }
     case 0x00020021: {
       struct XContentQueryVolumeDeviceType {
@@ -139,15 +138,8 @@ X_HRESULT XamApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
     case 0x0002B003: {
       // Games used in:
       // 4D5309C9
-      // It only receives buffer
-      struct {
-        xe::be<uint64_t> unk1;
-        xe::be<uint64_t> unk2;
-        xe::be<uint64_t> unk3;
-      }* args = memory_->TranslateVirtual<decltype(args)>(buffer_ptr);
-
-      XELOGD("XamUnk2B003({:016X}, {:016X}, {:016X}), unimplemented",
-             args->unk1.get(), args->unk2.get(), args->unk3.get());
+      XELOGD("XamUnk2B003({:08X}, {:08X}), unimplemented", buffer_ptr,
+             buffer_length);
       return X_E_SUCCESS;
     }
   }

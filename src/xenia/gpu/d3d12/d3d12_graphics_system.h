@@ -31,7 +31,7 @@ class D3D12GraphicsSystem : public GraphicsSystem {
 
   X_STATUS Setup(cpu::Processor* processor, kernel::KernelState* kernel_state,
                  ui::WindowedAppContext* app_context,
-                 bool with_presentation) override;
+                 bool is_surface_required) override;
 
  protected:
   std::unique_ptr<CommandProcessor> CreateCommandProcessor() override;

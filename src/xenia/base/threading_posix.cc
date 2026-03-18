@@ -17,11 +17,15 @@
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
+#include <sys/eventfd.h>
 #include <sys/syscall.h>
+#include <sys/time.h>
+#include <sys/types.h>
 #include <unistd.h>
 #include <array>
 #include <cstddef>
 #include <ctime>
+#include <memory>
 
 #include "logging.h"
 

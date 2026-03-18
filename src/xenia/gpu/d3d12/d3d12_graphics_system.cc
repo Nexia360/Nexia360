@@ -9,6 +9,8 @@
 
 #include "xenia/gpu/d3d12/d3d12_graphics_system.h"
 
+#include <algorithm>
+
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
 #include "xenia/gpu/d3d12/d3d12_command_processor.h"
@@ -40,10 +42,10 @@ std::string D3D12GraphicsSystem::name() const {
 X_STATUS D3D12GraphicsSystem::Setup(cpu::Processor* processor,
                                     kernel::KernelState* kernel_state,
                                     ui::WindowedAppContext* app_context,
-                                    bool with_presentation) {
+                                    bool is_surface_required) {
   provider_ = xe::ui::d3d12::D3D12Provider::Create();
   return GraphicsSystem::Setup(processor, kernel_state, app_context,
-                               with_presentation);
+                               is_surface_required);
 }
 
 std::unique_ptr<CommandProcessor>

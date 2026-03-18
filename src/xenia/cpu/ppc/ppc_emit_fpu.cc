@@ -54,35 +54,18 @@ int InstrEmit_faddsx(PPCHIRBuilder& f, const InstrData& i) {
 
 int InstrEmit_fdivx(PPCHIRBuilder& f, const InstrData& i) {
   // frD <- frA / frB
-#if XE_PLATFORM_LINUX
-  // TODO(has207): verify if this is needed on Windows
-  // On Linux, fdiv needs to use A format fields instead of X format
   Value* v = f.Div(f.LoadFPR(i.A.FRA), f.LoadFPR(i.A.FRB));
   f.StoreFPR(i.A.FRT, v);
   f.UpdateFPSCR(v, i.A.Rc);
-#else
-  Value* v = f.Div(f.LoadFPR(i.X.RA), f.LoadFPR(i.X.RB));
-  f.StoreFPR(i.X.RT, v);
-  f.UpdateFPSCR(v, i.X.Rc);
-#endif
   return 0;
 }
 
 int InstrEmit_fdivsx(PPCHIRBuilder& f, const InstrData& i) {
   // frD <- frA / frB
-#if XE_PLATFORM_LINUX
-  // TODO(has207): verify if this is needed on Windows
-  // On Linux, fdivs needs to use A format fields instead of X format
   Value* v = f.Div(f.LoadFPR(i.A.FRA), f.LoadFPR(i.A.FRB));
   v = f.ToSingle(v);
   f.StoreFPR(i.A.FRT, v);
   f.UpdateFPSCR(v, i.A.Rc);
-#else
-  Value* v = f.Div(f.LoadFPR(i.X.RA), f.LoadFPR(i.X.RB));
-  v = f.ToSingle(v);
-  f.StoreFPR(i.X.RT, v);
-  f.UpdateFPSCR(v, i.X.Rc);
-#endif
   return 0;
 }
 
@@ -254,7 +237,7 @@ int InstrEmit_fcfidx(PPCHIRBuilder& f, const InstrData& i) {
   // frD <- signed_int64_to_double( frB )
   Value* v = f.Convert(f.Cast(f.LoadFPR(i.X.RB), INT64_TYPE), FLOAT64_TYPE);
   f.StoreFPR(i.X.RT, v);
-  f.UpdateFPSCR(v, i.X.Rc);
+  f.UpdateFPSCR(v, i.A.Rc);
   return 0;
 }
 
@@ -369,37 +352,17 @@ int InstrEmit_fcmpu(PPCHIRBuilder& f, const InstrData& i) {
 // Floating-point status and control register (A
 
 int InstrEmit_mcrfs(PPCHIRBuilder& f, const InstrData& i) {
-  // mcrfs CRFD, CRFS
-  // CR[4*CRFD:4*CRFD+3] <- FPSCR[4*CRFS:4*CRFS+3]
-  // FPSCR[4*CRFS:4*CRFS+3] <- 0 (exception bits cleared)
-
-  uint32_t crfd = i.X.RT >> 2;  // Destination CR field
-  uint32_t crfs = i.X.RA >> 2;  // Source FPSCR field
-
-  Value* fpscr = f.LoadFPSCR();
-
-  // Extract 4-bit field from FPSCR
-  // FPSCR fields are numbered from left to right (0-7), with field 0 being bits
-  // 0-3
-  uint32_t shift = 4 * (7 - crfs);
-  Value* fpscr_field = f.And(f.Shr(fpscr, shift), f.LoadConstantUint32(0xF));
-
-  // Store to CR field (need to shift to proper position in 64-bit CR)
-  f.StoreCR(crfd, f.Shl(f.ZeroExtend(fpscr_field, INT64_TYPE), 4 * (7 - crfd)));
-
-  // Clear the FPSCR field (set to 0)
-  uint32_t mask = ~(0xF << shift);
-  f.StoreFPSCR(f.And(fpscr, f.LoadConstantUint32(mask)));
-
-  return 0;
+  XEINSTRNOTIMPLEMENTED();
+  return 1;
 }
 
 int InstrEmit_mffsx(PPCHIRBuilder& f, const InstrData& i) {
+  if (i.X.Rc) {
+    XEINSTRNOTIMPLEMENTED();
+    return 1;
+  }
   Value* v = f.Cast(f.ZeroExtend(f.LoadFPSCR(), INT64_TYPE), FLOAT64_TYPE);
   f.StoreFPR(i.X.RT, v);
-  if (i.X.Rc) {
-    f.CopyFPSCRToCR1();
-  }
   return 0;
 }
 

@@ -94,8 +94,6 @@ X_HRESULT XmpApp::XMPCreateTitlePlaylist(
 
   kernel_state_->emulator()->audio_media_player()->AddPlaylist(
       next_playlist_handle_, std::move(playlist));
-  kernel_state_->BroadcastNotification(
-      kXNotificationXmpTitlePlayListContentChanged, 0);
 
   return X_E_SUCCESS;
 }
@@ -399,8 +397,6 @@ X_HRESULT XmpApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
       // XMPCreateUserPlaylistEnumerator
       // For whatever reason buffer_length is 0 in this case.
       // Return buffer size is set to be items * 0x338 bytes.
-      // Games used in:
-      // 54540809, 494707D4
       return X_E_SUCCESS;
     }
     case 0x00070029: {
@@ -443,26 +439,10 @@ X_HRESULT XmpApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
       return X_E_SUCCESS;
     }
     case 0x0007002B: {
-      // XMPGetMediaSources
       // Called on the NXE and Kinect dashboard after clicking on the picture,
       // video, and music library
-      assert_true(!buffer_length || buffer_length == 20);
-      struct {
-        xe::be<uint32_t> xmp_client;
-        xe::be<uint32_t> unk1;
-        xe::be<uint32_t> unk2;
-        xe::be<uint32_t> unk3;
-        xe::be<uint32_t> unk4;
-      }* args = memory_->TranslateVirtual<decltype(args)>(buffer_ptr);
-      static_assert_size(decltype(*args), 20);
-
-      assert_true(args->xmp_client == 0x00000002 ||
-                  args->xmp_client == 0x00000000);
-      XELOGD(
-          "XMPGetMediaSources({:08X}, {:08X}, {:08X}, {:08X}, {:08X}), "
-          "unimplemented",
-          args->xmp_client.get(), args->unk1.get(), args->unk2.get(),
-          args->unk3.get(), args->unk4.get());
+      XELOGD("XMPUnk7002B({:08X}, {:08X}), unimplemented", buffer_ptr,
+             buffer_length);
       return X_E_INVALIDARG;
     }
     case 0x0007002E: {
@@ -484,26 +464,9 @@ X_HRESULT XmpApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
       return X_E_SUCCESS;
     }
     case 0x0007002F: {
-      // XMPDashInIt
       // Called on the start up of all dashboard versions before kinect
-      assert_true(!buffer_length || buffer_length == 24);
-      struct {
-        xe::be<uint32_t> xmp_client;
-        xe::be<uint32_t> unk1;
-        xe::be<uint32_t> unk2;
-        xe::be<uint32_t> unk3;
-        xe::be<uint32_t> unk4;
-        xe::be<uint32_t> storage_ptr;
-      }* args = memory_->TranslateVirtual<decltype(args)>(buffer_ptr);
-      static_assert_size(decltype(*args), 24);
-
-      assert_true(args->xmp_client == 0x00000002 ||
-                  args->xmp_client == 0x00000000);
-      XELOGD(
-          "XMPDashInIt({:08X}, {:08X}, {:08X}, {:08X}, {:08X}, {:08X}), "
-          "unimplemented",
-          args->xmp_client.get(), args->unk1.get(), args->unk2.get(),
-          args->unk3.get(), args->unk4.get(), args->storage_ptr.get());
+      XELOGD("XMPUnk7002F({:08X}, {:08X}), unimplemented", buffer_ptr,
+             buffer_length);
       return X_E_INVALIDARG;
     }
     case 0x0007003D: {
@@ -525,42 +488,19 @@ X_HRESULT XmpApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
       return X_E_SUCCESS;
     }
     case 0x00070044: {
-      // XMPSetMediaSourceWorkspace
       // Called on the start up of all dashboard versions before kinect
       // When it returns X_E_INVALIDARG you can access the music player up to
       // version 5787
-      assert_true(!buffer_length || buffer_length == 16);
-      struct {
-        xe::be<uint32_t> xmp_client;
-        xe::be<uint32_t> unk1;
-        xe::be<uint32_t> storage_ptr;
-        xe::be<uint32_t> unk2;
-      }* args = memory_->TranslateVirtual<decltype(args)>(buffer_ptr);
-      static_assert_size(decltype(*args), 16);
-
-      assert_true(args->xmp_client == 0x00000002 ||
-                  args->xmp_client == 0x00000000);
-      XELOGD(
-          "XMPSetMediaSourceWorkspace({:08X}, {:08X}, {:08X}, {:08X}), "
-          "unimplemented",
-          args->xmp_client.get(), args->unk1.get(), args->storage_ptr.get(),
-          args->unk2.get());
+      XELOGD("XMPUnk70044({:08X}, {:08X}), unimplemented", buffer_ptr,
+             buffer_length);
       return X_E_INVALIDARG;
     }
     case 0x00070053: {
-      // Called on the blades dashboard Version 4532-5787 after clicking on the
-      // picture or video library. It only receives buffer
-      // *unk1_ptr = to some unknown value
-      struct {
-        xe::be<uint32_t> xmp_client;
-        xe::be<uint32_t> unk1_ptr;
-      }* args = memory_->TranslateVirtual<decltype(args)>(buffer_ptr);
-      static_assert_size(decltype(*args), 8);
-
-      assert_true(args->xmp_client == 0x00000002 ||
-                  args->xmp_client == 0x00000000);
-      XELOGD("XMPUnk70053({:08X}, {:08X}), unimplemented",
-             args->xmp_client.get(), args->unk1_ptr.get());
+      // Called on the blades dashboard after clicking on the picture,
+      // video, and music library in rapid succession then freezes
+      // it only recieves buffer
+      XELOGD("XMPUnk70053({:08X}, {:08X}), unimplemented", buffer_ptr,
+             buffer_length);
       return X_E_SUCCESS;
     }
   }

@@ -9,6 +9,8 @@
 
 #include "xenia/vfs/devices/disc_image_entry.h"
 
+#include <algorithm>
+
 #include "xenia/base/math.h"
 #include "xenia/vfs/devices/disc_image_file.h"
 

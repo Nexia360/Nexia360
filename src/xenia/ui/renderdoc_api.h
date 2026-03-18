@@ -10,39 +10,26 @@
 #ifndef XENIA_UI_RENDERDOC_API_H_
 #define XENIA_UI_RENDERDOC_API_H_
 
-#include <memory>
-
 #include "third_party/renderdoc/renderdoc_app.h"
-#include "xenia/base/platform.h"
-
-#if XE_PLATFORM_WIN32
-#include "xenia/base/platform_win.h"
-#endif
 
 namespace xe {
 namespace ui {
 
-class RenderDocAPI {
+class RenderdocApi {
  public:
-  static std::unique_ptr<RenderDocAPI> CreateIfConnected();
+  RenderdocApi() = default;
+  RenderdocApi(const RenderdocApi& renderdoc_api) = delete;
+  RenderdocApi& operator=(const RenderdocApi& renderdoc_api) = delete;
+  ~RenderdocApi() { Shutdown(); }
 
-  RenderDocAPI(const RenderDocAPI&) = delete;
-  RenderDocAPI& operator=(const RenderDocAPI&) = delete;
+  bool Initialize();
+  void Shutdown();
 
-  ~RenderDocAPI();
-
-  // Always present if this object exists.
+  // nullptr if not attached.
   const RENDERDOC_API_1_0_0* api_1_0_0() const { return api_1_0_0_; }
 
  private:
-  explicit RenderDocAPI() = default;
-
-#if XE_PLATFORM_LINUX
   void* library_ = nullptr;
-#elif XE_PLATFORM_WIN32
-  HMODULE library_ = nullptr;
-#endif
-
   const RENDERDOC_API_1_0_0* api_1_0_0_ = nullptr;
 };
 

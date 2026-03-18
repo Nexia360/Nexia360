@@ -19,7 +19,6 @@
 #include "xenia/base/bit_map.h"
 #include "xenia/cpu/backend/backend.h"
 #include "xenia/cpu/export_resolver.h"
-#include "xenia/kernel/kernel.h"
 #include "xenia/kernel/smc.h"
 #include "xenia/kernel/util/kernel_fwd.h"
 #include "xenia/kernel/util/native_list.h"
@@ -32,6 +31,7 @@
 #include "xenia/kernel/xam/xdbf/spa_info.h"
 #include "xenia/kernel/xevent.h"
 #include "xenia/vfs/virtual_file_system.h"
+#include "xenia/xbox.h"
 
 namespace xe {
 class ByteStream;
@@ -58,8 +58,7 @@ struct X_KPROCESS {
   // list of threads in this process, guarded by the spinlock above
   X_LIST_ENTRY thread_list;
 
-  // quantum value assigned to each thread of the process
-  xe::be<int32_t> quantum;
+  xe::be<uint32_t> unk_0C;
   // kernel sets this to point to a section of size 0x2F700 called CLRDATAA,
   // except it clears bit 31 of the pointer. in 17559 the address is 0x801C0000,
   // so it sets this ptr to 0x1C0000
@@ -185,6 +184,7 @@ class KernelState {
   const std::unique_ptr<xam::SpaInfo> title_xdbf() const;
   const std::unique_ptr<xam::SpaInfo> module_xdbf(
       object_ref<UserModule> exec_module) const;
+  bool UpdateSpaData(vfs::Entry* spa_file_update);
 
   xam::XamState* xam_state() const { return xam_state_.get(); }
 
@@ -228,7 +228,6 @@ class KernelState {
   bool RegisterUserModule(object_ref<UserModule> module);
   void UnregisterUserModule(UserModule* module);
   bool IsKernelModule(const std::string_view name);
-  bool IsModuleLoaded(const std::string_view name);
   object_ref<XModule> GetModule(const std::string_view name,
                                 bool user_only = false);
 
@@ -268,7 +267,6 @@ class KernelState {
   void OnThreadExecute(XThread* thread);
   void OnThreadExit(XThread* thread);
   object_ref<XThread> GetThreadByID(uint32_t thread_id);
-  std::vector<uint32_t> GetAllThreadIDs();
 
   void RegisterNotifyListener(XNotifyListener* listener);
   void UnregisterNotifyListener(XNotifyListener* listener);
@@ -360,9 +358,6 @@ class KernelState {
   std::unordered_map<uint32_t, XThread*> threads_by_id_;
   std::vector<object_ref<XNotifyListener>> notify_listeners_;
   bool has_notified_startup_ = false;
-  bool has_notified_live_startup_ = false;
-  bool has_notified_system_and_live_ = false;
-  bool has_notified_xparty_ = false;
 
   object_ref<UserModule> executable_module_;
   std::vector<object_ref<KernelModule>> kernel_modules_;
@@ -389,6 +384,7 @@ class KernelState {
 
  public:
   uint32_t dash_context_ = 0;
+  X_DASH_APP_INFO dash_app_info_ = {};
   std::unordered_map<XObject::Type, uint32_t>
       host_object_type_enum_to_guest_object_type_ptr_;
   uint32_t GetKernelGuestGlobals() const { return kernel_guest_globals_; }

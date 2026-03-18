@@ -24,12 +24,12 @@ NullGraphicsSystem::~NullGraphicsSystem() {}
 X_STATUS NullGraphicsSystem::Setup(cpu::Processor* processor,
                                    kernel::KernelState* kernel_state,
                                    ui::WindowedAppContext* app_context,
-                                   bool with_presentation) {
+                                   bool is_surface_required) {
   // This is a null graphics system, but we still setup vulkan because UI needs
   // it through us :|
-  provider_ = xe::ui::vulkan::VulkanProvider::Create(false, with_presentation);
+  provider_ = xe::ui::vulkan::VulkanProvider::Create(is_surface_required);
   return GraphicsSystem::Setup(processor, kernel_state, app_context,
-                               with_presentation);
+                               is_surface_required);
 }
 
 std::unique_ptr<CommandProcessor> NullGraphicsSystem::CreateCommandProcessor() {

@@ -15,7 +15,7 @@
 #include <vector>
 
 #include "xenia/base/assert.h"
-#include "xenia/ui/vulkan/vulkan_device.h"
+#include "xenia/ui/vulkan/vulkan_provider.h"
 
 namespace xe {
 namespace ui {
@@ -28,7 +28,7 @@ class SingleLayoutDescriptorSetPool {
   // set count will be done internally). The descriptor set layout must not be
   // destroyed until this object is also destroyed.
   SingleLayoutDescriptorSetPool(
-      const VulkanDevice* vulkan_device, uint32_t pool_set_count,
+      const VulkanProvider& provider, uint32_t pool_set_count,
       uint32_t set_layout_descriptor_counts_count,
       const VkDescriptorPoolSize* set_layout_descriptor_counts,
       VkDescriptorSetLayout set_layout);
@@ -43,7 +43,7 @@ class SingleLayoutDescriptorSetPool {
   VkDescriptorSet Get(size_t index) const { return descriptor_sets_[index]; }
 
  private:
-  const VulkanDevice* vulkan_device_;
+  const VulkanProvider& provider_;
   uint32_t pool_set_count_;
   std::vector<VkDescriptorPoolSize> pool_descriptor_counts_;
   VkDescriptorSetLayout set_layout_;

@@ -9,6 +9,8 @@
 
 #include "xenia/kernel/user_module.h"
 
+#include <vector>
+
 #include "xenia/base/byte_stream.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/xxhash.h"
@@ -33,22 +35,6 @@ uint32_t UserModule::title_id() const {
     return static_cast<uint32_t>(opt_exec_info->title_id);
   }
   return 0;
-}
-
-std::string UserModule::bounding_filename() const {
-  std::string bounding_filename = "";
-
-  if (module_format_ != kModuleFormatXex) {
-    return bounding_filename;
-  }
-
-  xex2_opt_bound_path* bounding_path = nullptr;
-  if (xex_module()->GetOptHeader(XEX_HEADER_BOUNDING_PATH, &bounding_path)) {
-    bounding_filename =
-        utf8::find_base_name_from_guest_path(std::string(bounding_path->path));
-  }
-
-  return bounding_filename;
 }
 
 uint32_t UserModule::disc_number() const {

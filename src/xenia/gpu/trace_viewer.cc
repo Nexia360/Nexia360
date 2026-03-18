@@ -10,6 +10,7 @@
 #include "xenia/gpu/trace_viewer.h"
 
 #include <cinttypes>
+#include <string>
 
 #include "third_party/half/include/half.hpp"
 #include "third_party/imgui/imgui.h"
@@ -234,13 +235,13 @@ void TraceViewer::DrawControllerUI() {
     ImGui::SetTooltip("Reset to first frame");
   }
   ImGui::SameLine();
-  ImGui::PushItemFlag(ImGuiItemFlags_ButtonRepeat, true);
+  ImGui::PushButtonRepeat(true);
   if (ImGui::Button(">>", ImVec2(0, 0))) {
     if (target_frame + 1 < player_->frame_count()) {
       ++target_frame;
     }
   }
-  ImGui::PopItemFlag();
+  ImGui::PopButtonRepeat();
   if (ImGui::IsItemHovered()) {
     ImGui::SetTooltip("Next frame (hold for continuous)");
   }
@@ -433,8 +434,7 @@ void TraceViewer::DrawPacketDisassemblerUI() {
 int TraceViewer::RecursiveDrawCommandBufferUI(
     const TraceReader::Frame* frame, TraceReader::CommandBuffer* buffer) {
   int selected_id = -1;
-  int column_width =
-      int(ImGui::GetContentRegionAvail().x);  // TODO: This might be broken
+  int column_width = int(ImGui::GetContentRegionMax().x);
 
   for (size_t i = 0; i < buffer->commands.size(); i++) {
     switch (buffer->commands[i].type) {
@@ -513,8 +513,7 @@ void TraceViewer::DrawCommandListUI() {
   }
   int command_count = int(frame->commands.size());
   int target_command = player_->current_command_index();
-  int column_width =
-      int(ImGui::GetContentRegionAvail().x);  // TODO: This might be broken
+  int column_width = int(ImGui::GetContentRegionMax().x);
   ImGui::Text("Frame #%d", player_->current_frame_index());
   ImGui::Separator();
   if (ImGui::Button("reset")) {
@@ -524,7 +523,7 @@ void TraceViewer::DrawCommandListUI() {
     ImGui::SetTooltip("Reset to before any frame commands");
   }
   ImGui::SameLine();
-  ImGui::PushItemFlag(ImGuiItemFlags_ButtonRepeat, true);
+  ImGui::PushButtonRepeat(true);
   if (ImGui::Button("prev", ImVec2(0, 0))) {
     if (target_command >= 0) {
       --target_command;
@@ -542,7 +541,7 @@ void TraceViewer::DrawCommandListUI() {
   if (ImGui::IsItemHovered()) {
     ImGui::SetTooltip("Move to the next command (hold)");
   }
-  ImGui::PopItemFlag();
+  ImGui::PopButtonRepeat();
   ImGui::SameLine();
   if (ImGui::Button("end")) {
     target_command = command_count - 1;
@@ -1182,28 +1181,28 @@ void TraceViewer::DrawStateUI() {
   }
 
   auto enable_mode =
-      static_cast<EdramMode>(regs[XE_GPU_REG_RB_MODECONTROL] & 0x7);
+      static_cast<ModeControl>(regs[XE_GPU_REG_RB_MODECONTROL] & 0x7);
 
   switch (enable_mode) {
-    case EdramMode::kNoOperation:
+    case ModeControl::kIgnore:
       ImGui::Text("Ignored Command %d", player_->current_command_index());
       break;
-    case EdramMode::kColorDepth:
-    case EdramMode::kDepthOnly: {
+    case ModeControl::kColorDepth:
+    case ModeControl::kDepth: {
       static const char* kPrimNames[] = {
           "<none>",         "point list",   "line list",      "line strip",
           "triangle list",  "triangle fan", "triangle strip", "unknown 0x7",
           "rectangle list", "unknown 0x9",  "unknown 0xA",    "unknown 0xB",
           "line loop",      "quad list",    "quad strip",     "unknown 0xF",
       };
-      ImGui::Text(
-          "%s Command %d: %s, %d indices",
-          enable_mode == EdramMode::kColorDepth ? "Color-Depth" : "Depth-only",
-          player_->current_command_index(),
-          kPrimNames[int(draw_info.prim_type)], draw_info.index_count);
+      ImGui::Text("%s Command %d: %s, %d indices",
+                  enable_mode == ModeControl::kColorDepth ? "Color-Depth"
+                                                          : "Depth-only",
+                  player_->current_command_index(),
+                  kPrimNames[int(draw_info.prim_type)], draw_info.index_count);
       break;
     }
-    case EdramMode::kCopy: {
+    case ModeControl::kCopy: {
       uint32_t copy_dest_base = regs[XE_GPU_REG_RB_COPY_DEST_BASE];
       ImGui::Text("Copy Command %d (to %.8X)", player_->current_command_index(),
                   copy_dest_base);
@@ -1365,7 +1364,7 @@ void TraceViewer::DrawStateUI() {
       static_cast<xenos::MsaaSamples>((rb_surface_info >> 16) & 0x3);
 
   if (ImGui::CollapsingHeader("Color Targets")) {
-    if (enable_mode != EdramMode::kDepthOnly) {
+    if (enable_mode != ModeControl::kDepth) {
       // Alpha testing -- ALPHAREF, ALPHAFUNC, ALPHATESTENABLE
       // if(ALPHATESTENABLE && frag_out.a [<=/ALPHAFUNC] ALPHAREF) discard;
       uint32_t color_control = regs[XE_GPU_REG_RB_COLORCONTROL];

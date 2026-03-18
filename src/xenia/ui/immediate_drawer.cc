@@ -9,6 +9,8 @@
 
 #include "xenia/ui/immediate_drawer.h"
 
+#include <algorithm>
+
 #include "xenia/base/assert.h"
 #include "xenia/base/math.h"
 #include "xenia/ui/graphics_util.h"

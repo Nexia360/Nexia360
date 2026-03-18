@@ -9,6 +9,8 @@
 
 #include "xenia/vfs/devices/disc_image_file.h"
 
+#include <algorithm>
+
 #include "xenia/base/logging.h"
 #include "xenia/vfs/devices/disc_image_entry.h"
 namespace xe {

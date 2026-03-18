@@ -9,6 +9,8 @@
 
 #include "xenia/gpu/command_processor.h"
 
+#include <cinttypes>
+
 #include "third_party/fmt/include/fmt/format.h"
 #include "xenia/base/byte_stream.h"
 #include "xenia/base/cvar.h"
@@ -397,7 +399,7 @@ void CommandProcessor::EnableReadPointerWriteBack(uint32_t ptr,
 XE_NOINLINE XE_COLD void CommandProcessor::LogKickoffInitator(uint32_t value) {
   cpu::backend::GuestPseudoStackTrace st;
 
-  if (logging::ShouldLog(LogLevel::Debug) &&
+  if (logging::internal::ShouldLog(LogLevel::Debug) &&
       kernel_state_->processor()->backend()->PopulatePseudoStacktrace(&st)) {
     logging::LoggerBatch<LogLevel::Debug> log_initiator{};
 
@@ -427,7 +429,7 @@ void CommandProcessor::UpdateWritePointer(uint32_t value) {
 void CommandProcessor::LogRegisterSet(uint32_t register_index, uint32_t value) {
 #if XE_ENABLE_GPU_REG_WRITE_LOGGING == 1
   if (cvars::log_guest_driven_gpu_register_written_values &&
-      logging::ShouldLog(LogLevel::Debug)) {
+      logging::internal::ShouldLog(LogLevel::Debug)) {
     const RegisterInfo* reginfo = RegisterFile::GetRegisterInfo(register_index);
 
     if (!reginfo) {
@@ -444,7 +446,7 @@ void CommandProcessor::LogRegisterSets(uint32_t base_register_index,
                                        uint32_t n_values) {
 #if XE_ENABLE_GPU_REG_WRITE_LOGGING == 1
   if (cvars::log_guest_driven_gpu_register_written_values &&
-      logging::ShouldLog(LogLevel::Debug)) {
+      logging::internal::ShouldLog(LogLevel::Debug)) {
     auto target = logging::internal::GetThreadBuffer();
 
     auto target_ptr = target.first;

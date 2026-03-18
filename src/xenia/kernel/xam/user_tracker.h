@@ -90,7 +90,6 @@ class UserTracker {
 
   // Titles
   void AddTitleToPlayedList();
-  void RemoveTitleFromPlayedList(uint64_t xuid, uint32_t title_id);
   std::vector<TitleInfo> GetPlayedTitles(uint64_t xuid) const;
   std::optional<TitleInfo> GetUserTitleInfo(uint64_t xuid,
                                             uint32_t title_id) const;

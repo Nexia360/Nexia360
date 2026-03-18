@@ -40,11 +40,7 @@ XObject::XObject(KernelState* kernel_state, Type type, bool host_object)
       allocated_guest_object_(false),
       host_object_(host_object) {
   handles_.reserve(10);
-
-  // TODO: Assert kernel_state != nullptr in this constructor.
-  if (kernel_state) {
-    kernel_state->object_table()->AddHandle(this, nullptr);
-  }
+  // Handle allocation is now lazy - done in handle() on first access.
 }
 
 XObject::~XObject() {
@@ -70,11 +66,26 @@ Memory* XObject::memory() const { return kernel_state_->memory(); }
 
 XObject::Type XObject::type() const { return type_; }
 
+X_HANDLE XObject::handle() {
+  if (handles_.empty()) {
+    // Lazy allocation - add handle to table on first access.
+    if (kernel_state_) {
+      kernel_state_->object_table()->AddHandle(this, nullptr);
+    }
+  }
+  return handles_.empty() ? X_INVALID_HANDLE_VALUE : handles_[0];
+}
+
 void XObject::RetainHandle() {
-  kernel_state_->object_table()->RetainHandle(handles_[0]);
+  if (!handles_.empty()) {
+    kernel_state_->object_table()->RetainHandle(handles_[0]);
+  }
 }
 
 bool XObject::ReleaseHandle() {
+  if (handles_.empty()) {
+    return false;
+  }
   // FIXME: Return true when handle is actually released.
   return kernel_state_->object_table()->ReleaseHandle(handles_[0]) ==
          X_STATUS_SUCCESS;
@@ -96,6 +107,10 @@ X_STATUS XObject::Delete() {
     if (!name_.empty()) {
       kernel_state_->object_table()->RemoveNameMapping(name_);
     }
+    if (handles_.empty()) {
+      // No handle was ever allocated - nothing to remove.
+      return X_STATUS_SUCCESS;
+    }
     return kernel_state_->object_table()->RemoveHandle(handles_[0]);
   }
 }
@@ -105,7 +120,9 @@ bool XObject::SaveObject(ByteStream* stream) {
   stream->Write<uint32_t>(guest_object_ptr_);
 
   stream->Write(uint32_t(handles_.size()));
-  stream->Write(&handles_[0], handles_.size() * sizeof(X_HANDLE));
+  if (!handles_.empty()) {
+    stream->Write(&handles_[0], handles_.size() * sizeof(X_HANDLE));
+  }
 
   return true;
 }
@@ -114,12 +131,15 @@ bool XObject::RestoreObject(ByteStream* stream) {
   allocated_guest_object_ = stream->Read<uint32_t>() > 0;
   guest_object_ptr_ = stream->Read<uint32_t>();
 
-  handles_.resize(stream->Read<uint32_t>());
-  stream->Read(&handles_[0], handles_.size() * sizeof(X_HANDLE));
+  auto handle_count = stream->Read<uint32_t>();
+  if (handle_count > 0) {
+    handles_.resize(handle_count);
+    stream->Read(&handles_[0], handles_.size() * sizeof(X_HANDLE));
 
-  // Restore our pointer to our handles in the object table.
-  for (size_t i = 0; i < handles_.size(); i++) {
-    kernel_state_->object_table()->RestoreHandle(handles_[i], this);
+    // Restore our pointer to our handles in the object table.
+    for (size_t i = 0; i < handles_.size(); i++) {
+      kernel_state_->object_table()->RestoreHandle(handles_[i], this);
+    }
   }
 
   return true;
@@ -172,7 +192,8 @@ void XObject::SetAttributes(uint32_t obj_attributes_ptr) {
                     memory()->TranslateVirtual(obj_attributes_ptr + 4)));
   if (!name.empty()) {
     name_ = std::string(name);
-    kernel_state_->object_table()->AddNameMapping(name_, handles_[0]);
+    // Use handle() to ensure handle is allocated before adding name mapping.
+    kernel_state_->object_table()->AddNameMapping(name_, handle());
   }
 }
 

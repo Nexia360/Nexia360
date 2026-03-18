@@ -9,8 +9,10 @@
 
 #include "xenia/gpu/texture_conversion.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <functional>
 
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"

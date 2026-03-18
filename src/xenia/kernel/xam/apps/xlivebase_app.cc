@@ -568,30 +568,6 @@ X_HRESULT XLiveBaseApp::XPresenceCreateEnumerator(uint32_t buffer_ptr,
   const uint32_t starting_index = xe::load_and_swap<uint32_t>(
       memory->TranslateVirtual(static_cast<uint32_t>(
           create_args->starting_index.argument_value_ptr)));
-  const uint32_t xuid_address =
-      static_cast<uint32_t>(create_args->peer_xuids_ptr.argument_value_ptr);
-  const uint32_t buffer_address =
-      static_cast<uint32_t>(create_args->buffer_length_ptr.argument_value_ptr);
-  const uint32_t handle_address = static_cast<uint32_t>(
-      create_args->enumerator_handle_ptr.argument_value_ptr);
-
-  const xe::be<uint64_t>* peer_xuids_ptr =
-      memory->TranslateVirtual<xe::be<uint64_t>*>(xuid_address);
-  uint32_t* buffer_size_ptr =
-      memory->TranslateVirtual<uint32_t*>(buffer_address);
-  uint32_t* handle_ptr = memory->TranslateVirtual<uint32_t*>(handle_address);
-
-  if (!handle_address) {
-    return X_E_INVALIDARG;
-  }
-
-  *handle_ptr = 0;
-
-  if (!buffer_address) {
-    return X_E_INVALIDARG;
-  }
-
-  *buffer_size_ptr = 0;
 
   if (!kernel_state()->xam_state()->IsUserSignedIn(user_index)) {
     return X_E_INVALIDARG;
@@ -609,7 +585,22 @@ X_HRESULT XLiveBaseApp::XPresenceCreateEnumerator(uint32_t buffer_ptr,
     return X_E_INVALIDARG;
   }
 
+  const uint32_t xuid_address =
+      static_cast<uint32_t>(create_args->peer_xuids_ptr.argument_value_ptr);
+  const uint32_t buffer_address =
+      static_cast<uint32_t>(create_args->buffer_length_ptr.argument_value_ptr);
+  const uint32_t handle_address = static_cast<uint32_t>(
+      create_args->enumerator_handle_ptr.argument_value_ptr);
+
   if (!xuid_address) {
+    return X_E_INVALIDARG;
+  }
+
+  if (!buffer_address) {
+    return X_E_INVALIDARG;
+  }
+
+  if (!handle_address) {
     return X_E_INVALIDARG;
   }
 
@@ -626,6 +617,9 @@ X_HRESULT XLiveBaseApp::XPresenceCreateEnumerator(uint32_t buffer_ptr,
   if (XFAILED(result)) {
     return result;
   }
+
+  const xe::be<uint64_t>* peer_xuids_ptr =
+      memory->TranslateVirtual<xe::be<uint64_t>*>(xuid_address);
 
   const auto peer_xuids =
       std::vector<uint64_t>(peer_xuids_ptr, peer_xuids_ptr + num_peers);
@@ -649,6 +643,10 @@ X_HRESULT XLiveBaseApp::XPresenceCreateEnumerator(uint32_t buffer_ptr,
       profile->GetSubscriptionFromXUID(xuid, item);
     }
   }
+
+  uint32_t* buffer_size_ptr =
+      memory->TranslateVirtual<uint32_t*>(buffer_address);
+  uint32_t* handle_ptr = memory->TranslateVirtual<uint32_t*>(handle_address);
 
   const uint32_t presence_buffer_size =
       static_cast<uint32_t>(e->items_per_enumerate() * e->item_size());
@@ -884,28 +882,6 @@ X_HRESULT XLiveBaseApp::XFriendsCreateEnumerator(uint32_t buffer_ptr,
   const uint32_t friends_amount = xe::load_and_swap<uint32_t>(
       memory->TranslateVirtual(static_cast<uint32_t>(
           friends_enumerator->friends_amount.argument_value_ptr)));
-  const uint32_t buffer_address =
-      static_cast<uint32_t>(friends_enumerator->buffer_ptr.argument_value_ptr);
-  const uint32_t handle_address =
-      static_cast<uint32_t>(friends_enumerator->handle_ptr.argument_value_ptr);
-
-  uint32_t* buffer_size_ptr =
-      memory->TranslateVirtual<uint32_t*>(buffer_address);
-  uint32_t* handle_ptr = memory->TranslateVirtual<uint32_t*>(handle_address);
-
-  if (!handle_address) {
-    return X_E_INVALIDARG;
-  }
-
-  // 41560834 and 45410923 expect invalid handle of 0 (not -1) for failure,
-  // therefore set as soon as possible.
-  *handle_ptr = 0;
-
-  if (!buffer_address) {
-    return X_E_INVALIDARG;
-  }
-
-  *buffer_size_ptr = 0;
 
   if (user_index >= XUserMaxUserCount) {
     return X_E_INVALIDARG;
@@ -918,6 +894,26 @@ X_HRESULT XLiveBaseApp::XFriendsCreateEnumerator(uint32_t buffer_ptr,
   if (friends_amount > X_ONLINE_MAX_FRIENDS) {
     return X_E_INVALIDARG;
   }
+
+  const uint32_t buffer_address =
+      static_cast<uint32_t>(friends_enumerator->buffer_ptr.argument_value_ptr);
+  const uint32_t handle_address =
+      static_cast<uint32_t>(friends_enumerator->handle_ptr.argument_value_ptr);
+
+  if (!buffer_address) {
+    return X_E_INVALIDARG;
+  }
+
+  if (!handle_address) {
+    return X_E_INVALIDARG;
+  }
+
+  uint32_t* buffer_size_ptr =
+      memory->TranslateVirtual<uint32_t*>(buffer_address);
+  uint32_t* handle_ptr = memory->TranslateVirtual<uint32_t*>(handle_address);
+
+  *buffer_size_ptr = 0;
+  *handle_ptr = X_INVALID_HANDLE_VALUE;
 
   if (!kernel_state()->xam_state()->IsUserSignedIn(user_index)) {
     return X_E_NO_SUCH_USER;
@@ -1285,7 +1281,6 @@ X_HRESULT XLiveBaseApp::XAccountGetUserInfo(uint32_t buffer_ptr) {
   // Example usage
   std::u16string first_name = u"First Name";
   std::u16string last_name = u"Last Name";
-  std::u16string email = u"example@email.com";
 
   char16_t* first_name_ptr =
       reinterpret_cast<char16_t*>(user_info_response_ptr + 1);
@@ -1296,11 +1291,6 @@ X_HRESULT XLiveBaseApp::XAccountGetUserInfo(uint32_t buffer_ptr) {
       reinterpret_cast<char16_t*>(first_name_ptr + MAX_FIRSTNAME_SIZE);
   string_util::copy_and_swap_truncating(last_name_ptr, last_name.data(),
                                         MAX_LASTNAME_SIZE);
-
-  char16_t* email_ptr =
-      reinterpret_cast<char16_t*>(last_name_ptr + MAX_LASTNAME_SIZE);
-  string_util::copy_and_swap_truncating(email_ptr, email.data(),
-                                        MAX_EMAIL_SIZE);
 
   user_info_response_ptr->first_name_length =
       static_cast<uint32_t>(first_name.size());
@@ -1313,11 +1303,6 @@ X_HRESULT XLiveBaseApp::XAccountGetUserInfo(uint32_t buffer_ptr) {
   user_info_response_ptr->last_name =
       kernel_state()->memory()->HostToGuestVirtual(
           std::to_address(last_name_ptr));
-
-  // 4D530AA5 wants an email
-  user_info_response_ptr->email_length = static_cast<uint32_t>(email.size());
-  user_info_response_ptr->email =
-      kernel_state()->memory()->HostToGuestVirtual(std::to_address(email_ptr));
 
   return X_E_SUCCESS;
 }

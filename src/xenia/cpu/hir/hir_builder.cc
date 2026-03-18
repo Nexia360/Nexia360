@@ -9,6 +9,7 @@
 
 #include "xenia/cpu/hir/hir_builder.h"
 
+#include <cinttypes>
 #include <cstdarg>
 #include <cstring>
 

@@ -9,6 +9,8 @@
 
 #include "xenia/kernel/xam/user_profile.h"
 
+#include <ranges>
+
 #include "third_party/fmt/include/fmt/format.h"
 #include "xenia/emulator.h"
 #include "xenia/kernel/util/presence_string_builder.h"

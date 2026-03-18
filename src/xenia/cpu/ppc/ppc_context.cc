@@ -9,6 +9,7 @@
 
 #include "xenia/cpu/ppc/ppc_context.h"
 
+#include <cinttypes>
 #include <cstdlib>
 
 #include "xenia/base/assert.h"

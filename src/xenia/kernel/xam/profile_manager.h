@@ -68,8 +68,8 @@ class ProfileManager {
 
   bool DeleteProfile(const uint64_t xuid);
 
-  bool ModifyAccount(const uint64_t xuid, X_XAMACCOUNTINFO* account,
-                     std::function<bool(X_XAMACCOUNTINFO* account)> action);
+  bool ModifyAccount(const uint64_t xuid, xe::X_XAMACCOUNTINFO* account,
+                     std::function<bool(xe::X_XAMACCOUNTINFO* account)> action);
 
   bool ConvertToXboxLiveEnabledProfile(const uint64_t xuid);
 
@@ -95,8 +95,6 @@ class ProfileManager {
   UserProfile* GetProfile(const uint8_t user_index) const;
   uint8_t GetUserIndexAssignedToProfile(const uint64_t xuid) const;
   uint8_t GetUserIndexAssignedToLiveProfile(const uint64_t xuid_online) const;
-
-  std::bitset<XUserMaxUserCount> GetUsedUserSlots() const;
 
   const std::map<uint64_t, X_XAMACCOUNTINFO>* GetAccounts() {
     return &accounts_;
@@ -136,6 +134,7 @@ class ProfileManager {
   std::vector<uint64_t> FindProfiles() const;
 
   uint8_t FindFirstFreeProfileSlot() const;
+  std::bitset<XUserMaxUserCount> GetUsedUserSlots() const;
 
   uint64_t GenerateXuid() const {
     std::random_device rd;

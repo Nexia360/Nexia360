@@ -9,6 +9,7 @@
 
 #include "xenia/gpu/texture_info.h"
 
+#include <algorithm>
 #include <cmath>
 
 #include "xenia/base/math.h"

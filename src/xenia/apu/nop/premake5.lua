@@ -10,4 +10,6 @@ project("xenia-apu-nop")
     "xenia-base",
     "xenia-apu",
   })
+  defines({
+  })
   local_platform_files()

@@ -20,7 +20,7 @@
 #include "xenia/gpu/shader_translator.h"
 #include "xenia/gpu/spirv_builder.h"
 #include "xenia/gpu/xenos.h"
-#include "xenia/ui/vulkan/vulkan_device.h"
+#include "xenia/ui/vulkan/vulkan_provider.h"
 
 namespace xe {
 namespace gpu {
@@ -320,7 +320,8 @@ class SpirvShaderTranslator : public ShaderTranslator {
   static constexpr uint32_t kSpirvMagicToolId = 26;
 
   struct Features {
-    explicit Features(const ui::vulkan::VulkanDevice* vulkan_device);
+    explicit Features(
+        const ui::vulkan::VulkanProvider::DeviceInfo& device_info);
     explicit Features(bool all = false);
 
     unsigned int spirv_version;

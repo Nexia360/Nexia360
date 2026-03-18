@@ -24,7 +24,9 @@
 
 #include "xenia/cpu/backend/x64/x64_sequences.h"
 
+#include <algorithm>
 #include <cstring>
+#include <unordered_map>
 
 #include "xenia/base/assert.h"
 #include "xenia/base/clock.h"
@@ -2216,15 +2218,9 @@ struct POW2_V128 : Sequence<POW2_V128, I<OPCODE_POW2, V128Op, V128Op>> {
   }
   static void Emit(X64Emitter& e, const EmitArgType& i) {
     e.ChangeMxcsrMode(MXCSRMode::Vmx);
-    Xmm src1 = GetInputRegOrConstant(e, i.src1, e.xmm3);
-
-#if XE_PLATFORM_WIN32
-    // Windows x64 ABI: __m128 is passed by implicit pointer
+    Xmm src1 = GetInputRegOrConstant(e, i.src1, e.xmm0);
     e.lea(e.GetNativeParam(0), e.StashXmm(0, src1));
-#else
-    // Linux/Mac System V ABI: __m128 passed in xmm0, return in xmm0
-    e.vmovaps(e.xmm0, src1);
-#endif
+
     e.CallNativeSafe(reinterpret_cast<void*>(EmulatePow2));
     e.vmovaps(i.dest, e.xmm0);
   }
@@ -2258,15 +2254,10 @@ struct LOG2_V128 : Sequence<LOG2_V128, I<OPCODE_LOG2, V128Op, V128Op>> {
   }
   static void Emit(X64Emitter& e, const EmitArgType& i) {
     e.ChangeMxcsrMode(MXCSRMode::Vmx);
-    Xmm src1 = GetInputRegOrConstant(e, i.src1, e.xmm3);
+    Xmm src1 = GetInputRegOrConstant(e, i.src1, e.xmm0);
 
-#if XE_PLATFORM_WIN32
-    // Windows x64 ABI: __m128 is passed by implicit pointer
     e.lea(e.GetNativeParam(0), e.StashXmm(0, src1));
-#else
-    // Linux/Mac System V ABI: __m128 passed in xmm0, return in xmm0
-    e.vmovaps(e.xmm0, src1);
-#endif
+
     e.CallNativeSafe(reinterpret_cast<void*>(EmulateLog2));
     e.vmovaps(i.dest, e.xmm0);
   }
@@ -2857,25 +2848,12 @@ struct SHL_V128 : Sequence<SHL_V128, I<OPCODE_SHL, V128Op, V128Op, I8Op>> {
 
     auto src1 = GetInputRegOrConstant(e, i.src1, e.xmm3);
 
-#if XE_PLATFORM_WIN32
-    // Windows x64 ABI: __m128i is passed by implicit pointer
-    e.lea(e.GetNativeParam(0), e.StashXmm(0, src1));
     if (i.src2.is_constant) {
       e.mov(e.GetNativeParam(1), i.src2.constant());
     } else {
-      // Zero-extend the 8-bit register to avoid garbage in upper bits
-      e.movzx(e.GetNativeParam(1).cvt32(), i.src2);
+      e.mov(e.GetNativeParam(1), i.src2);
     }
-#else
-    // Linux/Mac System V ABI: __m128i passed in xmm0, return in xmm0
-    e.vmovaps(e.xmm0, src1);
-    if (i.src2.is_constant) {
-      e.mov(e.GetNativeParam(0), i.src2.constant());
-    } else {
-      // Zero-extend the 8-bit register to avoid garbage in upper bits
-      e.movzx(e.GetNativeParam(0).cvt32(), i.src2);
-    }
-#endif
+    e.lea(e.GetNativeParam(0), e.StashXmm(0, src1));
     e.CallNativeSafe(reinterpret_cast<void*>(EmulateShlV128));
     e.vmovaps(i.dest, e.xmm0);
   }

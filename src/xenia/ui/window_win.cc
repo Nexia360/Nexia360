@@ -9,6 +9,10 @@
 
 #include "xenia/ui/window_win.h"
 
+#include <algorithm>
+#include <memory>
+#include <string>
+
 #include "xenia/base/assert.h"
 #include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"

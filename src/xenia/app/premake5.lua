@@ -42,6 +42,7 @@ project("xenia-app")
     "XBYAK_NO_OP_NAMES",
     "XBYAK_ENABLE_OMITTED_OPERAND",
     "CURL_STATICLIB",
+    "MINIUPNP_STATICLIB"
   })
   local_platform_files()
   files({
@@ -132,4 +133,6 @@ project("xenia-app")
     local user_file = project_root.."/build/xenia-app.vcxproj.user"
     if not os.isfile(user_file) then
       debugdir(project_root)
+      debugargs({
+      })
     end

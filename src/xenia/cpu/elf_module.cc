@@ -9,6 +9,9 @@
 
 #include "xenia/cpu/elf_module.h"
 
+#include <algorithm>
+#include <memory>
+
 #include "xenia/base/byte_order.h"
 #include "xenia/base/logging.h"
 #include "xenia/cpu/processor.h"

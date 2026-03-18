@@ -11,7 +11,6 @@
 #define XENIA_KERNEL_UTIL_XLAST_H_
 
 #include <map>
-#include <memory>
 #include <optional>
 #include <string>
 #include <vector>

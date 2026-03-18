@@ -54,9 +54,28 @@ void ProfilePasscodeUI::DrawPasscodeField(uint8_t key_id) {
 }
 
 void ProfilePasscodeUI::OnDraw(ImGuiIO& io) {
+  auto* drawer = imgui_drawer();
+  auto* focus_manager = drawer->GetFocusManager();
+
+  if (pending_close_) {
+    if (!drawer->IsAnyGamepadActionPressed()) {
+      focus_manager->UIDropFocus("PasscodeUI");
+      Close();
+    }
+    return;
+  }
+
   if (!has_opened_) {
+    focus_manager->UISetFocus("PasscodeUI");
     ImGui::OpenPopup(title_.c_str());
     has_opened_ = true;
+  }
+
+  const auto& input = focus_manager->XamInputFocus("PasscodeUI");
+
+  if (input.ShouldClose()) {
+    pending_close_ = true;
+    return;
   }
 
   if (ImGui::BeginPopupModal(title_.c_str(), nullptr,
@@ -67,32 +86,40 @@ void ProfilePasscodeUI::OnDraw(ImGuiIO& io) {
 
     for (uint8_t i = 0; i < passcode_length; i++) {
       DrawPasscodeField(i);
-      // result_ptr_->Passcode[i] =
-      // keys_map_.at(labelled_keys_[key_indexes_[i]]);
     }
 
     ImGui::NewLine();
 
-    // We write each key on close to prevent simultaneous dialogs.
-    if (ImGui::Button("Sign In")) {
+    bool signin_clicked = ImGui::Button("Sign In");
+    bool signin_focused = ImGui::IsItemFocused();
+    if (input.Activated() && signin_focused) {
+      signin_clicked = true;
+    }
+    if (signin_clicked) {
       for (uint8_t i = 0; i < passcode_length; i++) {
         result_ptr_->Passcode[i] =
             keys_map_.at(labelled_keys_[key_indexes_[i]]);
       }
-
       selected_signed_in_ = true;
-
-      Close();
+      pending_close_ = true;
     }
 
     ImGui::SameLine();
 
-    if (ImGui::Button("Cancel")) {
-      Close();
+    bool cancel_clicked = ImGui::Button("Cancel");
+    bool cancel_focused = ImGui::IsItemFocused();
+    if (input.Activated() && cancel_focused) {
+      cancel_clicked = true;
     }
-  }
+    if (cancel_clicked) {
+      pending_close_ = true;
+    }
 
-  ImGui::EndPopup();
+    ImGui::Spacing();
+    ImGui::TextDisabled("A: Select | B/Back: Cancel");
+
+    ImGui::EndPopup();
+  }
 }
 
 }  // namespace ui

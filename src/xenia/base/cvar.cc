@@ -9,10 +9,7 @@
 
 #include "xenia/base/cvar.h"
 #include <iostream>
-// https://github.com/nemtrif/utfcpp/issues/85
-#if defined(_MSVC_LANG) && _MSVC_LANG > __cplusplus
-#define UTF_CPP_CPLUSPLUS _MSVC_LANG
-#endif
+#define UTF_CPP_CPLUSPLUS 202002L
 #include "third_party/utfcpp/source/utf8.h"
 
 #include "xenia/base/console.h"
@@ -31,9 +28,6 @@ std::map<std::string, ICommandVar*>* CmdVars;
 std::map<std::string, IConfigVar*>* ConfigVars;
 std::multimap<uint32_t, const IConfigVarUpdate*>* IConfigVarUpdate::updates_;
 
-bool updated;
-bool updated_arg_present;
-
 void PrintHelpAndExit() {
   std::cout << options.help({""}) << std::endl;
   std::cout << "For the full list of command line arguments, see xenia.cfg."
@@ -44,11 +38,7 @@ void PrintHelpAndExit() {
 void ParseLaunchArguments(int& argc, char**& argv,
                           const std::string_view positional_help,
                           const std::vector<std::string>& positional_options) {
-  // Prevent throwing exceptions during argv parsing
-  options.allow_unrecognised_options();
-
   options.add_options()("help", "Prints help and exit.");
-  options.add_options()("updated", "App update completion result.");
 
   if (!CmdVars) {
     CmdVars = new std::map<std::string, ICommandVar*>();
@@ -82,11 +72,6 @@ void ParseLaunchArguments(int& argc, char**& argv,
                                  options.help({""}));
         exit(0);
       }
-    }
-
-    if (result.contains("updated")) {
-      updated_arg_present = true;
-      updated = result["updated"].as<bool>();
     }
 
     for (auto& it : *CmdVars) {

@@ -58,7 +58,7 @@ class GraphicsSystem {
   virtual X_STATUS Setup(cpu::Processor* processor,
                          kernel::KernelState* kernel_state,
                          ui::WindowedAppContext* app_context,
-                         bool with_presentation);
+                         bool is_surface_required);
   virtual void Shutdown();
 
   // May be called from any thread any number of times, even during recovery

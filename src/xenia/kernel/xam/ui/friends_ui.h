@@ -24,6 +24,7 @@ class FriendsUI : public XamDialog {
  private:
   void OnDraw(ImGuiIO& io) override;
 
+  bool pending_close_ = false;
   UserProfile* profile_;
   ui::FriendsContentArgs args = {};
   std::vector<FriendPresenceObjectJSON> presences;

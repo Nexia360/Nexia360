@@ -11,6 +11,7 @@
 
 #include <cctype>
 #include <cstring>
+#include <iostream>
 
 // TODO(gibbed): UTF8 support.
 

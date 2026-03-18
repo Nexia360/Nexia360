@@ -8,7 +8,10 @@
  */
 
 #include "xenia/gpu/d3d12/d3d12_command_processor.h"
+#include <algorithm>
 #include <cstring>
+#include <sstream>
+#include <utility>
 #include "xenia/base/assert.h"
 #include "xenia/base/byte_order.h"
 #include "xenia/base/cvar.h"
@@ -2524,15 +2527,15 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
                                       uint32_t index_count,
                                       IndexBufferInfo* index_buffer_info,
                                       bool major_mode_explicit) {
-#if XE_GPU_FINE_GRAINED_DRAW_SCOPES
+#if XE_UI_D3D12_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
-#endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
+#endif  // XE_UI_D3D12_FINE_GRAINED_DRAW_SCOPES
 
   ID3D12Device* device = GetD3D12Provider().GetDevice();
   const RegisterFile& regs = *register_file_;
 
-  xenos::EdramMode edram_mode = regs.Get<reg::RB_MODECONTROL>().edram_mode;
-  if (edram_mode == xenos::EdramMode::kCopy) {
+  xenos::ModeControl edram_mode = regs.Get<reg::RB_MODECONTROL>().edram_mode;
+  if (edram_mode == xenos::ModeControl::kCopy) {
     // Special copy handling.
     return IssueCopy();
   }
@@ -2560,9 +2563,9 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
       draw_util::IsRasterizationPotentiallyDone(regs, primitive_polygonal);
   D3D12Shader* pixel_shader = nullptr;
   if (is_rasterization_done) {
-    // See xenos::EdramMode for explanation why the pixel shader is only used
+    // See xenos::ModeControl for explanation why the pixel shader is only used
     // when it's kColorDepth here.
-    if (edram_mode == xenos::EdramMode::kColorDepth) {
+    if (edram_mode == xenos::ModeControl::kColorDepth) {
       pixel_shader = static_cast<D3D12Shader*>(active_pixel_shader());
       if (pixel_shader) {
         pipeline_cache_->AnalyzeShaderUcode(*pixel_shader);
@@ -3061,9 +3064,9 @@ void D3D12CommandProcessor::InitializeTrace() {
 }
 
 bool D3D12CommandProcessor::IssueCopy() {
-#if XE_GPU_FINE_GRAINED_DRAW_SCOPES
+#if XE_UI_D3D12_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
-#endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
+#endif  // XE_UI_D3D12_FINE_GRAINED_DRAW_SCOPES
   if (!BeginSubmission(true)) {
     return false;
   }
@@ -3213,9 +3216,9 @@ void D3D12CommandProcessor::CheckSubmissionFence(uint64_t await_submission) {
 }
 
 bool D3D12CommandProcessor::BeginSubmission(bool is_guest_command) {
-#if XE_GPU_FINE_GRAINED_DRAW_SCOPES
+#if XE_UI_D3D12_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
-#endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
+#endif  // XE_UI_D3D12_FINE_GRAINED_DRAW_SCOPES
 
   if (device_removed_) {
     return false;
@@ -3506,9 +3509,9 @@ void D3D12CommandProcessor::UpdateFixedFunctionState(
     const draw_util::ViewportInfo& viewport_info,
     const draw_util::Scissor& scissor, bool primitive_polygonal,
     reg::RB_DEPTHCONTROL normalized_depth_control) {
-#if XE_GPU_FINE_GRAINED_DRAW_SCOPES
+#if XE_UI_D3D12_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
-#endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
+#endif  // XE_UI_D3D12_FINE_GRAINED_DRAW_SCOPES
 
   // Viewport.
   D3D12_VIEWPORT viewport;
@@ -4202,9 +4205,9 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
   ID3D12Device* device = provider.GetDevice();
   const RegisterFile& regs = *register_file_;
 
-#if XE_GPU_FINE_GRAINED_DRAW_SCOPES
+#if XE_UI_D3D12_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
-#endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
+#endif  // XE_UI_D3D12_FINE_GRAINED_DRAW_SCOPES
 
   // Set the new root signature.
   if (current_graphics_root_signature_ != root_signature) {

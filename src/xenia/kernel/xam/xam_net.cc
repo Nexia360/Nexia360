@@ -525,36 +525,29 @@ dword_result_t NetDll_WSARecvFrom_entry(
   }
 #endif
 
-  int ret;
-  int retry_count = 3;
-  do {
-    ret = socket->WSARecvFrom(buffers, num_buffers, num_bytes_recv_ptr,
-                              flags_ptr, from_ptr, fromlen_ptr, overlapped_ptr);
-    if (ret < 0) {
-      auto err = socket->GetLastWSAError();
-      if (err == static_cast<uint32_t>(X_WSAError::X_WSAEWOULDBLOCK) ||
-          err == static_cast<uint32_t>(X_WSAError::X_WSA_IO_PENDING)) {
-        if (err != 0) XELOGI("WSARecvFrom Unhandled error occurred: {}", err);
-        XThread::SetLastError(err);
-        return ret;
-      } else if (err != static_cast<uint32_t>(X_WSAError::X_WSAENOTSOCK) &&
-                 err != static_cast<uint32_t>(
-                            X_WSAError::X_WSA_INVALID_PARAMETER)) {
-        XELOGI("Non-critical error occurred: {}", err);
-        XThread::SetLastError(0);
-      } else {
-        XELOGI("Unhandled error occurred: {}", err);
-        XThread::SetLastError(err);
-      }
-      return ret;
-    }
-    break;
-  } while (--retry_count > 0);
+  XELOGD("NetDll_WSARecvFrom: sock={} bufs={} overlapped={} completion={}",
+         (uint32_t)socket_handle, (uint32_t)num_buffers,
+         overlapped_ptr.guest_address(),
+         completion_routine_ptr.guest_address());
+
+  int ret = socket->WSARecvFrom(
+      buffers, num_buffers, num_bytes_recv_ptr, flags_ptr, from_ptr,
+      fromlen_ptr, overlapped_ptr, completion_routine_ptr.guest_address(),
+      overlapped_ptr.guest_address());
+  if (ret < 0) {
+    auto err = socket->GetLastWSAError();
+    // On Xbox 360: WSA_IO_PENDING == WSAEWOULDBLOCK == 0x2733.
+    // Return SOCKET_ERROR (-1) so the game waits on the overlapped event.
+    XELOGD("NetDll_WSARecvFrom: err={} sock={}", err, (uint32_t)socket_handle);
+    XThread::SetLastError(err);
+    return -1;
+  }
 
   XThread::SetLastError(0);
 
-  if (!cvars::log_mask_ips && from_ptr) {
-    XELOGD("NetDll_WSARecvFrom: {} bytes from {}.{}.{}.{}",
+  if (!cvars::log_mask_ips && from_ptr && num_bytes_recv_ptr &&
+      static_cast<uint32_t>(*num_bytes_recv_ptr) > 0) {
+    XELOGI("NetDll_WSARecvFrom: {} bytes from {}.{}.{}.{}",
            static_cast<uint32_t>(*num_bytes_recv_ptr),
            from_ptr->address_ip.S_un.S_un_b.s_b1,
            from_ptr->address_ip.S_un.S_un_b.s_b2,
@@ -594,8 +587,6 @@ dword_result_t NetDll_WSASendTo_entry(
     dword_t num_buffers, lpdword_t num_bytes_sent, dword_t flags,
     pointer_t<XSOCKADDR_IN> to_ptr, dword_t to_len,
     pointer_t<XWSAOVERLAPPED> overlapped, lpvoid_t completion_routine) {
-  assert(!completion_routine);
-
   auto socket =
       kernel_state()->object_table()->LookupObject<XSocket>(socket_handle);
   if (!socket) {
@@ -610,85 +601,44 @@ dword_result_t NetDll_WSASendTo_entry(
   }
 #endif
 
-  if (overlapped) {
-    int ret;
-    int retry_count = 3;
-    do {
-      ret = socket->WSASendTo(buffers, num_buffers, num_bytes_sent, flags,
-                              to_ptr, to_len, overlapped);
-      if (ret == SOCKET_ERROR) {
-        auto err = WSAGetLastError();
+  XELOGI(
+      "NetDll_WSASendTo: sock={} bufs={} flags={} overlapped={} completion={}",
+      (uint32_t)socket_handle, (uint32_t)num_buffers, (uint32_t)flags,
+      overlapped.guest_address(), completion_routine.guest_address());
 
-        if (err == static_cast<uint32_t>(X_WSAError::X_WSAEWOULDBLOCK) ||
-            err == static_cast<uint32_t>(X_WSAError::X_WSA_IO_PENDING)) {
-          XThread::SetLastError(err);
-          return ret;
-        } else if (err != static_cast<uint32_t>(X_WSAError::X_WSAENOTSOCK) &&
-                   err != static_cast<uint32_t>(
-                              X_WSAError::X_WSA_INVALID_PARAMETER)) {
-          XELOGI("Non-critical error occurred: {}", err);
-          XThread::SetLastError(0);
-        } else {
-          XELOGI("WSASendTo Unhandled error occurred: {}", err);
-          XThread::SetLastError(err);
-        }
-        return ret;
-      }
-      break;
-    } while (--retry_count > 0);
-
-    XThread::SetLastError(0);
-    XELOGI("NetDll_WSASendTo: Send {} bytes", (uint32_t)*num_bytes_sent);
-
-    if (overlapped->event_handle) {
-      xboxkrnl::xeNtSetEvent(overlapped->event_handle, nullptr);
-    }
-    return ret;
-  }
-
-  // Combine buffers (no scatter/gather support here).
-  std::vector<uint8_t> combined_buffer_mem;
-  uint32_t combined_buffer_size = 0;
-  uint32_t combined_buffer_offset = 0;
-
-  for (uint32_t i = 0; i < num_buffers; i++) {
-    combined_buffer_size += buffers[i].len;
-    combined_buffer_mem.resize(combined_buffer_size);
-    uint8_t* combined_buffer = combined_buffer_mem.data();
-
-    std::memcpy(combined_buffer + combined_buffer_offset,
-                kernel_memory()->TranslateVirtual(buffers[i].buf_ptr),
-                buffers[i].len);
-    combined_buffer_offset += buffers[i].len;
-  }
-
-  const int result = socket->SendTo(
-      combined_buffer_mem.data(), combined_buffer_size, flags, to_ptr, to_len);
-
-  if (result == -1) {
-#ifdef XE_PLATFORM_WIN32
+  int ret = socket->WSASendTo(
+      buffers, num_buffers, num_bytes_sent, flags, to_ptr, to_len, overlapped,
+      completion_routine.guest_address(), overlapped.guest_address());
+  if (ret < 0) {
     auto err = socket->GetLastWSAError();
-    if (cvars::network_mode >= 2 && err == WSAECONNRESET) {
-      // Swallow the reset once so we can keep using this socket.
-      XThread::SetLastError(0);
-      if (num_bytes_sent) *num_bytes_sent = 0;
-      return 0;
+    switch (err) {
+      case (uint32_t)X_WSAError::X_WSAENOTSOCK:
+      case (uint32_t)X_WSAError::X_WSA_INVALID_PARAMETER:
+      case (uint32_t)X_WSAError::X_WSAENOTCONN:
+        // Fatal — return error to caller.
+        XELOGI("NetDll_WSASendTo: FATAL sock={} err={}",
+               (uint32_t)socket_handle, err);
+        XThread::SetLastError(err);
+        return -1;
+      default:
+        // Non-fatal — return 0, set error for WSAGetLastError.
+        XELOGD("NetDll_WSASendTo: non-fatal sock={} err={}",
+               (uint32_t)socket_handle, err);
+        XThread::SetLastError(err);
+        return 0;
     }
-#endif
-    XThread::SetLastError(socket->GetLastWSAError());
-    return result;
-  } else if (result != -1 && to_ptr && !cvars::log_mask_ips) {
-    XELOGD("NetDll_WSASendTo: sent {} bytes to {}.{}.{}.{}", result,
+  }
+
+  XThread::SetLastError(0);
+  if (num_bytes_sent && !cvars::log_mask_ips && to_ptr) {
+    XELOGI("NetDll_WSASendTo: sent {} bytes to {}.{}.{}.{}",
+           static_cast<uint32_t>(*num_bytes_sent),
            to_ptr->address_ip.S_un.S_un_b.s_b1,
            to_ptr->address_ip.S_un.S_un_b.s_b2,
            to_ptr->address_ip.S_un.S_un_b.s_b3,
            to_ptr->address_ip.S_un.S_un_b.s_b4);
   }
-
-  if (num_bytes_sent) {
-    *num_bytes_sent = result;
-  }
-  return 0;
+  return ret;
 }
 DECLARE_XAM_EXPORT1(NetDll_WSASendTo, kNetworking, kImplemented);
 
@@ -1225,55 +1175,54 @@ dword_result_t NetDll_XNetQosListen_entry(
   XELOGI("XNetQosListen({:08X}, {:016X}, {:016X}, {}, {:08X}, {:08X})",
          caller.value(), sessionId.host_address(), data.host_address(),
          data_size.value(), bits_per_second.value(), flags.value());
-
   if (flags & LISTEN_ENABLE) {
     XELOGI("XNetQosListen LISTEN_ENABLE");
   }
-
   if (flags & LISTEN_DISABLE) {
     XELOGI("XNetQosListen LISTEN_DISABLE");
   }
-
   if (flags & LISTEN_SET_BITSPERSEC) {
     XELOGI("XNetQosListen LISTEN_SET_BITSPERSEC");
   }
-
   if (flags & XLISTEN_RELEASE) {
     XELOGI("XNetQosListen XLISTEN_RELEASE");
   }
-
   if (data_size <= 0) {
     return X_ERROR_SUCCESS;
   }
-
   if (data_size > (uint32_t)(xnet_startup_params.cfgQosDataLimitDiv4 * 4)) {
     assert_always();
   }
-
   if (data == nullptr) {
     return X_ERROR_SUCCESS;
   }
-
   const uint64_t session_id = sessionId->as_uintBE64();
-
   IsValidXNKID(session_id);
-
   if (flags & LISTEN_SET_DATA) {
     std::vector<uint8_t> qos_buffer(data_size);
     memcpy(qos_buffer.data(), data, data_size);
-
     if (XLiveAPI::UpdateQoSCache(session_id, qos_buffer)) {
       XELOGI("XNetQosListen LISTEN_SET_DATA");
-
       auto run = [](uint64_t sessionId, std::vector<uint8_t> qosData) {
+      // Set thread priority based on platform
+#ifdef XE_PLATFORM_WIN32
+        // Set Windows thread priority to BELOW_NORMAL
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+#elif defined(XE_PLATFORM_LINUX)
+        // Set Linux thread priority to BELOW_NORMAL (lower nice value)
+        struct sched_param param;
+        param.sched_priority = 0;
+        if (sched_setscheduler(0, SCHED_OTHER, &param) == -1) {
+          // Fallback to nice adjustment if sched_setscheduler fails
+          nice(10);  // Adjust nice value to make thread less important
+        }
+#endif
         XLiveAPI::QoSPost(sessionId, qosData.data(), qosData.size());
       };
-
       std::thread qos_thread(run, session_id, qos_buffer);
       qos_thread.detach();
     }
   }
-
   return X_ERROR_SUCCESS;
 }
 DECLARE_XAM_EXPORT1(NetDll_XNetQosListen, kNetworking, kSketchy);
@@ -1603,11 +1552,16 @@ dword_result_t NetDll_socket_entry(dword_t caller, dword_t af, dword_t type,
                                        XSocket::Type((uint32_t)type),
                                        XSocket::Protocol((uint32_t)protocol));
   if (XFAILED(result)) {
+    XELOGI("NetDll_socket: FAILED af={} type={} proto={}", (uint32_t)af,
+           (uint32_t)type, (uint32_t)protocol);
     socket->Release();
 
     XThread::SetLastError(socket->GetLastWSAError());
     return -1;
   }
+
+  XELOGI("NetDll_socket: handle={} af={} type={} proto={}", socket->handle(),
+         (uint32_t)af, (uint32_t)type, (uint32_t)protocol);
 
   // socket->SetOption(SOL_SOCKET, 0x5801, &optEnable, sizeof(BOOL));
   // if (type == SOCK_STREAM)
@@ -1624,6 +1578,8 @@ dword_result_t NetDll_closesocket_entry(dword_t caller, dword_t socket_handle) {
     XThread::SetLastError(uint32_t(X_WSAError::X_WSAENOTSOCK));
     return -1;
   }
+
+  XELOGI("NetDll_closesocket: sock={}", (uint32_t)socket_handle);
 
   // Remove port if socket closes
   // XLiveAPI::upnp_handler->RemovePort(socket.get()->bound_port(), "UDP");
@@ -1736,31 +1692,34 @@ dword_result_t NetDll_bind_entry(dword_t caller, dword_t socket_handle,
   }
 
   auto upnp_internal_port = name->address_port;
-  const uint16_t mapped_internal_port =
-      XLiveAPI::upnp_handler->GetMappedBindPort(name->address_port);
 
-  // Support wildcard port
-  if (!upnp_internal_port || !mapped_internal_port) {
-    upnp_internal_port = socket->bound_port();
-  }
+  if (XLiveAPI::upnp_handler) {
+    const uint16_t mapped_internal_port =
+        XLiveAPI::upnp_handler->GetMappedBindPort(name->address_port);
 
-  if (cvars::logging) {
-    XELOGI("Bind port {}", upnp_internal_port.get());
-  }
+    // Support wildcard port
+    if (!upnp_internal_port || !mapped_internal_port) {
+      upnp_internal_port = socket->bound_port();
+    }
 
-  // Can be called multiple times.
-  const uint32_t result = XLiveAPI::upnp_handler->AddPort(
-      XLiveAPI::LocalIP_str(), upnp_internal_port, "UDP");
+    if (cvars::logging) {
+      XELOGI("Bind port {}", upnp_internal_port.get());
+    }
 
-  // Only scan once
-  if (result == HTTP_UNAUTHORIZED &&
-      !XLiveAPI::upnp_handler->GetRefreshedUnauthorized()) {
-    XLiveAPI::upnp_handler->SearchUPnP();
+    // Can be called multiple times.
+    const uint32_t result = XLiveAPI::upnp_handler->AddPort(
+        XLiveAPI::LocalIP_str(), upnp_internal_port, "UDP");
 
-    XLiveAPI::upnp_handler->SetRefreshedUnauthorized(true);
+    // Only scan once
+    if (result == HTTP_UNAUTHORIZED &&
+        !XLiveAPI::upnp_handler->GetRefreshedUnauthorized()) {
+      XLiveAPI::upnp_handler->SearchUPnP();
 
-    XLiveAPI::upnp_handler->AddPort(XLiveAPI::LocalIP_str(), upnp_internal_port,
-                                    "UDP");
+      XLiveAPI::upnp_handler->SetRefreshedUnauthorized(true);
+
+      XLiveAPI::upnp_handler->AddPort(XLiveAPI::LocalIP_str(),
+                                      upnp_internal_port, "UDP");
+    }
   }
 
   return 0;
@@ -1777,12 +1736,20 @@ dword_result_t NetDll_connect_entry(dword_t caller, dword_t socket_handle,
     return -1;
   }
 
+  XELOGI("NetDll_connect: sock={} addr={}.{}.{}.{}:{}", (uint32_t)socket_handle,
+         name->address_ip.S_un.S_un_b.s_b1, name->address_ip.S_un.S_un_b.s_b2,
+         name->address_ip.S_un.S_un_b.s_b3, name->address_ip.S_un.S_un_b.s_b4,
+         (uint16_t)name->address_port);
+
   X_STATUS status = socket->Connect(name, namelen);
   if (XFAILED(status)) {
+    XELOGI("NetDll_connect: FAILED sock={} err={}", (uint32_t)socket_handle,
+           socket->GetLastWSAError());
     XThread::SetLastError(socket->GetLastWSAError());
     return -1;
   }
 
+  XELOGI("NetDll_connect: SUCCESS sock={}", (uint32_t)socket_handle);
   return 0;
 }
 DECLARE_XAM_EXPORT1(NetDll_connect, kNetworking, kImplemented);
@@ -2050,8 +2017,12 @@ dword_result_t NetDll_sendto_entry(dword_t caller, dword_t socket_handle,
     return -1;
   }
 
+  XELOGI("NetDll_sendto: sock={} len={} flags={}", (uint32_t)socket_handle,
+         (uint32_t)buf_len, (uint32_t)flags);
   int ret = socket->SendTo(buf_ptr, buf_len, flags, to_ptr, to_len);
   if (ret < 0) {
+    XELOGI("NetDll_sendto: FAILED sock={} err={}", (uint32_t)socket_handle,
+           socket->GetLastWSAError());
     XThread::SetLastError(socket->GetLastWSAError());
   } else if (ret >= 0 && to_ptr && !cvars::log_mask_ips) {
     XELOGI("NetDll_sendto: Send {} bytes to: {}.{}.{}.{}", ret,

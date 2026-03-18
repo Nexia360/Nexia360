@@ -147,10 +147,9 @@ class VulkanCommandProcessor final : public CommandProcessor {
 
   void RestoreEdramSnapshot(const void* snapshot) override;
 
-  ui::vulkan::VulkanDevice* GetVulkanDevice() const {
-    return static_cast<const ui::vulkan::VulkanProvider*>(
-               graphics_system_->provider())
-        ->vulkan_device();
+  ui::vulkan::VulkanProvider& GetVulkanProvider() const {
+    return *static_cast<ui::vulkan::VulkanProvider*>(
+        graphics_system_->provider());
   }
 
   // Returns the deferred drawing command list for the currently open

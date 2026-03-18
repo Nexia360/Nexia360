@@ -7,7 +7,15 @@
  ******************************************************************************
  */
 
+#include <algorithm>
+
 #include "xenia/gpu/graphics_system.h"
+
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <mutex>
+#include <utility>
 
 #include "xenia/base/byte_stream.h"
 #include "xenia/base/clock.h"
@@ -87,7 +95,7 @@ GraphicsSystem::~GraphicsSystem() = default;
 X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
                                kernel::KernelState* kernel_state,
                                ui::WindowedAppContext* app_context,
-                               bool with_presentation) {
+                               [[maybe_unused]] bool is_surface_required) {
   memory_ = processor->memory();
   processor_ = processor;
   kernel_state_ = kernel_state;
@@ -111,7 +119,7 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
         custom_res_x, custom_res_y));
   }
 
-  if (with_presentation && provider_) {
+  if (provider_) {
     // Safe if either the UI thread call or the presenter creation fails.
     if (app_context_) {
       app_context_->CallInUIThreadSynchronous([this]() {

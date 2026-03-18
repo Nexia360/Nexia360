@@ -10,6 +10,9 @@
 #include "xenia/ui/d3d12/d3d12_immediate_drawer.h"
 
 #include <cstring>
+#include <memory>
+#include <utility>
+#include <vector>
 
 #include "xenia/base/assert.h"
 #include "xenia/base/logging.h"

@@ -15,7 +15,6 @@
 
 #include "xenia/app/profile_dialogs.h"
 #include "xenia/app/updater.h"
-#include "xenia/app/updater_dialog.h"
 #include "xenia/emulator.h"
 #include "xenia/gpu/command_processor.h"
 #include "xenia/ui/imgui_dialog.h"
@@ -97,12 +96,9 @@ class EmulatorWindow {
   void SaveImage(const std::filesystem::path& path,
                  const xe::ui::RawImage& image);
 
-  void UpdateCompletionNotification();
-
   void ToggleProfilesConfigDialog();
   void ToggleFriendsDialog();
   void ToggleUpdaterDialog();
-  void ToggleCompletionDialog();
   void SetHotkeysState(bool enabled) { disable_hotkeys_ = !enabled; }
 
   // Types of button functions for hotkeys.
@@ -119,6 +115,8 @@ class EmulatorWindow {
     ToggleLogging,
     IncTitleSelect,
     DecTitleSelect,
+    ToggleProfileMenu,
+    ToggleFriendsManager,
     Unknown
   };
 
@@ -264,8 +262,7 @@ class EmulatorWindow {
   void ShowCompatibility();
   void ShowFAQ();
   void ShowBuildCommit();
-  void ShowUpdateAvailableDialog(const std::string& commit,
-                                 const std::string& date);
+
   EmulatorWindow::ControllerHotKey ProcessControllerHotkey(int buttons);
   void VibrateController(xe::hid::InputSystem* input_sys, uint32_t user_index,
                          bool vibrate = true);
@@ -302,7 +299,6 @@ class EmulatorWindow {
   bool initializing_shader_storage_ = false;
 
   Updater* updater_;
-  bool update_found_ = false;
 
   std::unique_ptr<DisplayConfigDialog> display_config_dialog_;
 
@@ -314,9 +310,12 @@ class EmulatorWindow {
 
   std::unique_ptr<UpdaterDialog> updater_dialog_;
 
-  std::unique_ptr<UpdaterCompletionDialog> updater_completion_dialog_;
-
   std::vector<RecentTitleEntry> recently_launched_titles_;
+
+  // Guide button tracking for long press detection
+  bool guide_button_was_pressed_[XUserMaxUserCount] = {};
+  uint64_t guide_button_press_time_[XUserMaxUserCount] = {};
+  static constexpr uint64_t kGuideLongPressMs = 500;  // 500ms for long press
 };
 
 }  // namespace app

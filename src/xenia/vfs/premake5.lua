@@ -11,11 +11,11 @@ project("xenia-vfs")
     "zstd",
     "zarchive"
   })
+  defines({
+  })
 
   recursive_platform_files()
-  removefiles({
-    "vfs_dump.cc",
-  })
+  removefiles({"vfs_dump.cc"})
 
 if enableMiscSubprojects then
   project("xenia-vfs-dump")
@@ -27,6 +27,7 @@ if enableMiscSubprojects then
       "xenia-base",
       "xenia-vfs",
     })
+    defines({})
 
     files({
       "vfs_dump.cc",

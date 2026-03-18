@@ -6,11 +6,13 @@
  * Released under the BSD license - see LICENSE in the root for more details. *
  ******************************************************************************
  */
-#include "xenia/patcher/plugin_loader.h"
+#include <string>
+
 #include "xenia/base/logging.h"
 #include "xenia/config.h"
 #include "xenia/kernel/user_module.h"
 #include "xenia/kernel/xthread.h"
+#include "xenia/patcher/plugin_loader.h"
 #include "xenia/vfs/devices/host_path_device.h"
 
 DEFINE_bool(

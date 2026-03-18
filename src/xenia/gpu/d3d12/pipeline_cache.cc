@@ -9,8 +9,16 @@
 
 #include "xenia/gpu/d3d12/pipeline_cache.h"
 
+#include <algorithm>
+#include <atomic>
+#include <cinttypes>
 #include <cmath>
 #include <cstring>
+#include <deque>
+#include <mutex>
+#include <set>
+#include <utility>
+#include <vector>
 
 #include "third_party/dxbc/DXBCChecksum.h"
 #include "third_party/fmt/include/fmt/format.h"
@@ -961,9 +969,9 @@ bool PipelineCache::ConfigurePipeline(
     uint32_t bound_depth_and_color_render_target_bits,
     const uint32_t* bound_depth_and_color_render_target_formats,
     void** pipeline_handle_out, ID3D12RootSignature** root_signature_out) {
-#if XE_GPU_FINE_GRAINED_DRAW_SCOPES
+#if XE_UI_D3D12_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
-#endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
+#endif  // XE_UI_D3D12_FINE_GRAINED_DRAW_SCOPES
 
   assert_not_null(pipeline_handle_out);
   assert_not_null(root_signature_out);

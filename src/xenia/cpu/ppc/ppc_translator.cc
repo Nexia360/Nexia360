@@ -289,17 +289,12 @@ void PPCTranslator::DumpSource(GuestFunction* function,
 
     // Check labels.
     if (block_it != blocks.end() && block_it->start_address == address) {
-      string_buffer->AppendHexUInt32(address);
-      string_buffer->Append("          loc_");
-      string_buffer->AppendHexUInt32(address);
-      string_buffer->Append(":\n");
+      string_buffer->AppendFormat("{:08X}          loc_{:08X}:\n", address,
+                                  address);
       ++block_it;
     }
 
-    string_buffer->AppendHexUInt32(address);
-    string_buffer->Append(' ');
-    string_buffer->AppendHexUInt32(code);
-    string_buffer->Append("   ");
+    string_buffer->AppendFormat("{:08X} {:08X}   ", address, code);
     DisasmPPC(address, code, string_buffer);
     string_buffer->Append('\n');
   }

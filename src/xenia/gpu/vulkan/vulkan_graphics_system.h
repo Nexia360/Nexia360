@@ -30,7 +30,7 @@ class VulkanGraphicsSystem : public GraphicsSystem {
 
   X_STATUS Setup(cpu::Processor* processor, kernel::KernelState* kernel_state,
                  ui::WindowedAppContext* app_context,
-                 bool with_presentation) override;
+                 bool is_surface_required) override;
 
  private:
   std::unique_ptr<CommandProcessor> CreateCommandProcessor() override;

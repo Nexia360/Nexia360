@@ -9,6 +9,7 @@
 
 #include "xenia/cpu/backend/x64/x64_backend.h"
 
+#include <algorithm>
 #include <cstddef>
 #include "third_party/capstone/include/capstone/capstone.h"
 #include "third_party/capstone/include/capstone/x86.h"
@@ -693,14 +694,10 @@ HostToGuestThunk X64HelperEmitter::EmitHostToGuestThunk() {
   EmitSaveNonvolatileRegs();
 
   mov(rax, rdi);
-  // Save context register (RSI is volatile on Linux/Mac System V ABI, but we
-  // need it preserved)
-  mov(qword[rsp + offsetof(StackLayout::Thunk, xmm[0])], rsi);
+  // mov(rsi, rsi);   // context
   mov(rdi, ptr[rsi + offsetof(ppc::PPCContext, virtual_membase)]);  // membase
   mov(rcx, rdx);  // return address
   call(rax);
-  // Restore context register
-  mov(rsi, qword[rsp + offsetof(StackLayout::Thunk, xmm[0])]);
 
   EmitLoadNonvolatileRegs();
 

@@ -9,6 +9,9 @@
 
 #include "xenia/ui/d3d12/d3d12_cpu_descriptor_pool.h"
 
+#include <cstdint>
+#include <memory>
+
 #include "xenia/base/logging.h"
 
 namespace xe {

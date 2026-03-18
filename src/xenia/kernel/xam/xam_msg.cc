@@ -113,31 +113,25 @@ DECLARE_XAM_EXPORT2(XMsgCompleteIORequest, kNone, kImplemented, kSketchy);
 
 dword_result_t XamGetOverlappedResult_entry(
     pointer_t<XAM_OVERLAPPED> overlapped_ptr, lpdword_t length_ptr,
-    dword_t wait) {
-  uint32_t result = X_STATUS_SUCCESS;
-
+    dword_t unknown) {
+  uint32_t result;
   if (overlapped_ptr->result != X_ERROR_IO_PENDING) {
     result = overlapped_ptr->result;
-  } else if (wait && overlapped_ptr->event) {
+  } else if (!overlapped_ptr->event) {
+    result = X_ERROR_IO_INCOMPLETE;
+  } else {
     auto ev = kernel_state()->object_table()->LookupObject<XEvent>(
         overlapped_ptr->event);
     result = ev->Wait(3, 1, 0, nullptr);
-  } else {
-    result = X_STATUS_TIMEOUT;
+    if (XSUCCEEDED(result)) {
+      result = overlapped_ptr->result;
+    } else {
+      result = xboxkrnl::xeRtlNtStatusToDosError(result);
+    }
   }
-
-  if (result == X_STATUS_TIMEOUT) {
-    return X_ERROR_IO_INCOMPLETE;
-  }
-
-  if (XFAILED(result)) {
-    return XThread::GetLastError();
-  }
-
-  if (length_ptr) {
+  if (XSUCCEEDED(result) && length_ptr) {
     *length_ptr = overlapped_ptr->length;
   }
-
   return result;
 }
 DECLARE_XAM_EXPORT2(XamGetOverlappedResult, kNone, kImplemented, kSketchy);

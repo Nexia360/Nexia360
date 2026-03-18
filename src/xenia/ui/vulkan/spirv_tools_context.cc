@@ -10,6 +10,8 @@
 #include "xenia/ui/vulkan/spirv_tools_context.h"
 
 #include <cstdlib>
+#include <filesystem>
+#include <string>
 
 #include "xenia/base/logging.h"
 #include "xenia/base/platform.h"

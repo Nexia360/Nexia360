@@ -19,7 +19,6 @@
 
 #include "xenia/base/cvar.h"
 #include "xenia/kernel/xam/user_property.h"
-#include "xenia/kernel/xam/xam.h"
 #include "xenia/kernel/xam/xdbf/gpd_info_profile.h"
 #include "xenia/kernel/xam/xdbf/gpd_info_title.h"
 #include "xenia/kernel/xnet.h"
@@ -33,8 +32,8 @@ namespace xam {
 
 enum class X_USER_SIGNIN_STATE : uint32_t {
   NotSignedIn,
-  SignedInLocally,  // Offline
-  SignedInToLive,   // Online
+  SignedInLocally,
+  SignedInToLive
 };
 
 enum class X_USER_PROFILE_SETTING_SOURCE : uint32_t {

@@ -31,6 +31,8 @@ class TitleListUI final : public XamDialog {
                             const UserProfile* profile);
   void DrawTitleEntry(ImGuiIO& io, TitleInfo& entry);
 
+  bool has_opened_ = false;
+  bool pending_close_ = false;
   static constexpr uint8_t title_name_filter_size = 15;
 
   std::string dialog_name_ = "";

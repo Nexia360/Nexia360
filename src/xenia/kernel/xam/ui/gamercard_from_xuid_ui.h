@@ -26,6 +26,7 @@ class GamercardFromXUIDUI : public XamDialog {
  private:
   void OnDraw(ImGuiIO& io) override;
 
+  bool pending_close_ = false;
   bool card_opened = false;
   bool is_self = false;
   bool are_friends = false;

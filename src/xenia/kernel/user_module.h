@@ -61,19 +61,11 @@ class UserModule : public XModule {
   uint32_t guest_xex_header() const { return guest_xex_header_; }
   // The title ID in the xex header or 0 if this is not a xex.
   uint32_t title_id() const;
-  std::string bounding_filename() const;
   uint32_t disc_number() const;
   bool is_multi_disc_title() const;
 
   bool is_executable() const { return processor_module_->is_executable(); }
   bool is_dll_module() const { return is_dll_module_; }
-  bool is_attached() const {
-    // Special case for skipping real XAM initialization as it will fail.
-    if (bounding_filename() == "xam") {
-      return true;
-    }
-    return is_attached_;
-  }
 
   uint32_t entry_point() const { return entry_point_; }
   uint32_t stack_size() const { return stack_size_; }
@@ -115,11 +107,6 @@ class UserModule : public XModule {
   static object_ref<UserModule> Restore(KernelState* kernel_state,
                                         ByteStream* stream,
                                         const std::string_view path);
-
-  // TODO(Gliniak): This shouldn't be required. It is used for initial DLL
-  // initialization. Which should happen on main thread before main execution
-  // which isn't really possible right now.
-  bool is_attached_ = false;
 
  private:
   void CalculateHash();

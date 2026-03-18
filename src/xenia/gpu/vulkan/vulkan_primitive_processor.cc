@@ -9,12 +9,15 @@
 
 #include "xenia/gpu/vulkan/vulkan_primitive_processor.h"
 
+#include <algorithm>
 #include <cstdint>
+#include <memory>
 
 #include "xenia/base/assert.h"
 #include "xenia/base/logging.h"
 #include "xenia/gpu/vulkan/deferred_command_buffer.h"
 #include "xenia/gpu/vulkan/vulkan_command_processor.h"
+#include "xenia/ui/vulkan/vulkan_provider.h"
 #include "xenia/ui/vulkan/vulkan_util.h"
 
 namespace xe {
@@ -24,30 +27,29 @@ namespace vulkan {
 VulkanPrimitiveProcessor::~VulkanPrimitiveProcessor() { Shutdown(true); }
 
 bool VulkanPrimitiveProcessor::Initialize() {
-  const ui::vulkan::VulkanDevice* const vulkan_device =
-      command_processor_.GetVulkanDevice();
-  const ui::vulkan::VulkanDevice::Properties& device_properties =
-      vulkan_device->properties();
-  if (!InitializeCommon(
-          device_properties.fullDrawIndexUint32, device_properties.triangleFans,
-          false, device_properties.geometryShader,
-          device_properties.geometryShader, device_properties.geometryShader)) {
+  const ui::vulkan::VulkanProvider::DeviceInfo& device_info =
+      command_processor_.GetVulkanProvider().device_info();
+  if (!InitializeCommon(device_info.fullDrawIndexUint32,
+                        device_info.triangleFans, false,
+                        device_info.geometryShader, device_info.geometryShader,
+                        device_info.geometryShader)) {
     Shutdown();
     return false;
   }
   frame_index_buffer_pool_ =
       std::make_unique<ui::vulkan::VulkanUploadBufferPool>(
-          vulkan_device, VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+          command_processor_.GetVulkanProvider(),
+          VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
           std::max(size_t(kMinRequiredConvertedIndexBufferSize),
                    ui::GraphicsUploadBufferPool::kDefaultPageSize));
   return true;
 }
 
 void VulkanPrimitiveProcessor::Shutdown(bool from_destructor) {
-  const ui::vulkan::VulkanDevice* const vulkan_device =
-      command_processor_.GetVulkanDevice();
-  const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
-  const VkDevice device = vulkan_device->device();
+  const ui::vulkan::VulkanProvider& provider =
+      command_processor_.GetVulkanProvider();
+  const ui::vulkan::VulkanProvider::DeviceFunctions& dfn = provider.dfn();
+  VkDevice device = provider.device();
 
   frame_index_buffers_.clear();
   frame_index_buffer_pool_.reset();
@@ -69,10 +71,10 @@ void VulkanPrimitiveProcessor::CompletedSubmissionUpdated() {
   if (builtin_index_buffer_upload_ != VK_NULL_HANDLE &&
       command_processor_.GetCompletedSubmission() >=
           builtin_index_buffer_upload_submission_) {
-    const ui::vulkan::VulkanDevice* const vulkan_device =
-        command_processor_.GetVulkanDevice();
-    const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
-    const VkDevice device = vulkan_device->device();
+    const ui::vulkan::VulkanProvider& provider =
+        command_processor_.GetVulkanProvider();
+    const ui::vulkan::VulkanProvider::DeviceFunctions& dfn = provider.dfn();
+    VkDevice device = provider.device();
     ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyBuffer, device,
                                            builtin_index_buffer_upload_);
     ui::vulkan::util::DestroyAndNullHandle(dfn.vkFreeMemory, device,
@@ -129,14 +131,14 @@ bool VulkanPrimitiveProcessor::InitializeBuiltinIndexBuffer(
   assert_true(builtin_index_buffer_upload_ == VK_NULL_HANDLE);
   assert_true(builtin_index_buffer_upload_memory_ == VK_NULL_HANDLE);
 
-  const ui::vulkan::VulkanDevice* const vulkan_device =
-      command_processor_.GetVulkanDevice();
-  const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
-  const VkDevice device = vulkan_device->device();
+  const ui::vulkan::VulkanProvider& provider =
+      command_processor_.GetVulkanProvider();
+  const ui::vulkan::VulkanProvider::DeviceFunctions& dfn = provider.dfn();
+  VkDevice device = provider.device();
 
   builtin_index_buffer_size_ = VkDeviceSize(size_bytes);
   if (!ui::vulkan::util::CreateDedicatedAllocationBuffer(
-          vulkan_device, builtin_index_buffer_size_,
+          provider, builtin_index_buffer_size_,
           VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
           ui::vulkan::util::MemoryPurpose::kDeviceLocal, builtin_index_buffer_,
           builtin_index_buffer_memory_)) {
@@ -148,7 +150,7 @@ bool VulkanPrimitiveProcessor::InitializeBuiltinIndexBuffer(
   }
   uint32_t upload_memory_type;
   if (!ui::vulkan::util::CreateDedicatedAllocationBuffer(
-          vulkan_device, builtin_index_buffer_size_,
+          provider, builtin_index_buffer_size_,
           VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
           ui::vulkan::util::MemoryPurpose::kUpload,
           builtin_index_buffer_upload_, builtin_index_buffer_upload_memory_,
@@ -183,7 +185,7 @@ bool VulkanPrimitiveProcessor::InitializeBuiltinIndexBuffer(
   }
   fill_callback(mapping);
   ui::vulkan::util::FlushMappedMemoryRange(
-      vulkan_device, builtin_index_buffer_memory_, upload_memory_type);
+      provider, builtin_index_buffer_memory_, upload_memory_type);
   dfn.vkUnmapMemory(device, builtin_index_buffer_upload_memory_);
 
   // Schedule uploading in the first submission.

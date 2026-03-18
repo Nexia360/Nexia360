@@ -10,6 +10,8 @@
 #include "xenia/gpu/d3d12/d3d12_shared_memory.h"
 
 #include <cstring>
+#include <utility>
+#include <vector>
 
 #include "xenia/base/assert.h"
 #include "xenia/base/cvar.h"

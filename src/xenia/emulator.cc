@@ -9,6 +9,9 @@
 
 #include "xenia/emulator.h"
 
+#include <algorithm>
+#include <cinttypes>
+
 #include "config.h"
 #include "third_party/fmt/include/fmt/format.h"
 #include "third_party/tabulate/single_include/tabulate/tabulate.hpp"
@@ -591,7 +594,6 @@ X_STATUS Emulator::LaunchXexFile(const std::filesystem::path& path) {
   file_system_->RegisterSymbolicLink("font:", mount_path);
 
   auto module = kernel_state_->LoadUserModule("xam.xex");
-
   if (!module) {
     module = kernel_state_->LoadUserModule("$flash_xam.xex");
   }
@@ -599,7 +601,6 @@ X_STATUS Emulator::LaunchXexFile(const std::filesystem::path& path) {
   if (module) {
     result = kernel_state_->FinishLoadingUserModule(module, false);
   }
-
   return result;
 }
 
@@ -1116,7 +1117,7 @@ void Emulator::Resume() {
       continue;
     }
 
-    if (!thread->is_running()) {
+    if (thread->is_running()) {
       thread->thread()->Resume(nullptr);
     }
   }

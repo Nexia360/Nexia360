@@ -45,7 +45,6 @@ enum : uint32_t {
   Cpu = 4,
 };
 }
-
 class LogSink {
  public:
   virtual ~LogSink() = default;
@@ -82,20 +81,14 @@ void InitializeLogging(const std::string_view app_name);
 void ShutdownLogging();
 
 namespace logging {
-
-constexpr char kPrefixCharError = '!';
-constexpr char kPrefixCharWarning = 'w';
-constexpr char kPrefixCharInfo = 'i';
-constexpr char kPrefixCharDebug = 'd';
-
-void ToggleLogLevel();
-bool ShouldLog(LogLevel log_level,
-               uint32_t log_mask = xe::LogSrc::Uncategorized);
 namespace internal {
 
+void ToggleLogLevel();
+
+bool ShouldLog(LogLevel log_level,
+               uint32_t log_mask = xe::LogSrc::Uncategorized);
 uint32_t GetLogLevel();
 std::pair<char*, size_t> GetThreadBuffer();
-
 XE_NOALIAS
 void AppendLogLine(LogLevel log_level, const char prefix_char, size_t written);
 
@@ -123,7 +116,7 @@ XE_FORCEINLINE static void AppendLogLineFormat(uint32_t log_src_mask,
                                                const char prefix_char,
                                                std::string_view format,
                                                const Args&... args) noexcept {
-  if (!ShouldLog(log_level, log_src_mask)) {
+  if (!internal::ShouldLog(log_level, log_src_mask)) {
     return;
   }
   AppendLogLineFormat_Impl(log_level, prefix_char, format, args...);
@@ -174,30 +167,26 @@ struct LoggerBatch {
 
 template <typename... Args>
 XE_COLD void XELOGE(std::string_view format, const Args&... args) {
-  xe::logging::AppendLogLineFormat(
-      xe::LogSrc::Uncategorized, xe::LogLevel::Error,
-      xe::logging::kPrefixCharError, format, args...);
+  xe::logging::AppendLogLineFormat(xe::LogSrc::Uncategorized,
+                                   xe::LogLevel::Error, '!', format, args...);
 }
 
 template <typename... Args>
 XE_COLD void XELOGW(std::string_view format, const Args&... args) {
-  xe::logging::AppendLogLineFormat(
-      xe::LogSrc::Uncategorized, xe::LogLevel::Warning,
-      xe::logging::kPrefixCharWarning, format, args...);
+  xe::logging::AppendLogLineFormat(xe::LogSrc::Uncategorized,
+                                   xe::LogLevel::Warning, 'w', format, args...);
 }
 
 template <typename... Args>
 void XELOGI(std::string_view format, const Args&... args) {
-  xe::logging::AppendLogLineFormat(
-      xe::LogSrc::Uncategorized, xe::LogLevel::Info,
-      xe::logging::kPrefixCharInfo, format, args...);
+  xe::logging::AppendLogLineFormat(xe::LogSrc::Uncategorized,
+                                   xe::LogLevel::Info, 'i', format, args...);
 }
 
 template <typename... Args>
 void XELOGD(std::string_view format, const Args&... args) {
-  xe::logging::AppendLogLineFormat(
-      xe::LogSrc::Uncategorized, xe::LogLevel::Debug,
-      xe::logging::kPrefixCharDebug, format, args...);
+  xe::logging::AppendLogLineFormat(xe::LogSrc::Uncategorized,
+                                   xe::LogLevel::Debug, 'd', format, args...);
 }
 
 template <typename... Args>

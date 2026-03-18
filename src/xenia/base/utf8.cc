@@ -11,11 +11,11 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <locale>
+#include <numeric>
+#include <tuple>
 
-// https://github.com/nemtrif/utfcpp/issues/85
-#if defined(_MSVC_LANG) && _MSVC_LANG > __cplusplus
-#define UTF_CPP_CPLUSPLUS _MSVC_LANG
-#endif
+#define UTF_CPP_CPLUSPLUS 202002L
 #include "third_party/utfcpp/source/utf8.h"
 
 namespace utfcpp = utf8;

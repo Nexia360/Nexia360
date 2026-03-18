@@ -7,8 +7,6 @@
  ******************************************************************************
  */
 
-#include <ranges>
-
 #include "xenia/kernel/kernel_state.h"
 
 #include "xenia/base/byte_stream.h"
@@ -45,7 +43,7 @@ DECLARE_int32(network_mode);
 namespace xe {
 namespace kernel {
 
-constexpr std::chrono::milliseconds kDeferredOverlappedDelayMillis(25);
+constexpr std::chrono::milliseconds kDeferredOverlappedDelayMillis(100);
 
 // This is a global object initialized with the XboxkrnlModule.
 // It references the current kernel state object that all kernel methods should
@@ -166,6 +164,27 @@ const std::unique_ptr<xam::SpaInfo> KernelState::module_xdbf(
   return nullptr;
 }
 
+bool KernelState::UpdateSpaData(vfs::Entry* spa_file_update) {
+  vfs::File* file;
+  if (spa_file_update->Open(vfs::FileAccess::kFileReadData, &file) !=
+      X_STATUS_SUCCESS) {
+    return false;
+  }
+
+  std::vector<uint8_t> data(spa_file_update->size());
+
+  size_t read_bytes = 0;
+  if (file->ReadSync(std::span<uint8_t>(data.data(), spa_file_update->size()),
+                     0, &read_bytes) != X_STATUS_SUCCESS) {
+    return false;
+  }
+
+  xam::SpaInfo new_spa_data(std::span<uint8_t>(data.data(), data.size()));
+  xam_state_->LoadSpaInfo(&new_spa_data);
+  emulator_->game_info_database()->Update(&new_spa_data);
+  return true;
+}
+
 uint32_t KernelState::AllocateTLS() { return uint32_t(tls_bitmap_.Acquire()); }
 
 void KernelState::FreeTLS(uint32_t slot) {
@@ -239,28 +258,6 @@ bool KernelState::IsKernelModule(const std::string_view name) {
       return true;
     }
   }
-  return false;
-}
-
-bool KernelState::IsModuleLoaded(const std::string_view name) {
-  if (name.empty()) {
-    return true;
-  }
-
-  for (auto kernel_module : kernel_modules_) {
-    if (kernel_module->Matches(name)) {
-      return true;
-    }
-  }
-
-  auto global_lock = global_critical_region_.Acquire();
-
-  for (auto user_module : user_modules_) {
-    if (user_module->Matches(name)) {
-      return true;
-    }
-  }
-
   return false;
 }
 
@@ -457,7 +454,18 @@ void KernelState::SetExecutableModule(object_ref<UserModule> module) {
             dispatch_queue_.pop_front();
             global_lock.unlock();
 
-            fn();
+            if (fn) {
+              try {
+                fn();
+              } catch (const std::exception& e) {
+                XELOGE("Kernel Dispatch: exception caught: {}", e.what());
+              } catch (...) {
+                XELOGE("Kernel Dispatch: unknown exception caught");
+              }
+            } else {
+              XELOGE(
+                  "Kernel Dispatch: null function in dispatch queue, skipping");
+            }
           }
           return 0;
         },
@@ -478,14 +486,9 @@ object_ref<UserModule> KernelState::LoadUserModule(
   auto name = xe::utf8::find_name_from_guest_path(raw_name);
   std::string path(raw_name);
   if (name == raw_name) {
-    if (!executable_module_) {
-      path = xe::utf8::join_guest_paths(
-          xe::utf8::find_base_guest_path((*user_modules_.cbegin())->path()),
-          name);
-    } else {
-      path = xe::utf8::join_guest_paths(
-          xe::utf8::find_base_guest_path(executable_module_->path()), name);
-    }
+    assert_not_null(executable_module_);
+    path = xe::utf8::join_guest_paths(
+        xe::utf8::find_base_guest_path(executable_module_->path()), name);
   }
 
   object_ref<UserModule> module;
@@ -573,9 +576,6 @@ X_RESULT KernelState::FinishLoadingUserModule(
         1,  // DLL_PROCESS_ATTACH
         0,  // 0 because always dynamic
     };
-
-    module->is_attached_ = true;
-
     auto thread_state = XThread::GetCurrentThread()->thread_state();
     processor()->Execute(thread_state, module->entry_point(), args,
                          xe::countof(args));
@@ -863,16 +863,9 @@ void KernelState::OnThreadExecute(XThread* thread) {
     if (user_module->is_dll_module() && user_module->entry_point()) {
       uint64_t args[] = {
           user_module->handle(),
-          user_module->is_attached()
-              ? static_cast<uint64_t>(2)   // DLL_THREAD_ATTACH - Used to call
-                                           // DLL for each thread created.
-              : static_cast<uint64_t>(1),  // DLL_PROCESS_ATTACH - Used only
-                                           // once for initialization.
-          0,                               // 0 because always dynamic
+          2,  // DLL_THREAD_ATTACH
+          0,  // 0 because always dynamic
       };
-
-      user_module->is_attached_ = true;
-
       processor()->Execute(thread_state, user_module->entry_point(), args,
                            xe::countof(args));
     }
@@ -913,19 +906,6 @@ object_ref<XThread> KernelState::GetThreadByID(uint32_t thread_id) {
   return retain_object(thread);
 }
 
-std::vector<uint32_t> KernelState::GetAllThreadIDs() {
-  auto global_lock = global_critical_region_.Acquire();
-
-  auto thread_ids_view =
-      threads_by_id_ |
-      std::views::transform([](const auto& pair) { return pair.first; });
-
-  std::vector<std::uint32_t> thread_ids(thread_ids_view.begin(),
-                                        thread_ids_view.end());
-
-  return thread_ids;
-}
-
 void KernelState::RegisterNotifyListener(XNotifyListener* listener) {
   auto global_lock = global_critical_region_.Acquire();
   notify_listeners_.push_back(retain_object(listener));
@@ -938,23 +918,15 @@ void KernelState::RegisterNotifyListener(XNotifyListener* listener) {
     // XN_SYS_UI (on, off)
     listener->EnqueueNotification(kXNotificationSystemUI, 1);
     listener->EnqueueNotification(kXNotificationSystemUI, 0);
-
-    const auto signed_in_players =
-        xam_state()->profile_manager()->GetUsedUserSlots().to_ulong();
-
     // XN_SYS_SIGNINCHANGED x2
-    listener->EnqueueNotification(kXNotificationSystemSignInChanged,
-                                  signed_in_players);
-    listener->EnqueueNotification(kXNotificationSystemSignInChanged,
-                                  signed_in_players);
+    listener->EnqueueNotification(kXNotificationSystemSignInChanged, 1);
+    listener->EnqueueNotification(kXNotificationSystemSignInChanged, 1);
 
-    listener->EnqueueNotification(kXNotificationSystemTrayStateChanged,
+    listener->EnqueueNotification(kXNotificationDvdDriveTrayStateChanged,
                                   X_DVD_DISC_STATE::XBOX_360_GAME_DISC);
   }
 
-  if (!has_notified_live_startup_ && listener->mask() & kXNotifyLive) {
-    has_notified_live_startup_ = true;
-
+  if (listener->mask() & kXNotifyLive) {
     const uint32_t live_connection_state =
         cvars::network_mode >= NETWORK_MODE::XBOXLIVE
             ? X_ONLINE_S_LOGON_CONNECTION_ESTABLISHED
@@ -967,24 +939,6 @@ void KernelState::RegisterNotifyListener(XNotifyListener* listener) {
                                   live_connection_state);
     listener->EnqueueNotification(kXNotificationLiveLinkStateChanged,
                                   ethernet_link_state);
-  }
-
-  // 4E4D07ED, 58410869. Fixes creating Xbox Live sessions.
-  // Sign in related
-  if (!has_notified_system_and_live_ &&
-      listener->mask() == (kXNotifySystem | kXNotifyLive)) {
-    has_notified_system_and_live_ = true;
-
-    const auto signed_in_players =
-        xam_state()->profile_manager()->GetUsedUserSlots().to_ulong();
-
-    listener->EnqueueNotification(kXNotificationSystemSignInChanged,
-                                  signed_in_players);
-  }
-
-  if (!has_notified_xparty_ && listener->mask() & kXNotifyParty) {
-    has_notified_xparty_ = true;
-    listener->EnqueueNotification(kXNotificationPartyMembersChanged, 0);
   }
 }
 
@@ -1113,22 +1067,7 @@ void KernelState::CompleteOverlappedDeferredEx(
     if (pre_callback) {
       pre_callback();
     }
-    /*
-     5454082B infinitely loads free roam in netplay without sleep.
-     Small delay fixes it e.g. 25ms.
-
-     53450814 black screens in netplay before main menu with high delay e.g.
-     100ms.
-     Small delay fixes it e.g. 25ms.
-
-     55530848 and 55530816 fail to create Xbox Live session with high delay e.g.
-     100ms.
-     Small delay fixes it e.g. 25ms.
-
-     555307EE quickly disconnects from session with high delay e.g.
-     100ms.
-     Small delay fixes it e.g. 25ms.
-    */
+    // 5454082B infinitely loads free roam in netplay without sleep.
     xe::threading::Sleep(kDeferredOverlappedDelayMillis);
     uint32_t extended_error, length;
     auto result = completion_callback(extended_error, length);
@@ -1381,7 +1320,7 @@ void KernelState::InitializeProcess(X_KPROCESS* process, uint32_t type,
   process->unk_19 = unk_19;
   process->unk_1A = unk_1A;
   util::XeInitializeListHead(&process->thread_list, thread_list_guest_ptr);
-  process->quantum = 60;
+  process->unk_0C = 60;
   // doubt any guest code uses this ptr, which i think probably has something to
   // do with the page table
   process->clrdataa_masked_ptr = 0;
@@ -1481,7 +1420,7 @@ void KernelState::InitializeKernelGuestGlobals() {
 
   auto idle_process = memory()->TranslateVirtual<X_KPROCESS*>(GetIdleProcess());
   InitializeProcess(idle_process, X_PROCTYPE_IDLE, 0, 0, 0);
-  idle_process->quantum = 0x7F;
+  idle_process->unk_0C = 0x7F;
   auto system_process =
       memory()->TranslateVirtual<X_KPROCESS*>(GetSystemProcess());
   InitializeProcess(system_process, X_PROCTYPE_SYSTEM, 2, 5, 9);

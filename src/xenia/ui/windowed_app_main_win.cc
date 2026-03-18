@@ -8,6 +8,7 @@
  */
 
 #include <cstdlib>
+#include <memory>
 
 #include "xenia/base/console.h"
 #include "xenia/base/cvar.h"

@@ -112,6 +112,18 @@ void TitleListUI::DrawTitleEntry(ImGuiIO& io, TitleInfo& entry) {
   if (ImGui::BeginPopupContextItem(
           fmt::format("Title Menu {:08X}", entry.id).c_str())) {
     selected_title_ = entry.id;
+    if (ImGui::MenuItem("Refresh title stats", nullptr, nullptr, true)) {
+      kernel_state()->xam_state()->user_tracker()->RefreshTitleSummary(
+          profile_->xuid(), entry.id);
+
+      const auto title_info =
+          kernel_state()->xam_state()->user_tracker()->GetUserTitleInfo(
+              profile_->xuid(), entry.id);
+
+      if (title_info) {
+        entry = title_info.value();
+      }
+    }
 
     const auto savefile_path = profile_manager_->GetProfileContentPath(
         profile_->xuid(), entry.id, XContentType::kSavedGame);
@@ -138,34 +150,34 @@ void TitleListUI::DrawTitleEntry(ImGuiIO& io, TitleInfo& entry) {
       path_open.detach();
     }
 
-    ImGui::Separator();
-
-    const auto title_info =
-        kernel_state()->xam_state()->user_tracker()->GetUserTitleInfo(
-            profile_->xuid(), entry.id);
-
-    if (ImGui::MenuItem("Refresh title stats", nullptr, nullptr, true)) {
-      kernel_state()->xam_state()->user_tracker()->RefreshTitleSummary(
-          profile_->xuid(), entry.id);
-
-      if (title_info) {
-        entry = title_info.value();
-      }
-    }
-
-    if (title_info) {
-      if (ImGui::MenuItem("Delete title", nullptr, nullptr,
-                          !title_info->unlocked_achievements_count)) {
-        kernel_state()->xam_state()->user_tracker()->RemoveTitleFromPlayedList(
-            profile_->xuid(), entry.id);
-      }
-    }
-
     ImGui::EndPopup();
   }
 }
 
 void TitleListUI::OnDraw(ImGuiIO& io) {
+  auto* drawer = imgui_drawer();
+  auto* focus_manager = drawer->GetFocusManager();
+
+  if (pending_close_) {
+    if (!drawer->IsAnyGamepadActionPressed()) {
+      focus_manager->UIDropFocus("TitleListUI");
+      Close();
+    }
+    return;
+  }
+
+  if (!has_opened_) {
+    focus_manager->UISetFocus("TitleListUI");
+    has_opened_ = true;
+  }
+
+  const auto& input = focus_manager->XamInputFocus("TitleListUI");
+
+  if (input.ShouldClose()) {
+    pending_close_ = true;
+    return;
+  }
+
   ImGui::SetNextWindowPos(drawing_position_, ImGuiCond_FirstUseEver);
   const auto xenia_window_size = ImGui::GetMainViewport()->Size;
 
@@ -179,7 +191,7 @@ void TitleListUI::OnDraw(ImGuiIO& io) {
                     ImGuiWindowFlags_NoCollapse |
                         ImGuiWindowFlags_AlwaysAutoResize |
                         ImGuiWindowFlags_HorizontalScrollbar)) {
-    Close();
+    pending_close_ = true;
     ImGui::End();
     return;
   }
@@ -225,8 +237,11 @@ void TitleListUI::OnDraw(ImGuiIO& io) {
     ImGui::PopFont();
   }
 
+  ImGui::Spacing();
+  ImGui::TextDisabled("A: Select | B/Back: Close");
+
   if (!dialog_open) {
-    Close();
+    pending_close_ = true;
     ImGui::End();
     return;
   }

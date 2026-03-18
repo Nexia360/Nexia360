@@ -22,16 +22,36 @@ ShowCommunitySessionsUI::ShowCommunitySessionsUI(
 }
 
 void ShowCommunitySessionsUI::OnDraw(ImGuiIO& io) {
+  auto* drawer = imgui_drawer();
+  auto* focus_manager = drawer->GetFocusManager();
+
+  if (pending_close_) {
+    if (!drawer->IsAnyGamepadActionPressed()) {
+      focus_manager->UIDropFocus("SessionsDialog");
+      Close();
+    }
+    return;
+  }
+
   if (!sessions_args.sessions_open) {
+    focus_manager->UISetFocus("SessionsDialog");
     sessions_args.sessions_open = true;
     sessions_args.filter_own = true;
     ImGui::OpenPopup("Sessions");
   }
 
+  const auto& input = focus_manager->XamInputFocus("SessionsDialog");
+
+  if (input.ShouldClose()) {
+    sessions_args.sessions_open = false;
+    pending_close_ = true;
+    return;
+  }
+
   xeDrawSessionsContent(imgui_drawer(), profile_, sessions_args, &sessions_);
 
   if (!sessions_args.sessions_open) {
-    Close();
+    pending_close_ = true;
   }
 }
 

@@ -16,7 +16,7 @@
 #include <string>
 
 #include "xenia/base/threading.h"
-#include "xenia/kernel/kernel.h"
+// #include "xenia/kernel/kernel.h"
 #include "xenia/memory.h"
 #include "xenia/xbox.h"
 
@@ -170,7 +170,11 @@ class XObject {
   Type type() const;
 
   // Returns the primary handle of this object.
-  X_HANDLE handle() const { return handles_[0]; }
+  // Lazily allocates handle on first access.
+  X_HANDLE handle();
+
+  // Check if handle has been allocated without triggering allocation.
+  bool has_handle() const { return !handles_.empty(); }
 
   // Returns all associated handles with this object.
   std::vector<X_HANDLE> handles() const { return handles_; }

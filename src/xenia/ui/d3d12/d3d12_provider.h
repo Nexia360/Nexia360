@@ -14,23 +14,21 @@
 
 #include "xenia/ui/d3d12/d3d12_api.h"
 #include "xenia/ui/graphics_provider.h"
-
 // chrispy: this is here to prevent clang format from moving d3d12_nvapi above
 // the headers it depends on
 #define HEADERFENCE
 #undef HEADERFENCE
 #include "xenia/gpu/d3d12/d3d12_nvapi.hpp"
+#define XE_UI_D3D12_FINE_GRAINED_DRAW_SCOPES 1
 
 namespace xe {
 namespace ui {
 namespace d3d12 {
-
 enum {
   UPLOAD_RESULT_CREATE_FAILED = 0,
   UPLOAD_RESULT_CREATE_SUCCESS = 1,
   UPLOAD_RESULT_CREATE_CPUVISIBLE = 2
 };
-
 class D3D12Provider : public GraphicsProvider {
  public:
   ~D3D12Provider();
@@ -102,44 +100,6 @@ class D3D12Provider : public GraphicsProvider {
 
   // Adapter info.
   GpuVendorID GetAdapterVendorID() const { return adapter_vendor_id_; }
-
-  bool IsIntelArcGpu() const {
-    if (adapter_vendor_id_ != GpuVendorID::kIntel) {
-      return false;
-    }
-
-    // Desktop IDs - Alchemist
-    if (adapter_device_id_ >= 0x56A0 && adapter_device_id_ <= 0x56BD) {
-      return true;
-    }
-
-    // Mobile IDs - Alchemist
-    if (adapter_device_id_ >= 0x5690 && adapter_device_id_ <= 0x5697) {
-      return true;
-    }
-
-    // Desktop IDs - Battlemage
-    if (adapter_device_id_ >= 0xE20B && adapter_device_id_ <= 0xE20C) {
-      return true;
-    }
-
-    // Meteor Lake
-    if (adapter_device_id_ >= 0x7D40 && adapter_device_id_ <= 0x7DD5) {
-      return true;
-    }
-
-    // Lunar Lake
-    if (adapter_device_id_ >= 0x6420 && adapter_device_id_ <= 0x64B0) {
-      return true;
-    }
-
-    // Arrow Lake
-    if (adapter_device_id_ >= 0x7D41 && adapter_device_id_ <= 0x7D67) {
-      return true;
-    }
-
-    return false;
-  }
 
   // Device features.
   D3D12_HEAP_FLAGS GetHeapFlagCreateNotZeroed() const {
@@ -237,7 +197,6 @@ class D3D12Provider : public GraphicsProvider {
   uint32_t descriptor_sizes_[D3D12_DESCRIPTOR_HEAP_TYPE_NUM_TYPES];
 
   GpuVendorID adapter_vendor_id_;
-  uint32_t adapter_device_id_;
 
   D3D12_HEAP_FLAGS heap_flag_create_not_zeroed_;
   D3D12_PROGRAMMABLE_SAMPLE_POSITIONS_TIER programmable_sample_positions_tier_;

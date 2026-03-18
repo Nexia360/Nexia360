@@ -174,15 +174,12 @@ void XThread::InitializeGuestObject() {
 
   guest_thread->unk_10 = (thread_guest_ptr + 0x10);
   guest_thread->unk_14 = (thread_guest_ptr + 0x10);
-  guest_thread->wait_timeout_block.wait_list_entry.flink_ptr =
-      thread_guest_ptr + 0x20;
-  guest_thread->wait_timeout_block.wait_list_entry.blink_ptr =
-      thread_guest_ptr + 0x20;
-  guest_thread->wait_timeout_block.thread = thread_guest_ptr;
+  guest_thread->unk_40 = (thread_guest_ptr + 0x20);
+  guest_thread->unk_44 = (thread_guest_ptr + 0x20);
+  guest_thread->unk_48 = (thread_guest_ptr);
   uint32_t v6 = thread_guest_ptr + 0x18;
-  guest_thread->wait_timeout_block.wait_result_xstatus = 0x0100;
-  guest_thread->wait_timeout_block.wait_type = 0x0201;
-  guest_thread->wait_timeout_block.object = v6;
+  *(uint32_t*)&guest_thread->unk_54 = 16777729;
+  guest_thread->unk_4C = (v6);
   guest_thread->stack_base = (this->stack_base_);
   guest_thread->stack_limit = (this->stack_limit_);
   guest_thread->stack_kernel = (this->stack_base_ - 240);
@@ -210,14 +207,14 @@ void XThread::InitializeGuestObject() {
   guest_thread->process = process_info_block_address;
   guest_thread->stack_alloc_base = this->stack_base_;
   guest_thread->create_time = Clock::QueryGuestSystemTime();
-  guest_thread->timer_list.flink_ptr = thread_guest_ptr + 324;
-  guest_thread->timer_list.blink_ptr = thread_guest_ptr + 324;
+  guest_thread->unk_144 = thread_guest_ptr + 324;
+  guest_thread->unk_148 = thread_guest_ptr + 324;
   guest_thread->thread_id = this->thread_id_;
   guest_thread->start_address = this->creation_params_.start_address;
-  guest_thread->unk_154.flink_ptr = thread_guest_ptr + 340;
+  guest_thread->unk_154 = thread_guest_ptr + 340;
   uint32_t v9 = thread_guest_ptr;
   guest_thread->last_error = 0;
-  guest_thread->unk_154.blink_ptr = v9 + 340;
+  guest_thread->unk_158 = v9 + 340;
   guest_thread->creation_flags = this->creation_params_.creation_flags;
   guest_thread->unk_17C = 1;
 
@@ -704,14 +701,6 @@ uint32_t XThread::suspend_count() {
   return guest_object<X_KTHREAD>()->suspend_count;
 }
 
-X_FILETIME XThread::creation_time() {
-  return static_cast<X_FILETIME>(guest_object<X_KTHREAD>()->create_time);
-}
-
-uint32_t XThread::start_address() {
-  return guest_object<X_KTHREAD>()->start_address;
-}
-
 X_STATUS XThread::Resume(uint32_t* out_suspend_count) {
   auto guest_thread = guest_object<X_KTHREAD>();
 
@@ -743,13 +732,6 @@ X_STATUS XThread::Suspend(uint32_t* out_suspend_count) {
   }
   // If we are suspending ourselves, we can't hold the lock.
   uint32_t unused_host_suspend_count = 0;
-
-  // If we had suspend count wrap around and go back to 0 then thread is not
-  // suspended.
-  if (guest_thread->suspend_count == 0) {
-    return X_STATUS_SUCCESS;
-  }
-
   if (thread_->Suspend(&unused_host_suspend_count)) {
     return X_STATUS_SUCCESS;
   } else {
@@ -772,7 +754,6 @@ X_STATUS XThread::Delay(uint32_t processor_mode, uint32_t alertable,
   } else {
     timeout_ms = 0;
   }
-
   timeout_ms = Clock::ScaleGuestDurationMillis(timeout_ms);
   if (alertable) {
     auto result =
@@ -785,18 +766,9 @@ X_STATUS XThread::Delay(uint32_t processor_mode, uint32_t alertable,
         return X_STATUS_USER_APC;
     }
   } else {
-    if (timeout_ms == 0) {
-      if (priority_ <= xe::threading::ThreadPriority::kBelowNormal) {
-        xe::threading::NanoSleep(100);
-      } else {
-        xe::threading::MaybeYield();
-      }
-    } else {
-      xe::threading::Sleep(std::chrono::milliseconds(timeout_ms));
-    }
+    xe::threading::Sleep(std::chrono::milliseconds(timeout_ms));
+    return X_STATUS_SUCCESS;
   }
-
-  return X_STATUS_SUCCESS;
 }
 
 struct ThreadSavedState {
@@ -906,11 +878,13 @@ object_ref<XThread> XThread::Restore(KernelState* kernel_state,
   thread->kernel_state_ = kernel_state;
 
   if (!thread->RestoreObject(stream)) {
+    delete thread;
     return nullptr;
   }
 
   if (stream->Read<uint32_t>() != kThreadSaveSignature) {
     XELOGE("Could not restore XThread - invalid magic!");
+    delete thread;
     return nullptr;
   }
 

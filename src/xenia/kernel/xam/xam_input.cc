@@ -40,9 +40,8 @@ void XamResetInactivity_entry() {
 }
 DECLARE_XAM_EXPORT1(XamResetInactivity, kInput, kStub);
 
-dword_result_t XamEnableInactivityProcessing_entry(dword_t inactivity_index,
+dword_result_t XamEnableInactivityProcessing_entry(dword_t unk,
                                                    dword_t enable) {
-  // Enables/disables screen saver and auto shutoff
   return X_ERROR_SUCCESS;
 }
 DECLARE_XAM_EXPORT1(XamEnableInactivityProcessing, kInput, kStub);
@@ -210,9 +209,10 @@ dword_result_t XamInputGetKeystrokeEx_entry(
 }
 DECLARE_XAM_EXPORT1(XamInputGetKeystrokeEx, kInput, kImplemented);
 
-X_HRESULT_result_t XamUserGetDeviceContext_entry(dword_t user_index,
-                                                 dword_t device_type,
-                                                 lpdword_t out_ptr) {
+X_HRESULT_result_t XamUserGetDeviceContext_entry(
+    dword_t user_index,
+    dword_t unk,  // It's set to 3 for a big button
+    lpdword_t out_ptr) {
   // Games check the result - usually with some masking.
   // If this function fails they assume zero, so let's fail AND
   // set zero just to be safe.

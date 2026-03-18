@@ -9,6 +9,8 @@
 
 #include "xenia/vfs/devices/disc_zarchive_entry.h"
 
+#include <algorithm>
+
 #include "xenia/base/math.h"
 #include "xenia/vfs/devices/disc_zarchive_file.h"
 

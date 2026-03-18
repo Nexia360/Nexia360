@@ -67,7 +67,6 @@ struct XGI_XUSER_SET_PROPERTY {
 };
 static_assert_size(XGI_XUSER_SET_PROPERTY, 0x20);
 
-// ANID = Anonymous user id
 struct XGI_XUSER_ANID {
   xe::be<uint32_t> user_index;
   xe::be<uint32_t> AnId_buffer_size;
@@ -749,7 +748,6 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
     case 0x000B0020: {
       assert_true(!buffer_length ||
                   buffer_length == sizeof(XGI_XUSER_STATS_RESET));
-      // 545107D4
       XELOGI("XUserResetStatsView");
 
       XGI_XUSER_STATS_RESET* data =
@@ -770,8 +768,8 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
       // Called after opening xbox live arcade and clicking on xbox live v5759
       // to 5787 and called after clicking xbox live in the game library from
       // v6683 to v6717
-      // Does not get sent a buffer
-      XELOGD("XInvalidateGamerTileCache, unimplemented");
+      XELOGD("XGIUnkB0036({:08X}, {:08X}), unimplemented", buffer_ptr,
+             buffer_length);
       return X_E_FAIL;
     }
     case 0x000B003D: {
@@ -791,7 +789,7 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
 
       // Game calls HexDecodeDigit on AnIdBuffer
       for (uint32_t i = 0; i < data->AnId_buffer_size - 1; i++) {
-        AnIdBuffer[i] = i % 16;
+        AnIdBuffer[i] = i % 10;
       }
 
       return X_E_SUCCESS;
@@ -855,16 +853,18 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
           property);
     }
     case 0x000B0071: {
-      XELOGD("ContentEnumerate::ResetEnumerator({:08X}, {:08X}), unimplemented",
-             buffer_ptr, buffer_length);
+      XELOGD("XGIUnkB0071({:08X}, {:08X}), unimplemented", buffer_ptr,
+             buffer_length);
       return X_E_SUCCESS;
     }
+    default: {
+      XELOGE(
+          "Unimplemented XGI message app={:08X}, msg={:08X}, arg1={:08X}, "
+          "arg2={:08X}",
+          app_id(), message, buffer_ptr, buffer_length);
+      return X_E_FAIL;
+    }
   }
-  XELOGE(
-      "Unimplemented XGI message app={:08X}, msg={:08X}, arg1={:08X}, "
-      "arg2={:08X}",
-      app_id(), message, buffer_ptr, buffer_length);
-  return X_E_FAIL;
 }
 
 }  // namespace apps

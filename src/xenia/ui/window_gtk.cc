@@ -7,6 +7,9 @@
  ******************************************************************************
  */
 
+#include <algorithm>
+#include <string>
+
 #include <X11/Xlib-xcb.h>
 #include <gdk/gdkx.h>
 #include <xcb/xcb.h>

@@ -12,8 +12,6 @@
 #include "xenia/kernel/user_module.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xam/xam_private.h"
-#include "xenia/kernel/xboxkrnl/xboxkrnl_error.h"
-#include "xenia/kernel/xboxkrnl/xboxkrnl_threading.h"
 #include "xenia/kernel/xthread.h"
 #include "xenia/xbox.h"
 
@@ -34,7 +32,7 @@ struct XTASK_MESSAGE {
 };
 
 struct XAM_TASK_ARGS {
-  be<uint32_t> flags;
+  be<uint32_t> value1;
   be<uint32_t> value2;
   // i think there might be another value here, it might be padding
 };
@@ -50,7 +48,7 @@ dword_result_t XamTaskSchedule_entry(lpvoid_t callback,
   if (optional_ptr) {
     auto option = ctx->TranslateVirtual<XAM_TASK_ARGS*>(optional_ptr);
 
-    auto v1 = option->flags;
+    auto v1 = option->value1;
     auto v2 = option->value2;  // typically 0?
 
     XELOGI("Got xam task args: v1 = {:08X}, v2 = {:08X}", v1.get(), v2.get());
@@ -80,21 +78,8 @@ dword_result_t XamTaskSchedule_entry(lpvoid_t callback,
 }
 DECLARE_XAM_EXPORT2(XamTaskSchedule, kNone, kImplemented, kSketchy);
 
-dword_result_t XamTaskCloseHandle_entry(dword_t obj_handle) {
-  const X_STATUS error_code = xboxkrnl::NtClose(obj_handle);
-
-  if (XFAILED(error_code)) {
-    const uint32_t result = xboxkrnl::xeRtlNtStatusToDosError(error_code);
-    XThread::SetLastError(result);
-    return false;
-  }
-
-  return true;
-}
-DECLARE_XAM_EXPORT1(XamTaskCloseHandle, kNone, kImplemented);
-
-dword_result_t XamTaskShouldExit_entry() { return 0; }
-DECLARE_XAM_EXPORT1(XamTaskShouldExit, kNone, kStub);
+dword_result_t XamTaskShouldExit_entry(dword_t r3) { return 0; }
+DECLARE_XAM_EXPORT2(XamTaskShouldExit, kNone, kStub, kSketchy);
 
 }  // namespace xam
 }  // namespace kernel

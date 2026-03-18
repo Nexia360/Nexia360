@@ -9,6 +9,10 @@
 
 #include "xenia/gpu/spirv_builder.h"
 
+#include <memory>
+#include <utility>
+#include <vector>
+
 #include "xenia/base/assert.h"
 
 namespace xe {

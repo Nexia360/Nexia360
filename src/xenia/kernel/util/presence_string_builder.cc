@@ -12,8 +12,6 @@
 
 DECLARE_int32(user_language);
 
-#include "xenia/base/string.h"
-
 namespace xe {
 namespace kernel {
 namespace util {

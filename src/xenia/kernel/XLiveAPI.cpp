@@ -32,8 +32,8 @@ DEFINE_bool(logging, false, "Log Network Activity & Stats", "Live");
 DEFINE_bool(log_mask_ips, true, "Do not include P2P IPs inside the log",
             "Live");
 
-DEFINE_int32(network_mode, 3,
-             "Network mode types: 0 - Offline, 1 - Systemlink, 2 - Xbox Live, 3 - Nexia Hub",
+DEFINE_int32(network_mode, 2,
+             "Network mode types: 0 - Offline, 1 - Systemlink, 2 - Xbox Live.",
              "Live");
 
 DEFINE_bool(xlink_kai_systemlink_hack, false,
@@ -92,13 +92,9 @@ void XLiveAPI::IpGetConsoleXnAddr(XNADDR* XnAddr_ptr) {
       XnAddr_ptr->ina = LocalIP().sin_addr;
       XnAddr_ptr->inaOnline = LocalIP().sin_addr;
     }
-  }
 
-  if (cvars::network_mode >= NETWORK_MODE::XBOXLIVE) {
     XnAddr_ptr->wPortOnline = GetPlayerPort();
   }
-
-  XnAddr_ptr->abOnline.platform_type = PLATFORM_TYPE::Xbox360;
 
   memcpy(XnAddr_ptr->abEnet, mac_address_->raw(), sizeof(MacAddress));
 }
@@ -309,10 +305,7 @@ std::string XLiveAPI::GetApiAddress() {
   } else {
     cvars::api_address = api_addresses.front();
   }
-  if(cvars::network_mode == NETWORK_MODE::NEXIAHUB)
-  {
-    cvars::api_address = "107.155.85.242:36000/";
-  }
+
   // Add forward slash if not already added
   if (cvars::api_address.back() != '/') {
     cvars::api_address = cvars::api_address + '/';
@@ -338,25 +331,16 @@ void XLiveAPI::Init() {
   }
 
   if (cvars::logging) {
-    curl_version_info_data* curl_info = curl_version_info(CURLVERSION_NOW);
+    curl_version_info_data* vinfo = curl_version_info(CURLVERSION_NOW);
 
-    uint32_t major = (curl_info->version_num >> 16) & 0xFF;
-    uint32_t minor = (curl_info->version_num >> 8) & 0xFF;
-    uint32_t patch = curl_info->version_num & 0xFF;
+    XELOGI("libcurl version {}.{}.{}\n", (vinfo->version_num >> 16) & 0xFF,
+           (vinfo->version_num >> 8) & 0xFF, vinfo->version_num & 0xFF);
 
-    XELOGI("libcurl version {}.{}.{}\n", major, minor, patch);
-
-    if (curl_info->features & CURL_VERSION_SSL) {
-      XELOGI("SSL support: Yes");
+    if (vinfo->features & CURL_VERSION_SSL) {
+      XELOGI("SSL support enabled");
     } else {
       assert_always();
-      XELOGI("SSL support: No");
-    }
-
-    if (curl_info->features & CURL_VERSION_HTTP2) {
-      XELOGI("HTTP/2 support: Yes");
-    } else {
-      XELOGI("HTTP/2 support: No");
+      XELOGI("No SSL");
     }
   }
 
@@ -386,6 +370,10 @@ void XLiveAPI::Init() {
   if (!IsConnectedToServer()) {
     // Assign online ip as local ip to ensure XNADDR is not 0 for systemlink
     // online_ip_ = local_ip_;
+
+    // Fixes 4D53085F from crashing when joining via systemlink.
+    // kernel_state()->BroadcastNotification(kXNotificationIDLiveConnectionChanged,
+    //                                      X_ONLINE_S_LOGON_DISCONNECTED);
 
     XELOGE("XLiveAPI:: Cannot reach API server.");
     initialized_ = InitState::Failed;
@@ -438,7 +426,10 @@ std::unique_ptr<HTTPResponseObjectJSON> XLiveAPI::Get(std::string endpoint,
   std::string endpoint_API = fmt::format("{}{}", GetApiAddress(), endpoint);
 
   if (cvars::logging) {
-    XELOGI("{} Endpoint: {}", __func__, endpoint_API);
+    XELOGI("cURL: {}", endpoint_API);
+
+    curl_easy_setopt(curl_handle, CURLOPT_VERBOSE, 1);
+    curl_easy_setopt(curl_handle, CURLOPT_STDERR, stderr);
   }
 
   curl_slist* headers = NULL;
@@ -505,7 +496,10 @@ std::unique_ptr<HTTPResponseObjectJSON> XLiveAPI::Post(std::string endpoint,
   std::string endpoint_API = fmt::format("{}{}", GetApiAddress(), endpoint);
 
   if (cvars::logging) {
-    XELOGI("{} Endpoint: {}", __func__, endpoint_API);
+    XELOGI("cURL: {}", endpoint_API);
+
+    curl_easy_setopt(curl_handle, CURLOPT_VERBOSE, 1);
+    curl_easy_setopt(curl_handle, CURLOPT_STDERR, stderr);
   }
 
   curl_slist* headers = NULL;
@@ -573,10 +567,6 @@ std::unique_ptr<HTTPResponseObjectJSON> XLiveAPI::Delete(std::string endpoint) {
   }
 
   std::string endpoint_API = fmt::format("{}{}", GetApiAddress(), endpoint);
-
-  if (cvars::logging) {
-    XELOGI("{} Endpoint: {}", __func__, endpoint_API);
-  }
 
   struct curl_slist* headers = NULL;
   headers = curl_slist_append(headers, "Content-Type: application/json");
@@ -692,7 +682,7 @@ std::unique_ptr<HTTPResponseObjectJSON> XLiveAPI::RegisterPlayer() {
 
   const auto user_profile = kernel_state()->xam_state()->GetUserProfile(index);
 
-  if (cvars::network_mode == NETWORK_MODE::XBOXLIVE &&
+  if (cvars::network_mode >= NETWORK_MODE::XBOXLIVE &&
       !user_profile->IsLiveEnabled()) {
     XELOGE("Cancelled registering profile, profile is not live enabled!");
     return response;
@@ -808,15 +798,20 @@ void XLiveAPI::QoSPost(uint64_t sessionId, uint8_t* qosData, size_t qosLength) {
   std::string endpoint = fmt::format("title/{:08X}/sessions/{:016x}/qos",
                                      kernel_state()->title_id(), sessionId);
 
-  std::unique_ptr<HTTPResponseObjectJSON> response =
-      Post(endpoint, qosData, qosLength);
+  const int max_retries = 3;
+  for (int attempt = 0; attempt < max_retries; attempt++) {
+    std::unique_ptr<HTTPResponseObjectJSON> response =
+        Post(endpoint, qosData, qosLength);
 
-  if (response->StatusCode() != HTTP_STATUS_CODE::HTTP_CREATED) {
-    assert_always();
-    return;
+    if (response->StatusCode() == HTTP_STATUS_CODE::HTTP_CREATED) {
+      XELOGI("Sent QoS data.");
+      return;
+    }
+
+    XELOGE("QoSPost attempt {} failed for session {:016x}", attempt + 1, sessionId);
   }
 
-  XELOGI("Sent QoS data.");
+  XELOGE("QoSPost failed after {} retries", max_retries);
 }
 
 // Get QoS binary data from the server
@@ -824,19 +819,26 @@ response_data XLiveAPI::QoSGet(uint64_t sessionId) {
   std::string endpoint = fmt::format("title/{:08X}/sessions/{:016x}/qos",
                                      kernel_state()->title_id(), sessionId);
 
-  std::unique_ptr<HTTPResponseObjectJSON> response = Get(endpoint);
+  const int max_retries = 3;
+  for (int attempt = 0; attempt < max_retries; attempt++) {
+    std::unique_ptr<HTTPResponseObjectJSON> response = Get(endpoint);
 
-  if (response->StatusCode() != HTTP_STATUS_CODE::HTTP_OK &&
-      response->StatusCode() != HTTP_STATUS_CODE::HTTP_NO_CONTENT) {
-    XELOGE("QoSGet error message: {}", response->Message());
-    assert_always();
+    if (response->StatusCode() == HTTP_STATUS_CODE::HTTP_OK ||
+        response->StatusCode() == HTTP_STATUS_CODE::HTTP_NO_CONTENT) {
+      XELOGI("Requesting QoS data.");
+      return response->RawResponse();
+    }
 
-    return response->RawResponse();
+    XELOGE("QoSGet attempt {} failed: {}", attempt + 1, response->Message());
   }
 
-  XELOGI("Requesting QoS data.");
+  XELOGE("QoSGet failed after {} retries", max_retries);
 
-  return response->RawResponse();
+  response_data empty{};
+  empty.http_code = HTTP_STATUS_CODE::HTTP_NO_CONTENT;
+  empty.response = nullptr;
+  empty.size = 0;
+  return empty;
 }
 
 void XLiveAPI::SessionModify(uint64_t sessionId, XGI_SESSION_MODIFY* data) {
@@ -1029,7 +1031,7 @@ std::unique_ptr<SessionObjectJSON> XLiveAPI::XSessionMigration(
 
   session = response->Deserialize<SessionObjectJSON>();
 
-  XELOGI("Sent XSessionMigration data.");
+  XELOGI("Send XSessionMigration data.");
 
   return session;
 }
@@ -1352,8 +1354,6 @@ std::unique_ptr<ServicesObjectJSON> XLiveAPI::GetServices() {
   if (response->StatusCode() != HTTP_STATUS_CODE::HTTP_OK) {
     XELOGE("GetServices error message: {}", response->Message());
     assert_always();
-
-    return services;
   }
 
   services = response->Deserialize<ServicesObjectJSON>();
@@ -1701,8 +1701,7 @@ void XLiveAPI::SetPresence() {
     const auto user_profile = kernel_state()->xam_state()->GetUserProfile(i);
 
     if (user_profile) {
-      FriendPresenceObjectJSON* profile_presence =
-          new FriendPresenceObjectJSON();
+      FriendPresenceObjectJSON* profile_presence = new FriendPresenceObjectJSON();
 
       if (user_profile->IsLiveEnabled()) {
         profile_presence->XUID(user_profile->GetOnlineXUID());
@@ -1825,11 +1824,11 @@ std::map<uint64_t, FriendPresenceObjectJSON> XLiveAPI::GetOnlineFriendsPresence(
 
   std::map<uint64_t, FriendPresenceObjectJSON> peer_presences = {};
 
-  const auto& friends_presence =
+  const auto freinds_presence =
       XLiveAPI::GetFriendsPresence(profile->GetFriendsXUIDs())
           ->PlayersPresence();
 
-  for (const auto& presence : friends_presence) {
+  for (const auto& presence : freinds_presence) {
     peer_presences[presence.XUID()] = presence;
   }
 

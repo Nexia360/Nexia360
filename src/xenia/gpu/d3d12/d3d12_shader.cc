@@ -10,6 +10,7 @@
 #include "xenia/gpu/d3d12/d3d12_shader.h"
 
 #include <cstring>
+#include <utility>
 
 #include "xenia/base/assert.h"
 #include "xenia/base/logging.h"
