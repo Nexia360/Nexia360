@@ -525,7 +525,7 @@ dword_result_t NetDll_WSARecvFrom_entry(
   }
 #endif
 
-  XELOGI("NetDll_WSARecvFrom: sock={} bufs={} overlapped={} completion={}",
+  XELOGD("NetDll_WSARecvFrom: sock={} bufs={} overlapped={} completion={}",
          (uint32_t)socket_handle, (uint32_t)num_buffers,
          overlapped_ptr.guest_address(), completion_routine_ptr.guest_address());
 
@@ -535,22 +535,17 @@ dword_result_t NetDll_WSARecvFrom_entry(
       overlapped_ptr.guest_address());
   if (ret < 0) {
     auto err = socket->GetLastWSAError();
-    if (err == (uint32_t)X_WSAError::X_WSAEWOULDBLOCK) {
-      // On Xbox 360, WSA_IO_PENDING == WSAEWOULDBLOCK.
-      // Async operation was launched successfully — this is not an error.
-      XELOGI("NetDll_WSARecvFrom: IO_PENDING sock={}", (uint32_t)socket_handle);
-      XThread::SetLastError(err);
-      return ret;
-    }
-    XELOGI("NetDll_WSARecvFrom: FAILED sock={} ret={} err={}",
-           (uint32_t)socket_handle, ret, err);
+    // On Xbox 360: WSA_IO_PENDING == WSAEWOULDBLOCK == 0x2733.
+    // Return SOCKET_ERROR (-1) so the game waits on the overlapped event.
+    XELOGD("NetDll_WSARecvFrom: err={} sock={}", err, (uint32_t)socket_handle);
     XThread::SetLastError(err);
-    return ret;
+    return -1;
   }
 
   XThread::SetLastError(0);
 
-  if (!cvars::log_mask_ips && from_ptr) {
+  if (!cvars::log_mask_ips && from_ptr && num_bytes_recv_ptr &&
+      static_cast<uint32_t>(*num_bytes_recv_ptr) > 0) {
     XELOGI("NetDll_WSARecvFrom: {} bytes from {}.{}.{}.{}",
            static_cast<uint32_t>(*num_bytes_recv_ptr),
            from_ptr->address_ip.S_un.S_un_b.s_b1,
@@ -614,10 +609,22 @@ dword_result_t NetDll_WSASendTo_entry(
       completion_routine.guest_address(), overlapped.guest_address());
   if (ret < 0) {
     auto err = socket->GetLastWSAError();
-    XELOGI("NetDll_WSASendTo: FAILED sock={} ret={} err={}",
-           (uint32_t)socket_handle, ret, err);
-    XThread::SetLastError(err);
-    return ret;
+    switch (err) {
+      case (uint32_t)X_WSAError::X_WSAENOTSOCK:
+      case (uint32_t)X_WSAError::X_WSA_INVALID_PARAMETER:
+      case (uint32_t)X_WSAError::X_WSAENOTCONN:
+        // Fatal — return error to caller.
+        XELOGI("NetDll_WSASendTo: FATAL sock={} err={}",
+               (uint32_t)socket_handle, err);
+        XThread::SetLastError(err);
+        return -1;
+      default:
+        // Non-fatal — return 0, set error for WSAGetLastError.
+        XELOGD("NetDll_WSASendTo: non-fatal sock={} err={}",
+               (uint32_t)socket_handle, err);
+        XThread::SetLastError(err);
+        return 0;
+    }
   }
 
   XThread::SetLastError(0);

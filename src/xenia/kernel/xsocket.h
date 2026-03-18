@@ -11,6 +11,7 @@
 #define XENIA_KERNEL_XSOCKET_H_
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <future>
 #include <queue>
@@ -38,12 +39,14 @@
 namespace xe {
 namespace kernel {
 enum class X_WSAError : uint32_t {
-  // Xbox 360 maps these to WSAE* codes, NOT Win32 ERROR_* codes.
-  // See Xbox 360 SDK winsockx.h #else /* WIN16 */ block (non-_WIN32 path).
+  // Xbox 360 WSA error codes.
+  // NOTE: The SDK header winsockx.h says WSA_IO_PENDING == WSAEWOULDBLOCK,
+  // but the REAL XAM kernel uses 0x3E5 (997 = Windows ERROR_IO_PENDING).
+  // Confirmed by decompiling sub_81746610/sub_81746900 in xam.xex.
   X_WSA_INVALID_PARAMETER = 0x2726,   // == WSAEINVAL
   X_WSA_OPERATION_ABORTED = 0x2714,   // == WSAEINTR
-  X_WSA_IO_INCOMPLETE = 0x2733,       // == WSAEWOULDBLOCK
-  X_WSA_IO_PENDING = 0x2733,          // == WSAEWOULDBLOCK
+  X_WSA_IO_INCOMPLETE = 0x3E5,        // 997 — same as IO_PENDING in XAM
+  X_WSA_IO_PENDING = 0x3E5,           // 997 — real XAM value, NOT 0x2733
   // WSABASEERR + N (from Xbox 360 SDK winsockx.h)
   X_WSAEINTR = 0x2714,                // 10004
   X_WSAEBADF = 0x2719,                // 10009
@@ -273,6 +276,7 @@ class XSocket : public XObject {
   int PollWSARecvFrom(bool wait, struct WSARecvFromData data);
 
   void SetLastWSAError(X_WSAError) const;
+  mutable std::atomic<uint32_t> last_wsa_error_{0};
 };
 
 }  // namespace kernel
