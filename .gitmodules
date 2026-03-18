@@ -120,3 +120,6 @@
 [submodule "third_party/wolfssl"]
 	path = third_party/wolfssl
 	url = https://github.com/wolfssl/wolfssl.git
+[submodule "third_party/boost_fiber"]
+	path = third_party/boost_fiber
+	url = https://github.com/boostorg/fiber.git
