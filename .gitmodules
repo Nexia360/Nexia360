@@ -15,8 +15,7 @@
 	url = https://github.com/premake/premake-core.git
 [submodule "third_party/snappy"]
 	path = third_party/snappy
-	url = https://github.com/google/snappy.git
-	ignore = dirty
+	url = https://github.com/xenia-project/snappy.git
 [submodule "third_party/premake-export-compile-commands"]
 	path = third_party/premake-export-compile-commands
 	url = https://github.com/xenia-project/premake-export-compile-commands.git
@@ -98,19 +97,15 @@
 [submodule "third_party/rapidcsv"]
 	path = third_party/rapidcsv
 	url = https://github.com/d99kris/rapidcsv.git
-[submodule "third_party/zlib-ng"]
-	path = third_party/zlib-ng
-	url = https://github.com/zlib-ng/zlib-ng.git
-	ignore = dirty
+[submodule "third_party/zlib"]
+	path = third_party/zlib
+	url = https://github.com/madler/zlib.git
 [submodule "third_party/pugixml"]
 	path = third_party/pugixml
 	url = https://github.com/zeux/pugixml.git
 [submodule "third_party/libusb"]
 	path = third_party/libusb
 	url = https://github.com/libusb/libusb.git
-[submodule "third_party/cpplint"]
-	path = third_party/cpplint
-	url = https://github.com/cpplint/cpplint.git
 [submodule "third_party/libcurl"]
 	path = third_party/libcurl
 	url = https://github.com/curl/curl.git
@@ -120,6 +115,3 @@
 [submodule "third_party/wolfssl"]
 	path = third_party/wolfssl
 	url = https://github.com/wolfssl/wolfssl.git
-[submodule "third_party/boost_fiber"]
-	path = third_party/boost_fiber
-	url = https://github.com/boostorg/fiber.git
