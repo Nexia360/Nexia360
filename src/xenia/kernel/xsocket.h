@@ -43,59 +43,59 @@ enum class X_WSAError : uint32_t {
   // NOTE: The SDK header winsockx.h says WSA_IO_PENDING == WSAEWOULDBLOCK,
   // but the REAL XAM kernel uses 0x3E5 (997 = Windows ERROR_IO_PENDING).
   // Confirmed by decompiling sub_81746610/sub_81746900 in xam.xex.
-  X_WSA_INVALID_PARAMETER = 0x2726,   // == WSAEINVAL
-  X_WSA_OPERATION_ABORTED = 0x2714,   // == WSAEINTR
-  X_WSA_IO_INCOMPLETE = 0x3E5,        // 997 — same as IO_PENDING in XAM
-  X_WSA_IO_PENDING = 0x3E5,           // 997 — real XAM value, NOT 0x2733
+  X_WSA_INVALID_PARAMETER = 0x2726,  // == WSAEINVAL
+  X_WSA_OPERATION_ABORTED = 0x2714,  // == WSAEINTR
+  X_WSA_IO_INCOMPLETE = 0x3E5,       // 997 — same as IO_PENDING in XAM
+  X_WSA_IO_PENDING = 0x3E5,          // 997 — real XAM value, NOT 0x2733
   // WSABASEERR + N (from Xbox 360 SDK winsockx.h)
-  X_WSAEINTR = 0x2714,                // 10004
-  X_WSAEBADF = 0x2719,                // 10009
-  X_WSAEACCES = 0x271D,               // 10013
-  X_WSAEFAULT = 0x271E,               // 10014
-  X_WSAEINVAL = 0x2726,               // 10022
-  X_WSAEMFILE = 0x2728,               // 10024
-  X_WSAEWOULDBLOCK = 0x2733,          // 10035
-  X_WSAEINPROGRESS = 0x2734,          // 10036
-  X_WSAEALREADY = 0x2735,             // 10037
-  X_WSAENOTSOCK = 0x2736,             // 10038
-  X_WSAEDESTADDRREQ = 0x2737,         // 10039
-  X_WSAEMSGSIZE = 0x2738,             // 10040
-  X_WSAEPROTOTYPE = 0x2739,           // 10041
-  X_WSAENOPROTOOPT = 0x273A,          // 10042
-  X_WSAEPROTONOSUPPORT = 0x273B,      // 10043
-  X_WSAESOCKTNOSUPPORT = 0x273C,      // 10044
-  X_WSAEOPNOTSUPP = 0x273D,           // 10045
-  X_WSAEPFNOSUPPORT = 0x273E,         // 10046
-  X_WSAEAFNOSUPPORT = 0x273F,         // 10047
-  X_WSAEADDRINUSE = 0x2740,           // 10048
-  X_WSAEADDRNOTAVAIL = 0x2741,        // 10049
-  X_WSAENETDOWN = 0x2742,             // 10050
-  X_WSAENETUNREACH = 0x2743,          // 10051
-  X_WSAENETRESET = 0x2744,            // 10052
-  X_WSAECONNABORTED = 0x2745,         // 10053
-  X_WSAECONNRESET = 0x2746,           // 10054
-  X_WSAENOBUFS = 0x2747,              // 10055
-  X_WSAEISCONN = 0x2748,              // 10056
-  X_WSAENOTCONN = 0x2749,             // 10057
-  X_WSAESHUTDOWN = 0x274A,            // 10058
-  X_WSAETOOMANYREFS = 0x274B,         // 10059
-  X_WSAETIMEDOUT = 0x274C,            // 10060
-  X_WSAECONNREFUSED = 0x274D,         // 10061
-  X_WSAELOOP = 0x274E,                // 10062
-  X_WSAENAMETOOLONG = 0x274F,         // 10063
-  X_WSAEHOSTDOWN = 0x2750,            // 10064
-  X_WSAEHOSTUNREACH = 0x2751,         // 10065
-  X_WSAENOTEMPTY = 0x2752,            // 10066
-  X_WSAEPROCLIM = 0x2753,             // 10067
-  X_WSAEUSERS = 0x2754,               // 10068
-  X_WSAEDQUOT = 0x2755,               // 10069
-  X_WSAESTALE = 0x2756,               // 10070
-  X_WSAEREMOTE = 0x2757,              // 10071
-  X_WSASYSNOTREADY = 0x276B,          // 10091
-  X_WSAVERNOTSUPPORTED = 0x276C,      // 10092
-  X_WSANOTINITIALISED = 0x276D,       // 10093
-  X_WSAEDISCON = 0x2775,              // 10101
-  X_WSANO_DATA = 0x2AFC,              // 11004
+  X_WSAEINTR = 0x2714,            // 10004
+  X_WSAEBADF = 0x2719,            // 10009
+  X_WSAEACCES = 0x271D,           // 10013
+  X_WSAEFAULT = 0x271E,           // 10014
+  X_WSAEINVAL = 0x2726,           // 10022
+  X_WSAEMFILE = 0x2728,           // 10024
+  X_WSAEWOULDBLOCK = 0x2733,      // 10035
+  X_WSAEINPROGRESS = 0x2734,      // 10036
+  X_WSAEALREADY = 0x2735,         // 10037
+  X_WSAENOTSOCK = 0x2736,         // 10038
+  X_WSAEDESTADDRREQ = 0x2737,     // 10039
+  X_WSAEMSGSIZE = 0x2738,         // 10040
+  X_WSAEPROTOTYPE = 0x2739,       // 10041
+  X_WSAENOPROTOOPT = 0x273A,      // 10042
+  X_WSAEPROTONOSUPPORT = 0x273B,  // 10043
+  X_WSAESOCKTNOSUPPORT = 0x273C,  // 10044
+  X_WSAEOPNOTSUPP = 0x273D,       // 10045
+  X_WSAEPFNOSUPPORT = 0x273E,     // 10046
+  X_WSAEAFNOSUPPORT = 0x273F,     // 10047
+  X_WSAEADDRINUSE = 0x2740,       // 10048
+  X_WSAEADDRNOTAVAIL = 0x2741,    // 10049
+  X_WSAENETDOWN = 0x2742,         // 10050
+  X_WSAENETUNREACH = 0x2743,      // 10051
+  X_WSAENETRESET = 0x2744,        // 10052
+  X_WSAECONNABORTED = 0x2745,     // 10053
+  X_WSAECONNRESET = 0x2746,       // 10054
+  X_WSAENOBUFS = 0x2747,          // 10055
+  X_WSAEISCONN = 0x2748,          // 10056
+  X_WSAENOTCONN = 0x2749,         // 10057
+  X_WSAESHUTDOWN = 0x274A,        // 10058
+  X_WSAETOOMANYREFS = 0x274B,     // 10059
+  X_WSAETIMEDOUT = 0x274C,        // 10060
+  X_WSAECONNREFUSED = 0x274D,     // 10061
+  X_WSAELOOP = 0x274E,            // 10062
+  X_WSAENAMETOOLONG = 0x274F,     // 10063
+  X_WSAEHOSTDOWN = 0x2750,        // 10064
+  X_WSAEHOSTUNREACH = 0x2751,     // 10065
+  X_WSAENOTEMPTY = 0x2752,        // 10066
+  X_WSAEPROCLIM = 0x2753,         // 10067
+  X_WSAEUSERS = 0x2754,           // 10068
+  X_WSAEDQUOT = 0x2755,           // 10069
+  X_WSAESTALE = 0x2756,           // 10070
+  X_WSAEREMOTE = 0x2757,          // 10071
+  X_WSASYSNOTREADY = 0x276B,      // 10091
+  X_WSAVERNOTSUPPORTED = 0x276C,  // 10092
+  X_WSANOTINITIALISED = 0x276D,   // 10093
+  X_WSAEDISCON = 0x2775,          // 10101
+  X_WSANO_DATA = 0x2AFC,          // 11004
 };
 
 struct XSOCKADDR {
@@ -207,15 +207,13 @@ class XSocket : public XObject {
   int WSASendTo(XWSABUF* buffers, uint32_t num_buffers,
                 xe::be<uint32_t>* num_bytes_sent_ptr, uint32_t flags,
                 XSOCKADDR_IN* to_ptr, uint32_t to_len,
-                XWSAOVERLAPPED* overlapped_ptr,
-                uint32_t completion_routine = 0,
+                XWSAOVERLAPPED* overlapped_ptr, uint32_t completion_routine = 0,
                 uint32_t overlapped_guest_ptr = 0);
 
   int WSARecvFrom(XWSABUF* buffers, uint32_t num_buffers,
                   xe::be<uint32_t>* num_bytes_recv_ptr,
                   xe::be<uint32_t>* flags_ptr, XSOCKADDR_IN* from_ptr,
-                  xe::be<uint32_t>* fromlen_ptr,
-                  XWSAOVERLAPPED* overlapped_ptr,
+                  xe::be<uint32_t>* fromlen_ptr, XWSAOVERLAPPED* overlapped_ptr,
                   uint32_t completion_routine = 0,
                   uint32_t overlapped_guest_ptr = 0);
   bool WSAGetOverlappedResult(XWSAOVERLAPPED* overlapped_ptr,

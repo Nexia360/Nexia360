@@ -527,7 +527,8 @@ dword_result_t NetDll_WSARecvFrom_entry(
 
   XELOGD("NetDll_WSARecvFrom: sock={} bufs={} overlapped={} completion={}",
          (uint32_t)socket_handle, (uint32_t)num_buffers,
-         overlapped_ptr.guest_address(), completion_routine_ptr.guest_address());
+         overlapped_ptr.guest_address(),
+         completion_routine_ptr.guest_address());
 
   int ret = socket->WSARecvFrom(
       buffers, num_buffers, num_bytes_recv_ptr, flags_ptr, from_ptr,
@@ -600,9 +601,10 @@ dword_result_t NetDll_WSASendTo_entry(
   }
 #endif
 
-  XELOGI("NetDll_WSASendTo: sock={} bufs={} flags={} overlapped={} completion={}",
-         (uint32_t)socket_handle, (uint32_t)num_buffers, (uint32_t)flags,
-         overlapped.guest_address(), completion_routine.guest_address());
+  XELOGI(
+      "NetDll_WSASendTo: sock={} bufs={} flags={} overlapped={} completion={}",
+      (uint32_t)socket_handle, (uint32_t)num_buffers, (uint32_t)flags,
+      overlapped.guest_address(), completion_routine.guest_address());
 
   int ret = socket->WSASendTo(
       buffers, num_buffers, num_bytes_sent, flags, to_ptr, to_len, overlapped,
@@ -1202,7 +1204,7 @@ dword_result_t NetDll_XNetQosListen_entry(
     if (XLiveAPI::UpdateQoSCache(session_id, qos_buffer)) {
       XELOGI("XNetQosListen LISTEN_SET_DATA");
       auto run = [](uint64_t sessionId, std::vector<uint8_t> qosData) {
-        // Set thread priority based on platform
+      // Set thread priority based on platform
 #ifdef XE_PLATFORM_WIN32
         // Set Windows thread priority to BELOW_NORMAL
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
@@ -1212,7 +1214,7 @@ dword_result_t NetDll_XNetQosListen_entry(
         param.sched_priority = 0;
         if (sched_setscheduler(0, SCHED_OTHER, &param) == -1) {
           // Fallback to nice adjustment if sched_setscheduler fails
-          nice(10); // Adjust nice value to make thread less important
+          nice(10);  // Adjust nice value to make thread less important
         }
 #endif
         XLiveAPI::QoSPost(sessionId, qosData.data(), qosData.size());

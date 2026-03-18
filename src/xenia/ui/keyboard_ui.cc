@@ -639,8 +639,7 @@ void KeyboardDialog::DrawKeyboardLayout() {
             // Done/Cancel: defer until A button is released so the action
             // only commits when the user lifts the button.  Mouse clicks
             // go through immediately since A won't be held.
-            bool a_is_held =
-                ImGui::IsKeyDown(ImGuiKey_GamepadFaceDown);
+            bool a_is_held = ImGui::IsKeyDown(ImGuiKey_GamepadFaceDown);
             if (a_is_held) {
               a_pending_action_ = key_label;
             } else {

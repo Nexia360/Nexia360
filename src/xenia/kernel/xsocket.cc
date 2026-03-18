@@ -9,12 +9,12 @@
 #include "src/xenia/kernel/xsocket.h"
 #include <cstring>
 #include "xenia/base/platform.h"
+#include "xenia/kernel/XLiveAPI.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/xam/xam_module.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_threading.h"
 #include "xenia/kernel/xevent.h"
 #include "xenia/kernel/xthread.h"
-#include "xenia/kernel/XLiveAPI.h"
 #ifdef XE_PLATFORM_WIN32
 #include <windows.h>
 #endif
@@ -22,7 +22,8 @@ using namespace std::chrono_literals;
 
 // Network thread priority setting
 DEFINE_int32(network_priority, 3,
-             "Network thread priority setting: 0 - Leave Alone, 1 - Below Normal, 2 - Above Normal, 3 - High",
+             "Network thread priority setting: 0 - Leave Alone, 1 - Below "
+             "Normal, 2 - Above Normal, 3 - High",
              "Live");
 
 namespace xe {
@@ -87,13 +88,13 @@ X_STATUS XSocket::Close() {
 }
 
 void XSocket::CleanupCompletedTasks(std::vector<std::future<int>>& tasks) {
-  tasks.erase(
-      std::remove_if(tasks.begin(), tasks.end(),
-                     [](std::future<int>& f) {
-                       return !f.valid() ||
-                              f.wait_for(0ms) == std::future_status::ready;
-                     }),
-      tasks.end());
+  tasks.erase(std::remove_if(tasks.begin(), tasks.end(),
+                             [](std::future<int>& f) {
+                               return !f.valid() ||
+                                      f.wait_for(0ms) ==
+                                          std::future_status::ready;
+                             }),
+              tasks.end());
 }
 X_STATUS XSocket::GetOption(uint32_t level, uint32_t optname, void* optval_ptr,
                             uint32_t* optlen) {
@@ -253,7 +254,7 @@ struct WSASendToData {
   uint32_t to_len;
   XWSAOVERLAPPED* overlapped;
   bool heap_allocated;  // true when buffers/to were heap-copied for async
-  uint32_t completion_routine;  // guest function pointer for APC callback
+  uint32_t completion_routine;    // guest function pointer for APC callback
   uint32_t overlapped_guest_ptr;  // guest address of overlapped struct
   object_ref<XThread> calling_thread;  // thread to enqueue APC to
 };
@@ -264,9 +265,9 @@ struct WSARecvFromData {
   XSOCKADDR_IN* from;
   xe::be<uint32_t>* from_len;
   XWSAOVERLAPPED* overlapped;
-  bool heap_allocated;  // true when buffers were heap-copied for async
+  bool heap_allocated;          // true when buffers were heap-copied for async
   uint32_t completion_routine;  // guest function pointer for APC callback
-  uint32_t overlapped_guest_ptr;  // guest address of overlapped struct
+  uint32_t overlapped_guest_ptr;       // guest address of overlapped struct
   object_ref<XThread> calling_thread;  // thread to enqueue APC to
 };
 int XSocket::WSASendTo(XWSABUF* buffers, uint32_t num_buffers,
@@ -325,9 +326,9 @@ int XSocket::WSASendTo(XWSABUF* buffers, uint32_t num_buffers,
         if (overlapped_ptr->event_handle) {
           xboxkrnl::xeNtClearEvent(overlapped_ptr->event_handle);
         }
-        send_tasks_.push_back(
-            std::async(std::launch::async, &XSocket::PushWSASendTo, this, true,
-                       send_async_data));
+        send_tasks_.push_back(std::async(std::launch::async,
+                                         &XSocket::PushWSASendTo, this, true,
+                                         send_async_data));
       }
       SetLastWSAError(X_WSAError::X_WSA_IO_PENDING);
       if (num_bytes_sent_ptr) {
@@ -358,13 +359,13 @@ int XSocket::PushWSASendTo(bool wait, WSASendToData send_async_data) {
 #ifdef XE_PLATFORM_WIN32
     if (wait) {
       switch (cvars::network_priority) {
-        case 1: // Below Normal
+        case 1:  // Below Normal
           SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
           break;
-        case 2: // Above Normal
+        case 2:  // Above Normal
           SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
           break;
-        case 3: // High
+        case 3:  // High
           SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
           break;
       }
@@ -374,19 +375,19 @@ int XSocket::PushWSASendTo(bool wait, WSASendToData send_async_data) {
       struct sched_param param;
       param.sched_priority = 0;
       switch (cvars::network_priority) {
-        case 1: // Below Normal
+        case 1:  // Below Normal
           if (sched_setscheduler(0, SCHED_OTHER, &param) == -1) {
-            nice(10); // Adjust nice value to make thread less important
+            nice(10);  // Adjust nice value to make thread less important
           }
           break;
-        case 2: // Above Normal
+        case 2:  // Above Normal
           if (sched_setscheduler(0, SCHED_OTHER, &param) == -1) {
-            nice(-5); // Adjust nice value to make thread more important
+            nice(-5);  // Adjust nice value to make thread more important
           }
           break;
-        case 3: // High
+        case 3:  // High
           if (sched_setscheduler(0, SCHED_FIFO, &param) == -1) {
-            nice(-10); // Adjust nice value to make thread very important
+            nice(-10);  // Adjust nice value to make thread very important
           }
           break;
       }
@@ -442,11 +443,10 @@ int XSocket::PushWSASendTo(bool wait, WSASendToData send_async_data) {
             send_async_data.buffers[i].buf_ptr));
   }
   for (int send_retry = 0; send_retry < 5; send_retry++) {
-    ret = ::WSASendTo(native_handle_, buffers, send_async_data.num_buffers,
-                      &bytes_sent, send_async_data.flags,
-                      send_async_data.to ? &addr : nullptr,
-                      send_async_data.to ? send_async_data.to_len : 0,
-                      nullptr, nullptr);
+    ret = ::WSASendTo(
+        native_handle_, buffers, send_async_data.num_buffers, &bytes_sent,
+        send_async_data.flags, send_async_data.to ? &addr : nullptr,
+        send_async_data.to ? send_async_data.to_len : 0, nullptr, nullptr);
     if (ret >= 0) break;
     auto host_err = WSAGetLastError();
     // Retryable errors: reestablish socket and retry up to 5 times.
@@ -457,9 +457,10 @@ int XSocket::PushWSASendTo(bool wait, WSASendToData send_async_data) {
       {
         std::lock_guard lock(send_socket_mutex_);
         SOCKET old = native_handle_;
-        SOCKET fresh = socket(af_, type_, proto_ == Protocol::X_IPPROTO_VDP
-                                             ? (int)Protocol::X_IPPROTO_UDP
-                                             : (int)proto_);
+        SOCKET fresh = socket(af_, type_,
+                              proto_ == Protocol::X_IPPROTO_VDP
+                                  ? (int)Protocol::X_IPPROTO_UDP
+                                  : (int)proto_);
         if (fresh != INVALID_SOCKET) {
           closesocket(old);
           native_handle_ = fresh;
@@ -534,8 +535,7 @@ threadexit:
     auto ev = kernel_state()->object_table()->LookupObject<XEvent>(
         send_async_data.overlapped->event_handle);
     if (ev) {
-      xboxkrnl::xeNtSetEvent(send_async_data.overlapped->event_handle,
-                             nullptr);
+      xboxkrnl::xeNtSetEvent(send_async_data.overlapped->event_handle, nullptr);
     }
   }
   // Fire completion routine APC if one was provided.
@@ -547,8 +547,8 @@ threadexit:
     send_async_data.calling_thread->EnqueueApc(
         send_async_data.completion_routine,
         send_async_data.overlapped->internal_high,  // dwError
-        send_async_data.overlapped->internal,        // cbTransferred
-        send_async_data.overlapped_guest_ptr);       // lpOverlapped
+        send_async_data.overlapped->internal,       // cbTransferred
+        send_async_data.overlapped_guest_ptr);      // lpOverlapped
   }
   send_cv_.notify_all();
   return ret;
@@ -559,13 +559,13 @@ int XSocket::PollWSARecvFrom(bool wait, WSARecvFromData receive_async_data) {
 #ifdef XE_PLATFORM_WIN32
     if (wait) {
       switch (cvars::network_priority) {
-        case 1: // Below Normal
+        case 1:  // Below Normal
           SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
           break;
-        case 2: // Above Normal
+        case 2:  // Above Normal
           SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
           break;
-        case 3: // High
+        case 3:  // High
           SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
           break;
       }
@@ -575,19 +575,19 @@ int XSocket::PollWSARecvFrom(bool wait, WSARecvFromData receive_async_data) {
       struct sched_param param;
       param.sched_priority = 0;
       switch (cvars::network_priority) {
-        case 1: // Below Normal
+        case 1:  // Below Normal
           if (sched_setscheduler(0, SCHED_OTHER, &param) == -1) {
-            nice(10); // Adjust nice value to make thread less important
+            nice(10);  // Adjust nice value to make thread less important
           }
           break;
-        case 2: // Above Normal
+        case 2:  // Above Normal
           if (sched_setscheduler(0, SCHED_OTHER, &param) == -1) {
-            nice(-5); // Adjust nice value to make thread more important
+            nice(-5);  // Adjust nice value to make thread more important
           }
           break;
-        case 3: // High
+        case 3:  // High
           if (sched_setscheduler(0, SCHED_FIFO, &param) == -1) {
-            nice(-10); // Adjust nice value to make thread very important
+            nice(-10);  // Adjust nice value to make thread very important
           }
           break;
       }
@@ -667,14 +667,14 @@ recv_loop:
     // Retryable errors: reestablish socket and retry up to 5 times.
     if (host_err == WSAENETRESET || host_err == WSAECONNRESET ||
         host_err == WSAETIMEDOUT) {
-      XELOGW("WSARecvFrom retry {}/5 after error {}", recv_retry + 1,
-             host_err);
+      XELOGW("WSARecvFrom retry {}/5 after error {}", recv_retry + 1, host_err);
       {
         std::lock_guard lock(receive_socket_mutex_);
         SOCKET old = native_handle_;
-        SOCKET fresh = socket(af_, type_, proto_ == Protocol::X_IPPROTO_VDP
-                                             ? (int)Protocol::X_IPPROTO_UDP
-                                             : (int)proto_);
+        SOCKET fresh = socket(af_, type_,
+                              proto_ == Protocol::X_IPPROTO_VDP
+                                  ? (int)Protocol::X_IPPROTO_UDP
+                                  : (int)proto_);
         if (fresh != INVALID_SOCKET) {
           closesocket(old);
           native_handle_ = fresh;
@@ -791,8 +791,8 @@ threadexit:
     receive_async_data.calling_thread->EnqueueApc(
         receive_async_data.completion_routine,
         receive_async_data.overlapped->internal_high,  // dwError
-        receive_async_data.overlapped->internal,        // cbTransferred
-        receive_async_data.overlapped_guest_ptr);       // lpOverlapped
+        receive_async_data.overlapped->internal,       // cbTransferred
+        receive_async_data.overlapped_guest_ptr);      // lpOverlapped
   }
   receive_cv_.notify_all();
   return ret;
