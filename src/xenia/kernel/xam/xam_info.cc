@@ -228,7 +228,8 @@ void XCustomRegisterDynamicActions_entry() {
 }
 DECLARE_XAM_EXPORT1(XCustomRegisterDynamicActions, kNone, kStub);
 
-dword_result_t XCustomSetAction_entry(dword_t action_index, lpvoid_t action_data) {
+dword_result_t XCustomSetAction_entry(dword_t action_index,
+                                      lpvoid_t action_data) {
   // Stub — custom dashboard actions are not meaningful in the emulator.
   return 0;
 }
@@ -388,8 +389,7 @@ void XamLoaderLaunchTitle_entry(lpstring_t raw_name_ptr, dword_t flags) {
 
     // Use the current title's host path for relaunching within the same game.
     auto* emulator = kernel_state()->emulator();
-    loader_data.host_path =
-        xe::path_to_utf8(emulator->current_launch_path());
+    loader_data.host_path = xe::path_to_utf8(emulator->current_launch_path());
 
     xam->SaveLoaderData();
 

@@ -52,9 +52,10 @@ DEFINE_bool(log_to_logcat, true, "Write log output to Android Logcat.",
 DEFINE_path(log_file, "", "Logs are written to the given file", "Logging");
 DEFINE_bool(log_to_stdout, true, "Write log output to stdout", "Logging");
 DEFINE_bool(log_to_debugprint, false, "Dump the log to DebugPrint.", "Logging");
-DEFINE_bool(skip_logfile, false,
-            "Disable log file output. Console logging via stdout remains active.",
-            "Logging");
+DEFINE_bool(
+    skip_logfile, false,
+    "Disable log file output. Console logging via stdout remains active.",
+    "Logging");
 #endif  // XE_PLATFORM_ANDROID
 DEFINE_bool(flush_log, true, "Flush log file after each log line batch.",
             "Logging");
@@ -248,13 +249,13 @@ class Logger {
 
   void RemoveFileSinks() {
     // Remove all FileLogSink instances that own their file (i.e., not stdout).
-    sinks_.erase(
-        std::remove_if(sinks_.begin(), sinks_.end(),
-                       [](const std::unique_ptr<LogSink>& sink) {
-                         auto* fs = dynamic_cast<FileLogSink*>(sink.get());
-                         return fs && fs->OwnsFile();
-                       }),
-        sinks_.end());
+    sinks_.erase(std::remove_if(sinks_.begin(), sinks_.end(),
+                                [](const std::unique_ptr<LogSink>& sink) {
+                                  auto* fs =
+                                      dynamic_cast<FileLogSink*>(sink.get());
+                                  return fs && fs->OwnsFile();
+                                }),
+                 sinks_.end());
   }
 
  private:

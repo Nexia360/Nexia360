@@ -1751,8 +1751,7 @@ void X64Backend::InitializeBackendContext(void* ctx) {
   bctx->Ox1000 = 0x1000;
   bctx->guest_tick_count = Clock::GetGuestTickCountPointer();
   bctx->reserve_helper_ = &reserve_helper_;
-  bctx->sync_deadline =
-      *bctx->guest_tick_count + cvars::thread_sync_quantum;
+  bctx->sync_deadline = *bctx->guest_tick_count + cvars::thread_sync_quantum;
 
   // Drift clock: register this thread and set up pointers for JIT access.
   if (cvars::drift_clock) {

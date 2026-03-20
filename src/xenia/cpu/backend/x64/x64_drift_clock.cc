@@ -28,11 +28,11 @@ DriftClockThread* DriftClock::RegisterThread() {
   for (int i = 0; i < kMaxThreads; ++i) {
     bool expected = false;
     if (threads_[i].active.compare_exchange_strong(expected, true,
-                                                    std::memory_order_acq_rel)) {
+                                                   std::memory_order_acq_rel)) {
       // Reset progress to current min so new thread doesn't start at 0
       // and drag everyone down.
       threads_[i].progress.store(cached_min_progress_,
-                                  std::memory_order_relaxed);
+                                 std::memory_order_relaxed);
       thread_count_.fetch_add(1, std::memory_order_relaxed);
       return &threads_[i];
     }
@@ -76,8 +76,7 @@ uint64_t DriftClock::ComputeAndUpdateMinProgress() {
   if (active_count <= 1) {
     // Only one active thread (or none) — no drift possible.
     // Set min to max so the lone thread never blocks.
-    cached_min_progress_ = (active_count == 1) ? min_val
-                                                : cached_min_progress_;
+    cached_min_progress_ = (active_count == 1) ? min_val : cached_min_progress_;
     return std::numeric_limits<uint64_t>::max();
   }
 

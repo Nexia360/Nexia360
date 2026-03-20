@@ -59,7 +59,7 @@ void ContentBrowser::LoadSources() {
     }
   } catch (const toml::parse_error& e) {
     XELOGW("ContentBrowser: Failed to parse {}: {}", kFilesystemTomlName,
-            e.what());
+           e.what());
   }
 }
 
@@ -67,8 +67,7 @@ void ContentBrowser::SaveSources() {
   auto sources_table = toml::table();
   uint32_t index = 0;
   for (const auto& folder : source_folders_) {
-    sources_table.insert(std::to_string(index++),
-                         xe::path_to_utf8(folder));
+    sources_table.insert(std::to_string(index++), xe::path_to_utf8(folder));
   }
 
   auto root = toml::table();
@@ -124,14 +123,14 @@ void ContentBrowser::RefreshCache(const std::filesystem::path& path) {
   }
 
   // Sort: files first, then directories, alphabetically within each group
-  std::sort(cached_entries_.begin(), cached_entries_.end(),
-            [](const xe::filesystem::FileInfo& a,
-               const xe::filesystem::FileInfo& b) {
-              if (a.type != b.type) {
-                return a.type == xe::filesystem::FileInfo::Type::kFile;
-              }
-              return a.name < b.name;
-            });
+  std::sort(
+      cached_entries_.begin(), cached_entries_.end(),
+      [](const xe::filesystem::FileInfo& a, const xe::filesystem::FileInfo& b) {
+        if (a.type != b.type) {
+          return a.type == xe::filesystem::FileInfo::Type::kFile;
+        }
+        return a.name < b.name;
+      });
 }
 
 void ContentBrowser::OnDraw(ImGuiIO& io) {
@@ -146,8 +145,7 @@ void ContentBrowser::OnDraw(ImGuiIO& io) {
   ImGui::SetNextWindowSize(ImVec2(960, io.DisplaySize.y - 60),
                            ImGuiCond_FirstUseEver);
 
-  if (!ImGui::Begin("Content Browser", nullptr,
-                    ImGuiWindowFlags_NoCollapse)) {
+  if (!ImGui::Begin("Content Browser", nullptr, ImGuiWindowFlags_NoCollapse)) {
     ImGui::End();
     return;
   }
@@ -247,8 +245,9 @@ void ContentBrowser::DrawSourcesList() {
   }
 
   if (ImGui::BeginPopup("SourceOptions")) {
-    ImGui::Text("Options: %s",
-                source_folders_[selected_source_index_].filename().string().c_str());
+    ImGui::Text(
+        "Options: %s",
+        source_folders_[selected_source_index_].filename().string().c_str());
     ImGui::Separator();
 
     if (ImGui::Selectable("Remove from list")) {
@@ -306,8 +305,9 @@ void ContentBrowser::DrawFolderContents(
   ImGui::Separator();
 
   // Back button (or gamepad B)
-  bool go_back = ImGui::Button("<- Back") ||
-                 (is_focused_ && ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight));
+  bool go_back =
+      ImGui::Button("<- Back") ||
+      (is_focused_ && ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight));
   if (go_back) {
     // Check if this is a source root
     bool is_source_root = false;
@@ -344,15 +344,13 @@ void ContentBrowser::DrawFolderContents(
   bool first_item = true;
   for (const auto& entry : cached_entries_) {
     if (entry.type == xe::filesystem::FileInfo::Type::kDirectory) {
-      std::string label =
-          fmt::format("[DIR] {}", xe::path_to_utf8(entry.name));
+      std::string label = fmt::format("[DIR] {}", xe::path_to_utf8(entry.name));
       if (ImGui::Selectable(label.c_str())) {
         current_path_ = folder_path / entry.name;
         cached_path_.clear();
       }
     } else if (IsSupportedFile(entry.name)) {
-      std::string label =
-          fmt::format("      {}", xe::path_to_utf8(entry.name));
+      std::string label = fmt::format("      {}", xe::path_to_utf8(entry.name));
       if (ImGui::Selectable(label.c_str())) {
         auto full_path = folder_path / entry.name;
         emulator_window_->RunTitle(full_path);
@@ -402,8 +400,9 @@ void ContentBrowser::DrawFolderPicker() {
     ImGui::Separator();
 
     // Back button (or gamepad B)
-    bool go_back = ImGui::Button("<- Back") ||
-                   (is_focused_ && ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight));
+    bool go_back =
+        ImGui::Button("<- Back") ||
+        (is_focused_ && ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight));
     if (go_back) {
       auto parent = browse_path_.parent_path();
       if (parent == browse_path_) {
@@ -432,8 +431,7 @@ void ContentBrowser::DrawFolderPicker() {
     // Show drive roots
     auto drives = EnumerateDrives();
     for (const auto& drive : drives) {
-      std::string label =
-          fmt::format("[DRV] {}", xe::path_to_utf8(drive));
+      std::string label = fmt::format("[DRV] {}", xe::path_to_utf8(drive));
       if (ImGui::Selectable(label.c_str())) {
         browse_path_ = drive;
         cached_path_.clear();
@@ -449,8 +447,7 @@ void ContentBrowser::DrawFolderPicker() {
         continue;
       }
       any_dirs = true;
-      std::string label =
-          fmt::format("[DIR] {}", xe::path_to_utf8(entry.name));
+      std::string label = fmt::format("[DIR] {}", xe::path_to_utf8(entry.name));
       if (ImGui::Selectable(label.c_str())) {
         browse_path_ = browse_path_ / entry.name;
         cached_path_.clear();
@@ -466,8 +463,8 @@ void ContentBrowser::DrawFolderPicker() {
 
   // Bottom bar with Cancel and Select Folder
   ImGui::Separator();
-  bool cancel = ImGui::Button("Cancel") ||
-                ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight);
+  bool cancel =
+      ImGui::Button("Cancel") || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight);
   if (cancel) {
     browsing_for_source_ = false;
     browse_path_.clear();

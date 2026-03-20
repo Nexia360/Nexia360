@@ -24,6 +24,7 @@
 #include "xenia/base/math.h"
 #include "xenia/base/memory.h"
 #include "xenia/base/profiling.h"
+#include "xenia/base/threading.h"
 #include "xenia/base/vec128.h"
 #include "xenia/cpu/backend/x64/x64_backend.h"
 #include "xenia/cpu/backend/x64/x64_code_cache.h"
@@ -39,7 +40,6 @@
 #include "xenia/cpu/processor.h"
 #include "xenia/cpu/symbol.h"
 #include "xenia/cpu/thread_state.h"
-#include "xenia/base/threading.h"
 
 DEFINE_bool(debugprint_trap_log, false,
             "Log debugprint traps to the active debugger", "CPU");
@@ -1859,8 +1859,7 @@ static void DriftCheckHandler(void* raw_context) {
   xe::threading::MaybeYield();
 
   // Recheck after yield.
-  min_progress =
-      bctx->drift_clock_instance->ComputeAndUpdateMinProgress();
+  min_progress = bctx->drift_clock_instance->ComputeAndUpdateMinProgress();
   if (min_progress == std::numeric_limits<uint64_t>::max()) return;
 
   if (my_progress > min_progress + drift_max) {
@@ -1896,7 +1895,8 @@ void X64Emitter::EmitDriftCheck() {
   // rax now holds my_progress (post-increment)
 
   // rcx = drift_min_progress_ptr (pointer to cached min_progress)
-  mov(rcx, GetBackendCtxPtr(offsetof(X64BackendContext, drift_min_progress_ptr)));
+  mov(rcx,
+      GetBackendCtxPtr(offsetof(X64BackendContext, drift_min_progress_ptr)));
   // rdx = *drift_min_progress_ptr (current min_progress value)
   mov(rdx, qword[rcx]);
 

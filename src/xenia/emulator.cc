@@ -1348,10 +1348,8 @@ bool Emulator::ExceptionCallback(Exception* ex) {
   crash_msg.append(fmt::format("PC: 0x{:08X}\n", guest_pc));
 
   // Print immediately to console before anything else can fail.
-  printf("!!! CRASH PC: 0x%08X  Function: %s (0x%08X - 0x%08X)\n",
-         guest_pc,
-         guest_function->name().c_str(),
-         guest_function->address(),
+  printf("!!! CRASH PC: 0x%08X  Function: %s (0x%08X - 0x%08X)\n", guest_pc,
+         guest_function->name().c_str(), guest_function->address(),
          guest_function->end_address());
   fflush(stdout);
 
@@ -1359,8 +1357,8 @@ bool Emulator::ExceptionCallback(Exception* ex) {
   for (int i = 0; i < 32; i++) {
     uint64_t val = context->r[i];
     if ((val >> 32) != 0 && (val >> 32) != 0xFFFFFFFF) {
-      printf("!!! r%d CORRUPTED: %016llX (upper32: %08llX)\n",
-             i, val, val >> 32);
+      printf("!!! r%d CORRUPTED: %016llX (upper32: %08llX)\n", i, val,
+             val >> 32);
     }
   }
   fflush(stdout);

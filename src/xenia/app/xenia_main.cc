@@ -30,8 +30,8 @@
 #include "xenia/kernel/xam/xam_module.h"
 #include "xenia/ui/file_picker.h"
 #include "xenia/ui/window.h"
-#include "xenia/ui/window_win.h"
 #include "xenia/ui/window_listener.h"
+#include "xenia/ui/window_win.h"
 #include "xenia/ui/windowed_app.h"
 #include "xenia/ui/windowed_app_context.h"
 #include "xenia/vfs/devices/host_path_device.h"
@@ -528,16 +528,16 @@ bool EmulatorApp::OnInitialize() {
 
   // Restore window placement from a warm reboot if available.
   {
-    auto wp_path = xe::filesystem::GetExecutableFolder() /
-                   "window_placement.bin";
+    auto wp_path =
+        xe::filesystem::GetExecutableFolder() / "window_placement.bin";
     FILE* f = _wfopen(wp_path.c_str(), L"rb");
     if (f) {
       WINDOWPLACEMENT wp = {};
       uint8_t was_fullscreen = 0;
       if (fread(&wp, sizeof(wp), 1, f) == 1) {
         fread(&was_fullscreen, 1, 1, f);
-        auto* win32_window = dynamic_cast<xe::ui::Win32Window*>(
-            emulator_window_->window());
+        auto* win32_window =
+            dynamic_cast<xe::ui::Win32Window*>(emulator_window_->window());
         if (win32_window && win32_window->hwnd()) {
           SetWindowPlacement(win32_window->hwnd(), &wp);
           SetForegroundWindow(win32_window->hwnd());
@@ -791,29 +791,31 @@ void EmulatorApp::EmulatorThread() {
       // Keep launch_data.bin — the new process reads it on startup.
 
       XELOGD("Warm reboot: disconnecting graphics presenter");
-      app_context().CallInUIThreadSynchronous(
-          [this]() { emulator_window_->ShutdownGraphicsSystemPresenterPainting(); });
+      app_context().CallInUIThreadSynchronous([this]() {
+        emulator_window_->ShutdownGraphicsSystemPresenterPainting();
+      });
 
       XELOGD("Warm reboot: force-terminating process and relaunching");
       {
         auto exe_path = xe::filesystem::GetExecutablePath();
 
         // Save relaunch path to launch_data.bin so the new process picks it up.
-        auto xam = emulator_->kernel_state()
-                       ->GetKernelModule<kernel::xam::XamModule>("xam.xex");
+        auto xam =
+            emulator_->kernel_state()->GetKernelModule<kernel::xam::XamModule>(
+                "xam.xex");
         if (xam) {
           xam->SaveLoaderData();
         }
 
         // Save window placement + fullscreen state so new process can restore.
-        auto* win32_window = dynamic_cast<xe::ui::Win32Window*>(
-            emulator_window_->window());
+        auto* win32_window =
+            dynamic_cast<xe::ui::Win32Window*>(emulator_window_->window());
         if (win32_window && win32_window->hwnd()) {
           WINDOWPLACEMENT wp = {sizeof(wp)};
           GetWindowPlacement(win32_window->hwnd(), &wp);
           bool was_fullscreen = emulator_window_->window()->IsFullscreen();
-          auto wp_path = xe::filesystem::GetExecutableFolder() /
-                         "window_placement.bin";
+          auto wp_path =
+              xe::filesystem::GetExecutableFolder() / "window_placement.bin";
           FILE* f = _wfopen(wp_path.c_str(), L"wb");
           if (f) {
             fwrite(&wp, sizeof(wp), 1, f);
@@ -827,16 +829,16 @@ void EmulatorApp::EmulatorThread() {
         std::wstring cmd = L"\"" + exe_path.wstring() + L"\"";
         STARTUPINFOW si = {sizeof(si)};
         PROCESS_INFORMATION pi = {};
-        CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE,
-                       0, nullptr, nullptr, &si, &pi);
+        CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr,
+                       nullptr, &si, &pi);
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
         std::quick_exit(0);
       }
 
       // Create a brand new emulator from scratch.
-      emulator_ = std::make_unique<Emulator>(
-          "", storage_root_, content_root_, cache_root_);
+      emulator_ = std::make_unique<Emulator>("", storage_root_, content_root_,
+                                             cache_root_);
       emulator_window_->SetEmulator(emulator_.get());
 
       // Re-run Setup (GPU, CPU, memory, audio, input — everything).
@@ -850,8 +852,9 @@ void EmulatorApp::EmulatorThread() {
       }
 
       // Reconnect the graphics presenter to the window.
-      app_context().CallInUIThread(
-          [this]() { emulator_window_->SetupGraphicsSystemPresenterPainting(); });
+      app_context().CallInUIThread([this]() {
+        emulator_window_->SetupGraphicsSystemPresenterPainting();
+      });
 
       // Launch the new title directly on this thread.
       auto title_result = emulator_->LaunchPath(relaunch_path);

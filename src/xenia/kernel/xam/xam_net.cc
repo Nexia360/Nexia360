@@ -50,12 +50,11 @@ DECLARE_int32(network_mode);
 
 DECLARE_bool(xlink_kai_systemlink_hack);
 
-DEFINE_string(
-    replace_ip_address, "",
-    "Comma-separated IP redirections. Format: "
-    "original_ip:replacement_ip, ... "
-    "Example: 159.153.49.35:127.0.0.1, 159.153.52.101:10.0.0.5",
-    "Network");
+DEFINE_string(replace_ip_address, "",
+              "Comma-separated IP redirections. Format: "
+              "original_ip:replacement_ip, ... "
+              "Example: 159.153.49.35:127.0.0.1, 159.153.52.101:10.0.0.5",
+              "Network");
 
 DEFINE_string(
     dns_replace_ip_address, "",
@@ -155,8 +154,8 @@ static void ParseRedirects() {
     }
   }
 
-  XELOGI("Net redirector: {} IP rules, {} DNS rules",
-         ip_redirects_.size(), dns_redirects_.size());
+  XELOGI("Net redirector: {} IP rules, {} DNS rules", ip_redirects_.size(),
+         dns_redirects_.size());
 }
 
 // Check and replace an IP address in-place. Returns true if replaced.

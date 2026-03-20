@@ -112,7 +112,8 @@ struct X64BackendContext {
   unsigned int flags;
   unsigned int Ox1000;  // constant 0x1000 so we can shrink each tail emitted
                         // add of it by... 2 bytes lol
-  // cooperative thread sync: guest tick deadline at which this thread must yield
+  // cooperative thread sync: guest tick deadline at which this thread must
+  // yield
   uint64_t sync_deadline;
   // drift clock: this thread's progress counter (incremented at sync points)
   uint64_t* drift_progress_ptr;  // points to DriftClockThread::progress
