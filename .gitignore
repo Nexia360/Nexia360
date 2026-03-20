@@ -10,7 +10,9 @@
 Thumbs.db
 Desktop.ini
 .svn
-
+.claude
+.vs
+.vscode
 # Microprofile settings
 .microprofilepreset.*
 

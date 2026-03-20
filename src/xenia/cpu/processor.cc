@@ -9,6 +9,7 @@
 
 #include "xenia/cpu/processor.h"
 
+#include <unordered_set>
 #include "xenia/base/assert.h"
 #include "xenia/base/atomic.h"
 #include "xenia/base/byte_order.h"
@@ -367,8 +368,14 @@ bool Processor::Execute(ThreadState* thread_state, uint32_t address) {
   // Attempt to get the function.
   auto function = ResolveFunction(address);
   if (!function) {
-    // Symbol not found in any module.
-    XELOGCPU("Execute({:08X}): failed to find function", address);
+    // Log once per address to avoid spamming the console.
+    static std::unordered_set<uint32_t> logged_failures;
+    if (logged_failures.find(address) == logged_failures.end()) {
+      logged_failures.insert(address);
+      printf("!!! Execute(%08X): failed to find function (thread %u)\n",
+             address, thread_state->thread_id());
+      fflush(stdout);
+    }
     return false;
   }
 
@@ -509,18 +516,28 @@ void Processor::OnThreadDestroyed(uint32_t thread_id) {
 void Processor::OnThreadEnteringWait(uint32_t thread_id) {
   auto global_lock = global_critical_region_.Acquire();
   auto it = thread_debug_infos_.find(thread_id);
-  assert_true(it != thread_debug_infos_.end());
+  if (it == thread_debug_infos_.end()) return;
   auto thread_info = it->second.get();
   thread_info->state = ThreadDebugInfo::State::kWaiting;
+
+  if (thread_info->thread && thread_info->thread->thread_state()) {
+    backend_->OnThreadEnteringWait(
+        thread_info->thread->thread_state()->context());
+  }
 }
 
 void Processor::OnThreadLeavingWait(uint32_t thread_id) {
   auto global_lock = global_critical_region_.Acquire();
   auto it = thread_debug_infos_.find(thread_id);
-  assert_true(it != thread_debug_infos_.end());
+  if (it == thread_debug_infos_.end()) return;
   auto thread_info = it->second.get();
   if (thread_info->state == ThreadDebugInfo::State::kWaiting) {
     thread_info->state = ThreadDebugInfo::State::kAlive;
+  }
+
+  if (thread_info->thread && thread_info->thread->thread_state()) {
+    backend_->OnThreadLeavingWait(
+        thread_info->thread->thread_state()->context());
   }
 }
 

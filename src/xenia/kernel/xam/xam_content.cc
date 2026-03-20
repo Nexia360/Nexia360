@@ -717,17 +717,8 @@ dword_result_t XamContentLaunchImageFromFileInternal_entry(
 
   xam->SaveLoaderData();
 
-  auto display_window = kernel_state()->emulator()->display_window();
-  auto imgui_drawer = kernel_state()->emulator()->imgui_drawer();
-
-  if (display_window && imgui_drawer) {
-    display_window->app_context().CallInUIThreadSynchronous([imgui_drawer]() {
-      xe::ui::ImGuiDialog::ShowMessageBox(
-          imgui_drawer, "Launching new title!",
-          "Launching new title. \nPlease close Xenia and launch it again. Game "
-          "should load automatically.");
-    });
-  }
+  // Request warm reboot with the extracted content's host path.
+  kernel_state()->emulator()->RequestRelaunch(host_path);
 
   kernel_state()->TerminateTitle();
   return X_ERROR_SUCCESS;
@@ -773,17 +764,8 @@ dword_result_t XamContentLaunchImageInternal_entry(lpvoid_t content_data_ptr,
 
   xam->SaveLoaderData();
 
-  auto display_window = kernel_state()->emulator()->display_window();
-  auto imgui_drawer = kernel_state()->emulator()->imgui_drawer();
-
-  if (display_window && imgui_drawer) {
-    display_window->app_context().CallInUIThreadSynchronous([imgui_drawer]() {
-      xe::ui::ImGuiDialog::ShowMessageBox(
-          imgui_drawer, "Launching new title!",
-          "Launching new title. \nPlease close Xenia and launch it again. Game "
-          "should load automatically.");
-    });
-  }
+  // Request warm reboot with the extracted content's host path.
+  kernel_state()->emulator()->RequestRelaunch(host_path);
 
   kernel_state()->TerminateTitle();
   return X_ERROR_SUCCESS;

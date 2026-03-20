@@ -193,6 +193,14 @@ class Emulator {
   // Terminates the currently running title.
   X_STATUS TerminateTitle();
 
+  // Request a warm relaunch of a new title after the current one terminates.
+  // Call this before TerminateTitle(). WaitUntilExit() will pick up the
+  // relaunch path and load the new title automatically.
+  void RequestRelaunch(const std::filesystem::path& path);
+
+  // Check if a warm reboot was requested. Returns true once and clears.
+  bool ConsumeRelaunchRequest(std::filesystem::path& out_path);
+
   const std::unique_ptr<vfs::Device> CreateVfsDevice(
       const std::filesystem::path& path, const std::string_view mount_path);
 
@@ -369,6 +377,17 @@ class Emulator {
   bool paused_;
   bool restoring_;
   threading::Fence restore_fence_;  // Fired on restore finish.
+
+  bool relaunching_ = false;
+  std::filesystem::path relaunch_path_;
+
+  // The host filesystem path used to launch the current title.
+  std::filesystem::path current_launch_path_;
+
+ public:
+  const std::filesystem::path& current_launch_path() const {
+    return current_launch_path_;
+  }
 };
 
 }  // namespace xe

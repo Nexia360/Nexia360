@@ -62,6 +62,8 @@ class FileLogSink final : public LogSink {
   void Write(const char* buf, size_t size) override;
   void Flush() override;
 
+  bool OwnsFile() const { return owns_file_; }
+
  private:
   FILE* file_;
   bool owns_file_;
@@ -79,6 +81,10 @@ class DebugPrintLogSink final : public LogSink {
 // Must be called on startup.
 void InitializeLogging(const std::string_view app_name);
 void ShutdownLogging();
+
+// Call after config is loaded to remove the file log sink if skip_logfile is
+// set in the config toml (which loads after logging init).
+void ApplyPostConfigLogSettings();
 
 namespace logging {
 namespace internal {

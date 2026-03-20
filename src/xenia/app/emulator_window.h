@@ -13,6 +13,7 @@
 #include <memory>
 #include <string>
 
+#include "xenia/app/content_browser.h"
 #include "xenia/app/profile_dialogs.h"
 #include "xenia/app/updater.h"
 #include "xenia/emulator.h"
@@ -72,6 +73,7 @@ class EmulatorWindow {
   steady_clock::time_point last_mouse_down = steady_clock::now();
 
   Emulator* emulator() const { return emulator_; }
+  void SetEmulator(Emulator* emulator) { emulator_ = emulator; }
   ui::WindowedAppContext& app_context() const { return app_context_; }
   ui::Window* window() const { return window_.get(); }
   ui::ImGuiDrawer* imgui_drawer() const { return imgui_drawer_.get(); }
@@ -280,6 +282,8 @@ class EmulatorWindow {
   void AddRecentlyLaunchedTitle(std::filesystem::path path_to_file,
                                 std::string title_name);
 
+  void DumpThreadStates();
+  void StartThreadDumpWatchdog();
   void ClearDialogs();
 
   Emulator* emulator_;
@@ -301,6 +305,7 @@ class EmulatorWindow {
   Updater* updater_;
 
   std::unique_ptr<DisplayConfigDialog> display_config_dialog_;
+  std::unique_ptr<ContentBrowser> content_browser_;
 
   // Storing pointers and toggling dialog state is useful for broadcasting
   // messages back to guest.

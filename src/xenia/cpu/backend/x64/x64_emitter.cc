@@ -13,6 +13,7 @@
 
 #include <climits>
 #include <cstring>
+#include <limits>
 
 #include "third_party/fmt/include/fmt/format.h"
 #include "xenia/base/assert.h"
@@ -38,6 +39,7 @@
 #include "xenia/cpu/processor.h"
 #include "xenia/cpu/symbol.h"
 #include "xenia/cpu/thread_state.h"
+#include "xenia/base/threading.h"
 
 DEFINE_bool(debugprint_trap_log, false,
             "Log debugprint traps to the active debugger", "CPU");
@@ -63,6 +65,11 @@ DEFINE_bool(instrument_call_times, false,
             "Compute time taken for functions, for profiling guest code",
             "x64");
 #endif
+DECLARE_bool(enable_thread_sync);
+DECLARE_uint64(thread_sync_quantum);
+DECLARE_bool(drift_clock);
+DECLARE_uint64(drift_progress_adjust_min);
+DECLARE_uint64(drift_progress_adjust_max);
 namespace xe {
 namespace cpu {
 namespace backend {
@@ -249,6 +256,11 @@ bool X64Emitter::Emit(HIRBuilder* builder, EmitFunctionInfo& func_info) {
   mov(qword[rsp + StackLayout::GUEST_RET_ADDR], rcx);
 
   mov(qword[rsp + StackLayout::GUEST_CALL_RET_ADDR], rax);  // 0
+
+  // Cooperative thread sync: yield if past deadline.
+  EmitSyncCheck();
+  // Drift-based thread sync: increment progress, yield if ahead.
+  EmitDriftCheck();
 
 #if XE_X64_PROFILER_AVAILABLE == 1
   if (cvars::instrument_call_times) {
@@ -1796,6 +1808,121 @@ void X64Emitter::PopStackpoint() {
       GetBackendCtxPtr(offsetof(X64BackendContext, current_stackpoint_depth));
   stackpoint_pos_pointer.setBit(32);
   dec(stackpoint_pos_pointer);
+}
+
+static void SyncCheckHandler(void* raw_context) {
+  auto* bctx = reinterpret_cast<X64BackendContext*>(
+      reinterpret_cast<intptr_t>(raw_context) - sizeof(X64BackendContext));
+  xe::threading::MaybeYield();
+  uint64_t current_ticks = *bctx->guest_tick_count;
+  bctx->sync_deadline = current_ticks + cvars::thread_sync_quantum;
+}
+
+void X64Emitter::EmitSyncCheck() {
+  if (!cvars::enable_thread_sync) {
+    return;
+  }
+  // Load current guest tick count via pointer in backend context
+  mov(rcx, GetBackendCtxPtr(offsetof(X64BackendContext, guest_tick_count)));
+  mov(rcx, qword[rcx]);
+  // Compare with this thread's deadline
+  cmp(rcx, GetBackendCtxPtr(offsetof(X64BackendContext, sync_deadline)));
+  // If current_ticks < deadline, skip the yield
+  Xbyak::Label skip;
+  jb(skip, T_NEAR);
+  // Past deadline — yield and reset
+  CallNativeSafe((void*)SyncCheckHandler);
+  L(skip);
+}
+
+static void DriftCheckHandler(void* raw_context) {
+  auto* bctx = reinterpret_cast<X64BackendContext*>(
+      reinterpret_cast<intptr_t>(raw_context) - sizeof(X64BackendContext));
+
+  if (!bctx->drift_progress_ptr || !bctx->drift_min_progress_ptr) return;
+  if (!bctx->drift_clock_instance) return;
+
+  uint64_t my_progress = *bctx->drift_progress_ptr;
+  uint64_t drift_max = cvars::drift_progress_adjust_max;
+
+  // Recompute the real min across all active threads.
+  uint64_t min_progress =
+      bctx->drift_clock_instance->ComputeAndUpdateMinProgress();
+
+  // If only one thread is active (or none), no drift possible.
+  if (min_progress == std::numeric_limits<uint64_t>::max()) return;
+
+  // Are we ahead of the pack?
+  if (my_progress <= min_progress + drift_max) return;
+
+  // We're too far ahead. Yield once to give other threads CPU time.
+  xe::threading::MaybeYield();
+
+  // Recheck after yield.
+  min_progress =
+      bctx->drift_clock_instance->ComputeAndUpdateMinProgress();
+  if (min_progress == std::numeric_limits<uint64_t>::max()) return;
+
+  if (my_progress > min_progress + drift_max) {
+    // Still ahead. Sleep briefly to genuinely release the CPU.
+    // MaybeYield only yields to same-core threads. Sleep lets the OS
+    // scheduler run the slow thread on ANY core.
+    xe::threading::Sleep(std::chrono::microseconds(100));
+  }
+  // Don't loop. Proceed and check again at the next sync point.
+  // This prevents livelock — we never hold the CPU spinning.
+}
+
+void X64Emitter::EmitDriftCheck() {
+  if (!cvars::drift_clock) {
+    return;
+  }
+
+  // drift_progress_ptr is a pointer stored in the backend context.
+  // It points to a uint64_t (the atomic progress counter).
+  // Only this thread writes to it, so non-atomic increment is safe.
+
+  // rcx = drift_progress_ptr (the pointer itself, from backend ctx)
+  mov(rcx, GetBackendCtxPtr(offsetof(X64BackendContext, drift_progress_ptr)));
+  test(rcx, rcx);
+  Xbyak::Label no_drift;
+  jz(no_drift, T_NEAR);  // null check — drift clock not registered
+
+  // rax = *drift_progress_ptr (current progress value)
+  mov(rax, qword[rcx]);
+  // Increment and write back
+  add(rax, 1);
+  mov(qword[rcx], rax);
+  // rax now holds my_progress (post-increment)
+
+  // rcx = drift_min_progress_ptr (pointer to cached min_progress)
+  mov(rcx, GetBackendCtxPtr(offsetof(X64BackendContext, drift_min_progress_ptr)));
+  // rdx = *drift_min_progress_ptr (current min_progress value)
+  mov(rdx, qword[rcx]);
+
+  // If my_progress <= min_progress, update the cached min and skip.
+  // (We might be the slowest thread.)
+  cmp(rax, rdx);
+  Xbyak::Label not_behind;
+  ja(not_behind, T_NEAR);
+  // We are at or behind min — update cached min to our value
+  mov(qword[rcx], rax);
+  jmp(no_drift, T_NEAR);
+
+  L(not_behind);
+  // drift = my_progress - min_progress (already rax - rdx)
+  mov(rcx, rax);
+  sub(rcx, rdx);
+  // Compare drift against threshold (baked in at JIT compile time)
+  cmp(rcx, static_cast<uint32_t>(cvars::drift_progress_adjust_min));
+  Xbyak::Label skip;
+  jb(skip, T_NEAR);  // drift < threshold, keep going
+
+  // We're drifting too far ahead — call handler to yield/spin
+  CallNativeSafe((void*)DriftCheckHandler);
+
+  L(skip);
+  L(no_drift);
 }
 
 void X64Emitter::EnsureSynchronizedGuestAndHostStack() {

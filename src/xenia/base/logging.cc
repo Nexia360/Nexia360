@@ -52,6 +52,9 @@ DEFINE_bool(log_to_logcat, true, "Write log output to Android Logcat.",
 DEFINE_path(log_file, "", "Logs are written to the given file", "Logging");
 DEFINE_bool(log_to_stdout, true, "Write log output to stdout", "Logging");
 DEFINE_bool(log_to_debugprint, false, "Dump the log to DebugPrint.", "Logging");
+DEFINE_bool(skip_logfile, false,
+            "Disable log file output. Console logging via stdout remains active.",
+            "Logging");
 #endif  // XE_PLATFORM_ANDROID
 DEFINE_bool(flush_log, true, "Flush log file after each log line batch.",
             "Logging");
@@ -241,6 +244,17 @@ class Logger {
 
   void AddLogSink(std::unique_ptr<LogSink>&& sink) {
     sinks_.push_back(std::move(sink));
+  }
+
+  void RemoveFileSinks() {
+    // Remove all FileLogSink instances that own their file (i.e., not stdout).
+    sinks_.erase(
+        std::remove_if(sinks_.begin(), sinks_.end(),
+                       [](const std::unique_ptr<LogSink>& sink) {
+                         auto* fs = dynamic_cast<FileLogSink*>(sink.get());
+                         return fs && fs->OwnsFile();
+                       }),
+        sinks_.end());
   }
 
  private:
@@ -441,17 +455,19 @@ void InitializeLogging(const std::string_view app_name) {
     logger_->AddLogSink(std::make_unique<AndroidLogSink>(app_name));
   }
 #else
-  FILE* log_file = nullptr;
-  if (cvars::log_file.empty()) {
-    // Default to app name.
-    auto file_name = fmt::format("{}.log", app_name);
-    auto file_path = xe::filesystem::GetExecutableFolder() / file_name;
-    log_file = xe::filesystem::OpenFile(file_path, "wt");
-  } else {
-    xe::filesystem::CreateParentFolder(cvars::log_file);
-    log_file = xe::filesystem::OpenFile(cvars::log_file, "wt");
+  if (!cvars::skip_logfile) {
+    FILE* log_file = nullptr;
+    if (cvars::log_file.empty()) {
+      // Default to app name.
+      auto file_name = fmt::format("{}.log", app_name);
+      auto file_path = xe::filesystem::GetExecutableFolder() / file_name;
+      log_file = xe::filesystem::OpenFile(file_path, "wt");
+    } else {
+      xe::filesystem::CreateParentFolder(cvars::log_file);
+      log_file = xe::filesystem::OpenFile(cvars::log_file, "wt");
+    }
+    logger_->AddLogSink(std::make_unique<FileLogSink>(log_file, true));
   }
-  logger_->AddLogSink(std::make_unique<FileLogSink>(log_file, true));
 
   if (cvars::log_to_stdout) {
     logger_->AddLogSink(std::make_unique<FileLogSink>(stdout, false));
@@ -461,6 +477,14 @@ void InitializeLogging(const std::string_view app_name) {
     logger_->AddLogSink(std::make_unique<DebugPrintLogSink>());
   }
 #endif  // XE_PLATFORM_ANDROID
+}
+
+void ApplyPostConfigLogSettings() {
+#if !XE_PLATFORM_ANDROID
+  if (cvars::skip_logfile && logger_) {
+    logger_->RemoveFileSinks();
+  }
+#endif
 }
 
 void ShutdownLogging() {

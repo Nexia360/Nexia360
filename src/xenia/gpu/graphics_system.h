@@ -52,6 +52,7 @@ class GraphicsSystem {
   Memory* memory() const { return memory_; }
   cpu::Processor* processor() const { return processor_; }
   kernel::KernelState* kernel_state() const { return kernel_state_; }
+  void set_kernel_state(kernel::KernelState* ks) { kernel_state_ = ks; }
   ui::GraphicsProvider* provider() const { return provider_.get(); }
   ui::Presenter* presenter() const { return presenter_.get(); }
 
@@ -60,6 +61,10 @@ class GraphicsSystem {
                          ui::WindowedAppContext* app_context,
                          bool is_surface_required);
   virtual void Shutdown();
+  void ClearInterruptCallback() {
+    interrupt_callback_ = 0;
+    interrupt_callback_data_ = 0;
+  }
 
   // May be called from any thread any number of times, even during recovery
   // from a device loss.

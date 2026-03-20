@@ -15,6 +15,7 @@
 #include "xenia/base/bit_map.h"
 #include "xenia/base/cvar.h"
 #include "xenia/cpu/backend/backend.h"
+#include "xenia/cpu/backend/x64/x64_drift_clock.h"
 
 #if XE_PLATFORM_WIN32 == 1
 // we use KUSER_SHARED's systemtime field, which is at a fixed address and
@@ -111,6 +112,16 @@ struct X64BackendContext {
   unsigned int flags;
   unsigned int Ox1000;  // constant 0x1000 so we can shrink each tail emitted
                         // add of it by... 2 bytes lol
+  // cooperative thread sync: guest tick deadline at which this thread must yield
+  uint64_t sync_deadline;
+  // drift clock: this thread's progress counter (incremented at sync points)
+  uint64_t* drift_progress_ptr;  // points to DriftClockThread::progress
+  // drift clock: pointer to the global cached min_progress
+  uint64_t* drift_min_progress_ptr;
+  // drift clock: opaque pointer to DriftClockThread for unregistration
+  void* drift_thread_handle;
+  // drift clock: pointer to the DriftClock instance for recomputing min
+  DriftClock* drift_clock_instance;
 };
 constexpr unsigned int DEFAULT_VMX_MXCSR =
     0x8000 |                   // flush to zero
@@ -168,6 +179,8 @@ class X64Backend : public Backend {
   virtual void InitializeBackendContext(void* ctx) override;
   virtual void DeinitializeBackendContext(void* ctx) override;
   virtual void PrepareForReentry(void* ctx) override;
+  virtual void OnThreadEnteringWait(void* ctx) override;
+  virtual void OnThreadLeavingWait(void* ctx) override;
   X64BackendContext* BackendContextForGuestContext(void* ctx) {
     return reinterpret_cast<X64BackendContext*>(
         reinterpret_cast<intptr_t>(ctx) - sizeof(X64BackendContext));
@@ -217,7 +230,10 @@ class X64Backend : public Backend {
   void* vrsqrtefp_scalar_helper = nullptr;
   void* frsqrtefp_helper = nullptr;
 
+  DriftClock& drift_clock() { return drift_clock_; }
+
  private:
+  DriftClock drift_clock_;
 #if XE_X64_PROFILER_AVAILABLE == 1
   GuestProfilerData profiler_data_;
 #endif

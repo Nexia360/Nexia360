@@ -10,6 +10,7 @@
 #include "xenia/kernel/xobject.h"
 
 #include "xenia/base/byte_stream.h"
+#include "xenia/cpu/processor.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_private.h"
@@ -222,8 +223,21 @@ X_STATUS XObject::Wait(uint32_t wait_reason, uint32_t processor_mode,
                         TimeoutTicksToMs(*opt_timeout)))
                   : std::chrono::milliseconds::max();
 
+  // Notify drift clock that this thread is entering a wait.
+  auto* current_thread = XThread::GetCurrentThread();
+  auto* processor = kernel_state_ ? kernel_state_->processor() : nullptr;
+  if (processor && current_thread) {
+    processor->OnThreadEnteringWait(current_thread->thread_id());
+  }
+
   auto result =
       xe::threading::Wait(wait_handle, alertable ? true : false, timeout_ms);
+
+  // Notify drift clock that this thread is leaving the wait.
+  if (processor && current_thread) {
+    processor->OnThreadLeavingWait(current_thread->thread_id());
+  }
+
   switch (result) {
     case xe::threading::WaitResult::kSuccess:
       WaitCallback();
@@ -249,9 +263,25 @@ X_STATUS XObject::SignalAndWait(XObject* signal_object, XObject* wait_object,
                         TimeoutTicksToMs(*opt_timeout)))
                   : std::chrono::milliseconds::max();
 
+  // Notify drift clock that this thread is entering a wait.
+  auto* current_thread_sw = XThread::GetCurrentThread();
+  cpu::Processor* proc_sw = nullptr;
+  if (current_thread_sw && current_thread_sw->kernel_state()) {
+    proc_sw = current_thread_sw->kernel_state()->processor();
+    if (proc_sw) {
+      proc_sw->OnThreadEnteringWait(current_thread_sw->thread_id());
+    }
+  }
+
   auto result = xe::threading::SignalAndWait(
       signal_object->GetWaitHandle(), wait_object->GetWaitHandle(),
       alertable ? true : false, timeout_ms);
+
+  // Notify drift clock that this thread is leaving the wait.
+  if (proc_sw) {
+    proc_sw->OnThreadLeavingWait(current_thread_sw->thread_id());
+  }
+
   switch (result) {
     case xe::threading::WaitResult::kSuccess:
       wait_object->WaitCallback();
@@ -285,25 +315,40 @@ X_STATUS XObject::WaitMultiple(uint32_t count, XObject** objects,
                         TimeoutTicksToMs(*opt_timeout)))
                   : std::chrono::milliseconds::max();
 
+  // Notify drift clock that this thread is entering a wait.
+  auto* current_thread = XThread::GetCurrentThread();
+  cpu::Processor* proc = nullptr;
+  if (current_thread && current_thread->kernel_state()) {
+    proc = current_thread->kernel_state()->processor();
+    if (proc) {
+      proc->OnThreadEnteringWait(current_thread->thread_id());
+    }
+  }
+
+  X_STATUS status;
+
   if (wait_type) {
     auto result = xe::threading::WaitAny(wait_handles, count,
                                          alertable ? true : false, timeout_ms);
     switch (result.first) {
       case xe::threading::WaitResult::kSuccess:
         objects[result.second]->WaitCallback();
-
-        return X_STATUS(result.second);
+        status = X_STATUS(result.second);
+        break;
       case xe::threading::WaitResult::kUserCallback:
-        // Or X_STATUS_ALERTED?
-        return X_STATUS_USER_APC;
+        status = X_STATUS_USER_APC;
+        break;
       case xe::threading::WaitResult::kTimeout:
         xe::threading::MaybeYield();
-        return X_STATUS_TIMEOUT;
+        status = X_STATUS_TIMEOUT;
+        break;
       default:
       case xe::threading::WaitResult::kAbandoned:
-        return X_STATUS(X_STATUS_ABANDONED_WAIT_0 + result.second);
+        status = X_STATUS(X_STATUS_ABANDONED_WAIT_0 + result.second);
+        break;
       case xe::threading::WaitResult::kFailed:
-        return X_STATUS_UNSUCCESSFUL;
+        status = X_STATUS_UNSUCCESSFUL;
+        break;
     }
   } else {
     auto result = xe::threading::WaitAll(wait_handles, count,
@@ -313,20 +358,29 @@ X_STATUS XObject::WaitMultiple(uint32_t count, XObject** objects,
         for (uint32_t i = 0; i < count; i++) {
           objects[i]->WaitCallback();
         }
-
-        return X_STATUS_SUCCESS;
+        status = X_STATUS_SUCCESS;
+        break;
       case xe::threading::WaitResult::kUserCallback:
-        // Or X_STATUS_ALERTED?
-        return X_STATUS_USER_APC;
+        status = X_STATUS_USER_APC;
+        break;
       case xe::threading::WaitResult::kTimeout:
         xe::threading::MaybeYield();
-        return X_STATUS_TIMEOUT;
+        status = X_STATUS_TIMEOUT;
+        break;
       default:
       case xe::threading::WaitResult::kAbandoned:
       case xe::threading::WaitResult::kFailed:
-        return X_STATUS_ABANDONED_WAIT_0;
+        status = X_STATUS_ABANDONED_WAIT_0;
+        break;
     }
   }
+
+  // Notify drift clock that this thread is leaving the wait.
+  if (proc) {
+    proc->OnThreadLeavingWait(current_thread->thread_id());
+  }
+
+  return status;
 }
 
 uint8_t* XObject::CreateNative(uint32_t size) {

@@ -421,6 +421,23 @@ bool MMIOHandler::ExceptionCallback(Exception* ex) {
 
   void* fault_host_address = reinterpret_cast<void*>(ex->fault_address());
 
+  // Acquire the lock early to serialize all watch/fault handling.
+  // Access violations are rare, so the contention cost is negligible.
+  auto lock = global_critical_region_.Acquire();
+
+  // Check if the page is still protected — another thread may have already
+  // cleared the watch between the fault and us acquiring the lock.
+  {
+    memory::PageAccess cur_access;
+    size_t page_length = memory::page_size();
+    memory::QueryProtect(fault_host_address, page_length, cur_access);
+    if (cur_access != memory::PageAccess::kNoAccess &&
+        (!is_write || cur_access != memory::PageAccess::kReadOnly)) {
+      // Watch already cleared by another thread. Retry the instruction.
+      return true;
+    }
+  }
+
   // Access violations are pretty rare, so we can do a linear search here.
   // Only check if in the virtual range, as we only support virtual ranges.
   const MMIORange* range = nullptr;
@@ -438,19 +455,6 @@ bool MMIOHandler::ExceptionCallback(Exception* ex) {
     }
   }
   if (!range) {
-    // Recheck if the pages are still protected (race condition - another thread
-    // clears the watch we just hit).
-    // Do this under the lock so we don't introduce another race condition.
-    auto lock = global_critical_region_.Acquire();
-    memory::PageAccess cur_access;
-    size_t page_length = memory::page_size();
-    memory::QueryProtect(fault_host_address, page_length, cur_access);
-    if (cur_access != memory::PageAccess::kNoAccess &&
-        (!is_write || cur_access != memory::PageAccess::kReadOnly)) {
-      // Another thread has cleared this watch. Abort.
-      XELOGD("Race condition on watch, was already cleared by another thread!");
-      return true;
-    }
     // The address is not found within any range, so either a write watch or an
     // actual access violation.
     if (access_violation_callback_) {

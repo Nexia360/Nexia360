@@ -30,6 +30,7 @@
 #include "xenia/kernel/xam/xam_module.h"
 #include "xenia/ui/file_picker.h"
 #include "xenia/ui/window.h"
+#include "xenia/ui/window_win.h"
 #include "xenia/ui/window_listener.h"
 #include "xenia/ui/windowed_app.h"
 #include "xenia/ui/windowed_app_context.h"
@@ -264,6 +265,15 @@ class EmulatorApp final : public xe::ui::WindowedApp {
   std::unique_ptr<Emulator> emulator_;
   std::unique_ptr<EmulatorWindow> emulator_window_;
 
+  // Saved from OnInitialize for recreating emulator on warm reboot.
+  std::filesystem::path storage_root_;
+  std::filesystem::path content_root_;
+  std::filesystem::path cache_root_;
+
+  // Pending warm reboot path (set by emulator thread, consumed by UI thread).
+  std::mutex relaunch_mutex_;
+  std::filesystem::path pending_relaunch_path_;
+
   // Created on demand, used by the emulator.
   std::unique_ptr<xe::debug::ui::DebugWindow> debug_window_;
 
@@ -448,6 +458,11 @@ bool EmulatorApp::OnInitialize() {
 
   config::SetupConfig(storage_root);
 
+  // Now that config is loaded, apply log settings that depend on toml values
+  // (e.g., skip_logfile). Logging init runs before config load, so this
+  // retroactively removes the file sink if requested.
+  xe::ApplyPostConfigLogSettings();
+
   std::filesystem::path content_root = cvars::content_root;
   if (content_root.empty()) {
     content_root = storage_root / "content";
@@ -488,6 +503,11 @@ bool EmulatorApp::OnInitialize() {
            static_cast<uint32_t>(status));
   }
 
+  // Save roots for potential warm reboot recreation.
+  storage_root_ = storage_root;
+  content_root_ = content_root;
+  cache_root_ = cache_root;
+
   // Create the emulator but don't initialize so we can setup the window.
   emulator_ =
       std::make_unique<Emulator>("", storage_root, content_root, cache_root);
@@ -504,6 +524,32 @@ bool EmulatorApp::OnInitialize() {
   if (!emulator_window_) {
     XELOGE("Failed to create the main emulator window");
     return false;
+  }
+
+  // Restore window placement from a warm reboot if available.
+  {
+    auto wp_path = xe::filesystem::GetExecutableFolder() /
+                   "window_placement.bin";
+    FILE* f = _wfopen(wp_path.c_str(), L"rb");
+    if (f) {
+      WINDOWPLACEMENT wp = {};
+      uint8_t was_fullscreen = 0;
+      if (fread(&wp, sizeof(wp), 1, f) == 1) {
+        fread(&was_fullscreen, 1, 1, f);
+        auto* win32_window = dynamic_cast<xe::ui::Win32Window*>(
+            emulator_window_->window());
+        if (win32_window && win32_window->hwnd()) {
+          SetWindowPlacement(win32_window->hwnd(), &wp);
+          SetForegroundWindow(win32_window->hwnd());
+          SetFocus(win32_window->hwnd());
+          if (was_fullscreen) {
+            emulator_window_->window()->SetFullscreen(true);
+          }
+        }
+      }
+      fclose(f);
+      std::filesystem::remove(wp_path);
+    }
   }
 
   // Setup the emulator and run its loop in a separate thread.
@@ -735,6 +781,88 @@ void EmulatorApp::EmulatorThread() {
   while (!emulator_thread_quit_requested_.load(std::memory_order_relaxed)) {
     xe::threading::Wait(emulator_thread_event_.get(), false);
     emulator_->WaitUntilExit();
+
+    // Check if a warm reboot was requested.
+    std::filesystem::path relaunch_path;
+    if (emulator_->ConsumeRelaunchRequest(relaunch_path)) {
+      XELOGI("Warm reboot: destroying emulator and relaunching {}",
+             xe::path_to_utf8(relaunch_path));
+
+      // Keep launch_data.bin — the new process reads it on startup.
+
+      XELOGD("Warm reboot: disconnecting graphics presenter");
+      app_context().CallInUIThreadSynchronous(
+          [this]() { emulator_window_->ShutdownGraphicsSystemPresenterPainting(); });
+
+      XELOGD("Warm reboot: force-terminating process and relaunching");
+      {
+        auto exe_path = xe::filesystem::GetExecutablePath();
+
+        // Save relaunch path to launch_data.bin so the new process picks it up.
+        auto xam = emulator_->kernel_state()
+                       ->GetKernelModule<kernel::xam::XamModule>("xam.xex");
+        if (xam) {
+          xam->SaveLoaderData();
+        }
+
+        // Save window placement + fullscreen state so new process can restore.
+        auto* win32_window = dynamic_cast<xe::ui::Win32Window*>(
+            emulator_window_->window());
+        if (win32_window && win32_window->hwnd()) {
+          WINDOWPLACEMENT wp = {sizeof(wp)};
+          GetWindowPlacement(win32_window->hwnd(), &wp);
+          bool was_fullscreen = emulator_window_->window()->IsFullscreen();
+          auto wp_path = xe::filesystem::GetExecutableFolder() /
+                         "window_placement.bin";
+          FILE* f = _wfopen(wp_path.c_str(), L"wb");
+          if (f) {
+            fwrite(&wp, sizeof(wp), 1, f);
+            uint8_t fs = was_fullscreen ? 1 : 0;
+            fwrite(&fs, 1, 1, f);
+            fclose(f);
+          }
+        }
+
+        // Restart the process — launch_data.bin tells it what to load.
+        std::wstring cmd = L"\"" + exe_path.wstring() + L"\"";
+        STARTUPINFOW si = {sizeof(si)};
+        PROCESS_INFORMATION pi = {};
+        CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE,
+                       0, nullptr, nullptr, &si, &pi);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+        std::quick_exit(0);
+      }
+
+      // Create a brand new emulator from scratch.
+      emulator_ = std::make_unique<Emulator>(
+          "", storage_root_, content_root_, cache_root_);
+      emulator_window_->SetEmulator(emulator_.get());
+
+      // Re-run Setup (GPU, CPU, memory, audio, input — everything).
+      X_STATUS result = emulator_->Setup(
+          emulator_window_->window(), emulator_window_->imgui_drawer(), true,
+          CreateAudioSystem, CreateGraphicsSystem, CreateInputDrivers);
+      if (XFAILED(result)) {
+        XELOGE("Warm reboot: failed to setup emulator: {:08X}", result);
+        app_context().RequestDeferredQuit();
+        break;
+      }
+
+      // Reconnect the graphics presenter to the window.
+      app_context().CallInUIThread(
+          [this]() { emulator_window_->SetupGraphicsSystemPresenterPainting(); });
+
+      // Launch the new title directly on this thread.
+      auto title_result = emulator_->LaunchPath(relaunch_path);
+      if (XFAILED(title_result)) {
+        XELOGE("Warm reboot: failed to launch {}: {:08X}",
+               xe::path_to_utf8(relaunch_path), title_result);
+      }
+
+      // Loop back to WaitUntilExit for the new title.
+      continue;
+    }
   }
 }
 

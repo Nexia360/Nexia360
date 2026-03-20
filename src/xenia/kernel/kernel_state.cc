@@ -12,6 +12,7 @@
 #include "xenia/base/byte_stream.h"
 #include "xenia/base/logging.h"
 #include "xenia/emulator.h"
+#include "xenia/gpu/graphics_system.h"
 #include "xenia/hid/input_system.h"
 #include "xenia/kernel/user_module.h"
 #include "xenia/kernel/util/shim_utils.h"
@@ -764,46 +765,33 @@ void KernelState::UnloadUserModule(const object_ref<UserModule>& module,
 
 void KernelState::TerminateTitle() {
   XELOGD("KernelState::TerminateTitle");
+
   auto global_lock = global_critical_region_.Acquire();
 
-  // Call terminate routines.
-  // TODO(benvanik): these might take arguments.
-  // FIXME: Calling these will send some threads into kernel code and they'll
-  // hold the lock when terminated! Do we need to wait for all threads to exit?
-  /*
-  if (from_guest_thread) {
-    for (auto routine : terminate_notifications_) {
-      auto thread_state = XThread::GetCurrentThread()->thread_state();
-      processor()->Execute(thread_state, routine.guest_routine);
+  // Kill all guest threads.
+  // First pass: collect threads to kill (can't modify map while iterating
+  // with lock/unlock cycles).
+  std::vector<XThread*> threads_to_kill;
+  for (auto it = threads_by_id_.begin(); it != threads_by_id_.end(); ++it) {
+    if (!XThread::IsInThread(it->second) && it->second->is_guest_thread()) {
+      threads_to_kill.push_back(it->second);
     }
   }
-  terminate_notifications_.clear();
-  */
 
-  // Kill all guest threads.
-  for (auto it = threads_by_id_.begin(); it != threads_by_id_.end();) {
-    if (!XThread::IsInThread(it->second) && it->second->is_guest_thread()) {
-      auto thread = it->second;
-
-      if (thread->is_running()) {
-        // Need to step the thread to a safe point (returns it to guest code
-        // so it's guaranteed to not be holding any locks / in host kernel
-        // code / etc). Can't do that properly if we have the lock.
-        if (!emulator_->is_paused()) {
-          thread->thread()->Suspend();
-        }
-
-        global_lock.unlock();
-        processor_->StepToGuestSafePoint(thread->thread_id());
-        thread->Terminate(0);
-        global_lock.lock();
+  for (auto* thread : threads_to_kill) {
+    if (thread->is_running()) {
+      if (!emulator_->is_paused()) {
+        thread->thread()->Suspend();
       }
 
-      // Erase it from the thread list.
-      it = threads_by_id_.erase(it);
-    } else {
-      ++it;
+      // Force-terminate without waiting for a safe point.
+      // StepToGuestSafePoint can hang forever if threads are deadlocked.
+      global_lock.unlock();
+      thread->Terminate(0);
+      global_lock.lock();
     }
+
+    threads_by_id_.erase(thread->thread_id());
   }
 
   // Third: Unload all user modules (including the executable).

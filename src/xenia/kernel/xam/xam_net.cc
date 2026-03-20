@@ -9,7 +9,9 @@
 
 #include <random>
 
+#include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
+#include "xenia/base/threading.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xam/xam_module.h"
@@ -47,6 +49,149 @@ DECLARE_bool(log_mask_ips);
 DECLARE_int32(network_mode);
 
 DECLARE_bool(xlink_kai_systemlink_hack);
+
+DEFINE_string(
+    replace_ip_address, "",
+    "Comma-separated IP redirections. Format: "
+    "original_ip:replacement_ip, ... "
+    "Example: 159.153.49.35:127.0.0.1, 159.153.52.101:10.0.0.5",
+    "Network");
+
+DEFINE_string(
+    dns_replace_ip_address, "",
+    "Comma-separated DNS-to-IP redirections. Format: "
+    "HOSTNAME:replacement_ip, ... "
+    "Example: XETGS.XBOXLIVE.COM:127.0.0.1, XEAS.XBOXLIVE.COM:10.0.0.1",
+    "Network");
+
+namespace net_redirect {
+
+struct IpRedirect {
+  in_addr original;
+  in_addr replacement;
+};
+
+struct DnsRedirect {
+  std::string hostname;  // stored uppercase
+  in_addr replacement;
+};
+
+static std::vector<IpRedirect> ip_redirects_;
+static std::vector<DnsRedirect> dns_redirects_;
+static bool parsed_ = false;
+
+static std::string TrimWhitespace(const std::string& s) {
+  size_t start = s.find_first_not_of(" \t\r\n");
+  if (start == std::string::npos) return "";
+  size_t end = s.find_last_not_of(" \t\r\n");
+  return s.substr(start, end - start + 1);
+}
+
+static std::string ToUpper(const std::string& s) {
+  std::string result = s;
+  for (auto& c : result) c = (char)toupper((unsigned char)c);
+  return result;
+}
+
+static void ParseRedirects() {
+  if (parsed_) return;
+  parsed_ = true;
+
+  // Parse IP redirects
+  if (!cvars::replace_ip_address.empty()) {
+    std::string input = cvars::replace_ip_address;
+    size_t pos = 0;
+    while (pos < input.size()) {
+      size_t comma = input.find(',', pos);
+      std::string pair = (comma == std::string::npos)
+                             ? input.substr(pos)
+                             : input.substr(pos, comma - pos);
+      pair = TrimWhitespace(pair);
+
+      size_t colon = pair.find(':');
+      if (colon != std::string::npos) {
+        std::string from_str = TrimWhitespace(pair.substr(0, colon));
+        std::string to_str = TrimWhitespace(pair.substr(colon + 1));
+
+        IpRedirect r;
+        if (inet_pton(AF_INET, from_str.c_str(), &r.original) == 1 &&
+            inet_pton(AF_INET, to_str.c_str(), &r.replacement) == 1) {
+          ip_redirects_.push_back(r);
+          XELOGI("Net redirect: {} -> {}", from_str, to_str);
+        }
+      }
+
+      if (comma == std::string::npos) break;
+      pos = comma + 1;
+    }
+  }
+
+  // Parse DNS redirects
+  if (!cvars::dns_replace_ip_address.empty()) {
+    std::string input = cvars::dns_replace_ip_address;
+    size_t pos = 0;
+    while (pos < input.size()) {
+      size_t comma = input.find(',', pos);
+      std::string pair = (comma == std::string::npos)
+                             ? input.substr(pos)
+                             : input.substr(pos, comma - pos);
+      pair = TrimWhitespace(pair);
+
+      size_t colon = pair.find(':');
+      if (colon != std::string::npos) {
+        std::string host = TrimWhitespace(pair.substr(0, colon));
+        std::string to_str = TrimWhitespace(pair.substr(colon + 1));
+
+        DnsRedirect r;
+        r.hostname = ToUpper(host);
+        if (inet_pton(AF_INET, to_str.c_str(), &r.replacement) == 1) {
+          dns_redirects_.push_back(r);
+          XELOGI("DNS redirect: {} -> {}", host, to_str);
+        }
+      }
+
+      if (comma == std::string::npos) break;
+      pos = comma + 1;
+    }
+  }
+
+  XELOGI("Net redirector: {} IP rules, {} DNS rules",
+         ip_redirects_.size(), dns_redirects_.size());
+}
+
+// Check and replace an IP address in-place. Returns true if replaced.
+static bool MaybeRedirectIP(in_addr* addr) {
+  ParseRedirects();
+  for (const auto& r : ip_redirects_) {
+    if (addr->s_addr == r.original.s_addr) {
+      char from_buf[INET_ADDRSTRLEN], to_buf[INET_ADDRSTRLEN];
+      inet_ntop(AF_INET, &r.original, from_buf, sizeof(from_buf));
+      inet_ntop(AF_INET, &r.replacement, to_buf, sizeof(to_buf));
+      XELOGI("Net redirect: {} -> {}", from_buf, to_buf);
+      *addr = r.replacement;
+      return true;
+    }
+  }
+  return false;
+}
+
+// Look up a DNS hostname redirect. Returns true if found.
+static bool MaybeRedirectDNS(const char* hostname, in_addr* out_addr) {
+  ParseRedirects();
+  std::string upper_host = ToUpper(std::string(hostname));
+  for (const auto& r : dns_redirects_) {
+    if (upper_host == r.hostname) {
+      char to_buf[INET_ADDRSTRLEN];
+      inet_ntop(AF_INET, &r.replacement, to_buf, sizeof(to_buf));
+      XELOGI("DNS redirect: {} -> {}", hostname, to_buf);
+      *out_addr = r.replacement;
+      return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace net_redirect
 
 enum XNET_QOS {
   LISTEN_ENABLE = 0x01,
@@ -1068,27 +1213,35 @@ dword_result_t NetDll_XNetDnsLookup_entry(dword_t caller, lpstring_t host,
                                           dword_t event_handle,
                                           lpdword_t pdns) {
   if (pdns) {
-    hostent* ent = gethostbyname(host);
-
     auto dns_guest = kernel_memory()->SystemHeapAlloc(sizeof(XNDNS));
     auto dns = kernel_memory()->TranslateVirtual<XNDNS*>(dns_guest);
 
-    if (ent == nullptr) {
-#ifdef XE_PLATFORM_WIN32
-      dns->status = WSAGetLastError();
-#else
-      dns->status = (int32_t)X_WSAError::X_WSAENETDOWN;
-#endif
-    } else if (ent->h_addrtype != AF_INET) {
-      dns->status = (int32_t)X_WSAError::X_WSANO_DATA;
-    } else {
+    // Check DNS redirect first.
+    in_addr redirect_addr;
+    if (net_redirect::MaybeRedirectDNS(host, &redirect_addr)) {
       dns->status = 0;
-      int i = 0;
-      while (ent->h_addr_list[i] != nullptr && i < 8) {
-        dns->aina[i] = *reinterpret_cast<in_addr*>(ent->h_addr_list[i]);
-        i++;
+      dns->aina[0] = redirect_addr;
+      dns->cina = 1;
+    } else {
+      hostent* ent = gethostbyname(host);
+
+      if (ent == nullptr) {
+#ifdef XE_PLATFORM_WIN32
+        dns->status = WSAGetLastError();
+#else
+        dns->status = (int32_t)X_WSAError::X_WSAENETDOWN;
+#endif
+      } else if (ent->h_addrtype != AF_INET) {
+        dns->status = (int32_t)X_WSAError::X_WSANO_DATA;
+      } else {
+        dns->status = 0;
+        int i = 0;
+        while (ent->h_addr_list[i] != nullptr && i < 8) {
+          dns->aina[i] = *reinterpret_cast<in_addr*>(ent->h_addr_list[i]);
+          i++;
+        }
+        dns->cina = i;
       }
-      dns->cina = i;
     }
 
     *pdns = dns_guest;
@@ -1736,6 +1889,9 @@ dword_result_t NetDll_connect_entry(dword_t caller, dword_t socket_handle,
     return -1;
   }
 
+  // Apply IP redirect if configured.
+  net_redirect::MaybeRedirectIP(&name->address_ip);
+
   XELOGI("NetDll_connect: sock={} addr={}.{}.{}.{}:{}", (uint32_t)socket_handle,
          name->address_ip.S_un.S_un_b.s_b1, name->address_ip.S_un.S_un_b.s_b2,
          name->address_ip.S_un.S_un_b.s_b3, name->address_ip.S_un.S_un_b.s_b4,
@@ -1948,7 +2104,11 @@ dword_result_t NetDll_recv_entry(dword_t caller, dword_t socket_handle,
 
   int ret = socket->Recv(buf_ptr, buf_len, flags);
   if (ret < 0) {
-    XThread::SetLastError(socket->GetLastWSAError());
+    auto err = socket->GetLastWSAError();
+    XThread::SetLastError(err);
+    if (err == uint32_t(X_WSAError::X_WSAEWOULDBLOCK)) {
+      xe::threading::MaybeYield();
+    }
   }
   return ret;
 }
@@ -1974,7 +2134,13 @@ dword_result_t NetDll_recvfrom_entry(dword_t caller, dword_t socket_handle,
   }
 
   if (ret == -1) {
-    XThread::SetLastError(socket->GetLastWSAError());
+    auto err = socket->GetLastWSAError();
+    XThread::SetLastError(err);
+    // Non-blocking socket with no data — yield to prevent tight poll loop
+    // from starving other guest threads.
+    if (err == uint32_t(X_WSAError::X_WSAEWOULDBLOCK)) {
+      xe::threading::MaybeYield();
+    }
   } else if (ret >= 0 && !cvars::log_mask_ips && from_ptr) {
     XELOGI("NetDll_recvfrom: Received {} bytes from: {}.{}.{}.{}", ret,
            from_ptr->address_ip.S_un.S_un_b.s_b1,
@@ -2015,6 +2181,11 @@ dword_result_t NetDll_sendto_entry(dword_t caller, dword_t socket_handle,
   if (!socket) {
     XThread::SetLastError(uint32_t(X_WSAError::X_WSAENOTSOCK));
     return -1;
+  }
+
+  // Apply IP redirect if configured.
+  if (to_ptr) {
+    net_redirect::MaybeRedirectIP(&to_ptr->address_ip);
   }
 
   XELOGI("NetDll_sendto: sock={} len={} flags={}", (uint32_t)socket_handle,

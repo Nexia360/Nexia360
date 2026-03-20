@@ -228,6 +228,12 @@ void XCustomRegisterDynamicActions_entry() {
 }
 DECLARE_XAM_EXPORT1(XCustomRegisterDynamicActions, kNone, kStub);
 
+dword_result_t XCustomSetAction_entry(dword_t action_index, lpvoid_t action_data) {
+  // Stub — custom dashboard actions are not meaningful in the emulator.
+  return 0;
+}
+DECLARE_XAM_EXPORT1(XCustomSetAction, kNone, kStub);
+
 dword_result_t XGetAVPack_entry() {
   // Value from
   // https://github.com/Free60Project/libxenon/blob/920146f/libxenon/drivers/xenos/xenos_videomodes.h
@@ -380,22 +386,16 @@ void XamLoaderLaunchTitle_entry(lpstring_t raw_name_ptr, dword_t flags) {
       loader_data.launch_data_present = true;
     }
 
+    // Use the current title's host path for relaunching within the same game.
+    auto* emulator = kernel_state()->emulator();
+    loader_data.host_path =
+        xe::path_to_utf8(emulator->current_launch_path());
+
     xam->SaveLoaderData();
 
-    if (loader_data.launch_data_present) {
-      auto display_window = kernel_state()->emulator()->display_window();
-      auto imgui_drawer = kernel_state()->emulator()->imgui_drawer();
-
-      if (display_window && imgui_drawer) {
-        display_window->app_context().CallInUIThreadSynchronous(
-            [imgui_drawer]() {
-              xe::ui::ImGuiDialog::ShowMessageBox(
-                  imgui_drawer, "Title was restarted",
-                  "Title closed with new launch data. \nPlease restart Xenia. "
-                  "Game will be loaded automatically.");
-            });
-      }
-    }
+    // Request warm reboot — WaitUntilExit will pick this up after
+    // TerminateTitle kills all guest threads.
+    emulator->RequestRelaunch(emulator->current_launch_path());
   } else {
     assert_always("Game requested exit to dashboard via XamLoaderLaunchTitle");
   }

@@ -307,6 +307,8 @@ class X64Emitter : public Xbyak::CodeGenerator {
 
   void PushStackpoint();
   void PopStackpoint();
+  void EmitSyncCheck();
+  void EmitDriftCheck();
 
   void EnsureSynchronizedGuestAndHostStack();
   FunctionDebugInfo* debug_info() const { return debug_info_; }

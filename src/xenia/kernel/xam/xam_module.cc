@@ -11,7 +11,9 @@
 
 #include <vector>
 
+#include "xenia/base/logging.h"
 #include "xenia/base/math.h"
+#include "xenia/emulator.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/xam/xam_private.h"
 
@@ -108,8 +110,9 @@ void XamModule::LoadLoaderData() {
   }
 
   fclose(file);
-  // We read launch data. Let's remove it till next request.
-  std::filesystem::remove(kXamModuleLoaderDataFileName);
+  // Rename to .bak instead of deleting — useful for debugging warm reboots.
+  std::filesystem::remove("launch_data.bak");
+  std::filesystem::rename(kXamModuleLoaderDataFileName, "launch_data.bak");
 }
 
 void XamModule::SaveLoaderData() {

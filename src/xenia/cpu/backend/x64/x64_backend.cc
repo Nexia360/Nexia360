@@ -41,6 +41,36 @@ DEFINE_bool(enable_host_guest_stack_synchronization, true,
             "and checks for reentry at return sites. Has slight performance "
             "impact, but fixes crashes in games that use setjmp/longjmp.",
             "x64");
+
+DEFINE_bool(enable_thread_sync, false,
+            "Enable cooperative thread synchronization via global clock. "
+            "JIT threads yield when they exceed their quantum, preventing "
+            "lockups caused by thread drift in games that rely on balanced "
+            "thread progress.",
+            "CPU");
+
+DEFINE_uint64(thread_sync_quantum, 300,
+              "Guest timebase ticks between forced thread yields. Lower "
+              "values give tighter synchronization but more overhead. "
+              "The Xbox 360 timebase runs at ~50MHz, so 50000 = ~1ms.",
+              "CPU");
+
+DEFINE_bool(drift_clock, false,
+            "Enable drift-based thread synchronization. Tracks per-thread "
+            "progress and forces threads that race ahead to yield until "
+            "slower threads catch up. Prevents lockups from thread drift.",
+            "CPU");
+
+DEFINE_uint64(drift_progress_adjust_min, 50000,
+              "Minimum drift threshold in sync points. A thread must be at "
+              "least this far ahead of the slowest thread before it yields. "
+              "Each sync point is a backward branch or function call.",
+              "CPU");
+
+DEFINE_uint64(drift_progress_adjust_max, 100000,
+              "Maximum drift threshold in sync points. A thread this far "
+              "ahead will sleep briefly to let slower threads catch up.",
+              "CPU");
 #if XE_X64_PROFILER_AVAILABLE == 1
 DECLARE_bool(instrument_call_times);
 #endif
@@ -1721,6 +1751,30 @@ void X64Backend::InitializeBackendContext(void* ctx) {
   bctx->Ox1000 = 0x1000;
   bctx->guest_tick_count = Clock::GetGuestTickCountPointer();
   bctx->reserve_helper_ = &reserve_helper_;
+  bctx->sync_deadline =
+      *bctx->guest_tick_count + cvars::thread_sync_quantum;
+
+  // Drift clock: register this thread and set up pointers for JIT access.
+  if (cvars::drift_clock) {
+    auto* drift_thread = drift_clock_.RegisterThread();
+    if (drift_thread) {
+      bctx->drift_progress_ptr =
+          reinterpret_cast<uint64_t*>(&drift_thread->progress);
+      bctx->drift_min_progress_ptr = drift_clock_.min_progress_ptr();
+      bctx->drift_thread_handle = drift_thread;
+      bctx->drift_clock_instance = &drift_clock_;
+    } else {
+      bctx->drift_progress_ptr = nullptr;
+      bctx->drift_min_progress_ptr = nullptr;
+      bctx->drift_thread_handle = nullptr;
+      bctx->drift_clock_instance = nullptr;
+    }
+  } else {
+    bctx->drift_progress_ptr = nullptr;
+    bctx->drift_min_progress_ptr = nullptr;
+    bctx->drift_thread_handle = nullptr;
+    bctx->drift_clock_instance = nullptr;
+  }
 }
 void X64Backend::DeinitializeBackendContext(void* ctx) {
   X64BackendContext* bctx = BackendContextForGuestContext(ctx);
@@ -1729,12 +1783,34 @@ void X64Backend::DeinitializeBackendContext(void* ctx) {
     delete[] bctx->stackpoints;
     bctx->stackpoints = nullptr;
   }
+
+  if (bctx->drift_thread_handle) {
+    drift_clock_.UnregisterThread(
+        static_cast<DriftClockThread*>(bctx->drift_thread_handle));
+    bctx->drift_thread_handle = nullptr;
+  }
 }
 
 void X64Backend::PrepareForReentry(void* ctx) {
   X64BackendContext* bctx = BackendContextForGuestContext(ctx);
 
   bctx->current_stackpoint_depth = 0;
+}
+
+void X64Backend::OnThreadEnteringWait(void* ctx) {
+  X64BackendContext* bctx = BackendContextForGuestContext(ctx);
+  if (bctx->drift_thread_handle) {
+    drift_clock_.ThreadEnteringWait(
+        static_cast<DriftClockThread*>(bctx->drift_thread_handle));
+  }
+}
+
+void X64Backend::OnThreadLeavingWait(void* ctx) {
+  X64BackendContext* bctx = BackendContextForGuestContext(ctx);
+  if (bctx->drift_thread_handle) {
+    drift_clock_.ThreadLeavingWait(
+        static_cast<DriftClockThread*>(bctx->drift_thread_handle));
+  }
 }
 
 constexpr uint32_t mxcsr_table[8] = {

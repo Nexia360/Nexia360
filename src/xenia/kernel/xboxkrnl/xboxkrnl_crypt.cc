@@ -870,6 +870,17 @@ dword_result_t XeKeysGetConsoleType_entry(lpdword_t type_out) {
 
 DECLARE_XBOXKRNL_EXPORT1(XeKeysGetConsoleType, kNone, kImplemented);
 
+dword_result_t XeKeysConsolePrivateKeySign_entry(lpvoid_t hash, lpvoid_t sig_out) {
+  // Stub - fill signature output with zeros.
+  // Games use this for online authentication; returning success with a
+  // zeroed signature lets them continue offline.
+  if (sig_out) {
+    memset(sig_out, 0, 0x100);
+  }
+  return X_STATUS_SUCCESS;
+}
+DECLARE_XBOXKRNL_EXPORT1(XeKeysConsolePrivateKeySign, kNone, kStub);
+
 }  // namespace xboxkrnl
 }  // namespace kernel
 }  // namespace xe

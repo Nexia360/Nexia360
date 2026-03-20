@@ -350,11 +350,59 @@ X_STATUS Emulator::TerminateTitle() {
   }
 
   kernel_state_->TerminateTitle();
+  main_thread_.reset();
   title_id_ = std::nullopt;
   title_name_ = "";
   title_version_ = "";
+
+  // Pause GPU so it stops reading guest memory before we wipe it.
+  if (graphics_system_) {
+    graphics_system_->Pause();
+  }
+
+  // Tear down kernel state completely — kill all remaining objects,
+  // kernel modules, VFS mounts, sockets, etc.
+  kernel_state_.reset();
+
+  // Reset memory to a clean slate — all heaps freed.
+  memory_->Reset();
+
+  // Reset the virtual filesystem.
+  file_system_ = std::make_unique<xe::vfs::VirtualFileSystem>();
+
+  // Recreate kernel state fresh, as if the app just started.
+  kernel_state_ = std::make_unique<xe::kernel::KernelState>(this);
+#define LOAD_KERNEL_MODULE(t) \
+  static_cast<void>(kernel_state_->LoadKernelModule<kernel::t>())
+  LOAD_KERNEL_MODULE(xboxkrnl::XboxkrnlModule);
+  LOAD_KERNEL_MODULE(xam::XamModule);
+  LOAD_KERNEL_MODULE(xbdm::XbdmModule);
+#undef LOAD_KERNEL_MODULE
+
+  // Update kernel state pointer in graphics system, clear stale GPU state,
+  // and resume.
+  if (graphics_system_) {
+    graphics_system_->set_kernel_state(kernel_state_.get());
+    graphics_system_->ClearInterruptCallback();
+    graphics_system_->Resume();
+  }
+
   on_terminate();
   return X_STATUS_SUCCESS;
+}
+
+void Emulator::RequestRelaunch(const std::filesystem::path& path) {
+  XELOGI("RequestRelaunch: {}", xe::path_to_utf8(path));
+  relaunching_ = true;
+  relaunch_path_ = path;
+}
+
+bool Emulator::ConsumeRelaunchRequest(std::filesystem::path& out_path) {
+  if (!relaunching_) return false;
+  relaunching_ = false;
+  out_path = relaunch_path_;
+  relaunch_path_.clear();
+  return true;
 }
 
 const std::unique_ptr<vfs::Device> Emulator::CreateVfsDevice(
@@ -530,6 +578,7 @@ Emulator::FileSignatureType Emulator::GetFileSignature(
 }
 
 X_STATUS Emulator::LaunchPath(const std::filesystem::path& path) {
+  current_launch_path_ = path;
   X_STATUS mount_result = X_STATUS_SUCCESS;
 
   switch (GetFileSignature(path)) {
@@ -1295,9 +1344,27 @@ bool Emulator::ExceptionCallback(Exception* ex) {
                                current_thread->thread_id()));
   crash_msg.append(
       fmt::format("Thread Handle: 0x{:08X}\n", current_thread->handle()));
-  crash_msg.append(
-      fmt::format("PC: 0x{:08X}\n",
-                  guest_function->MapMachineCodeToGuestAddress(ex->pc())));
+  auto guest_pc = guest_function->MapMachineCodeToGuestAddress(ex->pc());
+  crash_msg.append(fmt::format("PC: 0x{:08X}\n", guest_pc));
+
+  // Print immediately to console before anything else can fail.
+  printf("!!! CRASH PC: 0x%08X  Function: %s (0x%08X - 0x%08X)\n",
+         guest_pc,
+         guest_function->name().c_str(),
+         guest_function->address(),
+         guest_function->end_address());
+  fflush(stdout);
+
+  // Print registers with upper 32-bit check
+  for (int i = 0; i < 32; i++) {
+    uint64_t val = context->r[i];
+    if ((val >> 32) != 0 && (val >> 32) != 0xFFFFFFFF) {
+      printf("!!! r%d CORRUPTED: %016llX (upper32: %08llX)\n",
+             i, val, val >> 32);
+    }
+  }
+  fflush(stdout);
+
   crash_msg.append("Registers:\n");
   for (int i = 0; i < 32; i++) {
     crash_msg.append(fmt::format(" r{:<3} = {:016X}\n", i, context->r[i]));
@@ -1346,8 +1413,13 @@ void Emulator::WaitUntilExit() {
 
     if (restoring_) {
       restore_fence_.Wait();
+    } else if (relaunching_) {
+      // Warm reboot requested. Let WaitUntilExit exit — the UI thread
+      // will pick up the relaunch via EmulatorWindow polling.
+      XELOGI("Warm reboot: WaitUntilExit exiting for relaunch");
+      break;
     } else {
-      // Not restoring and the thread exited. We're finished.
+      // Not restoring, not relaunching. We're finished.
       break;
     }
   }

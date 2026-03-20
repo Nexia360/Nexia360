@@ -94,6 +94,11 @@ class Backend {
   * */
   virtual void PrepareForReentry(void* ctx) {}
 
+  // Called when a guest thread enters a kernel wait.
+  virtual void OnThreadEnteringWait(void* ctx) {}
+  // Called when a guest thread leaves a kernel wait.
+  virtual void OnThreadLeavingWait(void* ctx) {}
+
   // returns true if populated st
   virtual bool PopulatePseudoStacktrace(GuestPseudoStackTrace* st) {
     return false;

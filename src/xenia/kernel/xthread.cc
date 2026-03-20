@@ -755,20 +755,37 @@ X_STATUS XThread::Delay(uint32_t processor_mode, uint32_t alertable,
     timeout_ms = 0;
   }
   timeout_ms = Clock::ScaleGuestDurationMillis(timeout_ms);
+
+  // Notify drift clock that this thread is entering a wait (sleep).
+  auto* proc = kernel_state_ ? kernel_state_->processor() : nullptr;
+  if (proc) {
+    proc->OnThreadEnteringWait(thread_id());
+  }
+
+  X_STATUS status;
   if (alertable) {
     auto result =
         xe::threading::AlertableSleep(std::chrono::milliseconds(timeout_ms));
     switch (result) {
       default:
       case xe::threading::SleepResult::kSuccess:
-        return X_STATUS_SUCCESS;
+        status = X_STATUS_SUCCESS;
+        break;
       case xe::threading::SleepResult::kAlerted:
-        return X_STATUS_USER_APC;
+        status = X_STATUS_USER_APC;
+        break;
     }
   } else {
     xe::threading::Sleep(std::chrono::milliseconds(timeout_ms));
-    return X_STATUS_SUCCESS;
+    status = X_STATUS_SUCCESS;
   }
+
+  // Notify drift clock that this thread is leaving the wait.
+  if (proc) {
+    proc->OnThreadLeavingWait(thread_id());
+  }
+
+  return status;
 }
 
 struct ThreadSavedState {
