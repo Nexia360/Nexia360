@@ -8,12 +8,12 @@
  */
 
 #include "xenia/kernel/util/xlast.h"
-#include "zlib-ng.h"
 #include "xenia/base/cvar.h"
 #include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/string_util.h"
 #include "xenia/kernel/util/presence_string_builder.h"
+#include "zlib-ng.h"
 
 DECLARE_int32(user_language);
 
@@ -322,8 +322,7 @@ XLast::XLast(const uint8_t* compressed_xml_data,
   }
 
   stream.avail_in = compressed_data_size;
-  stream.next_in =
-      const_cast<uint8_t*>(compressed_xml_data);
+  stream.next_in = const_cast<uint8_t*>(compressed_xml_data);
   stream.avail_out = decompressed_data_size;
   stream.next_out = reinterpret_cast<uint8_t*>(xlast_decompressed_xml_.data());
 

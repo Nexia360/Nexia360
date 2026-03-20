@@ -16,9 +16,9 @@ namespace app {
 
 void UpdaterDialog::OnDraw(ImGuiIO& io) {
   bool open = true;
-  if (ImGui::Begin("Updater", &open,
-                   ImGuiWindowFlags_NoCollapse |
-                       ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (ImGui::Begin(
+          "Updater", &open,
+          ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize)) {
     ImGui::Text("This is still being worked on, sorry for the inconvenience.");
     ImGui::End();
   }
