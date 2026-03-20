@@ -116,8 +116,8 @@ sockaddr_in WinsockGetLocalIP() {
   }
 
   socklen_t addrSize = sizeof(localAddr);
-  if (getsockname(sock, reinterpret_cast<sockaddr*>(&localAddr),
-                  &addrSize) < 0) {
+  if (getsockname(sock, reinterpret_cast<sockaddr*>(&localAddr), &addrSize) <
+      0) {
     close(sock);
     return localAddr;
   }
