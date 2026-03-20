@@ -200,12 +200,16 @@ class XLiveAPI {
 
   static const uint8_t* GetMACaddress();
 
+#ifdef XE_PLATFORM_WIN32
   static std::string GetNetworkFriendlyName(IP_ADAPTER_ADDRESSES adapter);
+#endif
 
   static void DiscoverNetworkInterfaces();
 
+#ifdef XE_PLATFORM_WIN32
   static bool UpdateNetworkInterface(sockaddr_in local_ip,
                                      IP_ADAPTER_ADDRESSES adapter);
+#endif
 
   static void SelectNetworkInterface();
 
@@ -226,7 +230,9 @@ class XLiveAPI {
 
   inline static std::vector<uint8_t> adapter_addresses_buf{};
 
+#ifdef XE_PLATFORM_WIN32
   inline static std::vector<IP_ADAPTER_ADDRESSES> adapter_addresses{};
+#endif
 
   inline static bool adapter_has_wan_routing = false;
 

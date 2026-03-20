@@ -9,6 +9,11 @@
 
 #include <random>
 
+#ifndef XE_PLATFORM_WIN32
+#include <ifaddrs.h>
+#include <net/if.h>
+#endif
+
 #include "third_party/rapidcsv/src/rapidcsv.h"
 
 #include "xenia/base/cvar.h"
@@ -1880,6 +1885,7 @@ const uint8_t* XLiveAPI::GetMACaddress() {
 #endif  // XE_PLATFORM_WIN32
 }
 
+#ifdef XE_PLATFORM_WIN32
 std::string XLiveAPI::GetNetworkFriendlyName(IP_ADAPTER_ADDRESSES adapter) {
   char interface_name[MAX_ADAPTER_NAME_LENGTH];
   size_t bytes_out =
@@ -1892,6 +1898,7 @@ std::string XLiveAPI::GetNetworkFriendlyName(IP_ADAPTER_ADDRESSES adapter) {
 
   return interface_name;
 }
+#endif
 
 void XLiveAPI::DiscoverNetworkInterfaces() {
   XELOGI("Discovering network interfaces...");
@@ -1961,9 +1968,43 @@ void XLiveAPI::DiscoverNetworkInterfaces() {
     XELOGI("{}", xe::string_util::trim(networks));
   }
 #else
+  // Linux: use getifaddrs to discover network interfaces
+  struct ifaddrs* ifaddr = nullptr;
+  if (getifaddrs(&ifaddr) == -1) {
+    XELOGI("getifaddrs failed");
+    return;
+  }
+
+  std::string networks = "Network Interfaces:\n";
+  int count = 0;
+
+  for (struct ifaddrs* ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next) {
+    if (!ifa->ifa_addr) continue;
+    if (ifa->ifa_addr->sa_family != AF_INET) continue;
+
+    // Skip loopback
+    if (ifa->ifa_flags & IFF_LOOPBACK) continue;
+
+    sockaddr_in* addr = reinterpret_cast<sockaddr_in*>(ifa->ifa_addr);
+    networks += fmt::format("{}: {}\n", ifa->ifa_name, ip_to_string(*addr));
+    count++;
+  }
+
+  freeifaddrs(ifaddr);
+
+  if (count == 0) {
+    XELOGI("No network interfaces detected!\n");
+  } else {
+    XELOGI("Found {} network interfaces!\n", count);
+  }
+
+  if (cvars::logging) {
+    XELOGI("{}", xe::string_util::trim(networks));
+  }
 #endif  // XE_PLATFORM_WIN32
 }
 
+#ifdef XE_PLATFORM_WIN32
 bool XLiveAPI::UpdateNetworkInterface(sockaddr_in local_ip,
                                       IP_ADAPTER_ADDRESSES adapter) {
   for (PIP_ADAPTER_UNICAST_ADDRESS_LH address = adapter.FirstUnicastAddress;
@@ -1993,6 +2034,7 @@ bool XLiveAPI::UpdateNetworkInterface(sockaddr_in local_ip,
 
   return false;
 }
+#endif  // XE_PLATFORM_WIN32
 
 void XLiveAPI::SelectNetworkInterface() {
   sockaddr_in local_ip{};
@@ -2008,6 +2050,7 @@ void XLiveAPI::SelectNetworkInterface() {
 
   bool updated = false;
 
+#ifdef XE_PLATFORM_WIN32
   // If existing network GUID exists use it
   for (auto const& adapter : adapter_addresses) {
     if (cvars::network_guid == adapter.AdapterName) {
@@ -2056,6 +2099,12 @@ void XLiveAPI::SelectNetworkInterface() {
       interface_name = "Unspecified Network";
     }
   }
+#else
+  // Linux: just use the local IP from the socket
+  local_ip_ = local_ip;
+  interface_name = "Linux Network";
+  updated = true;
+#endif
 
   std::string WAN_interface = xe::kernel::XLiveAPI::adapter_has_wan_routing
                                   ? "(Default)"

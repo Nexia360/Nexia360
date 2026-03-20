@@ -17,6 +17,11 @@
 #define _WINSOCK_DEPRECATED_NO_WARNINGS  // inet_addr
 #include <WS2tcpip.h>                    // NOLINT(build/include_order)
 #include <winsock2.h>                    // NOLINT(build/include_order)
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
 #endif
 
 namespace xe {

@@ -98,6 +98,31 @@ sockaddr_in WinsockGetLocalIP() {
 
   return localAddr;
 #else
+  // Linux: same UDP connect trick with POSIX sockets
+  int sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+  if (sock < 0) {
+    return localAddr;
+  }
+
+  sockaddr_in remoteAddr{};
+  remoteAddr.sin_family = AF_INET;
+  remoteAddr.sin_port = htons(80);
+  inet_pton(AF_INET, "8.8.8.8", &remoteAddr.sin_addr);
+
+  if (connect(sock, reinterpret_cast<sockaddr*>(&remoteAddr),
+              sizeof(remoteAddr)) < 0) {
+    close(sock);
+    return localAddr;
+  }
+
+  socklen_t addrSize = sizeof(localAddr);
+  if (getsockname(sock, reinterpret_cast<sockaddr*>(&localAddr),
+                  &addrSize) < 0) {
+    close(sock);
+    return localAddr;
+  }
+
+  close(sock);
   return localAddr;
 #endif  // XE_PLATFORM_WIN32
 }
