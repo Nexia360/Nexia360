@@ -16,5 +16,6 @@ project("rapidjson")
   })
   files({
     "rapidjson/include/**.h",
-		"rapidjson/include/**.c"
+    "rapidjson/include/**.c",
+    "rapidjson_dummy.cc",
   })
