@@ -2,6 +2,8 @@ name: Windows build
 
 on:
   push:
+    tags:
+      - 'v*'
     paths-ignore:
       - '.clang-format'
       - '.drone.star'
@@ -50,7 +52,7 @@ permissions:
   contents: write
 
 env:
-  RELEASE_TOKEN: ${{ vars.RELEASE_TOKEN }}
+  RELEASE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
   lint:
@@ -104,9 +106,8 @@ jobs:
     name: Create release
     needs: [lint, build]
     if: |
-      github.repository == 'xenia-canary/xenia-canary' &&
       github.event_name != 'pull_request' &&
-      github.ref == 'refs/heads/canary_experimental'
+      startsWith(github.ref, 'refs/tags/')
     uses: ./.github/workflows/Create_release.yml
     with:
       artifact_name: release-asset-windows

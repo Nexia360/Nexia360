@@ -19,8 +19,7 @@ project("miniupnp")
 
   filter { "platforms:Linux" }
     prebuildcommands {
-      "cd $(SolutionDir)..\\third_party\\miniupnp\\miniupnpc",
-      "updateminiupnpcstrings.sh"
+      "cd %{wks.location}/../third_party/miniupnp/miniupnpc && sh updateminiupnpcstrings.sh"
     }
 
   filter {}
