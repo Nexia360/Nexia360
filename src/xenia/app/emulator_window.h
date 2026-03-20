@@ -31,6 +31,8 @@
 namespace xe {
 namespace app {
 
+class UpdaterDialog;
+
 struct RecentTitleEntry {
   std::string title_name;
   std::filesystem::path path_to_file;

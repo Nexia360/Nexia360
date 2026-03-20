@@ -8,6 +8,7 @@
  */
 
 #include "xenia/app/emulator_window.h"
+#include "xenia/app/updater_dialog.h"
 
 #include <filesystem>
 #include <functional>
@@ -1814,7 +1815,7 @@ void EmulatorWindow::ToggleUpdaterDialog() {
     disable_hotkeys_ = true;
     emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 1);
     updater_dialog_ =
-        std::make_unique<UpdaterDialog>(updater_, imgui_drawer_.get(), this);
+        std::make_unique<UpdaterDialog>(imgui_drawer_.get(), this);
     kernel::xam::xam_dialogs_shown_++;
   } else {
     disable_hotkeys_ = false;

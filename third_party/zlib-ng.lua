@@ -45,6 +45,7 @@ project("zlib-ng")
   })
 
   local zlibng_dir = path.getabsolute("zlib-ng")
+  local zlibng_build_dir = ""
   local zlibng_h_src_files = {
     path.join(zlibng_build_dir, "zlib-ng.h"),
     path.join(zlibng_build_dir, "zconf-ng.h"),

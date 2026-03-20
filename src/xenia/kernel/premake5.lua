@@ -9,7 +9,7 @@ project("xenia-kernel")
   links({
     "aes_128",
     "fmt",
-    "zlib",
+    "zlib-ng",
     "pugixml",
     "libcurl",
     "miniupnp",
@@ -21,7 +21,10 @@ project("xenia-kernel")
   })
   defines({
     "CURL_STATICLIB",
-    "MINIUPNP_STATICLIB"
+    "MINIUPNP_STATICLIB",
+  })
+  includedirs({
+    project_root.."/third_party/zlib-ng",
   })
   recursive_platform_files()
   files({

@@ -80,37 +80,7 @@ class ManagerDialog final : public ui::ImGuiDialog {
   EmulatorWindow* emulator_window_;
 };
 
-class UpdaterDialog final : public ui::ImGuiDialog {
- public:
-  UpdaterDialog(Updater* updater, ui::ImGuiDrawer* imgui_drawer,
-                EmulatorWindow* emulator_window)
-      : ui::ImGuiDialog(imgui_drawer), emulator_window_(emulator_window) {
-    updater_ = updater;
-  }
-
- protected:
-  void OnDraw(ImGuiIO& io) override;
-
- private:
-  bool updater_opened_ = false;
-  Updater* updater_ = nullptr;
-  uint32_t response_code_ = 0;
-  bool update_available_ = false;
-  bool checked_for_updates_ = false;
-  bool downloading_ = false;
-  bool downloaded_ = false;
-  bool downloaded_failed_ = false;
-  bool hide_download_button_ = false;
-  bool show_replace_dialog_ = false;
-  bool replace_file_ = false;
-  std::filesystem::path downloaded_file_path_;
-  const std::string windows_artifact_name_ = "Nexia360_windows.zip";
-  std::string latest_commit_hash_ = "";
-  std::string latest_commit_date_ = "";
-  std::vector<std::string> commit_messages_ = {};
-  std::string changelog_ = "";
-  EmulatorWindow* emulator_window_;
-};
+// UpdaterDialog moved to updater_dialog.h
 
 }  // namespace app
 }  // namespace xe
