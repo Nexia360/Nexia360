@@ -354,11 +354,7 @@ static inline uint16_t GetLocalUdpPortFor(XSocket* xs) {
                     (int*)&slen) != 0)
     return 0;
 #else
-  // On POSIX builds, XSocket exposes a platform handle; Xenia commonly exposes
-  // fd() If your XSocket doesn't, add a getter or use
-  // socket->platform_handle().
-  int fd = xs->platform_handle();  // <-- if your build uses a different name,
-                                   // adjust here
+  int fd = static_cast<int>(xs->native_handle());
   if (fd < 0) return 0;
   if (::getsockname(fd, reinterpret_cast<sockaddr*>(&sin), &slen) != 0)
     return 0;

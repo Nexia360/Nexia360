@@ -23,6 +23,13 @@
 // clang-format on
 #include <inaddr.h>
 #include <winapifamily.h>
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
+typedef char CHAR;
+#ifndef __declspec
+#define __declspec(x)
+#endif
 #endif
 
 namespace xe {
@@ -628,7 +635,11 @@ struct X_ARGUMENT_ENTRY {
 };
 static_assert_size(X_ARGUMENT_ENTRY, 0x10);
 
+#ifdef XE_PLATFORM_WIN32
 struct __declspec(align(8)) X_ARGUMENT_LIST {
+#else
+struct __attribute__((aligned(8))) X_ARGUMENT_LIST {
+#endif
   X_ARGUMENT_ENTRY entry[32];
   xe::be<uint32_t> argument_count;
 };
