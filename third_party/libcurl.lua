@@ -45,6 +45,7 @@ project("libcurl")
       "SIZEOF_SIZE_T=8",
       "SIZEOF_INT=4",
       "SIZEOF_SHORT=2",
+      'CURL_OS="Linux"',
     })
     links({
       "ssl",
