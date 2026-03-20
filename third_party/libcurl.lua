@@ -27,6 +27,8 @@ project("libcurl")
       "HAVE_SYS_SOCKET_H",
       "HAVE_UNISTD_H",
       "HAVE_FCNTL_H",
+      "HAVE_FCNTL_O_NONBLOCK",
+      "HAVE_FSETXATTR",
       "HAVE_RECV",
       "HAVE_SEND",
       "HAVE_SOCKET",
