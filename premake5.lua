@@ -177,7 +177,9 @@ filter({"language:C++", "toolset:clang"}) -- "platforms:Linux"
   })
 CLANG_BIN = os.getenv("CC") or _OPTIONS["cc"] or "clang"
 if os.istarget("linux") and string.contains(CLANG_BIN, "clang") then
-  if tonumber(string.match(os.outputof(CLANG_BIN.." --version"), "version (%d%d)")) >= 20 then
+  local clang_version_output = os.outputof(CLANG_BIN.." --version") or ""
+  local clang_version_num = tonumber(string.match(clang_version_output, "version (%d%d)")) or 0
+  if clang_version_num >= 20 then
     filter({"language:C++", "toolset:clang"}) -- "platforms:Linux"
       disablewarnings({
         "deprecated-literal-operator",   -- Needed only for tabulate

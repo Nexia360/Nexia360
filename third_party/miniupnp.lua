@@ -30,7 +30,7 @@ project("miniupnp")
   filter {}
 
   includedirs({
-    ".",
+    "../third_party",
     "miniupnp/miniupnpc",
     "miniupnp/miniupnpc/include",
   })
