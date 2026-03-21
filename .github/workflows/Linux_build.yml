@@ -114,13 +114,13 @@ jobs:
           fi
           chmod +x "$binary"
           mkdir -p artifacts
-          XZ_OPT=-e9 tar cJf artifacts/xenia_canary_linux.tar.xz "$binary" LICENSE
+          XZ_OPT=-e9 tar cJf artifacts/Nexia360-Linux.tar.xz "$binary" LICENSE
       - name: Upload linux artifact
         if: steps.prepare_artifacts.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: release-asset-linux
-          path: artifacts/xenia_canary_linux.tar.xz
+          path: artifacts/Nexia360-Linux.tar.xz
           if-no-files-found: error
 
   create-release:
@@ -133,4 +133,4 @@ jobs:
     uses: ./.github/workflows/Create_release.yml
     with:
       artifact_name: release-asset-linux
-      asset_filename: xenia_canary_linux.tar.xz
+      asset_filename: Nexia360-Linux.tar.xz

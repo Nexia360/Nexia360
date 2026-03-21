@@ -9,7 +9,7 @@
 
 #include <random>
 
-#ifndef XE_PLATFORM_WIN32
+#if !defined(_WIN32)
 #include <ifaddrs.h>
 #include <net/if.h>
 #endif

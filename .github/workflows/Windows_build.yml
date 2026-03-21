@@ -2,8 +2,6 @@ name: Windows build
 
 on:
   push:
-    tags:
-      - 'v*'
     paths-ignore:
       - '.clang-format'
       - '.drone.star'
@@ -93,13 +91,13 @@ jobs:
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
           Copy-Item -Force $binary artifacts\
           Copy-Item -Force LICENSE artifacts\
-          Compress-Archive -Path artifacts\* -DestinationPath artifacts\xenia_canary_windows.zip -Force
+          Compress-Archive -Path artifacts\* -DestinationPath artifacts\Nexia360-Windows.zip -Force
       - name: Upload windows artifact
         if: steps.prepare_artifacts.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: release-asset-windows
-          path: artifacts/xenia_canary_windows.zip
+          path: artifacts/Nexia360-Windows.zip
           if-no-files-found: error
 
   create-release:
@@ -111,4 +109,4 @@ jobs:
     uses: ./.github/workflows/Create_release.yml
     with:
       artifact_name: release-asset-windows
-      asset_filename: xenia_canary_windows.zip
+      asset_filename: Nexia360-Windows.zip
