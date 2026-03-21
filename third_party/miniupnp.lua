@@ -24,12 +24,13 @@ project("miniupnp")
       "_DEFAULT_SOURCE",
     })
     prebuildcommands {
-      "cd %{wks.location}/../third_party/miniupnp/miniupnpc && sh updateminiupnpcstrings.sh"
+      "true"
     }
 
   filter {}
 
   includedirs({
+    ".",
     "miniupnp/miniupnpc",
     "miniupnp/miniupnpc/include",
   })
