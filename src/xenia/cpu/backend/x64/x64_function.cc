@@ -269,12 +269,19 @@ bool X64Function::CallImpl(ThreadState* thread_state, uint32_t return_address) {
     return true;
 
 #else
-  XELOGD("[CALL] non-Win32 direct thunk fn={:#010X}", address());
+  // Linux: no fiber support, direct thunk call.
   thunk(machine_code_, thread_state->context(),
         reinterpret_cast<void*>(uintptr_t(return_address)));
   return true;
 #endif
-  }
+#if XE_PLATFORM_WIN32
+  }  // closes if (cvars::replace_thunk_call_with_fibers)
+
+  // Fallback when fibers are disabled.
+  thunk(machine_code_, thread_state->context(),
+        reinterpret_cast<void*>(uintptr_t(return_address)));
+  return true;
+#endif
 }
 
 }  // namespace x64
