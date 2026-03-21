@@ -1357,8 +1357,8 @@ bool Emulator::ExceptionCallback(Exception* ex) {
   for (int i = 0; i < 32; i++) {
     uint64_t val = context->r[i];
     if ((val >> 32) != 0 && (val >> 32) != 0xFFFFFFFF) {
-      printf("!!! r%d CORRUPTED: %016" PRIx64 " (upper32: %08" PRIx64 ")\n",
-             i, val, val >> 32);
+      printf("!!! r%d CORRUPTED: %016" PRIx64 " (upper32: %08" PRIx64 ")\n", i,
+             val, val >> 32);
     }
   }
   fflush(stdout);

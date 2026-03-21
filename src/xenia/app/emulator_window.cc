@@ -2302,12 +2302,19 @@ void EmulatorWindow::GamepadHotKeys() {
           if (solo_guide && !guide_button_was_pressed_[user_index]) {
             // Guide just pressed alone - record time
             guide_button_was_pressed_[user_index] = true;
-            guide_button_press_time_[user_index] = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+            guide_button_press_time_[user_index] = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch())
+                    .count());
           } else if (!guide_pressed && guide_button_was_pressed_[user_index]) {
             // Guide just released - check duration
             guide_button_was_pressed_[user_index] = false;
             uint64_t duration =
-                static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()) - guide_button_press_time_[user_index];
+                static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count()) -
+                guide_button_press_time_[user_index];
 
             if (duration >= kGuideLongPressMs) {
               // Long press - friends/netplay manager

@@ -9,12 +9,12 @@
 
 #include <random>
 
-#include "xenia/kernel/util/socket_compat.h"
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/threading.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/shim_utils.h"
+#include "xenia/kernel/util/socket_compat.h"
 #include "xenia/kernel/xam/xam_module.h"
 #include "xenia/kernel/xam/xam_net.h"
 #include "xenia/kernel/xam/xam_private.h"
@@ -1889,9 +1889,10 @@ dword_result_t NetDll_connect_entry(dword_t caller, dword_t socket_handle,
   net_redirect::MaybeRedirectIP(&name->address_ip);
 
   XELOGI("NetDll_connect: sock={} addr={}.{}.{}.{}:{}", (uint32_t)socket_handle,
-         ((uint8_t*)&name->address_ip.s_addr)[0], ((uint8_t*)&name->address_ip.s_addr)[1],
-         ((uint8_t*)&name->address_ip.s_addr)[2], ((uint8_t*)&name->address_ip.s_addr)[3],
-         (uint16_t)name->address_port);
+         ((uint8_t*)&name->address_ip.s_addr)[0],
+         ((uint8_t*)&name->address_ip.s_addr)[1],
+         ((uint8_t*)&name->address_ip.s_addr)[2],
+         ((uint8_t*)&name->address_ip.s_addr)[3], (uint16_t)name->address_port);
 
   X_STATUS status = socket->Connect(name, namelen);
   if (XFAILED(status)) {

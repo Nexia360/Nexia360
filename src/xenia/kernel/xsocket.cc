@@ -10,9 +10,9 @@
 #include <cstring>
 #include <vector>
 #include "xenia/base/platform.h"
-#include "xenia/kernel/util/socket_compat.h"
 #include "xenia/kernel/XLiveAPI.h"
 #include "xenia/kernel/kernel_state.h"
+#include "xenia/kernel/util/socket_compat.h"
 #include "xenia/kernel/xam/xam_module.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_threading.h"
 #include "xenia/kernel/xevent.h"
@@ -242,9 +242,9 @@ int XSocket::RecvFrom(uint8_t* buf, uint32_t buf_len, uint32_t flags,
     sa = from->to_host();
   }
   socklen_t from_len_sl = from_len ? static_cast<socklen_t>(*from_len) : 0;
-  int ret = recvfrom(native_handle_, reinterpret_cast<char*>(buf), buf_len,
-                     flags, from ? &sa : nullptr,
-                     from_len ? &from_len_sl : nullptr);
+  int ret =
+      recvfrom(native_handle_, reinterpret_cast<char*>(buf), buf_len, flags,
+               from ? &sa : nullptr, from_len ? &from_len_sl : nullptr);
   if (from_len) *from_len = static_cast<uint32_t>(from_len_sl);
   if (from) {
     from->to_guest(&sa);
@@ -463,10 +463,10 @@ int XSocket::PushWSASendTo(bool wait, WSASendToData send_async_data) {
       combined_buf.insert(combined_buf.end(), src,
                           src + send_async_data.buffers[i].len);
     }
-    ssize_t sent = sendto(native_handle_, combined_buf.data(),
-                          combined_buf.size(), send_async_data.flags,
-                          send_async_data.to ? &addr : nullptr,
-                          send_async_data.to ? send_async_data.to_len : 0);
+    ssize_t sent =
+        sendto(native_handle_, combined_buf.data(), combined_buf.size(),
+               send_async_data.flags, send_async_data.to ? &addr : nullptr,
+               send_async_data.to ? send_async_data.to_len : 0);
     ret = (sent >= 0) ? 0 : -1;
     bytes_sent = (sent >= 0) ? static_cast<DWORD>(sent) : 0;
 #endif
