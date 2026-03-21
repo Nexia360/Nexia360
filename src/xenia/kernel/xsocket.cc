@@ -8,7 +8,9 @@
  */
 #include "src/xenia/kernel/xsocket.h"
 #include <cstring>
+#include <vector>
 #include "xenia/base/platform.h"
+#include "xenia/kernel/util/socket_compat.h"
 #include "xenia/kernel/XLiveAPI.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/xam/xam_module.h"
@@ -207,7 +209,7 @@ X_STATUS XSocket::Listen(int backlog) {
 }
 object_ref<XSocket> XSocket::Accept(XSOCKADDR_IN* name, int* name_len) {
   sockaddr sa = {};
-  int addrlen = 0;
+  socklen_t addrlen = 0;
   const bool is_name_and_name_len_available = name && name_len;
   if (is_name_and_name_len_available) {
     addrlen = byte_swap(*name_len);
@@ -239,8 +241,11 @@ int XSocket::RecvFrom(uint8_t* buf, uint32_t buf_len, uint32_t flags,
   if (from) {
     sa = from->to_host();
   }
+  socklen_t from_len_sl = from_len ? static_cast<socklen_t>(*from_len) : 0;
   int ret = recvfrom(native_handle_, reinterpret_cast<char*>(buf), buf_len,
-                     flags, from ? &sa : nullptr, (int*)from_len);
+                     flags, from ? &sa : nullptr,
+                     from_len ? &from_len_sl : nullptr);
+  if (from_len) *from_len = static_cast<uint32_t>(from_len_sl);
   if (from) {
     from->to_guest(&sa);
   }
@@ -401,7 +406,6 @@ int XSocket::PushWSASendTo(bool wait, WSASendToData send_async_data) {
   fds.events = POLLOUT;
   DWORD bytes_sent = 0;
   DWORD flags = send_async_data.flags;
-  WSABUF* buffers = nullptr;
   sockaddr addr = {};
   if (send_async_data.to) {
     addr = send_async_data.to->to_host();
@@ -435,24 +439,43 @@ int XSocket::PushWSASendTo(bool wait, WSASendToData send_async_data) {
     ret = -1;
     goto threadexit;
   }
-  buffers = new WSABUF[send_async_data.num_buffers];
-  for (uint32_t i = 0; i < send_async_data.num_buffers; i++) {
-    buffers[i].len = send_async_data.buffers[i].len;
-    buffers[i].buf =
-        reinterpret_cast<CHAR*>(kernel_state()->memory()->TranslateVirtual(
-            send_async_data.buffers[i].buf_ptr));
-  }
+  // Build buffer array for sending
   for (int send_retry = 0; send_retry < 5; send_retry++) {
+#ifdef XE_PLATFORM_WIN32
+    WSABUF* wsa_buffers = new WSABUF[send_async_data.num_buffers];
+    for (uint32_t i = 0; i < send_async_data.num_buffers; i++) {
+      wsa_buffers[i].len = send_async_data.buffers[i].len;
+      wsa_buffers[i].buf =
+          reinterpret_cast<CHAR*>(kernel_state()->memory()->TranslateVirtual(
+              send_async_data.buffers[i].buf_ptr));
+    }
     ret = ::WSASendTo(
-        native_handle_, buffers, send_async_data.num_buffers, &bytes_sent,
+        native_handle_, wsa_buffers, send_async_data.num_buffers, &bytes_sent,
         send_async_data.flags, send_async_data.to ? &addr : nullptr,
         send_async_data.to ? send_async_data.to_len : 0, nullptr, nullptr);
+    delete[] wsa_buffers;
+#else
+    // Linux: use regular sendto with concatenated buffer
+    std::vector<uint8_t> combined_buf;
+    for (uint32_t i = 0; i < send_async_data.num_buffers; i++) {
+      auto* src = kernel_state()->memory()->TranslateVirtual(
+          send_async_data.buffers[i].buf_ptr);
+      combined_buf.insert(combined_buf.end(), src,
+                          src + send_async_data.buffers[i].len);
+    }
+    ssize_t sent = sendto(native_handle_, combined_buf.data(),
+                          combined_buf.size(), send_async_data.flags,
+                          send_async_data.to ? &addr : nullptr,
+                          send_async_data.to ? send_async_data.to_len : 0);
+    ret = (sent >= 0) ? 0 : -1;
+    bytes_sent = (sent >= 0) ? static_cast<DWORD>(sent) : 0;
+#endif
     if (ret >= 0) break;
     auto host_err = WSAGetLastError();
     // Retryable errors: reestablish socket and retry up to 5 times.
     if (host_err == WSAENETRESET || host_err == WSAECONNRESET ||
         host_err == WSAETIMEDOUT) {
-      XELOGW("WSASendTo retry {}/5 after error {}", send_retry + 1, host_err);
+      XELOGW("sendto retry {}/5 after error {}", send_retry + 1, host_err);
       // Reestablish the socket.
       {
         std::lock_guard lock(send_socket_mutex_);
@@ -488,8 +511,6 @@ int XSocket::PushWSASendTo(bool wait, WSASendToData send_async_data) {
       case WSAEINVAL:
         send_async_data.overlapped->internal_high =
             (uint32_t)X_WSAError::X_WSA_OPERATION_ABORTED;
-        delete[] buffers;
-        buffers = nullptr;
         goto threadexit;
       case WSAEMSGSIZE:
         send_async_data.overlapped->internal_high =
@@ -521,8 +542,6 @@ int XSocket::PushWSASendTo(bool wait, WSASendToData send_async_data) {
     send_async_data.overlapped->internal = bytes_sent;
   }
   send_async_data.overlapped->offset = flags;
-  delete[] buffers;
-  buffers = nullptr;
 threadexit:
   if (send_async_data.heap_allocated) {
     delete[] send_async_data.buffers;
@@ -932,8 +951,14 @@ int XSocket::SendTo(uint8_t* buf, uint32_t buf_len, uint32_t flags,
 }
 int XSocket::WSAEventSelect(uint64_t socket_handle, uint64_t event_handle,
                             uint32_t flags) {
+#ifdef XE_PLATFORM_WIN32
   return ::WSAEventSelect(socket_handle, reinterpret_cast<HANDLE>(event_handle),
                           flags);
+#else
+  // Linux doesn't have WSAEventSelect. The event-based model
+  // is handled differently via poll/epoll at the call site.
+  return 0;
+#endif
 }
 bool XSocket::QueuePacket(uint32_t src_ip, uint16_t src_port,
                           const uint8_t* buf, size_t len) {

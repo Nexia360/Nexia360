@@ -11,6 +11,7 @@
 #define XENIA_KERNEL_NET_NETWORK_MESSAGES_H_
 
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <memory>
 #include <vector>

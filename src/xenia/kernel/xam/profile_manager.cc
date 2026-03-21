@@ -697,13 +697,13 @@ bool ProfileManager::ModifyAccount(
 bool ProfileManager::ConvertToXboxLiveEnabledProfile(const uint64_t xuid) {
   xe::X_XAMACCOUNTINFO* account = &accounts_[xuid];
 
-  auto run = [this, account](X_XAMACCOUNTINFO* account) {
-    account->reserved_flags |=
+  auto run = [this, account](X_XAMACCOUNTINFO* acc) {
+    acc->reserved_flags |=
         X_XAMACCOUNTINFO::AccountReservedFlags::kLiveEnabled;
 
     // Generate once
-    if (!account->xuid_online) {
-      account->xuid_online = GenerateXuidOnline();
+    if (!acc->xuid_online) {
+      acc->xuid_online = GenerateXuidOnline();
     }
 
     return true;
@@ -715,8 +715,8 @@ bool ProfileManager::ConvertToXboxLiveEnabledProfile(const uint64_t xuid) {
 bool ProfileManager::ConvertToOfflineProfile(const uint64_t xuid) {
   xe::X_XAMACCOUNTINFO* account = &accounts_[xuid];
 
-  auto run = [account](X_XAMACCOUNTINFO* account) {
-    account->reserved_flags &=
+  auto run = [account](X_XAMACCOUNTINFO* acc) {
+    acc->reserved_flags &=
         ~X_XAMACCOUNTINFO::AccountReservedFlags::kLiveEnabled;
 
     return true;

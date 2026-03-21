@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cstring>
 
 // TODO: Replace with xenia/base/logging.h when integrating
 #ifndef XELOGI

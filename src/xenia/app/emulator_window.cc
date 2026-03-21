@@ -847,6 +847,7 @@ bool EmulatorWindow::Initialize() {
     Network_interfaces_menu->AddChild(
         MenuItem::Create(MenuItem::Type::kSeparator));
 
+#ifdef XE_PLATFORM_WIN32
     for (auto& adapter : xe::kernel::XLiveAPI::adapter_addresses) {
       std::string guid = adapter.AdapterName;
       std::string interface_name =
@@ -857,6 +858,7 @@ bool EmulatorWindow::Initialize() {
                            std::bind(&EmulatorWindow::SetNetworkInterfaceByGUID,
                                      this, adapter.AdapterName)));
     }
+#endif
 
     Network_mode_menu->AddChild(
         MenuItem::Create(MenuItem::Type::kString, "Offline", "",
@@ -1129,18 +1131,22 @@ void EmulatorWindow::OnMouseUp(const ui::MouseEvent& e) {
 }
 
 void EmulatorWindow::StartThreadDumpWatchdog() {
-  // Spawn a background thread that polls for F10 via GetAsyncKeyState.
+  // Spawn a background thread that polls for a key to trigger thread dump.
   // This works even when the UI thread is blocked by a frozen game.
   std::thread([this]() {
     bool was_pressed = false;
     while (true) {
+#ifdef XE_PLATFORM_WIN32
       bool pressed =
           (GetAsyncKeyState(VK_OEM_5) & 0x8000) != 0;  // backslash/pipe key
+#else
+      bool pressed = false;  // TODO: Linux key polling
+#endif
       if (pressed && !was_pressed) {
         DumpThreadStates();
       }
       was_pressed = pressed;
-      Sleep(100);  // 100ms poll
+      xe::threading::Sleep(std::chrono::milliseconds(100));
     }
   }).detach();
 }
@@ -1671,12 +1677,14 @@ void EmulatorWindow::SetNetworkInterfaceByGUID(std::string guid) {
       xe::kernel::XLiveAPI::InitState::Pending) {
     std::string interface_name = "Reset";
 
+#ifdef XE_PLATFORM_WIN32
     for (auto& adapter : xe::kernel::XLiveAPI::adapter_addresses) {
       if (adapter.AdapterName == guid) {
         interface_name = xe::kernel::XLiveAPI::GetNetworkFriendlyName(adapter);
         break;
       }
     }
+#endif
 
     app_context_.CallInUIThread([&]() {
       new xe::ui::HostNotificationWindow(imgui_drawer(), "Network Interface",
@@ -2294,12 +2302,12 @@ void EmulatorWindow::GamepadHotKeys() {
           if (solo_guide && !guide_button_was_pressed_[user_index]) {
             // Guide just pressed alone - record time
             guide_button_was_pressed_[user_index] = true;
-            guide_button_press_time_[user_index] = GetTickCount64();
+            guide_button_press_time_[user_index] = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
           } else if (!guide_pressed && guide_button_was_pressed_[user_index]) {
             // Guide just released - check duration
             guide_button_was_pressed_[user_index] = false;
             uint64_t duration =
-                GetTickCount64() - guide_button_press_time_[user_index];
+                static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count()) - guide_button_press_time_[user_index];
 
             if (duration >= kGuideLongPressMs) {
               // Long press - friends/netplay manager

@@ -31,7 +31,9 @@
 #include "xenia/ui/file_picker.h"
 #include "xenia/ui/window.h"
 #include "xenia/ui/window_listener.h"
+#ifdef XE_PLATFORM_WIN32
 #include "xenia/ui/window_win.h"
+#endif
 #include "xenia/ui/windowed_app.h"
 #include "xenia/ui/windowed_app_context.h"
 #include "xenia/vfs/devices/host_path_device.h"
@@ -526,6 +528,7 @@ bool EmulatorApp::OnInitialize() {
     return false;
   }
 
+#ifdef XE_PLATFORM_WIN32
   // Restore window placement from a warm reboot if available.
   {
     auto wp_path =
@@ -551,6 +554,7 @@ bool EmulatorApp::OnInitialize() {
       std::filesystem::remove(wp_path);
     }
   }
+#endif
 
   // Setup the emulator and run its loop in a separate thread.
   emulator_thread_quit_requested_.store(false, std::memory_order_relaxed);
@@ -807,6 +811,7 @@ void EmulatorApp::EmulatorThread() {
           xam->SaveLoaderData();
         }
 
+#ifdef XE_PLATFORM_WIN32
         // Save window placement + fullscreen state so new process can restore.
         auto* win32_window =
             dynamic_cast<xe::ui::Win32Window*>(emulator_window_->window());
@@ -834,6 +839,13 @@ void EmulatorApp::EmulatorThread() {
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
         std::quick_exit(0);
+#else
+        // Linux: re-exec the process
+        auto exe_str = exe_path.string();
+        execl(exe_str.c_str(), exe_str.c_str(), nullptr);
+        // If execl fails, just exit
+        std::quick_exit(1);
+#endif
       }
 
       // Create a brand new emulator from scratch.
