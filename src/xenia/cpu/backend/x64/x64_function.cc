@@ -270,15 +270,10 @@ bool X64Function::CallImpl(ThreadState* thread_state, uint32_t return_address) {
 
 #else
   XELOGD("[CALL] non-Win32 direct thunk fn={:#010X}", address());
-  thunk(machine_code_, ctx, reinterpret_cast<void*>(uintptr_t(return_address)));
+  thunk(machine_code_, thread_state->context(),
+        reinterpret_cast<void*>(uintptr_t(return_address)));
   return true;
 #endif
-  }
-
-  else {
-    thunk(machine_code_, thread_state->context(),
-          reinterpret_cast<void*>(uintptr_t(return_address)));
-    return true;
   }
 }
 
