@@ -92,6 +92,10 @@ jobs:
           sudo apt-get -y update
           sudo apt-get -y install mesa-vulkan-drivers valgrind libc++-dev libc++abi-dev libgtk-3-dev libsdl2-dev libvulkan-dev libx11-xcb-dev clang-${{ matrix.LLVM_VERSION }} ninja-build
           ./xenia-build.py setup
+      - name: Generate miniupnpcstrings.h
+        run: |
+          cd third_party/miniupnp/miniupnpc
+          sh updateminiupnpcstrings.sh
       - name: Build
         env:
           CC: clang-${{ matrix.LLVM_VERSION }}
