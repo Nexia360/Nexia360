@@ -1,0 +1,1174 @@
+Building configurations...
+    Baking aes_128...
+    Baking capstone...
+    Baking dxbc...
+    Baking discord-rpc...
+    Baking cxxopts...
+    Baking tomlplusplus...
+    Baking libavcodec...
+    Baking libavformat...
+    Baking libavutil...
+    Baking fmt...
+    Baking glslang-spirv...
+    Baking imgui...
+    Baking mspack...
+    Baking snappy...
+    Baking xxhash...
+    Baking zarchive...
+    Baking zstd...
+    Baking zlib-ng...
+    Baking pugixml...
+    Baking libcurl...
+    Baking rapidjson...
+    Baking miniupnp...
+    Baking wolfssl...
+    Baking libusb...
+    Baking SDL2...
+    Baking xenia-core...
+    Baking xenia-app...
+    Baking xenia-app-discord...
+    Baking xenia-apu...
+    Baking xenia-apu-nop...
+    Baking xenia-base...
+    Baking xenia-cpu...
+    Baking xenia-cpu-backend-x64...
+    Baking xenia-debug-ui...
+    Baking xenia-gpu...
+    Baking xenia-gpu-shader-compiler...
+    Baking xenia-gpu-null...
+    Baking xenia-gpu-vulkan...
+    Baking xenia-hid...
+    Baking xenia-hid-nop...
+    Baking xenia-hid-skylander...
+    Baking xenia-kernel...
+    Baking xenia-patcher...
+    Baking xenia-ui...
+    Baking xenia-ui-vulkan...
+    Baking xenia-vfs...
+    Baking xenia-apu-sdl...
+    Baking xenia-helper-sdl...
+    Baking xenia-hid-sdl...
+    Baking xenia-apu-xaudio2...
+    Baking xenia-gpu-d3d12...
+    Baking xenia-hid-winkey...
+    Baking xenia-hid-xinput...
+    Baking xenia-ui-d3d12...
+    Baking usages...
+Running action 'vs2022'...
+Done (914ms).
+
+  aes_128.vcxproj -> F:\Nexia360\build\bin\Windows\Release\aes_128.lib
+  xxhash.vcxproj -> F:\Nexia360\build\bin\Windows\Release\xxhash.lib
+  snappy.vcxproj -> F:\Nexia360\build\bin\Windows\Release\snappy.lib
+  dxbc.vcxproj -> F:\Nexia360\build\bin\Windows\Release\dxbc.lib
+  rapidjson.vcxproj -> F:\Nexia360\build\bin\Windows\Release\rapidjson.lib
+  capstone.vcxproj -> F:\Nexia360\build\bin\Windows\Release\capstone.lib
+  libusb.vcxproj -> F:\Nexia360\build\bin\Windows\Release\libusb.lib
+  discord-rpc.vcxproj -> F:\Nexia360\build\bin\Windows\Release\discord-rpc.lib
+  glslang-spirv.vcxproj -> F:\Nexia360\build\bin\Windows\Release\glslang-spirv.lib
+  fmt.vcxproj -> F:\Nexia360\build\bin\Windows\Release\fmt.lib
+  imgui.vcxproj -> F:\Nexia360\build\bin\Windows\Release\imgui.lib
+  pugixml.vcxproj -> F:\Nexia360\build\bin\Windows\Release\pugixml.lib
+  zstd.vcxproj -> F:\Nexia360\build\bin\Windows\Release\zstd.lib
+  wolfssl.vcxproj -> F:\Nexia360\build\bin\Windows\Release\wolfssl.lib
+  zlib-ng.vcxproj -> F:\Nexia360\build\bin\Windows\Release\zlib-ng.lib
+  xenia-app-discord.vcxproj -> F:\Nexia360\build\bin\Windows\Release\xenia-app-discord.lib
+  xenia-hid-skylander.vcxproj -> F:\Nexia360\build\bin\Windows\Release\xenia-hid-skylander.lib
+  libavutil.vcxproj -> F:\Nexia360\build\bin\Windows\Release\libavutil.lib
+  zarchive.vcxproj -> F:\Nexia360\build\bin\Windows\Release\zarchive.lib
+  SDL2.vcxproj -> F:\Nexia360\build\bin\Windows\Release\SDL2.lib
+  xenia-base.vcxproj -> F:\Nexia360\build\bin\Windows\Release\xenia-base.lib
+  libcurl.vcxproj -> F:\Nexia360\build\bin\Windows\Release\libcurl.lib
+  xenia-helper-sdl.vcxproj -> F:\Nexia360\build\bin\Windows\Release\xenia-helper-sdl.lib
+  xenia-core.vcxproj -> F:\Nexia360\build\bin\Windows\Release\xenia-core.lib
+  mspack.vcxproj -> F:\Nexia360\build\bin\Windows\Release\mspack.lib
+  xenia-hid.vcxproj -> F:\Nexia360\build\bin\Windows\Release\xenia-hid.lib
+  xenia-patcher.vcxproj -> F:\Nexia360\build\bin\Windows\Release\xenia-patcher.lib
+  xenia-ui.vcxproj -> F:\Nexia360\build\bin\Windows\Release\xenia-ui.lib
+  libavcodec.vcxproj -> F:\Nexia360\build\bin\Windows\Release\libavcodec.lib
+  xenia-hid-xinput.vcxproj -> F:\Nexia360\build\bin\Windows\Release\xenia-hid-xinput.lib
+  xenia-vfs.vcxproj -> F:\Nexia360\build\bin\Windows\Release\xenia-vfs.lib
+  xenia-hid-nop.vcxproj -> F:\Nexia360\build\bin\Windows\Release\xenia-hid-nop.lib
+  xenia-hid-sdl.vcxproj -> F:\Nexia360\build\bin\Windows\Release\xenia-hid-sdl.lib
+  xenia-hid-winkey.vcxproj -> F:\Nexia360\build\bin\Windows\Release\xenia-hid-winkey.lib
+  xenia-ui-d3d12.vcxproj -> F:\Nexia360\build\bin\Windows\Release\xenia-ui-d3d12.lib
+  xenia-cpu.vcxproj -> F:\Nexia360\build\bin\Windows\Release\xenia-cpu.lib
+  libavformat.vcxproj -> F:\Nexia360\build\bin\Windows\Release\libavformat.lib
+  xenia-gpu.vcxproj -> F:\Nexia360\build\bin\Windows\Release\xenia-gpu.lib
+  xenia-debug-ui.vcxproj -> F:\Nexia360\build\bin\Windows\Release\xenia-debug-ui.lib
+  xenia-apu.vcxproj -> F:\Nexia360\build\bin\Windows\Release\xenia-apu.lib
+  xenia-cpu-backend-x64.vcxproj -> F:\Nexia360\build\bin\Windows\Release\xenia-cpu-backend-x64.lib
+  xenia-gpu-d3d12.vcxproj -> F:\Nexia360\build\bin\Windows\Release\xenia-gpu-d3d12.lib
+  xenia-apu-nop.vcxproj -> F:\Nexia360\build\bin\Windows\Release\xenia-apu-nop.lib
+  xenia-apu-sdl.vcxproj -> F:\Nexia360\build\bin\Windows\Release\xenia-apu-sdl.lib
+  xenia-apu-xaudio2.vcxproj -> F:\Nexia360\build\bin\Windows\Release\xenia-apu-xaudio2.lib
+  miniupnp.vcxproj -> F:\Nexia360\build\bin\Windows\Release\miniupnp.lib
+  xenia-ui-vulkan.vcxproj -> F:\Nexia360\build\bin\Windows\Release\xenia-ui-vulkan.lib
+  xenia-gpu-null.vcxproj -> F:\Nexia360\build\bin\Windows\Release\xenia-gpu-null.lib
+  xenia-gpu-shader-compiler.vcxproj -> F:\Nexia360\build\bin\Windows\Release\xenia-gpu-shader-compiler.exe
+  xenia-gpu-vulkan.vcxproj -> F:\Nexia360\build\bin\Windows\Release\xenia-gpu-vulkan.lib
+cl : command line  warning D9025: overriding '/Ob2' with '/Ob3' [F:\Nexia360\build\xenia-kernel.vcxproj]
+cl : command line  warning D9025: overriding '/Ob2' with '/Ob3' [F:\Nexia360\build\xenia-kernel.vcxproj]
+cl : command line  warning D9025: overriding '/Ob2' with '/Ob3' [F:\Nexia360\build\xenia-kernel.vcxproj]
+  XLiveAPI.cpp
+  arbitration_object_json.cc
+cl : command line  warning D9025: overriding '/Ob2' with '/Ob3' [F:\Nexia360\build\xenia-kernel.vcxproj]
+  find_users_object_json.cc
+cl : command line  warning D9025: overriding '/Ob2' with '/Ob3' [F:\Nexia360\build\xenia-kernel.vcxproj]
+cl : command line  warning D9025: overriding '/Ob2' with '/Ob3' [F:\Nexia360\build\xenia-kernel.vcxproj]
+  friend_presence_object_json.cc
+cl : command line  warning D9025: overriding '/Ob2' with '/Ob3' [F:\Nexia360\build\xenia-kernel.vcxproj]
+cl : command line  warning D9025: overriding '/Ob2' with '/Ob3' [F:\Nexia360\build\xenia-kernel.vcxproj]
+  http_response_object_json.cc
+cl : command line  warning D9025: overriding '/Ob2' with '/Ob3' [F:\Nexia360\build\xenia-kernel.vcxproj]
+cl : command line  warning D9025: overriding '/Ob2' with '/Ob3' [F:\Nexia360\build\xenia-kernel.vcxproj]
+cl : command line  warning D9025: overriding '/Ob2' with '/Ob3' [F:\Nexia360\build\xenia-kernel.vcxproj]
+cl : command line  warning D9025: overriding '/Ob2' with '/Ob3' [F:\Nexia360\build\xenia-kernel.vcxproj]
+  player_object_json.cc
+  properties_object_json.cc
+  services_json.cc
+  xstorage_file_info_object_json.cc
+  upnp.cc
+cl : command line  warning D9025: overriding '/Ob2' with '/Ob3' [F:\Nexia360\build\xenia-kernel.vcxproj]
+cl : command line  warning D9025: overriding '/Ob2' with '/Ob3' [F:\Nexia360\build\xenia-kernel.vcxproj]
+cl : command line  warning D9025: overriding '/Ob2' with '/Ob3' [F:\Nexia360\build\xenia-kernel.vcxproj]
+cl : command line  warning D9025: overriding '/Ob2' with '/Ob3' [F:\Nexia360\build\xenia-kernel.vcxproj]
+  net_utils.cc
+cl : command line  warning D9025: overriding '/Ob2' with '/Ob3' [F:\Nexia360\build\xenia-kernel.vcxproj]
+cl : command line  warning D9025: overriding '/Ob2' with '/Ob3' [F:\Nexia360\build\xenia-kernel.vcxproj]
+cl : command line  warning D9025: overriding '/Ob2' with '/Ob3' [F:\Nexia360\build\xenia-kernel.vcxproj]
+cl : command line  warning D9025: overriding '/Ob2' with '/Ob3' [F:\Nexia360\build\xenia-kernel.vcxproj]
+cl : command line  warning D9025: overriding '/Ob2' with '/Ob3' [F:\Nexia360\build\xenia-kernel.vcxproj]
+  app_manager.cc
+  xam_app.cc
+  xgi_app.cc
+  xlivebase_app.cc
+  xmp_app.cc
+  profile_manager.cc
+cl : command line  warning D9025: overriding '/Ob2' with '/Ob3' [F:\Nexia360\build\xenia-kernel.vcxproj]
+  community_sessions_ui.cc
+  create_profile_ui.cc
+  friendfind_ui.cc
+cl : command line  warning D9025: overriding '/Ob2' with '/Ob3' [F:\Nexia360\build\xenia-kernel.vcxproj]
+cl : command line  warning D9025: overriding '/Ob2' with '/Ob3' [F:\Nexia360\build\xenia-kernel.vcxproj]
+cl : command line  warning D9025: overriding '/Ob2' with '/Ob3' [F:\Nexia360\build\xenia-kernel.vcxproj]
+cl : command line  warning D9025: overriding '/Ob2' with '/Ob3' [F:\Nexia360\build\xenia-kernel.vcxproj]
+cl : command line  warning D9025: overriding '/Ob2' with '/Ob3' [F:\Nexia360\build\xenia-kernel.vcxproj]
+cl : command line  warning D9025: overriding '/Ob2' with '/Ob3' [F:\Nexia360\build\xenia-kernel.vcxproj]
+cl : command line  warning D9025: overriding '/Ob2' with '/Ob3' [F:\Nexia360\build\xenia-kernel.vcxproj]
+cl : command line  warning D9025: overriding '/Ob2' with '/Ob3' [F:\Nexia360\build\xenia-kernel.vcxproj]
+cl : command line  warning D9025: overriding '/Ob2' with '/Ob3' [F:\Nexia360\build\xenia-kernel.vcxproj]
+  friends_ui.cc
+  gamercard_from_xuid_ui.cc
+  signin_ui.cc
+  user_tracker.cc
+  xam_state.cc
+  xam_ui.cc
+  xam_user.cc
+  xam_video.cc
+  xsession.cc
+  xsocket.cc
+F:\Nexia360\src\xenia\kernel\xam\profile_manager.h(49,42): error C3861: 'GetConsoleMacAddress': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/util/net_utils.cc')
+  
+F:\Nexia360\src\xenia\kernel\xam\profile_manager.h(49,42): error C3861: 'GetConsoleMacAddress': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/json/player_object_json.cc')
+  
+F:\Nexia360\src\xenia\kernel\xam\profile_manager.h(49,42): error C3861: 'GetConsoleMacAddress': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/json/properties_object_json.cc')
+  
+F:\Nexia360\src\xenia\kernel\xam\profile_manager.h(49,42): error C3861: 'GetConsoleMacAddress': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/json/xstorage_file_info_object_json.cc')
+  
+F:\Nexia360\src\xenia\kernel\xam\profile_manager.h(49,42): error C3861: 'GetConsoleMacAddress': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/json/find_users_object_json.cc')
+  
+F:\Nexia360\src\xenia\kernel\xam\profile_manager.h(49,42): error C3861: 'GetConsoleMacAddress': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/json/friend_presence_object_json.cc')
+  
+F:\Nexia360\src\xenia\kernel\xam\profile_manager.h(49,42): error C3861: 'GetConsoleMacAddress': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/upnp.cc')
+  
+F:\Nexia360\src\xenia\kernel\xam\xam_state.h(46,17): error C2143: syntax error: missing ';' before '*' [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/xam/profile_manager.cc')
+  
+F:\Nexia360\src\xenia\kernel\xam\xam_state.h(46,3): error C4430: missing type specifier - int assumed. Note: C++ does not support default-int [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/xam/profile_manager.cc')
+  
+F:\Nexia360\src\xenia\kernel\xam\xam_state.h(46,43): error C2334: unexpected token(s) preceding '{'; skipping apparent function body [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/xam/profile_manager.cc')
+  
+F:\Nexia360\src\xenia\kernel\xam\profile_manager.h(49,42): error C3861: 'GetConsoleMacAddress': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/json/arbitration_object_json.cc')
+  
+F:\Nexia360\src\xenia\kernel\xam\xam_state.h(81,19): error C2065: 'ProfileManager': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/xam/profile_manager.cc')
+  
+F:\Nexia360\src\xenia\kernel\xam\xam_state.h(81,8): error C2923: 'std::unique_ptr': 'ProfileManager' is not a valid template type argument for parameter '_Ty' [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/xam/profile_manager.cc')
+      F:\Nexia360\src\xenia\kernel\xam\xam_state.h(81,19):
+      see declaration of 'ProfileManager'
+  
+F:\Nexia360\src\xenia\kernel\xam\xam_state.h(81,8): error C2976: 'std::unique_ptr': too few template arguments [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/xam/profile_manager.cc')
+      C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207\include\memory(3347,7):
+      see declaration of 'std::unique_ptr'
+  
+F:\Nexia360\src\xenia\kernel\xam\xam_state.h(81,35): error C2955: 'std::unique_ptr': use of class template requires template argument list [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/xam/profile_manager.cc')
+      C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207\include\memory(3347,7):
+      see declaration of 'std::unique_ptr'
+  
+F:\Nexia360\src\xenia\kernel\xam\profile_manager.h(49,42): error C3861: 'GetConsoleMacAddress': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/json/http_response_object_json.cc')
+  
+F:\Nexia360\src\xenia\kernel\xam\profile_manager.h(49,42): error C3861: 'GetConsoleMacAddress': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/json/services_json.cc')
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xlivebase_app.h(25,13): error C3668: 'xe::kernel::xam::apps::XLiveBaseApp::DispatchMessageSync': method with override specifier 'override' did not override any base class methods [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/xam/apps/xlivebase_app.cc')
+  
+F:\Nexia360\src\xenia\kernel\xam\profile_manager.h(49,42): error C3861: 'GetConsoleMacAddress': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/xsocket.cc')
+  
+F:\Nexia360\src\xenia\kernel\kernel_state.h(189,8): error C2039: 'XamState': is not a member of 'xe::kernel::xam' [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/xam/xam_state.cc')
+      F:\Nexia360\src\xenia\kernel\xam\user_profile.h(33,11):
+      see declaration of 'xe::kernel::xam'
+  
+F:\Nexia360\src\xenia\kernel\kernel_state.h(189,16): error C2143: syntax error: missing ';' before '*' [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/xam/xam_state.cc')
+  
+F:\Nexia360\src\xenia\kernel\kernel_state.h(189,8): error C4430: missing type specifier - int assumed. Note: C++ does not support default-int [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/xam/xam_state.cc')
+  
+F:\Nexia360\src\xenia\kernel\kernel_state.h(189,36): error C2334: unexpected token(s) preceding '{'; skipping apparent function body [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/xam/xam_state.cc')
+  
+F:\Nexia360\src\xenia\kernel\kernel_state.h(349,24): error C2039: 'XamState': is not a member of 'xe::kernel::xam' [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/xam/xam_state.cc')
+      F:\Nexia360\src\xenia\kernel\xam\user_profile.h(33,11):
+      see declaration of 'xe::kernel::xam'
+  
+F:\Nexia360\src\xenia\kernel\kernel_state.h(349,24): error C2065: 'XamState': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/xam/xam_state.cc')
+  
+F:\Nexia360\src\xenia\kernel\kernel_state.h(349,8): error C2923: 'std::unique_ptr': 'XamState' is not a valid template type argument for parameter '_Ty' [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/xam/xam_state.cc')
+      F:\Nexia360\src\xenia\kernel\kernel_state.h(349,24):
+      see declaration of 'XamState'
+  
+F:\Nexia360\src\xenia\kernel\kernel_state.h(349,8): error C2976: 'std::unique_ptr': too few template arguments [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/xam/xam_state.cc')
+      C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207\include\memory(3347,7):
+      see declaration of 'std::unique_ptr'
+  
+F:\Nexia360\src\xenia\kernel\kernel_state.h(349,34): error C2955: 'std::unique_ptr': use of class template requires template argument list [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/xam/xam_state.cc')
+      C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207\include\memory(3347,7):
+      see declaration of 'std::unique_ptr'
+  
+F:\Nexia360\src\xenia\kernel\kernel_state.h(194,12): error C3861: 'xam_state': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/xam/xam_state.cc')
+  
+F:\Nexia360\src\xenia\kernel\kernel_state.h(196,49): error C3861: 'xam_state': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/xam/xam_state.cc')
+  
+F:\Nexia360\src\xenia\kernel\kernel_state.h(198,12): error C3861: 'xam_state': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/xam/xam_state.cc')
+  
+F:\Nexia360\src\xenia\kernel\xam\xam_video.cc(28,13): error C2660: 'xe::kernel::xboxkrnl::VdQueryVideoMode': function does not take 2 arguments [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\xboxkrnl\xboxkrnl_video.h(19,6):
+      see declaration of 'xe::kernel::xboxkrnl::VdQueryVideoMode'
+      F:\Nexia360\src\xenia\kernel\xam\xam_video.cc(28,13):
+      while trying to match the argument list '(const xe::kernel::shim::TypedPointerParam<xe::X_VIDEO_MODE>, bool)'
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xlivebase_app.h(25,13): error C3668: 'xe::kernel::xam::apps::XLiveBaseApp::DispatchMessageSync': method with override specifier 'override' did not override any base class methods [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/xam/app_manager.cc')
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(33,19): error C2039: 'DispatchMessageSync': is not a member of 'xe::kernel::xam::apps::XamApp' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.h(21,7):
+      see declaration of 'xe::kernel::xam::apps::XamApp'
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(36,17): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(48,49): error C3536: 'buffer': cannot be used before it is initialized [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(48,17): warning C4312: 'reinterpret_cast': conversion from '<error type>' to 'xe::kernel::xam::apps::DispatchMessageSync::message_data *' of greater size [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(60,20): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(60,78): error C2059: syntax error: '>' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(62,21): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(63,16): error C2065: 'kernel_state_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(64,11): error C3536: 'extra': cannot be used before it is initialized [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(65,12): error C3536: 'e': cannot be used before it is initialized [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(70,21): error C3536: 'buffer': cannot be used before it is initialized [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(75,11): error C3536: 'result': cannot be used before it is initialized [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(78,15): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(78,54): error C2059: syntax error: '>' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(79,12): error C3536: 'length_ptr': cannot be used before it is initialized [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(79,11): error C2100: you cannot dereference an operand of type '<error type>' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(91,17): warning C4312: 'reinterpret_cast': conversion from '<error type>' to 'xe::kernel::xam::apps::DispatchMessageSync::XContentQueryVolumeDeviceType *' of greater size [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(95,11): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(95,56): error C2059: syntax error: '>' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(98,15): error C2065: 'kernel_state_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(99,31): error C2440: 'type cast': cannot convert from 'xe::XDeploymentType' to 'int' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(99,31):
+      This conversion requires an explicit cast (static_cast, C-style cast or parenthesized function-style cast)
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(99,9): error C2046: illegal case [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(100,31): error C2440: 'type cast': cannot convert from 'xe::XDeploymentType' to 'int' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(100,31):
+      This conversion requires an explicit cast (static_cast, C-style cast or parenthesized function-style cast)
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(100,9): error C2046: illegal case [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(103,31): error C2440: 'type cast': cannot convert from 'xe::XDeploymentType' to 'int' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(103,31):
+      This conversion requires an explicit cast (static_cast, C-style cast or parenthesized function-style cast)
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(103,9): error C2046: illegal case [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(128,17): warning C4312: 'reinterpret_cast': conversion from '<error type>' to 'xe::kernel::xam::apps::DispatchMessageSync::XTITLE_GET_DEPLOYMENT_TYPE *' of greater size [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(132,11): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(132,46): error C2059: syntax error: '>' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(133,8): error C3536: 'deployment_type': cannot be used before it is initialized [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(133,7): error C2100: you cannot dereference an operand of type '<error type>' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(133,48): error C2065: 'kernel_state_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(149,7): error C3861: 'app_id': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(146,3): error C2672: 'XELOGE': no matching overloaded function found [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\base\logging.h(175,14):
+      could be 'void XELOGE(std::string_view,const Args ...)'
+          F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(146,3):
+          Failed to specialize function template 'void XELOGE(std::string_view,const Args ...)'
+              F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(146,3):
+              With the following template arguments:
+                  F:\Nexia360\src\xenia\kernel\xam\apps\xam_app.cc(146,3):
+                  'Args={<error type>, uint32_t, uint32_t, uint32_t}'
+  
+F:\Nexia360\src\xenia\kernel\upnp.h(20,7): error C2011: 'xe::kernel::UPnP': 'class' type redefinition [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/xam/ui/community_sessions_ui.cc')
+      F:\Nexia360\src\xenia\kernel\upnp.h(20,7):
+      see declaration of 'xe::kernel::UPnP'
+  
+F:\Nexia360\src\xenia\kernel\upnp.h(20,7): error C2011: 'xe::kernel::UPnP': 'class' type redefinition [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/xam/ui/friendfind_ui.cc')
+      F:\Nexia360\src\xenia\kernel\upnp.h(20,7):
+      see declaration of 'xe::kernel::UPnP'
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(149,19): error C2039: 'DispatchMessageSync': is not a member of 'xe::kernel::xam::apps::XmpApp' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.h(196,7):
+      see declaration of 'xe::kernel::xam::apps::XmpApp'
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(152,17): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(156,57): error C3536: 'buffer': cannot be used before it is initialized [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(156,33): error C2672: 'xe::load_and_swap': no matching overloaded function found [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\base\memory.h(285,3):
+      could be 'T xe::load_and_swap(const void *)'
+          F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(156,64):
+          'initializing': cannot convert from 'int' to 'const void *'
+              F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(156,64):
+              Conversion from integral type to pointer type requires reinterpret_cast, C-style cast or parenthesized function-style cast
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(157,34): error C2672: 'xe::load_and_swap': no matching overloaded function found [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\base\memory.h(285,3):
+      could be 'T xe::load_and_swap(const void *)'
+          F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(157,65):
+          'initializing': cannot convert from 'int' to 'const void *'
+              F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(157,65):
+              Conversion from integral type to pointer type requires reinterpret_cast, C-style cast or parenthesized function-style cast
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(158,34): error C2672: 'xe::load_and_swap': no matching overloaded function found [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\base\memory.h(285,3):
+      could be 'T xe::load_and_swap(const void *)'
+          F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(158,65):
+          'initializing': cannot convert from 'int' to 'const void *'
+              F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(158,65):
+              Conversion from integral type to pointer type requires reinterpret_cast, C-style cast or parenthesized function-style cast
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(160,39): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(162,14): error C3861: 'XMPPlayTitlePlaylist': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(166,33): error C2672: 'xe::load_and_swap': no matching overloaded function found [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\base\memory.h(285,3):
+      could be 'T xe::load_and_swap(const void *)'
+          F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(166,64):
+          'initializing': cannot convert from 'int' to 'const void *'
+              F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(166,64):
+              Conversion from integral type to pointer type requires reinterpret_cast, C-style cast or parenthesized function-style cast
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(168,14): error C3861: 'XMPContinue': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(172,33): error C2672: 'xe::load_and_swap': no matching overloaded function found [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\base\memory.h(285,3):
+      could be 'T xe::load_and_swap(const void *)'
+          F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(172,64):
+          'initializing': cannot convert from 'int' to 'const void *'
+              F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(172,64):
+              Conversion from integral type to pointer type requires reinterpret_cast, C-style cast or parenthesized function-style cast
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(173,26): error C2672: 'xe::load_and_swap': no matching overloaded function found [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\base\memory.h(285,3):
+      could be 'T xe::load_and_swap(const void *)'
+          F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(173,57):
+          'initializing': cannot convert from 'int' to 'const void *'
+              F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(173,57):
+              Conversion from integral type to pointer type requires reinterpret_cast, C-style cast or parenthesized function-style cast
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(175,14): error C3861: 'XMPStop': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(179,33): error C2672: 'xe::load_and_swap': no matching overloaded function found [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\base\memory.h(285,3):
+      could be 'T xe::load_and_swap(const void *)'
+          F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(179,64):
+          'initializing': cannot convert from 'int' to 'const void *'
+              F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(179,64):
+              Conversion from integral type to pointer type requires reinterpret_cast, C-style cast or parenthesized function-style cast
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(181,14): error C3861: 'XMPPause': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(185,33): error C2672: 'xe::load_and_swap': no matching overloaded function found [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\base\memory.h(285,3):
+      could be 'T xe::load_and_swap(const void *)'
+          F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(185,64):
+          'initializing': cannot convert from 'int' to 'const void *'
+              F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(185,64):
+              Conversion from integral type to pointer type requires reinterpret_cast, C-style cast or parenthesized function-style cast
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(187,14): error C3861: 'XMPNext': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(191,33): error C2672: 'xe::load_and_swap': no matching overloaded function found [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\base\memory.h(285,3):
+      could be 'T xe::load_and_swap(const void *)'
+          F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(191,64):
+          'initializing': cannot convert from 'int' to 'const void *'
+              F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(191,64):
+              Conversion from integral type to pointer type requires reinterpret_cast, C-style cast or parenthesized function-style cast
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(193,14): error C3861: 'XMPPrevious': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(202,17): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(202,43): error C2062: type 'xe::kernel::xam::apps::DispatchMessageSync::<unnamed-type-args> *' unexpected [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(211,7): error C2065: 'kernel_state_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(212,23): error C2061: syntax error: identifier 'PlaybackMode' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(213,7): error C2065: 'kernel_state_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(214,23): error C2061: syntax error: identifier 'RepeatMode' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(215,7): error C2065: 'kernel_state_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(216,23): error C2061: syntax error: identifier 'PlaybackFlags' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(218,7): error C2065: 'kernel_state_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(224,33): error C2672: 'xe::load_and_swap': no matching overloaded function found [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\base\memory.h(285,3):
+      could be 'T xe::load_and_swap(const void *)'
+          F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(224,64):
+          'initializing': cannot convert from 'int' to 'const void *'
+              F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(224,64):
+              Conversion from integral type to pointer type requires reinterpret_cast, C-style cast or parenthesized function-style cast
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(226,15): error C2672: 'xe::load_and_swap': no matching overloaded function found [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\base\memory.h(285,3):
+      could be 'T xe::load_and_swap(const void *)'
+          F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(226,46):
+          'initializing': cannot convert from 'int' to 'const void *'
+              F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(226,46):
+              Conversion from integral type to pointer type requires reinterpret_cast, C-style cast or parenthesized function-style cast
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(228,14): error C3861: 'XMPGetStatus': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(235,17): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(235,43): error C2062: type 'xe::kernel::xam::apps::DispatchMessageSync::<unnamed-type-args> *' unexpected [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(242,11): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(243,11): error C2065: 'kernel_state_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(241,11): error C2672: 'xe::store_and_swap': no matching overloaded function found [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\base\memory.h(411,6):
+      could be 'void xe::store_and_swap(void *,const T &)'
+          F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(241,11):
+          'void xe::store_and_swap(void *,const T &)': expects 2 arguments - 1 provided
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(251,17): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(251,43): error C2062: type 'xe::kernel::xam::apps::DispatchMessageSync::<unnamed-type-args> *' unexpected [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(257,7): error C2065: 'kernel_state_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(273,17): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(273,43): error C2062: type 'xe::kernel::xam::apps::DispatchMessageSync::<unnamed-type-args> *' unexpected [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(277,11): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(286,13): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(289,14): error C3861: 'XMPCreateTitlePlaylist': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(300,17): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(300,43): error C2062: type 'xe::kernel::xam::apps::DispatchMessageSync::<unnamed-type-args> *' unexpected [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(303,19): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(303,58): error C2059: syntax error: '>' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(309,7): error C2065: 'Song': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(309,13): error C2065: 'current_song': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(310,11): error C2065: 'kernel_state_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(312,12): error C2065: 'current_song': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(316,14): error C3536: 'info': cannot be used before it is initialized [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(318,22): error C2065: 'current_song': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(319,55): error C2065: 'current_song': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(319,11): error C2672: 'xe::store_and_swap': no matching overloaded function found [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\base\memory.h(411,6):
+      could be 'void xe::store_and_swap(void *,const T &)'
+          F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(319,11):
+          'void xe::store_and_swap(void *,const T &)': expects 2 arguments - 1 provided
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(320,56): error C2065: 'current_song': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(320,11): error C2672: 'xe::store_and_swap': no matching overloaded function found [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\base\memory.h(411,6):
+      could be 'void xe::store_and_swap(void *,const T &)'
+          F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(320,11):
+          'void xe::store_and_swap(void *,const T &)': expects 2 arguments - 1 provided
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(321,55): error C2065: 'current_song': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(321,11): error C2672: 'xe::store_and_swap': no matching overloaded function found [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\base\memory.h(411,6):
+      could be 'void xe::store_and_swap(void *,const T &)'
+          F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(321,11):
+          'void xe::store_and_swap(void *,const T &)': expects 2 arguments - 1 provided
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(323,42): error C2065: 'current_song': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(322,11): error C2672: 'xe::store_and_swap': no matching overloaded function found [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\base\memory.h(411,6):
+      could be 'void xe::store_and_swap(void *,const T &)'
+          F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(322,11):
+          'void xe::store_and_swap(void *,const T &)': expects 2 arguments - 1 provided
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(324,55): error C2065: 'current_song': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(324,11): error C2672: 'xe::store_and_swap': no matching overloaded function found [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\base\memory.h(411,6):
+      could be 'void xe::store_and_swap(void *,const T &)'
+          F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(324,11):
+          'void xe::store_and_swap(void *,const T &)': expects 2 arguments - 1 provided
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(325,28): error C2065: 'current_song': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(326,24): error C2065: 'current_song': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(327,49): error C2065: 'current_song': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(335,17): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(335,43): error C2062: type 'xe::kernel::xam::apps::DispatchMessageSync::<unnamed-type-args> *' unexpected [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(339,11): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(342,14): error C3861: 'XMPDeleteTitlePlaylist': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(351,17): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(351,43): error C2062: type 'xe::kernel::xam::apps::DispatchMessageSync::<unnamed-type-args> *' unexpected [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(360,7): error C2065: 'kernel_state_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(361,11): error C3861: 'PlaybackClient': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(363,7): error C2065: 'kernel_state_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(365,11): error C2065: 'kernel_state_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(377,17): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(377,43): error C2062: type 'xe::kernel::xam::apps::DispatchMessageSync::<unnamed-type-args> *' unexpected [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(385,11): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(386,36): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(410,17): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(410,43): error C2062: type 'xe::kernel::xam::apps::DispatchMessageSync::<unnamed-type-args> *' unexpected [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(420,13): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(421,35): error C2065: 'kernel_state_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(419,13): error C2672: 'xe::store_and_swap': no matching overloaded function found [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\base\memory.h(411,6):
+      could be 'void xe::store_and_swap(void *,const T &)'
+          F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(419,13):
+          'void xe::store_and_swap(void *,const T &)': expects 2 arguments - 1 provided
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(427,13): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(428,35): error C2065: 'kernel_state_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(426,13): error C2672: 'xe::store_and_swap': no matching overloaded function found [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\base\memory.h(411,6):
+      could be 'void xe::store_and_swap(void *,const T &)'
+          F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(426,13):
+          'void xe::store_and_swap(void *,const T &)': expects 2 arguments - 1 provided
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(434,13): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(435,35): error C2065: 'kernel_state_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(433,13): error C2672: 'xe::store_and_swap': no matching overloaded function found [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\base\memory.h(411,6):
+      could be 'void xe::store_and_swap(void *,const T &)'
+          F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(433,13):
+          'void xe::store_and_swap(void *,const T &)': expects 2 arguments - 1 provided
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(456,17): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(456,43): error C2062: type 'xe::kernel::xam::apps::DispatchMessageSync::<unnamed-type-args> *' unexpected [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(462,36): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(480,17): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(480,43): error C2062: type 'xe::kernel::xam::apps::DispatchMessageSync::<unnamed-type-args> *' unexpected [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(486,7): error C2065: 'kernel_state_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(510,7): error C3861: 'app_id': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(507,3): error C2672: 'XELOGE': no matching overloaded function found [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\base\logging.h(175,14):
+      could be 'void XELOGE(std::string_view,const Args ...)'
+          F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(507,3):
+          Failed to specialize function template 'void XELOGE(std::string_view,const Args ...)'
+              F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(507,3):
+              With the following template arguments:
+                  F:\Nexia360\src\xenia\kernel\xam\apps\xmp_app.cc(507,3):
+                  'Args={<error type>, uint32_t, uint32_t, uint32_t}'
+  
+F:\Nexia360\src\xenia\kernel\upnp.h(20,7): error C2011: 'xe::kernel::UPnP': 'class' type redefinition [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/xam/ui/friends_ui.cc')
+      F:\Nexia360\src\xenia\kernel\upnp.h(20,7):
+      see declaration of 'xe::kernel::UPnP'
+  
+F:\Nexia360\src\xenia\kernel\upnp.h(20,7): error C2011: 'xe::kernel::UPnP': 'class' type redefinition [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/xam/ui/signin_ui.cc')
+      F:\Nexia360\src\xenia\kernel\upnp.h(20,7):
+      see declaration of 'xe::kernel::UPnP'
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(97,19): error C2039: 'DispatchMessageSync': is not a member of 'xe::kernel::xam::apps::XgiApp' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.h(21,7):
+      see declaration of 'xe::kernel::xam::apps::XgiApp'
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(100,17): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(107,72): error C3536: 'buffer': cannot be used before it is initialized [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(107,34): warning C4312: 'reinterpret_cast': conversion from '<error type>' to 'xe::kernel::XGI_SESSION_MODIFY *' of greater size [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(113,26): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(113,60): error C2059: syntax error: '>' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(128,34): warning C4312: 'reinterpret_cast': conversion from '<error type>' to 'xe::kernel::XGI_SESSION_SEARCH *' of greater size [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(136,11): error C2065: 'kernel_state_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(135,18): error C2737: 'xlast': const object must be initialized [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(138,36): error C2065: 'kernel_state_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(146,11): warning C4312: 'reinterpret_cast': conversion from '<error type>' to 'xe::kernel::XGI_SESSION_SEARCH_EX *' of greater size [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(148,36): error C2065: 'kernel_state_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(157,11): warning C4312: 'reinterpret_cast': conversion from '<error type>' to 'xe::kernel::XGI_SESSION_DETAILS *' of greater size [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(159,26): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(159,60): error C2059: syntax error: '>' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(175,11): warning C4312: 'reinterpret_cast': conversion from '<error type>' to 'xe::kernel::XGI_SESSION_MIGRATE *' of greater size [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(177,26): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(177,60): error C2059: syntax error: '>' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(186,11): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(186,51): error C2059: syntax error: '>' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(201,11): warning C4312: 'reinterpret_cast': conversion from '<error type>' to 'xe::kernel::xam::apps::XGI_XUSER_READ_STATS *' of greater size [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xlivebase_app.cc(962,42): error C2440: 'initializing': cannot convert from 'const std::set<uint64_t,std::less<uint64_t>,std::allocator<uint64_t>>' to 'std::vector<uint64_t,std::allocator<uint64_t>>' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\xam\apps\xlivebase_app.cc(962,42):
+      No user-defined-conversion operator available that can perform this conversion, or the operator cannot be called
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(213,11): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(213,54): error C2059: syntax error: '>' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(217,39): error C3536: 'xuids': cannot be used before it is initialized [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(217,57): error C2109: subscript requires array or pointer type [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(217,32): error C2737: 'xuid': const object must be initialized [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xlivebase_app.cc(1056,3): error C2664: 'void *memcpy(void *,const void *,size_t)': cannot convert argument 2 from 'xe::kernel::X_INVITE_INFO' to 'const void *' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\xam\apps\xlivebase_app.cc(1056,50):
+      No user-defined-conversion operator available that can perform this conversion, or the operator cannot be called
+      C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207\include\vcruntime_string.h(43,15):
+      see declaration of 'memcpy'
+      F:\Nexia360\src\xenia\kernel\xam\apps\xlivebase_app.cc(1056,3):
+      while trying to match the argument list '(xe::kernel::X_INVITE_INFO *, xe::kernel::X_INVITE_INFO, size_t)'
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xlivebase_app.cc(1057,3): error C2664: 'void *memset(void *,int,size_t)': cannot convert argument 1 from 'xe::kernel::X_INVITE_INFO' to 'void *' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\xam\apps\xlivebase_app.cc(1057,37):
+      No user-defined-conversion operator available that can perform this conversion, or the operator cannot be called
+      C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207\include\vcruntime_string.h(63,15):
+      see declaration of 'memset'
+      F:\Nexia360\src\xenia\kernel\xam\apps\xlivebase_app.cc(1057,3):
+      while trying to match the argument list '(xe::kernel::X_INVITE_INFO, int, size_t)'
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(241,11): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(241,55): error C2059: syntax error: '>' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(246,37): error C3536: 'queries': cannot be used before it is initialized [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(246,55): error C2109: subscript requires array or pointer type [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(246,21): error C2661: 'rapidjson::GenericValue<rapidjson::UTF8<char>,rapidjson::MemoryPoolAllocator<rapidjson::CrtAllocator>>::AddMember': no overloaded function takes 2 arguments [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\third_party\rapidjson\include\rapidjson\document.h(1513,5):
+      could be '::rapidjson::internal::DisableIf<::rapidjson::internal::RemoveSfinaeTag<rapidjson::internal::SfinaeTag&(__cdecl *)(rapidjson::internal::OrExpr<rapidjson::internal::IsPointer<T>,rapidjson::internal::IsGenericValue<T>>)>::Type,rapidjson::GenericValue<rapidjson::UTF8<char>,rapidjson::MemoryPoolAllocator<rapidjson::CrtAllocator>>&>::Type rapidjson::GenericValue<rapidjson::UTF8<char>,rapidjson::MemoryPoolAllocator<rapidjson::CrtAllocator>>::AddMember(rapidjson::GenericStringRef<char>,T,Allocator &)'
+          with
+          [
+              Allocator=rapidjson::MemoryPoolAllocator<rapidjson::CrtAllocator>
+          ]
+          F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(246,21):
+          '::rapidjson::internal::DisableIf<::rapidjson::internal::RemoveSfinaeTag<rapidjson::internal::SfinaeTag&(__cdecl *)(rapidjson::internal::OrExpr<rapidjson::internal::IsPointer<T>,rapidjson::internal::IsGenericValue<T>>)>::Type,rapidjson::GenericValue<rapidjson::UTF8<char>,rapidjson::MemoryPoolAllocator<rapidjson::CrtAllocator>>&>::Type rapidjson::GenericValue<rapidjson::UTF8<char>,rapidjson::MemoryPoolAllocator<rapidjson::CrtAllocator>>::AddMember(rapidjson::GenericStringRef<char>,T,Allocator &)': expects 3 arguments - 2 provided
+          with
+          [
+              Allocator=rapidjson::MemoryPoolAllocator<rapidjson::CrtAllocator>
+          ]
+      F:\Nexia360\third_party\rapidjson\include\rapidjson\document.h(1443,5):
+      or       '::rapidjson::internal::DisableIf<::rapidjson::internal::RemoveSfinaeTag<rapidjson::internal::SfinaeTag&(__cdecl *)(rapidjson::internal::OrExpr<rapidjson::internal::IsPointer<T>,rapidjson::internal::IsGenericValue<T>>)>::Type,rapidjson::GenericValue<rapidjson::UTF8<char>,rapidjson::MemoryPoolAllocator<rapidjson::CrtAllocator>>&>::Type rapidjson::GenericValue<rapidjson::UTF8<char>,rapidjson::MemoryPoolAllocator<rapidjson::CrtAllocator>>::AddMember(rapidjson::GenericValue<rapidjson::UTF8<char>,rapidjson::MemoryPoolAllocator<rapidjson::CrtAllocator>> &,T,Allocator &)'
+          with
+          [
+              Allocator=rapidjson::MemoryPoolAllocator<rapidjson::CrtAllocator>
+          ]
+          F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(246,21):
+          '::rapidjson::internal::DisableIf<::rapidjson::internal::RemoveSfinaeTag<rapidjson::internal::SfinaeTag&(__cdecl *)(rapidjson::internal::OrExpr<rapidjson::internal::IsPointer<T>,rapidjson::internal::IsGenericValue<T>>)>::Type,rapidjson::GenericValue<rapidjson::UTF8<char>,rapidjson::MemoryPoolAllocator<rapidjson::CrtAllocator>>&>::Type rapidjson::GenericValue<rapidjson::UTF8<char>,rapidjson::MemoryPoolAllocator<rapidjson::CrtAllocator>>::AddMember(rapidjson::GenericValue<rapidjson::UTF8<char>,rapidjson::MemoryPoolAllocator<rapidjson::CrtAllocator>> &,T,Allocator &)': expects 3 arguments - 2 provided
+          with
+          [
+              Allocator=rapidjson::MemoryPoolAllocator<rapidjson::CrtAllocator>
+          ]
+      F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(246,21):
+      while trying to match the argument list '(const char [3], Allocator)'
+          with
+          [
+              Allocator=rapidjson::MemoryPoolAllocator<rapidjson::CrtAllocator>
+          ]
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(250,1): error C2109: subscript requires array or pointer type [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(253,31): error C2109: subscript requires array or pointer type [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(252,24): error C2737: 'num_column_ids': const object must be initialized [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(258,51): error C2109: subscript requires array or pointer type [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\user_tracker.cc(216,28): error C2039: 'RemoveTitle': is not a member of 'xe::kernel::xam::GpdInfoProfile' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\xam\xdbf\gpd_info_profile.h(26,7):
+      see declaration of 'xe::kernel::xam::GpdInfoProfile'
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(284,41): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(286,26): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(286,70): error C2059: syntax error: '>' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(289,11): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(289,63): error C2059: syntax error: '>' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(291,7): error C3536: 'resultsHeader': cannot be used before it is initialized [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\user_tracker.cc(256,52): error C2065: 'X_STATS_SKILL_MU_DEFAULT': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(292,34): error C3536: 'leaderboards_guest_address': cannot be used before it is initialized [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\user_tracker.cc(258,50): error C2065: 'X_STATS_SKILL_SIGMA_DEFAULT': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(299,9): error C3536: 'leaderboard': cannot be used before it is initialized [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(299,37): error C2109: subscript requires array or pointer type [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(302,37): error C2109: subscript requires array or pointer type [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(303,37): error C2109: subscript requires array or pointer type [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(304,38): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(307,13): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(307,56): error C2059: syntax error: '>' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(308,37): error C2109: subscript requires array or pointer type [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(308,47): error C3536: 'players_guest_address': cannot be used before it is initialized [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(316,18): error C3536: 'player': cannot be used before it is initialized [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(316,36): error C2109: subscript requires array or pointer type [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(321,37): error C2109: subscript requires array or pointer type [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(324,29): error C2109: subscript requires array or pointer type [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(325,38): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(327,23): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(327,69): error C2059: syntax error: '>' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(329,29): error C2109: subscript requires array or pointer type [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(329,42): error C3536: 'stats_guest_address': cannot be used before it is initialized [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(335,13): error C3536: 'stat': cannot be used before it is initialized [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(335,27): error C2109: subscript requires array or pointer type [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(337,27): error C2109: subscript requires array or pointer type [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(340,56): error C2109: subscript requires array or pointer type [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(378,31): error C2109: subscript requires array or pointer type [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(382,31): error C2109: subscript requires array or pointer type [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(386,31): error C2109: subscript requires array or pointer type [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(394,60): error C2109: subscript requires array or pointer type [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(396,33): error C2109: subscript requires array or pointer type [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(401,31): error C2109: subscript requires array or pointer type [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(405,33): error C2109: subscript requires array or pointer type [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(425,11): warning C4312: 'reinterpret_cast': conversion from '<error type>' to 'xe::kernel::XGI_SESSION_ARBITRATION *' of greater size [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(432,26): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(432,60): error C2059: syntax error: '>' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(446,11): warning C4312: 'reinterpret_cast': conversion from '<error type>' to 'const xe::kernel::xam::apps::XGI_XUSER_SET_CONTEXT *' of greater size [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(455,16): error C2065: 'kernel_state_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(458,13): error C2065: 'kernel_state_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(462,9): error C2065: 'kernel_state_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(466,15): error C2039: 'UpdatePresence': is not a member of 'xe::kernel::xam::UserProfile' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\xam\user_profile.h(102,7):
+      see declaration of 'xe::kernel::xam::UserProfile'
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(483,11): warning C4312: 'reinterpret_cast': conversion from '<error type>' to 'const xe::kernel::xam::apps::XGI_XUSER_SET_PROPERTY *' of greater size [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(491,16): error C2065: 'kernel_state_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(493,16): error C2065: 'kernel_state_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(502,13): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(502,47): error C2059: syntax error: '>' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(504,9): error C2065: 'kernel_state_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(507,15): error C2039: 'UpdatePresence': is not a member of 'xe::kernel::xam::UserProfile' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\xam\user_profile.h(102,7):
+      see declaration of 'xe::kernel::xam::UserProfile'
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(510,13): error C2065: 'kernel_state_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(522,40): error C2672: 'xe::load_and_swap': no matching overloaded function found [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\base\memory.h(285,3):
+      could be 'T xe::load_and_swap(const void *)'
+          F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(522,71):
+          'initializing': cannot convert from 'int' to 'const void *'
+              F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(522,71):
+              Conversion from integral type to pointer type requires reinterpret_cast, C-style cast or parenthesized function-style cast
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(523,39): error C2672: 'xe::load_and_swap': no matching overloaded function found [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\base\memory.h(285,3):
+      could be 'T xe::load_and_swap(const void *)'
+          F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(523,70):
+          'initializing': cannot convert from 'int' to 'const void *'
+              F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(523,70):
+              Conversion from integral type to pointer type requires reinterpret_cast, C-style cast or parenthesized function-style cast
+  
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(528,11): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(528,59): error C2059: syntax error: '>' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(529,56): error C3536: 'achievement': cannot be used before it is initialized [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(530,9): error C2065: 'kernel_state_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(531,38): error C2065: 'kernel_state_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(546,34): warning C4312: 'reinterpret_cast': conversion from '<error type>' to 'xe::kernel::XGI_SESSION_CREATE *' of greater size [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(548,26): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(548,60): error C2059: syntax error: '>' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(568,33): warning C4312: 'reinterpret_cast': conversion from '<error type>' to 'xe::kernel::XGI_SESSION_STATE *' of greater size [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(570,26): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(570,60): error C2059: syntax error: '>' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(586,34): warning C4312: 'reinterpret_cast': conversion from '<error type>' to 'xe::kernel::XGI_SESSION_MANAGE *' of greater size [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(587,26): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(587,60): error C2059: syntax error: '>' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(604,25): warning C4312: 'reinterpret_cast': conversion from '<error type>' to 'xe::kernel::XGI_SESSION_MANAGE *' of greater size [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(606,26): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(606,60): error C2059: syntax error: '>' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(625,33): warning C4312: 'reinterpret_cast': conversion from '<error type>' to 'xe::kernel::XGI_SESSION_STATE *' of greater size [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(627,26): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(627,60): error C2059: syntax error: '>' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(643,33): warning C4312: 'reinterpret_cast': conversion from '<error type>' to 'xe::kernel::XGI_SESSION_STATE *' of greater size [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(645,26): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(645,60): error C2059: syntax error: '>' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(659,31): warning C4312: 'reinterpret_cast': conversion from '<error type>' to 'xe::kernel::XGI_STATS_WRITE *' of greater size [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(665,26): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(665,60): error C2059: syntax error: '>' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(681,11): warning C4312: 'reinterpret_cast': conversion from '<error type>' to 'xe::kernel::XGI_SESSION_SEARCH_BYID *' of greater size [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(683,39): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(691,11): warning C4312: 'reinterpret_cast': conversion from '<error type>' to 'xe::kernel::XGI_SESSION_SEARCH_BYIDS *' of greater size [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(693,57): error C2065: 'memory_': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\apps\xgi_app.cc(693,57): error C1003: error count exceeds 100; stopping compilation [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\profile_manager.cc(682,8): error C2664: 'bool xe::kernel::xam::ProfileManager::UpdateAccount(const uint64_t,const xe::kernel::xam::X_XAMACCOUNTINFO *)': cannot convert argument 2 from 'xe::X_XAMACCOUNTINFO *' to 'const xe::kernel::xam::X_XAMACCOUNTINFO *' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\xam\profile_manager.cc(682,28):
+      Types pointed to are unrelated; conversion requires reinterpret_cast, C-style cast or parenthesized function-style cast
+      F:\Nexia360\src\xenia\kernel\xam\profile_manager.cc(584,22):
+      see declaration of 'xe::kernel::xam::ProfileManager::UpdateAccount'
+      F:\Nexia360\src\xenia\kernel\xam\profile_manager.cc(682,8):
+      while trying to match the argument list '(const uint64_t, xe::X_XAMACCOUNTINFO *)'
+  
+F:\Nexia360\src\xenia\kernel\xam\profile_manager.cc(698,33): error C2440: 'initializing': cannot convert from 'xe::kernel::xam::X_XAMACCOUNTINFO *' to 'xe::X_XAMACCOUNTINFO *' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\xam\profile_manager.cc(698,33):
+      Types pointed to are unrelated; conversion requires reinterpret_cast, C-style cast or parenthesized function-style cast
+  
+F:\Nexia360\src\xenia\kernel\xam\profile_manager.cc(711,10): error C2664: 'bool xe::kernel::xam::ProfileManager::ModifyAccount(const uint64_t,xe::X_XAMACCOUNTINFO *,std::function<bool (xe::X_XAMACCOUNTINFO *)>)': cannot convert argument 3 from 'xe::kernel::xam::ProfileManager::ConvertToXboxLiveEnabledProfile::<lambda_1>' to 'std::function<bool (xe::X_XAMACCOUNTINFO *)>' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\xam\profile_manager.cc(711,39):
+      No user-defined-conversion operator available that can perform this conversion, or the operator cannot be called
+      F:\Nexia360\src\xenia\kernel\xam\profile_manager.cc(663,22):
+      see declaration of 'xe::kernel::xam::ProfileManager::ModifyAccount'
+      F:\Nexia360\src\xenia\kernel\xam\profile_manager.cc(711,10):
+      while trying to match the argument list '(const uint64_t, xe::X_XAMACCOUNTINFO *, xe::kernel::xam::ProfileManager::ConvertToXboxLiveEnabledProfile::<lambda_1>)'
+  
+F:\Nexia360\src\xenia\kernel\xam\profile_manager.cc(715,33): error C2440: 'initializing': cannot convert from 'xe::kernel::xam::X_XAMACCOUNTINFO *' to 'xe::X_XAMACCOUNTINFO *' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\xam\profile_manager.cc(715,33):
+      Types pointed to are unrelated; conversion requires reinterpret_cast, C-style cast or parenthesized function-style cast
+  
+F:\Nexia360\src\xenia\kernel\xam\profile_manager.cc(724,10): error C2664: 'bool xe::kernel::xam::ProfileManager::ModifyAccount(const uint64_t,xe::X_XAMACCOUNTINFO *,std::function<bool (xe::X_XAMACCOUNTINFO *)>)': cannot convert argument 3 from 'xe::kernel::xam::ProfileManager::ConvertToOfflineProfile::<lambda_1>' to 'std::function<bool (xe::X_XAMACCOUNTINFO *)>' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\xam\profile_manager.cc(724,39):
+      No user-defined-conversion operator available that can perform this conversion, or the operator cannot be called
+      F:\Nexia360\src\xenia\kernel\xam\profile_manager.cc(663,22):
+      see declaration of 'xe::kernel::xam::ProfileManager::ModifyAccount'
+      F:\Nexia360\src\xenia\kernel\xam\profile_manager.cc(724,10):
+      while trying to match the argument list '(const uint64_t, xe::X_XAMACCOUNTINFO *, xe::kernel::xam::ProfileManager::ConvertToOfflineProfile::<lambda_1>)'
+  
+F:\Nexia360\src\xenia\kernel\xam\ui\friends_ui.cc(20,33): error C2039: 'GetFriendsPresenceAsync': is not a member of 'xe::kernel::XLiveAPI' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\XLiveAPI.h(43,7):
+      see declaration of 'xe::kernel::XLiveAPI'
+  
+F:\Nexia360\src\xenia\kernel\xam\ui\friends_ui.cc(20,33): error C3861: 'GetFriendsPresenceAsync': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\ui\friends_ui.cc(22,17): error C2039: 'GetFriendsGamerpicsAsync': is not a member of 'xe::kernel::XLiveAPI' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\XLiveAPI.h(43,7):
+      see declaration of 'xe::kernel::XLiveAPI'
+  
+F:\Nexia360\src\xenia\kernel\xam\ui\friends_ui.cc(22,17): error C3861: 'GetFriendsGamerpicsAsync': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\ui\friends_ui.cc(46,35): error C2039: 'GetFriendsPresenceAsync': is not a member of 'xe::kernel::XLiveAPI' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\XLiveAPI.h(43,7):
+      see declaration of 'xe::kernel::XLiveAPI'
+  
+F:\Nexia360\src\xenia\kernel\xam\ui\friends_ui.cc(46,35): error C3861: 'GetFriendsPresenceAsync': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\ui\friends_ui.cc(48,19): error C2039: 'GetFriendsGamerpicsAsync': is not a member of 'xe::kernel::XLiveAPI' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\XLiveAPI.h(43,7):
+      see declaration of 'xe::kernel::XLiveAPI'
+  
+F:\Nexia360\src\xenia\kernel\xam\ui\friends_ui.cc(48,19): error C3861: 'GetFriendsGamerpicsAsync': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\ui\signin_ui.cc(40,19): error C2039: 'DownloadCompleteGamerpic': is not a member of 'xe::kernel::XLiveAPI' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\XLiveAPI.h(43,7):
+      see declaration of 'xe::kernel::XLiveAPI'
+  
+F:\Nexia360\src\xenia\kernel\xam\ui\signin_ui.cc(40,19): error C3861: 'DownloadCompleteGamerpic': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\upnp.h(20,7): error C2011: 'xe::kernel::UPnP': 'class' type redefinition [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/xam/ui/create_profile_ui.cc')
+      F:\Nexia360\src\xenia\kernel\upnp.h(20,7):
+      see declaration of 'xe::kernel::UPnP'
+  
+F:\Nexia360\src\xenia\kernel\xam\user_tracker.cc(1404,17): error C2664: 'std::unique_ptr<xe::kernel::FriendsPresenceObjectJSON,std::default_delete<xe::kernel::FriendsPresenceObjectJSON>> xe::kernel::XLiveAPI::GetFriendsPresence(const std::vector<uint64_t,std::allocator<uint64_t>> &)': cannot convert argument 1 from 'std::set<uint64_t,std::less<uint64_t>,std::allocator<uint64_t>>' to 'const std::vector<uint64_t,std::allocator<uint64_t>> &' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\xam\user_tracker.cc(1404,36):
+      Reason: cannot convert from 'std::set<uint64_t,std::less<uint64_t>,std::allocator<uint64_t>>' to 'const std::vector<uint64_t,std::allocator<uint64_t>>'
+      F:\Nexia360\src\xenia\kernel\xam\user_tracker.cc(1404,36):
+      No user-defined-conversion operator available that can perform this conversion, or the operator cannot be called
+      F:\Nexia360\src\xenia\kernel\XLiveAPI.h(166,53):
+      see declaration of 'xe::kernel::XLiveAPI::GetFriendsPresence'
+      F:\Nexia360\src\xenia\kernel\xam\user_tracker.cc(1404,17):
+      while trying to match the argument list '(std::set<uint64_t,std::less<uint64_t>,std::allocator<uint64_t>>)'
+  
+F:\Nexia360\src\xenia\kernel\xam\user_tracker.cc(1545,15): error C2660: 'xe::kernel::XLiveAPI::SetPresence': function does not take 1 arguments [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\XLiveAPI.h(185,15):
+      see declaration of 'xe::kernel::XLiveAPI::SetPresence'
+      F:\Nexia360\src\xenia\kernel\xam\user_tracker.cc(1545,15):
+      while trying to match the argument list '(initializer list)'
+  
+F:\Nexia360\src\xenia\kernel\xam\user_tracker.cc(1563,54): warning C4244: 'argument': conversion from 'uint64_t' to 'uint32_t', possible loss of data [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\user_tracker.cc(1562,43): error C2451: a conditional expression of type 'void' is not valid [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\xam\user_tracker.cc(1562,43):
+      Expressions of type void cannot be converted to other types
+  
+F:\Nexia360\src\xenia\kernel\upnp.h(20,7): error C2011: 'xe::kernel::UPnP': 'class' type redefinition [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/xam/ui/gamercard_from_xuid_ui.cc')
+      F:\Nexia360\src\xenia\kernel\upnp.h(20,7):
+      see declaration of 'xe::kernel::UPnP'
+  
+F:\Nexia360\src\xenia\kernel\upnp.h(20,7): error C2011: 'xe::kernel::UPnP': 'class' type redefinition [F:\Nexia360\build\xenia-kernel.vcxproj]
+  (compiling source file '../src/xenia/kernel/xam/xam_ui.cc')
+      F:\Nexia360\src\xenia\kernel\upnp.h(20,7):
+      see declaration of 'xe::kernel::UPnP'
+  
+F:\Nexia360\src\xenia\kernel\xsession.cc(248,16): error C2039: 'HostAddress': is not a member of 'std::unique_ptr<xe::kernel::SessionObjectJSON,std::default_delete<xe::kernel::SessionObjectJSON>>' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207\include\memory(3347,7):
+      see declaration of 'std::unique_ptr<xe::kernel::SessionObjectJSON,std::default_delete<xe::kernel::SessionObjectJSON>>'
+  
+F:\Nexia360\src\xenia\kernel\xsession.cc(249,15): error C2039: 'GetXnAddrFromSessionObject': is not a member of 'xe::kernel::XLiveAPI' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\XLiveAPI.h(43,7):
+      see declaration of 'xe::kernel::XLiveAPI'
+  
+F:\Nexia360\src\xenia\kernel\xsession.cc(249,15): error C3861: 'GetXnAddrFromSessionObject': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\ui\gamercard_from_xuid_ui.cc(61,43): error C2039: 'GetUserGamerpicTile': is not a member of 'xe::kernel::XLiveAPI' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\XLiveAPI.h(43,7):
+      see declaration of 'xe::kernel::XLiveAPI'
+  
+F:\Nexia360\src\xenia\kernel\xam\ui\gamercard_from_xuid_ui.cc(61,43): error C3861: 'GetUserGamerpicTile': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\ui\create_profile_ui.cc(38,19): error C2039: 'DownloadCompleteGamerpic': is not a member of 'xe::kernel::XLiveAPI' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\XLiveAPI.h(43,7):
+      see declaration of 'xe::kernel::XLiveAPI'
+  
+F:\Nexia360\src\xenia\kernel\xam\ui\create_profile_ui.cc(38,19): error C3861: 'DownloadCompleteGamerpic': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\ui\create_profile_ui.cc(91,51): error C2039: 'GetLoadingTileIcon': is not a member of 'xe::ui::ImGuiDrawer' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\ui\imgui_drawer.h(45,7):
+      see declaration of 'xe::ui::ImGuiDrawer'
+  
+F:\Nexia360\src\xenia\kernel\xam\ui\create_profile_ui.cc(130,37): error C2661: 'xe::kernel::xam::ProfileManager::CreateProfile': no overloaded function takes 5 arguments [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\xam\ui\create_profile_ui.cc(130,37):
+      while trying to match the argument list '(const std::string, bool, bool, uint32_t, uint64_t *)'
+  
+F:\Nexia360\src\xenia\kernel\xam\ui\create_profile_ui.cc(160,9): error C4430: missing type specifier - int assumed. Note: C++ does not support default-int [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\ui\create_profile_ui.cc(160,30): error C2146: syntax error: missing ';' before identifier 'gamerpics' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\ui\create_profile_ui.cc(160,30): error C2065: 'gamerpics': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\ui\create_profile_ui.cc(167,35): error C2065: 'gamerpics': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\ui\create_profile_ui.cc(167,52): error C2065: 'gamerpics': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\ui\create_profile_ui.cc(165,23): error C2660: 'xe::kernel::xam::UserTracker::UpdateUserGamerpic': function does not take 4 arguments [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\xam\user_tracker.h(145,8):
+      see declaration of 'xe::kernel::xam::UserTracker::UpdateUserGamerpic'
+      F:\Nexia360\src\xenia\kernel\xam\ui\create_profile_ui.cc(165,23):
+      while trying to match the argument list '(uint64_t, uint32_t, uint32_t, uint32_t)'
+  
+F:\Nexia360\src\xenia\kernel\xsession.cc(649,49): error C2039: 'GetUPnP': is not a member of 'xe::Emulator' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\emulator.h(64,7):
+      see declaration of 'xe::Emulator'
+  
+F:\Nexia360\src\xenia\kernel\xsession.cc(649,14): error C2737: 'upnp': const object must be initialized [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xsession.cc(651,7): error C3536: 'upnp': cannot be used before it is initialized [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xsession.cc(747,12): error C2065: 'X_ONLINE_E_SESSION_INVALID_FLAGS': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xsession.cc(759,8): error C2039: 'column_ids': is not a member of 'xe::kernel::X_USER_STATS_SPEC' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\xnet.h(571,8):
+      see declaration of 'xe::kernel::X_USER_STATS_SPEC'
+  
+F:\Nexia360\src\xenia\kernel\xsession.cc(759,24): error C2065: 'X_STATS_COLUMN_SKILL_MU': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xsession.cc(760,8): error C2039: 'column_ids': is not a member of 'xe::kernel::X_USER_STATS_SPEC' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\xnet.h(571,8):
+      see declaration of 'xe::kernel::X_USER_STATS_SPEC'
+  
+F:\Nexia360\src\xenia\kernel\xsession.cc(760,24): error C2065: 'X_STATS_COLUMN_SKILL_SIGMA': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xsession.cc(814,3): error C2065: 'X_STATS_MAX_VIEWS': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xsession.cc(817,43): error C2065: 'X_STATS_MAX_VIEWS': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xsession.cc(816,18): error C2737: 'view_properties_count': const object must be initialized [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xsession.cc(829,10): error C3861: 'IsTrueSkillViewID': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xsession.cc(829,56): error C2039: 'has_value': is not a member of 'xe::kernel::util::GameInfoDatabase::StatsView' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\util\game_info_database.h(71,10):
+      see declaration of 'xe::kernel::util::GameInfoDatabase::StatsView'
+  
+F:\Nexia360\src\xenia\kernel\xsession.cc(831,14): error C2065: 'X_ONLINE_E_STAT_INVALID_TITLE_OR_LEADERBOARD': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xsession.cc(835,24): error C2039: 'has_value': is not a member of 'xe::kernel::util::GameInfoDatabase::StatsView' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\util\game_info_database.h(71,10):
+      see declaration of 'xe::kernel::util::GameInfoDatabase::StatsView'
+  
+F:\Nexia360\src\xenia\kernel\xsession.cc(835,54): error C2039: 'value': is not a member of 'xe::kernel::util::GameInfoDatabase::StatsView' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\util\game_info_database.h(71,10):
+      see declaration of 'xe::kernel::util::GameInfoDatabase::StatsView'
+  
+F:\Nexia360\src\xenia\kernel\xsession.cc(834,16): error C2737: 'is_view_arbitrated': const object must be initialized [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xsession.cc(839,9): error C3861: 'IsTrueSkillViewID': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xsession.cc(851,5): error C2065: 'X_STATS_MAX_PROPERTIES_IN_VIEW': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xsession.cc(854,32): error C2065: 'X_STATS_MAX_PROPERTIES_IN_VIEW': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xsession.cc(853,20): error C2737: 'properties_count': const object must be initialized [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_ui.cc(19,10): error C1083: Cannot open include file: 'xenia/kernel/xam/friends_util.h': No such file or directory [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xsession.cc(901,56): error C2039: 'has_value': is not a member of 'xe::kernel::util::GameInfoDatabase::StatsView' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\util\game_info_database.h(71,10):
+      see declaration of 'xe::kernel::util::GameInfoDatabase::StatsView'
+  
+F:\Nexia360\src\xenia\kernel\xsession.cc(902,56): error C2039: 'value': is not a member of 'xe::kernel::util::GameInfoDatabase::StatsView' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\util\game_info_database.h(71,10):
+      see declaration of 'xe::kernel::util::GameInfoDatabase::StatsView'
+  
+F:\Nexia360\src\xenia\kernel\xsession.cc(901,20): error C2737: 'is_view_arbitrated': const object must be initialized [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xsession.cc(905,14): error C3861: 'IsTrueSkillViewID': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xsession.cc(910,14): error C3861: 'IsTrueSkillViewID': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xsession.cc(920,19): error C2039: 'SessionFlushStats': is not a member of 'xe::kernel::XLiveAPI' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\XLiveAPI.h(43,7):
+      see declaration of 'xe::kernel::XLiveAPI'
+  
+F:\Nexia360\src\xenia\kernel\xsession.cc(920,19): error C3861: 'SessionFlushStats': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xsession.cc(952,19): error C2039: 'SessionFlushStats': is not a member of 'xe::kernel::XLiveAPI' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\XLiveAPI.h(43,7):
+      see declaration of 'xe::kernel::XLiveAPI'
+  
+F:\Nexia360\src\xenia\kernel\xsession.cc(952,19): error C3861: 'SessionFlushStats': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xsession.cc(1175,18): error C2039: 'HostAddress': is not a member of 'std::unique_ptr<xe::kernel::SessionObjectJSON,std::default_delete<xe::kernel::SessionObjectJSON>>' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207\include\memory(3347,7):
+      see declaration of 'std::unique_ptr<xe::kernel::SessionObjectJSON,std::default_delete<xe::kernel::SessionObjectJSON>>'
+  
+F:\Nexia360\src\xenia\kernel\xsession.cc(1176,7): error C2664: 'void xe::kernel::XSession::FillSessionSearchResult(const xe::kernel::SessionObjectJSON,xe::kernel::XSESSION_SEARCHRESULT *)': cannot convert argument 1 from 'const std::unique_ptr<xe::kernel::SessionObjectJSON,std::default_delete<xe::kernel::SessionObjectJSON>>' to 'const xe::kernel::SessionObjectJSON' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\xsession.cc(1176,31):
+      No user-defined-conversion operator available that can perform this conversion, or the operator cannot be called
+      F:\Nexia360\src\xenia\kernel\xsession.h(377,15):
+      see declaration of 'xe::kernel::XSession::FillSessionSearchResult'
+      F:\Nexia360\src\xenia\kernel\xsession.cc(1176,7):
+      while trying to match the argument list '(const std::unique_ptr<xe::kernel::SessionObjectJSON,std::default_delete<xe::kernel::SessionObjectJSON>>, xe::kernel::XSESSION_SEARCHRESULT *)'
+  
+F:\Nexia360\src\xenia\kernel\xsession.cc(1198,13): error C2039: 'GetXnAddrFromSessionObject': is not a member of 'xe::kernel::XLiveAPI' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\XLiveAPI.h(43,7):
+      see declaration of 'xe::kernel::XLiveAPI'
+  
+F:\Nexia360\src\xenia\kernel\xsession.cc(1198,13): error C3861: 'GetXnAddrFromSessionObject': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(328,23): error C3878: syntax error: unexpected token 'remote_user_settings' following 'expression' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(328,47): error C2760: syntax error: '}' was unexpected here; expected ';' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(328,48): error C2059: syntax error: ';' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(329,5): error C2065: 'user_settings_map': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(329,23): error C2146: syntax error: missing ';' before identifier 'local_user_settings' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(329,23): error C2065: 'local_user_settings': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(329,43): error C3079: an initializer list cannot be used as the right operand of this assignment operator [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(337,40): error C3481: 'requested_settings_ids': lambda capture variable not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(345,50): error C2065: 'requested_settings_ids': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(345,37): error C2734: 'setting_id': 'const' object must be initialized if not 'extern' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(345,48): error C2143: syntax error: missing ';' before ':' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(345,72): error C2143: syntax error: missing ';' before ')' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(370,7): error C2065: 'user_settingids_map': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(370,27): error C2146: syntax error: missing ';' before identifier 'remote_user_setting_ids' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(370,27): error C2065: 'remote_user_setting_ids': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(370,51): error C3079: an initializer list cannot be used as the right operand of this assignment operator [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(375,55): error C2065: 'requested_settings_ids': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(375,41): error C2734: 'settings_id': 'const' object must be initialized if not 'extern' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(375,53): error C2143: syntax error: missing ';' before ':' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(375,77): error C2143: syntax error: missing ';' before ')' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(385,13): error C2065: 'remote_user_setting_ids': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(395,13): error C2065: 'local_user_settings': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(400,12): error C2065: 'remote_user_setting_ids': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(401,9): error C2065: 'remote_user_settings': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(402,23): error C2039: 'GetUsersSettings': is not a member of 'xe::kernel::XLiveAPI' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\XLiveAPI.h(43,7):
+      see declaration of 'xe::kernel::XLiveAPI'
+  
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(402,40): error C2065: 'remote_user_setting_ids': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(402,23): error C3861: 'GetUsersSettings': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(412,9): error C2065: 'local_user_settings': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(416,9): error C2065: 'local_user_settings': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(416,40): error C2065: 'remote_user_settings': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(417,7): error C2065: 'extended_error': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(422,5): error C2065: 'user_settings_map': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(422,23): error C2146: syntax error: missing ';' before identifier 'users_settings' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(422,23): error C2065: 'users_settings': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(422,40): error C2065: 'local_user_settings': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(423,5): error C2065: 'users_settings': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(423,26): error C2065: 'remote_user_settings': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(437,33): error C2065: 'requested_settings_ids': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(446,50): error C2065: 'requested_settings_ids': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(446,37): error C2734: 'setting_id': 'const' object must be initialized if not 'extern' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(446,48): error C2143: syntax error: missing ';' before ':' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(446,72): error C2143: syntax error: missing ';' before ')' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(459,13): error C2065: 'users_settings': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(460,15): error C2065: 'users_settings': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(461,24): error C2065: 'users_settings': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\XLiveAPI.cpp(1861,17): error C2664: 'std::unique_ptr<xe::kernel::FriendsPresenceObjectJSON,std::default_delete<xe::kernel::FriendsPresenceObjectJSON>> xe::kernel::XLiveAPI::GetFriendsPresence(const std::vector<uint64_t,std::allocator<uint64_t>> &)': cannot convert argument 1 from 'const std::set<uint64_t,std::less<uint64_t>,std::allocator<uint64_t>>' to 'const std::vector<uint64_t,std::allocator<uint64_t>> &' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\XLiveAPI.cpp(1861,60):
+      Reason: cannot convert from 'const std::set<uint64_t,std::less<uint64_t>,std::allocator<uint64_t>>' to 'const std::vector<uint64_t,std::allocator<uint64_t>>'
+      F:\Nexia360\src\xenia\kernel\XLiveAPI.cpp(1861,60):
+      No user-defined-conversion operator available that can perform this conversion, or the operator cannot be called
+      F:\Nexia360\src\xenia\kernel\XLiveAPI.cpp(1498,54):
+      see declaration of 'xe::kernel::XLiveAPI::GetFriendsPresence'
+      F:\Nexia360\src\xenia\kernel\XLiveAPI.cpp(1861,17):
+      while trying to match the argument list '(const std::set<uint64_t,std::less<uint64_t>,std::allocator<uint64_t>>)'
+  
+F:\Nexia360\src\xenia\kernel\XLiveAPI.cpp(1862,13): error C2039: 'PlayersPresence': is not a member of 'std::unique_ptr<xe::kernel::FriendsPresenceObjectJSON,std::default_delete<xe::kernel::FriendsPresenceObjectJSON>>' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\14.44.35207\include\memory(3347,7):
+      see declaration of 'std::unique_ptr<xe::kernel::FriendsPresenceObjectJSON,std::default_delete<xe::kernel::FriendsPresenceObjectJSON>>'
+  
+F:\Nexia360\src\xenia\kernel\XLiveAPI.cpp(1860,14): error C2737: 'freinds_presence': const object must be initialized [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\XLiveAPI.cpp(1864,20): error C2530: 'presence': references must be initialized [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\XLiveAPI.cpp(1864,20): error C3531: 'presence': a symbol whose type contains 'auto' must have an initializer [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\XLiveAPI.cpp(1864,29): error C2143: syntax error: missing ';' before ':' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\XLiveAPI.cpp(1864,31): error C3536: 'freinds_presence': cannot be used before it is initialized [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\XLiveAPI.cpp(1864,47): error C2143: syntax error: missing ';' before ')' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\XLiveAPI.cpp(1865,35): error C7732: expected an expression before ']' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\XLiveAPI.cpp(1865,35): error C2679: binary '=': no operator found which takes a right-hand operand of type '<error type>' (or there is no acceptable conversion) [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\json\friend_presence_object_json.h(102,1):
+      could be 'xe::kernel::FriendPresenceObjectJSON &xe::kernel::FriendPresenceObjectJSON::operator =(const xe::kernel::FriendPresenceObjectJSON &)'
+          F:\Nexia360\src\xenia\kernel\XLiveAPI.cpp(1865,35):
+          'xe::kernel::FriendPresenceObjectJSON &xe::kernel::FriendPresenceObjectJSON::operator =(const xe::kernel::FriendPresenceObjectJSON &)': cannot convert argument 2 from '<error type>' to 'const xe::kernel::FriendPresenceObjectJSON &'
+              F:\Nexia360\src\xenia\kernel\XLiveAPI.cpp(1865,39):
+              Reason: cannot convert from '<error type>' to 'const xe::kernel::FriendPresenceObjectJSON'
+              F:\Nexia360\src\xenia\kernel\XLiveAPI.cpp(1865,39):
+              'xe::kernel::FriendPresenceObjectJSON::FriendPresenceObjectJSON': no overloaded function could convert all the argument types
+                  F:\Nexia360\src\xenia\kernel\json\friend_presence_object_json.h(102,1):
+                  could be 'xe::kernel::FriendPresenceObjectJSON::FriendPresenceObjectJSON(const xe::kernel::FriendPresenceObjectJSON &)'
+                      F:\Nexia360\src\xenia\kernel\XLiveAPI.cpp(1865,39):
+                      'xe::kernel::FriendPresenceObjectJSON::FriendPresenceObjectJSON(const xe::kernel::FriendPresenceObjectJSON &)': cannot convert argument 1 from '<error type>' to 'const xe::kernel::FriendPresenceObjectJSON &'
+                          F:\Nexia360\src\xenia\kernel\XLiveAPI.cpp(1865,39):
+                          Reason: cannot convert from '<error type>' to 'const xe::kernel::FriendPresenceObjectJSON'
+                          F:\Nexia360\src\xenia\kernel\XLiveAPI.cpp(1865,39):
+                          Conversion requires a second user-defined-conversion operator or constructor
+                  F:\Nexia360\src\xenia\kernel\XLiveAPI.cpp(1865,39):
+                  while trying to match the argument list '(<error type>)'
+      F:\Nexia360\src\xenia\kernel\XLiveAPI.cpp(1865,35):
+      while trying to match the argument list '(xe::kernel::FriendPresenceObjectJSON, <error type>)'
+  
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(511,3): error C2059: syntax error: 'if' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(511,24): error C2143: syntax error: missing ';' before '{' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(511,24): error C2447: '{': missing function header (old-style formal list?) [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(519,19): error C3613: missing return type after '->' ('int' assumed) [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(519,19): error C3646: 'CompleteOverlappedDeferredEx': unknown override specifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(519,3): error C3551: if a trailing return type is used then the leading return type shall be the single type-specifier 'auto' (not 'int') [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(519,3): error C4430: missing type specifier - int assumed. Note: C++ does not support default-int [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(519,47): error C2059: syntax error: '(' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(519,51): error C2143: syntax error: missing ')' before ',' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(519,48): error C4430: missing type specifier - int assumed. Note: C++ does not support default-int [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(519,67): error C2059: syntax error: ')' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(519,53): error C4430: missing type specifier - int assumed. Note: C++ does not support default-int [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(520,3): error C2059: syntax error: 'return' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(527,10): error C3861: 'XamUserReadProfileSettingsEx': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(531,1): error C3861: 'RegisterExport_xam': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(537,10): error C3861: 'XamUserReadProfileSettingsEx': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(541,1): error C3861: 'RegisterExport_xam': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(545,15): error C2065: 'X_USER_PROFILE_SETTING': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(545,5): error C2923: 'xe::kernel::pointer_t': 'X_USER_PROFILE_SETTING' is not a valid template type argument for parameter 'T' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(545,15):
+      see declaration of 'X_USER_PROFILE_SETTING'
+  
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(563,7): error C4430: missing type specifier - int assumed. Note: C++ does not support default-int [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(563,25): error C2146: syntax error: missing ';' before identifier 'setting' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(563,25): error C2065: 'setting': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(563,35): error C2064: term does not evaluate to a function taking 1 arguments [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(565,12): error C2065: 'setting': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(570,44): error C2065: 'setting': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(576,3): error C2439: 'xe::kernel::XamUserWriteProfileSettings_entry::<lambda_1>::settings': member could not be initialized [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(576,3):
+      see declaration of 'xe::kernel::XamUserWriteProfileSettings_entry::<lambda_1>::settings'
+  
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(586,1): error C2672: 'xe::kernel::shim::GetRegister': no matching overloaded function found [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\util\shim_utils.h(618,6):
+      could be 'auto xe::kernel::shim::GetRegister(R (__cdecl *)(Ps ...))'
+          F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(586,1):
+          'auto xe::kernel::shim::GetRegister(R (__cdecl *)(Ps ...))': could not deduce template argument for 'R (__cdecl *)(Ps ...)' from 'xe::kernel::dword_result_t (__cdecl *)(xe::kernel::dword_t,xe::kernel::dword_t,xe::kernel::dword_t,<error type>,xe::kernel::lpvoid_t)'
+  
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(586,1): error C2446: '>': no conversion from 'const char [28]' to 'xe::cpu::ExportTag::type' [F:\Nexia360\build\xenia-kernel.vcxproj]
+      F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(586,1):
+      There is no context in which this conversion is possible
+  
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(586,1): warning C4554: '|': check operator precedence for possible error; use parentheses to clarify precedence [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(586,1): error C3861: 'RegisterExport_xam': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(645,1): error C3861: 'RegisterExport_xam': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(657,1): error C3861: 'RegisterExport_xam': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(673,1): error C3861: 'RegisterExport_xam': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(689,1): error C3861: 'RegisterExport_xam': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(705,1): error C3861: 'RegisterExport_xam': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(721,1): error C3861: 'RegisterExport_xam': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(731,1): error C3861: 'RegisterExport_xam': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(754,43): error C2653: 'X_USER_SIGNIN_STATE': is not a class or namespace name [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(754,64): error C2065: 'SignedInToLive': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(791,1): error C3861: 'RegisterExport_xam': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(824,1): error C3861: 'RegisterExport_xam': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(838,30): error C2065: 'X_ACHIEVEMENT_DETAILS': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(840,19): error C2653: 'X_ACHIEVEMENT_DETAILS': is not a class or namespace name [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(840,42): error C2065: 'kStringBufferSize': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(880,19): error C3861: 'AchievementDetails': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(892,1): error C3861: 'RegisterExport_xam': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(940,1): error C3861: 'RegisterExport_xam': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(962,49): error C2187: syntax error: 'XTileType' was unexpected here [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(962,58): error C3878: syntax error: unexpected token '>' following 'simple-declaration' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(963,20): error C2760: syntax error: ')' was unexpected here; expected ';' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(963,20): error C3878: syntax error: unexpected token ')' following 'expression-statement' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(982,4): error C2059: syntax error: ';' [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(986,12): error C3536: 'run': cannot be used before it is initialized [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(992,1): error C3861: 'RegisterExport_xam': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(1002,1): error C3861: 'RegisterExport_xam': identifier not found [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(1004,53): error C2065: 'X_USER_DATA': undeclared identifier [F:\Nexia360\build\xenia-kernel.vcxproj]
+F:\Nexia360\src\xenia\kernel\xam\xam_user.cc(1004,53): error C1003: error count exceeds 100; stopping compilation [F:\Nexia360\build\xenia-kernel.vcxproj]
+Building release...
+
+- running premake...
+
+- building (all):release...
+[91mFailed![0m

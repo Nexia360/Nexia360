@@ -375,17 +375,19 @@ X_STATUS VirtualFileSystem::ExtractContentFile(Entry* entry,
   if (entry->can_map()) {
     auto map = entry->OpenMapped(xe::MappedMemory::Mode::kRead);
 
-    auto remaining_size = map->size();
-    auto offset = 0;
+    size_t remaining_size = map->size();
+    size_t offset = 0;
 
     while (remaining_size > 0) {
-      fwrite(map->data() + offset, write_buffer_size, 1, file);
-      offset += write_buffer_size;
-      remaining_size -= write_buffer_size;
+      const auto bytes_to_read = std::min(write_buffer_size, remaining_size);
+      fwrite(map->data() + offset, bytes_to_read, 1, file);
+      offset += bytes_to_read;
+      remaining_size -= bytes_to_read;
+      progress += bytes_to_read;
     }
     map->Close();
   } else {
-    auto remaining_size = entry->size();
+    size_t remaining_size = entry->size();
     size_t offset = 0;
     buffer = new uint8_t[write_buffer_size];
 

@@ -175,6 +175,10 @@ struct ValueOp : Op<ValueOp<T, KEY_TYPE, REG_TYPE, CONST_TYPE>, KEY_TYPE> {
   virtual bool ConstantFitsIn32Reg() const { return true; }
   const REG_TYPE& reg() const {
     assert_true(!is_constant);
+    if (is_constant) {
+      XELOGE("{} - Invalid handling of constant! Report this to developers!",
+             __FUNCTION__);
+    }
     return reg_;
   }
   operator const REG_TYPE&() const { return reg(); }

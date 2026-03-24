@@ -313,7 +313,17 @@ EMITTER_OPCODE_TABLE(OPCODE_CALL_TRUE, CALL_TRUE_I8, CALL_TRUE_I16,
 struct CALL_INDIRECT
     : Sequence<CALL_INDIRECT, I<OPCODE_CALL_INDIRECT, VoidOp, I64Op>> {
   static void Emit(X64Emitter& e, const EmitArgType& i) {
-    e.CallIndirect(i.instr, i.src1);
+    if (i.src1.is_constant) [[unlikely]] {
+      if (i.src1.constant() == 0) {
+        e.nop();
+      } else {
+        // This isn't valid, but at least we will have log info about potential
+        // usecase.
+        e.CallIndirect(i.instr, i.src1);
+      }
+    } else {
+      e.CallIndirect(i.instr, i.src1);
+    }
     e.ForgetMxcsrMode();
   }
 };
