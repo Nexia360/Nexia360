@@ -19,6 +19,10 @@
 #include "xenia/kernel/xthread.h"
 #ifdef XE_PLATFORM_WIN32
 #include <windows.h>
+#else
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
 #endif
 using namespace std::chrono_literals;
 
@@ -155,14 +159,29 @@ X_STATUS XSocket::SetOption(uint32_t level, uint32_t optname, void* optval_ptr,
 X_STATUS XSocket::IOControl(uint32_t cmd, uint8_t* arg_ptr) {
 #ifdef XE_PLATFORM_WIN32
   int ret = ioctlsocket(native_handle_, cmd, (u_long*)arg_ptr);
+#else
+  // Translate Windows ioctl commands to Linux equivalents.
+  // The guest passes Windows FIONBIO (0x8004667E), but Linux
+  // uses a different value (0x5421). We must translate.
+  int linux_cmd = cmd;
+  if (cmd == 0x8004667E) {  // Windows FIONBIO
+    linux_cmd = FIONBIO;
+  } else if (cmd == 0x4004667F) {  // Windows FIONREAD
+    linux_cmd = FIONREAD;
+  }
+  int arg_val = 0;
+  if (arg_ptr) {
+    arg_val = static_cast<int>(*reinterpret_cast<uint32_t*>(arg_ptr));
+  }
+  int ret = ioctl(native_handle_, linux_cmd, &arg_val);
+  if (ret == 0 && arg_ptr && linux_cmd == FIONREAD) {
+    *reinterpret_cast<uint32_t*>(arg_ptr) = static_cast<uint32_t>(arg_val);
+  }
+#endif
   if (ret < 0) {
-    // TODO: Get last error
     return X_STATUS_UNSUCCESSFUL;
   }
   return X_STATUS_SUCCESS;
-#elif XE_PLATFORM_LINUX
-  return X_STATUS_UNSUCCESSFUL;
-#endif
 }
 X_STATUS XSocket::Connect(const XSOCKADDR_IN* name, int name_len) {
   XSOCKADDR_IN sa_in = XSOCKADDR_IN();

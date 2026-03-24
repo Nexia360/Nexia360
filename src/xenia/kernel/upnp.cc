@@ -102,10 +102,12 @@ const UPNPDev* UPnP::GetDeviceByName(const UPNPDev* device_list,
 }
 
 const UPNPDev* UPnP::DiscoverUPnPDevice() {
-  XELOGI("UPnP: Starting UPnP search");
+  XELOGI("UPnP: Starting UPnP search (calling upnpDiscover with 2s timeout)");
+  fflush(stdout);
 
   int error = 0;
   UPNPDev* device_list = upnpDiscover(2000, nullptr, nullptr, 0, 0, 2, &error);
+  XELOGI("UPnP: upnpDiscover returned (error={})", error);
   if (error) {
     XELOGE("UPnP: SearchUPnPDevice Error Code: {}", error);
     return nullptr;

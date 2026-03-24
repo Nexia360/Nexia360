@@ -9,6 +9,8 @@
 
 #include "xenia/kernel/xam/unmarshaller/xlivebase_task.h"
 
+#include "xenia/kernel/XLiveAPI.h"
+
 namespace xe {
 namespace kernel {
 namespace xam {
@@ -86,7 +88,8 @@ void XLivebaseAsyncTask::PrintTaskInfo() {
       "MarshalledRequestSize: {}\n"
       "ResultsPtr: {:08X}\n"
       "RequestsSize: {}\n"
-      "URL: {}\n",
+      "ServiceIDIndex: {:04X}\n"
+      "URL Path: {}\n",
       schema_data_ptr_->Header.SchemaVersionMajor.get(),
       schema_data_ptr_->Header.SchemaVersionMinor.get(),
       schema_data_ptr_->Header.ToolVersion.get(),
@@ -97,7 +100,13 @@ void XLivebaseAsyncTask::PrintTaskInfo() {
       xlive_async_task_ptr_->marshalled_request_ptr.get(),
       xlive_async_task_ptr_->marshalled_request_size.get(),
       xlive_async_task_ptr_->results_ptr.get(),
-      xlive_async_task_ptr_->results_size.get(), GetTaskUrl());
+      xlive_async_task_ptr_->results_size.get(),
+      [&]() -> uint16_t {
+        SCHEMA_TABLE_ENTRY entry = {};
+        GetSchemaEntry(xlive_async_task_ptr_->schema_index, &entry);
+        return entry.ServiceIDIndex;
+      }(),
+      GetTaskUrl());
 }
 
 bool XLivebaseAsyncTask::GetSchemaEntry(uint16_t schema_index,

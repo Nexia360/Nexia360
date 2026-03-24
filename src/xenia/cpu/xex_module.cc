@@ -1164,7 +1164,14 @@ bool XexModule::SetupLibraryImports(const std::string_view name,
     kernel_resolver = processor_->export_resolver();
   }
 
-  auto user_module = kernel_state_->GetModule(name);
+  // For kernel modules, also look for a loaded UserModule of the same name
+  // to use as a fallback for unimplemented exports (hybrid mode).
+  xe::kernel::object_ref<xe::kernel::XModule> user_module;
+  if (kernel_state_->IsKernelModule(name)) {
+    user_module = kernel_state_->GetModule(name, true);  // user_only = true
+  } else {
+    user_module = kernel_state_->GetModule(name);
+  }
 
   auto base_name = utf8::find_base_name_from_guest_path(name);
 
@@ -1192,6 +1199,19 @@ bool XexModule::SetupLibraryImports(const std::string_view name,
 
     if (kernel_resolver) {
       kernel_export = kernel_resolver->GetExportByOrdinal(name, ordinal);
+      // If the kernel export exists but isn't implemented, try the real
+      // XEX binary as a fallback (hybrid kernel/user module support).
+      if (kernel_export && !kernel_export->is_implemented() && user_module) {
+        uint32_t fallback_addr = user_module->GetProcAddressByOrdinal(ordinal);
+        if (fallback_addr) {
+          user_export_addr = fallback_addr;
+          kernel_export = nullptr;  // Use the real XEX code instead
+        }
+      }
+      // If no kernel export at all, also try the real XEX
+      if (!kernel_export && !user_export_addr && user_module) {
+        user_export_addr = user_module->GetProcAddressByOrdinal(ordinal);
+      }
     } else if (user_module) {
       user_export_addr = user_module->GetProcAddressByOrdinal(ordinal);
     }

@@ -364,7 +364,15 @@ void XLiveAPI::Init() {
   }
 
   if (cvars::upnp) {
+#ifdef XE_PLATFORM_WIN32
     upnp_handler->Initialize();
+#else
+    // Linux: run UPnP discovery in a background thread to avoid blocking.
+    // upnpDiscover() can hang if multicast isn't available.
+    std::thread([]() {
+      upnp_handler->Initialize();
+    }).detach();
+#endif
   }
 
   DiscoverNetworkInterfaces();
@@ -457,6 +465,12 @@ std::unique_ptr<HTTPResponseObjectJSON> XLiveAPI::Get(std::string endpoint,
   curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, callback);
   curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, (void*)&chunk);
 
+#ifndef XE_PLATFORM_WIN32
+  // Linux: use system CA bundle for SSL verification
+  curl_easy_setopt(curl_handle, CURLOPT_CAINFO,
+                   "/etc/ssl/certs/ca-certificates.crt");
+#endif
+
   result = curl_easy_perform(curl_handle);
 
   if (result != CURLE_OK) {
@@ -513,6 +527,13 @@ std::unique_ptr<HTTPResponseObjectJSON> XLiveAPI::Post(std::string endpoint,
   curl_easy_setopt(curl_handle, CURLOPT_CUSTOMREQUEST, "POST");
   curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, "xenia");
   curl_easy_setopt(curl_handle, CURLOPT_POSTFIELDS, data);
+  curl_easy_setopt(curl_handle, CURLOPT_CONNECTTIMEOUT, 10L);
+  curl_easy_setopt(curl_handle, CURLOPT_TIMEOUT, 30L);
+
+#ifndef XE_PLATFORM_WIN32
+  curl_easy_setopt(curl_handle, CURLOPT_CAINFO,
+                   "/etc/ssl/certs/ca-certificates.crt");
+#endif
 
   if (data_size > 0) {
     curl_easy_setopt(curl_handle, CURLOPT_POSTFIELDSIZE_LARGE,
@@ -579,6 +600,11 @@ std::unique_ptr<HTTPResponseObjectJSON> XLiveAPI::Delete(std::string endpoint) {
   headers = curl_slist_append(headers, "charset: utf-8");
 
   curl_easy_setopt(curl_handle, CURLOPT_URL, endpoint_API.c_str());
+
+#ifndef XE_PLATFORM_WIN32
+  curl_easy_setopt(curl_handle, CURLOPT_CAINFO,
+                   "/etc/ssl/certs/ca-certificates.crt");
+#endif
 
   curl_easy_setopt(curl_handle, CURLOPT_CUSTOMREQUEST, "DELETE");
   curl_easy_setopt(curl_handle, CURLOPT_HTTPHEADER, headers);
@@ -1503,6 +1529,8 @@ X_STORAGE_BUILD_SERVER_PATH_RESULT XLiveAPI::XStorageBuildServerPath(
     std::string server_path) {
   // Remove address it's added later
   std::string endpoint = server_path.substr(GetApiAddress().size());
+  XELOGI("XStorageBuildServerPath: server_path='{}' endpoint='{}'",
+         server_path, endpoint);
 
   X_STORAGE_BUILD_SERVER_PATH_RESULT result =
       X_STORAGE_BUILD_SERVER_PATH_RESULT::Invalid;
@@ -2100,10 +2128,44 @@ void XLiveAPI::SelectNetworkInterface() {
     }
   }
 #else
-  // Linux: just use the local IP from the socket
-  local_ip_ = local_ip;
-  interface_name = "Linux Network";
-  updated = true;
+  // Linux: match interface by name (network_guid stores interface name on Linux)
+  struct ifaddrs* ifaddr = nullptr;
+  if (getifaddrs(&ifaddr) == 0) {
+    for (struct ifaddrs* ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next) {
+      if (!ifa->ifa_addr) continue;
+      if (ifa->ifa_addr->sa_family != AF_INET) continue;
+      if (ifa->ifa_flags & IFF_LOOPBACK) continue;
+
+      std::string if_name = ifa->ifa_name;
+
+      // If a specific interface was requested, match it
+      if (!cvars::network_guid.empty() && if_name == cvars::network_guid) {
+        auto* addr = reinterpret_cast<sockaddr_in*>(ifa->ifa_addr);
+        local_ip_ = *addr;
+        adapter_has_wan_routing = true;
+        interface_name = if_name;
+        OVERRIDE_string(network_guid, if_name);
+        updated = true;
+        break;
+      }
+
+      // Otherwise use the first non-loopback interface
+      if (cvars::network_guid.empty() && !updated) {
+        auto* addr = reinterpret_cast<sockaddr_in*>(ifa->ifa_addr);
+        local_ip_ = *addr;
+        adapter_has_wan_routing = true;
+        interface_name = if_name;
+        OVERRIDE_string(network_guid, if_name);
+        updated = true;
+      }
+    }
+    freeifaddrs(ifaddr);
+  }
+
+  if (!updated) {
+    local_ip_ = local_ip;
+    interface_name = "Unspecified Network";
+  }
 #endif
 
   std::string WAN_interface = xe::kernel::XLiveAPI::adapter_has_wan_routing
@@ -2113,7 +2175,9 @@ void XLiveAPI::SelectNetworkInterface() {
   XELOGI("Set network interface: {} {} {} {}", interface_name,
          cvars::network_guid, LocalIP_str(), WAN_interface);
 
-  assert_false(cvars::network_guid == "");
+  if (cvars::network_guid.empty()) {
+    XELOGW("No network interface selected!");
+  }
 }
 }  // namespace kernel
 }  // namespace xe

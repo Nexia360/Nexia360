@@ -496,9 +496,22 @@ X_STATUS Emulator::MountPath(const std::filesystem::path& path,
   file_system_->UnregisterSymbolicLink(kDefaultGameSymbolicLink);
   file_system_->UnregisterSymbolicLink("plugins:");
 
+  // Check if this is a dashboard XEX
+  auto filename = path.filename().string();
+  std::transform(filename.begin(), filename.end(), filename.begin(), ::tolower);
+  bool is_dashboard = (filename == "dash.xex" || filename == "dashboard.xex");
+
   // Create symlinks to the device.
-  file_system_->RegisterSymbolicLink(kDefaultGameSymbolicLink, mount_path);
-  file_system_->RegisterSymbolicLink(kDefaultPartitionSymbolicLink, mount_path);
+  if (is_dashboard) {
+    file_system_->UnregisterSymbolicLink("DASH:");
+    file_system_->RegisterSymbolicLink("DASH:", mount_path);
+    // Also register GAME: and D: so xam.xex and other modules can be found
+    file_system_->RegisterSymbolicLink(kDefaultGameSymbolicLink, mount_path);
+    file_system_->RegisterSymbolicLink(kDefaultPartitionSymbolicLink, mount_path);
+  } else {
+    file_system_->RegisterSymbolicLink(kDefaultGameSymbolicLink, mount_path);
+    file_system_->RegisterSymbolicLink(kDefaultPartitionSymbolicLink, mount_path);
+  }
 
   return X_STATUS_SUCCESS;
 }

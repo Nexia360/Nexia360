@@ -47,6 +47,14 @@ XamModule::XamModule(Emulator* emulator, KernelState* kernel_state)
   Register##n##Exports(export_resolver_, kernel_state_);
 #include "xam_module_export_groups.inc"
 #undef XE_MODULE_EXPORT_GROUP
+
+  // Register xam: device so dashboard/games can load XAM resources
+  // (GamerCard.xur, GScore.png, LiveProfile.xus, etc.)
+  auto fs = kernel_state->file_system();
+  if (fs) {
+    fs->RegisterSymbolicLink("xam:", "\\Device\\Harddisk0\\Partition1");
+    XELOGD("XamModule: registered xam: symbolic link");
+  }
 }
 
 xe::cpu::Export* RegisterExport_xam(xe::cpu::Export* export_entry) {
