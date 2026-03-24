@@ -681,18 +681,21 @@ dword_result_t IoCreateDevice_entry(dword_t driver_object,
 
   // Log device creation for debugging
   if (device_name) {
-    auto name_ptr = kernel_mem->TranslateVirtual<const char*>(
-        device_name->pointer);
+    auto name_ptr =
+        kernel_mem->TranslateVirtual<const char*>(device_name->pointer);
     uint16_t name_len = device_name->length;
     std::string dev_name(name_ptr, name_len);
-    XELOGD("IoCreateDevice: driver={:08X} ext_size={} name='{}' type={} attrs={:08X}",
-           (uint32_t)driver_object, (uint32_t)device_extension_size,
-           dev_name, (uint32_t)device_type,
-           (uint32_t)extra_device_object_attributes);
+    XELOGD(
+        "IoCreateDevice: driver={:08X} ext_size={} name='{}' type={} "
+        "attrs={:08X}",
+        (uint32_t)driver_object, (uint32_t)device_extension_size, dev_name,
+        (uint32_t)device_type, (uint32_t)extra_device_object_attributes);
   } else {
-    XELOGD("IoCreateDevice: driver={:08X} ext_size={} name=<none> type={} attrs={:08X}",
-           (uint32_t)driver_object, (uint32_t)device_extension_size,
-           (uint32_t)device_type, (uint32_t)extra_device_object_attributes);
+    XELOGD(
+        "IoCreateDevice: driver={:08X} ext_size={} name=<none> type={} "
+        "attrs={:08X}",
+        (uint32_t)driver_object, (uint32_t)device_extension_size,
+        (uint32_t)device_type, (uint32_t)extra_device_object_attributes);
   }
 
   memset(out, 0, required_size);

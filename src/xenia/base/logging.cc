@@ -10,11 +10,8 @@
 #include "xenia/base/logging.h"
 
 #include <algorithm>
-#include <atomic>
 #include <cstdlib>
 #include <cstring>
-#include <mutex>
-#include <vector>
 
 #include "third_party/disruptorplus/include/disruptorplus/multi_threaded_claim_strategy.hpp"
 #include "third_party/disruptorplus/include/disruptorplus/ring_buffer.hpp"
@@ -52,17 +49,17 @@ DEFINE_bool(log_to_logcat, true, "Write log output to Android Logcat.",
 DEFINE_path(log_file, "", "Logs are written to the given file", "Logging");
 DEFINE_bool(log_to_stdout, true, "Write log output to stdout", "Logging");
 DEFINE_bool(log_to_debugprint, false, "Dump the log to DebugPrint.", "Logging");
+#endif  // XE_PLATFORM_ANDROID
+DEFINE_bool(flush_log, true, "Flush log file after each log line batch.",
+            "Logging");
 DEFINE_bool(
     skip_logfile, false,
     "Disable log file output. Console logging via stdout remains active.",
     "Logging");
-#endif  // XE_PLATFORM_ANDROID
-DEFINE_bool(flush_log, true, "Flush log file after each log line batch.",
-            "Logging");
 
 DEFINE_uint32(log_mask, 0,
               "Disables specific categorizes for more granular debug logging. "
-              "Kernel = 1, Apu = 2, Cpu = 4.",
+              "Kernel = 1, Apu = 2, Cpu = 4, Gpu = 8.",
               "Logging");
 
 DEFINE_int32(
@@ -248,7 +245,6 @@ class Logger {
   }
 
   void RemoveFileSinks() {
-    // Remove all FileLogSink instances that own their file (i.e., not stdout).
     sinks_.erase(std::remove_if(sinks_.begin(), sinks_.end(),
                                 [](const std::unique_ptr<LogSink>& sink) {
                                   auto* fs =
@@ -497,16 +493,18 @@ void ShutdownLogging() {
 }
 
 static int g_saved_loglevel = static_cast<int>(LogLevel::Disabled);
-void logging::internal::ToggleLogLevel() {
+void logging::ToggleLogLevel() {
   auto swap = g_saved_loglevel;
 
   g_saved_loglevel = cvars::log_level;
   cvars::log_level = swap;
 }
-bool logging::internal::ShouldLog(LogLevel log_level, uint32_t log_mask) {
+
+bool logging::ShouldLog(LogLevel log_level, uint32_t log_mask) {
   return static_cast<int32_t>(log_level) <= cvars::log_level &&
          (log_mask & cvars::log_mask) == 0;
 }
+
 uint32_t logging::internal::GetLogLevel() { return cvars::log_level; }
 
 std::pair<char*, size_t> logging::internal::GetThreadBuffer() {
@@ -524,7 +522,7 @@ void logging::internal::AppendLogLine(LogLevel log_level,
 
 void logging::AppendLogLine(LogLevel log_level, const char prefix_char,
                             const std::string_view str, uint32_t log_mask) {
-  if (!internal::ShouldLog(log_level, log_mask) || !str.size()) {
+  if (!ShouldLog(log_level, log_mask) || !str.size()) {
     return;
   }
   logger_->AppendLine(xe::threading::current_thread_id(), prefix_char,

@@ -507,10 +507,12 @@ X_STATUS Emulator::MountPath(const std::filesystem::path& path,
     file_system_->RegisterSymbolicLink("DASH:", mount_path);
     // Also register GAME: and D: so xam.xex and other modules can be found
     file_system_->RegisterSymbolicLink(kDefaultGameSymbolicLink, mount_path);
-    file_system_->RegisterSymbolicLink(kDefaultPartitionSymbolicLink, mount_path);
+    file_system_->RegisterSymbolicLink(kDefaultPartitionSymbolicLink,
+                                       mount_path);
   } else {
     file_system_->RegisterSymbolicLink(kDefaultGameSymbolicLink, mount_path);
-    file_system_->RegisterSymbolicLink(kDefaultPartitionSymbolicLink, mount_path);
+    file_system_->RegisterSymbolicLink(kDefaultPartitionSymbolicLink,
+                                       mount_path);
   }
 
   return X_STATUS_SUCCESS;
