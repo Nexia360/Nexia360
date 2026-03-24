@@ -114,7 +114,11 @@ inline size_t copy_and_swap_maybe_truncating(char16_t* dest,
 }
 
 inline bool hex_string_to_array(std::vector<uint8_t>& output_array,
-                                const std::string_view value) {
+                                std::string_view value) {
+  if (value.rfind("0x", 0) == 0) {
+    value.remove_prefix(2);
+  }
+
   output_array.reserve((value.size() + 1) / 2);
 
   size_t remaining_length = value.size();
@@ -425,15 +429,6 @@ inline vec128_t from_string<vec128_t>(const std::string_view value,
   return v;
 }
 
-inline std::u16string read_u16string_and_swap(const char16_t* string_ptr) {
-  std::u16string input_str = std::u16string(string_ptr);
-
-  std::u16string output_str = {};
-  output_str.resize(input_str.size() + 1);
-  copy_and_swap_truncating(output_str.data(), input_str, input_str.size() + 1);
-  return output_str;
-}
-
 inline size_t size_in_bytes(std::variant<std::string, std::u16string> string,
                             bool include_terminator = true) {
   if (std::holds_alternative<std::string>(string)) {
@@ -445,6 +440,17 @@ inline size_t size_in_bytes(std::variant<std::string, std::u16string> string,
     assert_always();
   }
   return 0;
+}
+
+inline std::u16string read_u16string_and_swap(const char16_t* string_ptr) {
+  std::u16string input_str = std::u16string(string_ptr);
+
+  std::u16string output_str = {};
+  output_str.resize(input_str.size() + 1);
+  copy_and_swap_truncating(output_str.data(), input_str,
+                           size_in_bytes(input_str, false));
+  output_str.pop_back();  // Remove nullptr added by copy_and_swap.
+  return output_str;
 }
 
 }  // namespace string_util
