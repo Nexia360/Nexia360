@@ -56,17 +56,17 @@ X_HRESULT xeXMsgStartIORequestEx(uint32_t app, uint32_t message,
                                  XMSGSTARTIOREQUEST_UNKNOWNARG* unknown) {
   auto result = kernel_state()->app_manager()->DispatchMessageAsync(
       app, message, buffer_ptr, buffer_length, overlapped_ptr);
+
   if (result == X_E_NOTFOUND) {
     XELOGE("XMsgStartIORequestEx: app {:08X} undefined", app);
     result = X_E_INVALIDARG;
     XThread::SetLastError(X_ERROR_NOT_FOUND);
   }
-  if (overlapped_ptr) {
-    result = X_ERROR_IO_PENDING;
-  }
+
   if (result == X_ERROR_SUCCESS || result == X_ERROR_IO_PENDING) {
     XThread::SetLastError(0);
   }
+
   return result;
 }
 
@@ -113,25 +113,31 @@ DECLARE_XAM_EXPORT2(XMsgCompleteIORequest, kNone, kImplemented, kSketchy);
 
 dword_result_t XamGetOverlappedResult_entry(
     pointer_t<XAM_OVERLAPPED> overlapped_ptr, lpdword_t length_ptr,
-    dword_t unknown) {
-  uint32_t result;
+    dword_t wait) {
+  uint32_t result = X_STATUS_SUCCESS;
+
   if (overlapped_ptr->result != X_ERROR_IO_PENDING) {
     result = overlapped_ptr->result;
-  } else if (!overlapped_ptr->event) {
-    result = X_ERROR_IO_INCOMPLETE;
-  } else {
+  } else if (wait && overlapped_ptr->event) {
     auto ev = kernel_state()->object_table()->LookupObject<XEvent>(
         overlapped_ptr->event);
     result = ev->Wait(3, 1, 0, nullptr);
-    if (XSUCCEEDED(result)) {
-      result = overlapped_ptr->result;
-    } else {
-      result = xboxkrnl::xeRtlNtStatusToDosError(result);
-    }
+  } else {
+    result = X_STATUS_TIMEOUT;
   }
-  if (XSUCCEEDED(result) && length_ptr) {
+
+  if (result == X_STATUS_TIMEOUT) {
+    return X_ERROR_IO_INCOMPLETE;
+  }
+
+  if (XFAILED(result)) {
+    return XThread::GetLastError();
+  }
+
+  if (length_ptr) {
     *length_ptr = overlapped_ptr->length;
   }
+
   return result;
 }
 DECLARE_XAM_EXPORT2(XamGetOverlappedResult, kNone, kImplemented, kSketchy);
