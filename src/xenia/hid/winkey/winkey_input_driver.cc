@@ -37,6 +37,24 @@ DEFINE_int32(
     "selected slot. Passthrough does not require assigning slot.",
     "HID");
 
+DEFINE_bool(
+    mousehook, false,
+    "Mouse-look (mousehook): lock the cursor to the window and map "
+    "relative mouse motion to the right thumbstick (FPS aim). Left "
+    "mouse = right trigger (fire), right mouse = left trigger (aim), "
+    "middle mouse = right-thumb press. Requires keyboard_mode=1 for the "
+    "same controller slot (keyboard_user_index).",
+    "HID");
+
+DEFINE_double(
+    mousehook_sensitivity, 1.0,
+    "Mousehook aim sensitivity multiplier (right-stick deflection per "
+    "pixel of mouse motion).",
+    "HID");
+
+DEFINE_bool(mousehook_invert_y, false,
+            "Mousehook: invert the vertical (look up/down) aim axis.", "HID");
+
 namespace xe {
 namespace hid {
 namespace winkey {
@@ -169,7 +187,7 @@ X_RESULT WinKeyInputDriver::GetState(uint32_t user_index,
   int16_t thumb_rx = 0;
   int16_t thumb_ry = 0;
 
-  if (window()->HasFocus()) {
+  if (window()->HasFocus() && is_active()) {
     bool capital = IsKeyToggled(VK_CAPITAL) || IsKeyDown(VK_SHIFT);
     for (const KeyBinding& b : key_bindings_) {
       if (((b.lowercase == b.uppercase) || (b.lowercase && !capital) ||
@@ -254,6 +272,37 @@ X_RESULT WinKeyInputDriver::GetState(uint32_t user_index,
         }
       }
     }
+
+    // Mousehook: fold accumulated relative mouse motion into the right stick as
+    // a velocity-style deflection (pixels moved this frame -> deflection; the
+    // accumulator is drained each poll so the stick recentres when the mouse
+    // stops). Mouse buttons map to triggers / right-thumb press.
+    if (cvars::mousehook) {
+      const int dx = mouse_dx_.exchange(0, std::memory_order_relaxed);
+      const int dy = mouse_dy_.exchange(0, std::memory_order_relaxed);
+      // ~25 px of motion in one poll == full deflection at sensitivity 1.0.
+      const double scale = cvars::mousehook_sensitivity * (32767.0 / 25.0);
+      auto add_axis = [](int base, double delta) -> int16_t {
+        double v = static_cast<double>(base) + delta;
+        if (v > SHRT_MAX) v = SHRT_MAX;
+        if (v < SHRT_MIN) v = SHRT_MIN;
+        return static_cast<int16_t>(v);
+      };
+      thumb_rx = add_axis(thumb_rx, dx * scale);
+      // Screen-down (dy > 0) = look down = stick down (negative) unless
+      // inverted.
+      thumb_ry = add_axis(
+          thumb_ry, cvars::mousehook_invert_y ? (dy * scale) : -(dy * scale));
+      if (mouse_left_.load(std::memory_order_relaxed)) {
+        right_trigger = 0xFF;  // fire
+      }
+      if (mouse_right_.load(std::memory_order_relaxed)) {
+        left_trigger = 0xFF;  // aim down sights
+      }
+      if (mouse_middle_.load(std::memory_order_relaxed)) {
+        buttons |= X_INPUT_GAMEPAD_RIGHT_THUMB;
+      }
+    }
   }
 
   out_state->packet_number = packet_number_;
@@ -283,6 +332,10 @@ X_RESULT WinKeyInputDriver::SetState(uint32_t user_index,
 
 X_RESULT WinKeyInputDriver::GetKeystroke(uint32_t user_index, uint32_t flags,
                                          X_INPUT_KEYSTROKE* out_keystroke) {
+  if (!is_active()) {
+    return X_ERROR_DEVICE_NOT_CONNECTED;
+  }
+
   if (!IsKeyboardForUserEnabled(user_index) && !IsPassthroughEnabled()) {
     return X_ERROR_DEVICE_NOT_CONNECTED;
   }
@@ -378,8 +431,8 @@ void WinKeyInputDriver::WinKeyWindowInputListener::OnKeyUp(ui::KeyEvent& e) {
 }
 
 void WinKeyInputDriver::OnKey(ui::KeyEvent& e, bool is_down) {
-  if (static_cast<KeyboardMode>(cvars::keyboard_mode) ==
-      KeyboardMode::Disabled) {
+  if (!is_active() || static_cast<KeyboardMode>(cvars::keyboard_mode) ==
+                          KeyboardMode::Disabled) {
     return;
   }
 
@@ -391,6 +444,85 @@ void WinKeyInputDriver::OnKey(ui::KeyEvent& e, bool is_down) {
 
   auto global_lock = global_critical_region_.Acquire();
   key_events_.push(key);
+}
+
+void WinKeyInputDriver::WinKeyWindowInputListener::OnMouseDown(
+    ui::MouseEvent& e) {
+  driver_.OnMouseButton(e, true);
+}
+
+void WinKeyInputDriver::WinKeyWindowInputListener::OnMouseUp(
+    ui::MouseEvent& e) {
+  driver_.OnMouseButton(e, false);
+}
+
+void WinKeyInputDriver::WinKeyWindowInputListener::OnMouseMove(
+    ui::MouseEvent& e) {
+  driver_.OnMouseMove(e);
+}
+
+void WinKeyInputDriver::OnMouseButton(ui::MouseEvent& e, bool is_down) {
+  if (!cvars::mousehook) {
+    return;
+  }
+  switch (e.button()) {
+    case ui::MouseEvent::Button::kLeft:
+      mouse_left_.store(is_down, std::memory_order_relaxed);
+      break;
+    case ui::MouseEvent::Button::kRight:
+      mouse_right_.store(is_down, std::memory_order_relaxed);
+      break;
+    case ui::MouseEvent::Button::kMiddle:
+      mouse_middle_.store(is_down, std::memory_order_relaxed);
+      break;
+    default:
+      break;
+  }
+}
+
+void WinKeyInputDriver::OnMouseMove(ui::MouseEvent& e) {
+  // Cursor-lock relative aim. Only active when mousehook is on, this driver is
+  // active, and the window is focused; otherwise restore the system cursor.
+  const bool active = cvars::mousehook && is_active() && window()->HasFocus();
+  HWND hwnd = GetForegroundWindow();
+  if (!active || !hwnd) {
+    if (cursor_hidden_) {
+      ShowCursor(TRUE);
+      cursor_hidden_ = false;
+    }
+    return;
+  }
+
+  RECT client_rect;
+  if (!GetClientRect(hwnd, &client_rect)) {
+    return;
+  }
+  const int center_x = client_rect.right / 2;
+  const int center_y = client_rect.bottom / 2;
+  POINT screen_center{center_x, center_y};
+  ClientToScreen(hwnd, &screen_center);
+
+  if (!cursor_hidden_) {
+    // Just entered the lock: hide + re-centre, but ignore this initial jump so
+    // the aim doesn't lurch when the cursor was sitting elsewhere.
+    SetCursorPos(screen_center.x, screen_center.y);
+    ShowCursor(FALSE);
+    cursor_hidden_ = true;
+    return;
+  }
+
+  // MouseEvent x()/y() are client-relative; the delta from centre is the
+  // relative motion since our last re-centre.
+  const int dx = e.x() - center_x;
+  const int dy = e.y() - center_y;
+  if (dx == 0 && dy == 0) {
+    // The move our own SetCursorPos generated.
+    return;
+  }
+  mouse_dx_.fetch_add(dx, std::memory_order_relaxed);
+  mouse_dy_.fetch_add(dy, std::memory_order_relaxed);
+  // Re-centre so the cursor can never leave the window (unbounded aim).
+  SetCursorPos(screen_center.x, screen_center.y);
 }
 
 InputType WinKeyInputDriver::GetInputType() const {

@@ -1607,11 +1607,17 @@ bool D3D12CommandProcessor::SetupContext() {
   // Just not to expose uninitialized memory.
   std::memset(&system_constants_, 0, sizeof(system_constants_));
 
+  zpd_host_query_pool_ = std::make_unique<D3D12ZPDQueryPool>();
+  EnsureZPDQueryResources();
+
   return true;
 }
 
 void D3D12CommandProcessor::ShutdownContext() {
   AwaitAllQueueOperationsCompletion();
+
+  ShutdownZPDQueryResources();
+  zpd_host_query_pool_.reset();
 
   ui::d3d12::util::ReleaseAndNull(readback_buffer_);
   readback_buffer_size_ = 0;
@@ -1711,6 +1717,141 @@ void D3D12CommandProcessor::ShutdownContext() {
   device_removed_ = false;
 
   CommandProcessor::ShutdownContext();
+}
+
+void D3D12CommandProcessor::EnsureZPDQueryResources() {
+  if (GetZPDMode() == ZPDMode::kFake || !zpd_host_query_pool_) {
+    return;
+  }
+  uint32_t scale_x =
+      texture_cache_ ? texture_cache_->draw_resolution_scale_x() : 1;
+  uint32_t scale_y =
+      texture_cache_ ? texture_cache_->draw_resolution_scale_y() : 1;
+  zpd_draw_resolution_scale_x_ = scale_x ? scale_x : 1;
+  zpd_draw_resolution_scale_y_ = scale_y ? scale_y : 1;
+  if (zpd_host_query_pool_->is_initialized()) {
+    return;
+  }
+  if (!zpd_host_query_pool_->EnsureInitialized(GetD3D12Provider(),
+                                               kZPDQueryPoolCapacity)) {
+    XELOGE("ZPD: occlusion query pool init failed, using fake reports");
+    zpd_force_fake_fallback_ = true;
+  }
+}
+
+void D3D12CommandProcessor::ShutdownZPDQueryResources() {
+  zpd_resolves_in_flight_.clear();
+  zpd_active_query_index_ = UINT32_MAX;
+  zpd_active_query_generation_ = 0;
+  if (zpd_host_query_pool_) {
+    zpd_host_query_pool_->Shutdown();
+  }
+}
+
+bool D3D12CommandProcessor::IsZPDQueryPoolReady() const {
+  return zpd_host_query_pool_ && zpd_host_query_pool_->is_initialized() &&
+         !zpd_force_fake_fallback_;
+}
+
+bool D3D12CommandProcessor::CanOpenZPDQuery() const {
+  return submission_open_ && zpd_active_query_index_ == UINT32_MAX &&
+         zpd_host_query_pool_ && zpd_host_query_pool_->has_free_indices();
+}
+
+CommandProcessor::QueryOpenResult D3D12CommandProcessor::OpenZPDQuery(
+    ReportHandle report_handle, bool can_close_submission) {
+  if (!IsZPDQueryPoolReady()) {
+    return QueryOpenResult::kFailed;
+  }
+  if (!submission_open_) {
+    return QueryOpenResult::kDeferred;
+  }
+  if (zpd_active_query_index_ != UINT32_MAX) {
+    return QueryOpenResult::kFailed;
+  }
+  uint32_t index, generation;
+  if (!zpd_host_query_pool_->AcquireQueryIndex(index, generation)) {
+    return QueryOpenResult::kPoolExhausted;
+  }
+  zpd_host_query_pool_->BeginQuery(deferred_command_list_, index);
+  zpd_active_query_index_ = index;
+  zpd_active_query_generation_ = generation;
+  return QueryOpenResult::kOpened;
+}
+
+bool D3D12CommandProcessor::CloseZPDQuery(ReportHandle report_handle,
+                                          uint64_t& out_submission) {
+  if (zpd_active_query_index_ == UINT32_MAX || !zpd_host_query_pool_) {
+    return false;
+  }
+  uint32_t index = zpd_active_query_index_;
+  uint32_t generation = zpd_active_query_generation_;
+  zpd_host_query_pool_->EndQuery(deferred_command_list_, index);
+  zpd_host_query_pool_->QueueQueryResolve(index);
+  zpd_resolves_in_flight_.push_back(
+      {report_handle, index, generation, submission_current_});
+  out_submission = submission_current_;
+  zpd_active_query_index_ = UINT32_MAX;
+  zpd_active_query_generation_ = 0;
+  return true;
+}
+
+bool D3D12CommandProcessor::DiscardZPDQuery() {
+  if (zpd_active_query_index_ == UINT32_MAX || !zpd_host_query_pool_) {
+    return false;
+  }
+  uint32_t index = zpd_active_query_index_;
+  uint32_t generation = zpd_active_query_generation_;
+  // EndQuery must still pair with the recorded BeginQuery; just skip the
+  // resolve.
+  zpd_host_query_pool_->EndQuery(deferred_command_list_, index);
+  zpd_host_query_pool_->ReleaseQueryIndex(index, generation);
+  zpd_active_query_index_ = UINT32_MAX;
+  zpd_active_query_generation_ = 0;
+  return true;
+}
+
+void D3D12CommandProcessor::PumpQueryResolves() {
+  if (!zpd_host_query_pool_) {
+    return;
+  }
+  uint64_t completed = GetCompletedSubmission();
+  while (!zpd_resolves_in_flight_.empty()) {
+    PendingQueryResolve pending = zpd_resolves_in_flight_.front();
+    if (pending.submission > completed) {
+      break;
+    }
+    uint64_t samples = 0;
+    if (zpd_host_query_pool_->GenerationMatches(pending.query_index,
+                                                pending.query_generation)) {
+      samples =
+          zpd_host_query_pool_->GetQueryReadbackValue(pending.query_index);
+      zpd_host_query_pool_->ReleaseQueryIndex(pending.query_index,
+                                              pending.query_generation);
+    }
+    zpd_resolves_in_flight_.pop_front();
+    OnZPDQueryResolved(pending.report_handle, samples);
+  }
+}
+
+bool D3D12CommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
+                                              uint64_t wait_for_submission) {
+  if (!zpd_host_query_pool_) {
+    return false;
+  }
+  if (wait_for_submission > submission_completed_) {
+    CheckSubmissionFence(wait_for_submission);
+  }
+  PumpQueryResolves();
+  return logical_zpd_reports_.find(report_handle) == logical_zpd_reports_.end();
+}
+
+void D3D12CommandProcessor::RecordZPDResolveBatch() {
+  if (!zpd_host_query_pool_ || !submission_open_ ||
+      !zpd_host_query_pool_->has_pending_resolve_batch()) {
+    return;
+  }
+  zpd_host_query_pool_->FlushResolveBatch(deferred_command_list_);
 }
 
 XE_FORCEINLINE
@@ -3230,6 +3371,34 @@ bool D3D12CommandProcessor::BeginSubmission(bool is_guest_command) {
   ID3D12Device* device = GetD3D12Provider().GetDevice();
   HRESULT device_removed_reason = device->GetDeviceRemovedReason();
   if (FAILED(device_removed_reason)) {
+    const char* reason_str;
+    switch (device_removed_reason) {
+      case DXGI_ERROR_DEVICE_HUNG:
+        reason_str =
+            "DEVICE_HUNG - the GPU stopped responding (TDR), usually a "
+            "bad/looping shader or malformed command from the guest";
+        break;
+      case DXGI_ERROR_DEVICE_REMOVED:
+        reason_str =
+            "DEVICE_REMOVED - external: GPU physically removed or the driver "
+            "was updated/restarted (not the emulator's fault)";
+        break;
+      case DXGI_ERROR_DEVICE_RESET:
+        reason_str =
+            "DEVICE_RESET - the GPU was reset due to a badly-formed command";
+        break;
+      case DXGI_ERROR_DRIVER_INTERNAL_ERROR:
+        reason_str = "DRIVER_INTERNAL_ERROR - host driver internal error";
+        break;
+      case DXGI_ERROR_INVALID_CALL:
+        reason_str = "INVALID_CALL - invalid use of the D3D12 API";
+        break;
+      default:
+        reason_str = "unknown reason";
+        break;
+    }
+    XELOGE("D3D12 device removed: {} (HRESULT {:08X})", reason_str,
+           static_cast<uint32_t>(device_removed_reason));
     device_removed_ = true;
     graphics_system_->OnHostGpuLossFromAnyThread(device_removed_reason !=
                                                  DXGI_ERROR_DEVICE_REMOVED);
@@ -3293,6 +3462,13 @@ bool D3D12CommandProcessor::BeginSubmission(bool is_guest_command) {
     primitive_processor_->BeginSubmission();
 
     texture_cache_->BeginSubmission(submission_current_);
+
+    if (GetZPDMode() != ZPDMode::kFake) {
+      PumpQueryResolves();
+      if (zpd_active_segment_.logical_active) {
+        OpenQuerySegment(false);
+      }
+    }
   }
 
   if (is_opening_frame) {
@@ -3380,6 +3556,11 @@ bool D3D12CommandProcessor::EndSubmission(bool is_swap) {
 
   if (submission_open_) {
     assert_false(scratch_buffer_used_);
+
+    if (GetZPDMode() != ZPDMode::kFake) {
+      CloseQuerySegment();
+      RecordZPDResolveBatch();
+    }
 
     pipeline_cache_->EndSubmission();
 

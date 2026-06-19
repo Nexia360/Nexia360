@@ -183,12 +183,11 @@ bool PPCHIRBuilder::Emit(GuestFunction* function, uint32_t flags) {
       auto& disasm_info = GetOpcodeDisasmInfo(opcode);
       XELOGE(
           "Unimplemented instr {:08X} {:08X} {} - report the game to Xenia "
-          "developers; to skip, disable break_on_unimplemented_instructions",
+          "developers",
           address, code, disasm_info.name);
       Comment("UNIMPLEMENTED!");
-      if (cvars::break_on_unimplemented_instructions) {
-        DebugBreak();
-      }
+      // Log and continue rather than breaking - an unimplemented instruction
+      // must not pause/halt emulation.
     }
   }
 

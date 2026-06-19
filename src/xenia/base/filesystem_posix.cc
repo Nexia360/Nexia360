@@ -129,6 +129,26 @@ bool CreateEmptyFile(const std::filesystem::path& path) {
   return false;
 }
 
+bool CreateDirectoryJunction(const std::filesystem::path& link_path,
+                             const std::filesystem::path& target) {
+  std::error_code ec;
+  std::filesystem::path abs_target = std::filesystem::absolute(target, ec);
+  if (ec) {
+    return false;
+  }
+  std::filesystem::remove(link_path, ec);
+  std::filesystem::create_directory_symlink(abs_target, link_path, ec);
+  return !ec;
+}
+
+bool RemoveDirectoryJunction(const std::filesystem::path& link_path) {
+  std::error_code ec;
+  if (!std::filesystem::is_symlink(std::filesystem::symlink_status(link_path, ec))) {
+    return false;
+  }
+  return std::filesystem::remove(link_path, ec) && !ec;
+}
+
 class PosixFileHandle : public FileHandle {
  public:
   PosixFileHandle(std::filesystem::path path, int handle)

@@ -368,6 +368,17 @@ void GamercardUI::SelectNewIcon() {
   }
 }
 
+void GamercardUI::SetWorkingProfileIcon(const std::vector<uint8_t>& png) {
+  if (png.empty()) {
+    return;
+  }
+  // Update only the in-memory working copy; SaveProfileIcon() applies it when
+  // the user presses Save.
+  gamercardValues_.profile_icon = png;
+  gamercardValues_.icon_texture =
+      imgui_drawer()->LoadImGuiIcon(gamercardValues_.profile_icon).release();
+}
+
 void GamercardUI::DrawBaseSettings(ImGuiIO& io) {
   ImGui::SeparatorText("Profile Settings");
 
@@ -384,7 +395,13 @@ void GamercardUI::DrawBaseSettings(ImGuiIO& io) {
           "###ProfileIcon",
           reinterpret_cast<ImTextureID>(gamercardValues_.icon_texture),
           xe::ui::default_image_icon_size)) {
-    SelectNewIcon();
+    // Prefer the gamerpic browser (wired by the app layer); fall back to the
+    // native file picker when no callback is set.
+    if (change_icon_callback_) {
+      change_icon_callback_();
+    } else {
+      SelectNewIcon();
+    }
   }
   ImGui::EndDisabled();
 
@@ -543,6 +560,15 @@ void GamercardUI::DrawGpdSettings(ImGuiIO& io) {
 }
 
 void GamercardUI::OnDraw(ImGuiIO& io) {
+  // While the gamerpic browser is open on top, keep this dialog alive but do
+  // NOT draw its popup (opening the browser's modal closed it; drawing it again
+  // would BeginPopupModal->false->Close()/delete this dialog out from under the
+  // browser's callback). Re-open the popup once the browser closes.
+  if (gamerpic_browser_open_) {
+    has_opened_ = false;
+    return;
+  }
+
   if (!has_opened_) {
     ImGui::OpenPopup(fmt::format("{}'s Gamercard",
                                  std::string(gamercardOriginalValues_.gamertag))
@@ -579,6 +605,24 @@ void GamercardUI::OnDraw(ImGuiIO& io) {
 
   ImGui::NewLine();
 
+  // Control legend.
+  ImGui::SeparatorText("Legend");
+  ImGui::TextDisabled("Y - Change Gamerpic");
+  ImGui::TextDisabled("Start - Save & Exit");
+
+  // Y triggers the gamerpic change, same as activating the profile icon above.
+  // Only when allowed (signed in, no title running) and not editing a text
+  // field, and only while this dialog is focused.
+  if (is_signed_in_ && !kernel_state_->title_id() && !io.WantTextInput &&
+      ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+      ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp)) {
+    if (change_icon_callback_) {
+      change_icon_callback_();
+    } else {
+      SelectNewIcon();
+    }
+  }
+
   const bool is_valid_gamertag =
       ProfileManager::IsGamertagValid(std::string(gamercardValues_.gamertag));
 
@@ -599,6 +643,18 @@ void GamercardUI::OnDraw(ImGuiIO& io) {
   ImGui::SameLine();
 
   if (ImGui::Button("Cancel")) {
+    dialog_open = false;
+  }
+
+  // START saves and exits (same as the Save button), when the gamertag is
+  // valid and this dialog is focused. Fires on release, matching the Save
+  // button's activate-on-release behavior.
+  if (is_valid_gamertag && !io.WantTextInput &&
+      ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+      ImGui::IsKeyReleased(ImGuiKey_GamepadStart)) {
+    SaveProfileIcon();
+    SaveSettings();
+    SaveAccountData();
     dialog_open = false;
   }
 

@@ -1,3 +1,5 @@
 //{{NO_DEPENDENCIES}}
+// Nexia360 application icon (bumped to force the resource compiler to
+// re-embed assets\icon\icon.ico - MSBuild doesn't always detect .ico changes).
 
 MAINICON               ICON                    "..\\..\\..\\assets\\icon\\icon.ico"

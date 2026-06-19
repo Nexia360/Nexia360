@@ -1116,7 +1116,10 @@ bool BaseHeap::AllocRange(uint32_t low_address, uint32_t high_address,
   }
   if (start_page_number == UINT_MAX || end_page_number == UINT_MAX) {
     // Out of memory.
-    XELOGE("BaseHeap::Alloc failed to find contiguous range");
+    XELOGE(
+        "BaseHeap::Alloc failed to find contiguous range (heap {:08X}+{:08X}, "
+        "requested {} KB)",
+        heap_base_, heap_size_, (uint64_t(page_count) * page_size_) >> 10);
     // assert_always("Heap exhausted!");
     return false;
   }

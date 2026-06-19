@@ -200,6 +200,26 @@ class XLiveAPI {
 
   static TitleGamerpicsObjectJSON GetTitleGamerpic(uint32_t title_id);
 
+  // One entry of the hub's player directory, used by the "Find Friends"
+  // browser. state holds the X_ONLINE state flags (bit0 = online).
+  struct FindFriendsEntry {
+    uint64_t xuid = 0;
+    std::string gamertag;
+    uint32_t title_id = 0;
+    uint32_t state = 0;
+    std::string gamerpic_url;
+    std::string rich_presence;
+  };
+
+  // GET players/list -> every currently-known player on the hub. The caller
+  // filters (online / same title) client-side.
+  static std::vector<FindFriendsEntry> GetPlayersList();
+
+  // POST players/gamerpic -> uploads the local profile's actual gamerpic PNG
+  // (base64) so the hub can serve it directly. local_xuid reads the on-disk
+  // tile; hub_xuid is the id the player is registered under on the hub.
+  static void UploadGamerpic(uint64_t local_xuid, uint64_t hub_xuid);
+
   static std::set<uint32_t> GetSupportedGamerpicTitles();
 
   static std::optional<PageGamerpicsObjectJSON> GetGamerpicPage(

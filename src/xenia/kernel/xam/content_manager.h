@@ -269,6 +269,13 @@ class ContentManager {
       const std::string_view file_name, uint64_t xuid, uint32_t title_id,
       const XContentType content_type) const;
 
+  // If the title's active title update bundles per-user content
+  // (<library>/<title>/<active>/Content/<xuid>/), returns that path so saved
+  // games are served from the library instead of the global content tree.
+  // Empty when there is no such bundled content.
+  std::filesystem::path ActiveTitleUpdateContentRoot(uint64_t xuid,
+                                                     uint32_t title_id) const;
+
   std::unordered_set<uint32_t> FindPublisherTitleIds(
       const uint64_t xuid,
       uint32_t base_title_id = kCurrentlyRunningTitleId) const;

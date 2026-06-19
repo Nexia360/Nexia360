@@ -454,44 +454,48 @@ uint32_t XamUserReadProfileSettingsEx(uint32_t title_id, uint32_t user_index,
           setting_title_id = kDashboardID;
         }
 
-        std::vector<xam::UserSetting> settings = {};
+        std::optional<xam::UserSetting> setting;
 
-        if (users_settings.contains(xuid)) {
-          if (users_settings.at(xuid).contains(setting_title_id)) {
-            settings = users_settings.at(xuid).at(setting_title_id);
+        if (users_settings.contains(xuid) &&
+            users_settings.at(xuid).contains(setting_title_id)) {
+          const auto& settings = users_settings.at(xuid).at(setting_title_id);
+
+          auto it =
+              std::find_if(settings.cbegin(), settings.cend(),
+                           [&setting_id_val](const xam::UserSetting& entry) {
+                             return setting_id_val == entry.get_setting_id();
+                           });
+
+          if (it != settings.cend()) {
+            setting = *it;
           }
         }
 
-        if (settings.empty()) {
-          assert_always();
+        // The remote (hub) path has no local GPD to fall back on, so a setting
+        // the backend hasn't stored for that player arrives empty here. Unlike
+        // the local path (UserTracker::GetSetting), nothing synthesized a
+        // value. Fall back to the standard default for known settings - same
+        // as the local path and Nexia - so the guest always receives a valid
+        // value (e.g. controller vibration = 3) instead of a zeroed/missing
+        // entry. Some titles (e.g. Tetris Splash) read a joining player's
+        // gamercard right after the session join and bail the join if a
+        // requested setting comes back missing.
+        if (!setting) {
+          setting = xam::UserSetting::GetDefaultSetting(setting_id_val);
+        }
 
-          XELOGI(fmt::format(
-              "XamUserReadProfileSettingsEx: {:08X}: {:08X} not found!",
-              setting_title_id, setting_id_val));
+        if (!setting) {
+          XELOGW(
+              "XamUserReadProfileSettingsEx: {:08X}: {:08X} not found and no "
+              "default available",
+              setting_title_id, setting_id_val);
           continue;
         }
 
-        auto it =
-            std::find_if(settings.cbegin(), settings.cend(),
-                         [&setting_id_val](xam::UserSetting setting) {
-                           return setting_id_val == setting.get_setting_id();
-                         });
+        out_setting->setting_id = setting->get_setting_id();
+        out_setting->source = setting->get_setting_source();
 
-        if (it == settings.cend()) {
-          assert_always();
-
-          XELOGI(fmt::format(
-              "XamUserReadProfileSettingsEx: {:08X}: {:08X} not found!",
-              setting_title_id, setting_id_val));
-          continue;
-        }
-
-        xam::UserSetting setting = *it;
-
-        out_setting->setting_id = setting.get_setting_id();
-        out_setting->source = setting.get_setting_source();
-
-        setting.WriteToGuest(out_setting, additional_data_buffer_ptr);
+        setting->WriteToGuest(out_setting, additional_data_buffer_ptr);
 
         if (xuids) {
           out_setting->xuid = xuid;
@@ -1096,7 +1100,12 @@ dword_result_t XamReadTileToTextureEx_entry(
     std::vector<uint8_t> gamerpic_icon = {};
 
     // 5454084E
-    if (user_index <= -1) {
+    // NOTE: user_index is unsigned (dword_t), so the original `user_index <=
+    // -1` was always true (-1 -> 0xFFFFFFFF) and aborted EVERY request before
+    // the buffer was filled, leaving the game's texture as uninitialized
+    // garbage. Only a genuinely invalid index should fail; XUserIndexNone
+    // (0xFE) is the valid "resolve by gamer-tile key" path used below.
+    if (static_cast<int32_t>(user_index) <= -1) {
       extended_error = X_E_NO_SUCH_USER;
       return X_ERROR_FUNCTION_FAILED;
     }
@@ -1144,17 +1153,49 @@ dword_result_t XamReadTileToTextureEx_entry(
 
       const uint32_t gamerpic_id = fsmall ? small_tile_id : big_tile_id;
 
-      if (!IsGamerPictureAvatar(title_id) && !IsGamerPictureCustom(title_id)) {
+      // If this gamer-tile key belongs to a signed-in LOCAL user, serve their
+      // local stored tile (always fresh after a gamerpic editor/browser change)
+      // instead of a cached download - otherwise local gamerpic edits never
+      // show in-game. Match on the (unique) tile id so it works even when the
+      // editor changed the tile bytes without changing the key.
+      auto* xam_state = kernel_state()->xam_state();
+      for (uint32_t idx = 0; idx < XUserMaxUserCount; idx++) {
+        auto local_user = xam_state->GetUserProfile(idx);
+        if (!local_user) {
+          continue;
+        }
+        const auto local_key =
+            xam_state->user_tracker()->GetUserGamerpicSetting(
+                local_user->xuid());
+        if (!local_key) {
+          continue;
+        }
+        const uint32_t local_tile_id =
+            fsmall ? local_key->GetSmallTileId() : local_key->GetBigTileId();
+        if (local_tile_id != gamerpic_id) {
+          continue;
+        }
+        const auto local_tile = xam_state->user_tracker()->GetIcon(
+            local_user->xuid(), title_id,
+            fsmall ? XTileType::kGamerTileSmall : XTileType::kGamerTile,
+            tile_id);
+        if (!local_tile.empty()) {
+          gamerpic_icon.assign(local_tile.begin(), local_tile.end());
+          XELOGE(
+              "ICON_DBG: served LOCAL gamerpic user={} tile_id={:08X} ({} b)",
+              idx, gamerpic_id, local_tile.size());
+        }
+        break;
+      }
+
+      if (gamerpic_icon.empty() && !IsGamerPictureAvatar(title_id) &&
+          !IsGamerPictureCustom(title_id)) {
         if (XLiveAPI::cached_gamerpics.contains(gamerpic_id)) {
           gamerpic_icon = XLiveAPI::cached_gamerpics.at(gamerpic_id);
         } else {
           gamerpic_icon = XLiveAPI::DownloadGamerpicTile(title_id, gamerpic_id);
           XLiveAPI::cached_gamerpics[gamerpic_id] = gamerpic_icon;
         }
-      } else {
-        // We do not support avatar or custom gamerpics.
-        // If remote user is local we still cannot provide gamerpic as we would
-        // need to determine the user profile from the gamerpic key.
       }
     }
 
@@ -1173,13 +1214,18 @@ dword_result_t XamReadTileToTextureEx_entry(
       return X_ERROR_SUCCESS;
     }
 
-    int width, height, channels;
+    int width = 0, height = 0, channels = 0;
     unsigned char* imageData = stbi_load_from_memory(
         gamerpic_icon.data(), static_cast<int>(gamerpic_icon.size()), &width,
         &height, &channels, STBI_rgb_alpha);
 
+    // Decode failed - leave the already black-filled buffer as-is.
+    if (!imageData || width <= 0 || height <= 0) {
+      return X_ERROR_SUCCESS;
+    }
+
     const size_t icon_dimmension_size = size_t(width) * size_t(height);
-    for (int i = 0; i < icon_dimmension_size; i++) {
+    for (size_t i = 0; i < icon_dimmension_size; i++) {
       unsigned char* pixel = &imageData[i * sizeof(uint32_t)];
 
       // RGBA to ARGB. TODO: Find faster method!
@@ -1191,21 +1237,30 @@ dword_result_t XamReadTileToTextureEx_entry(
       std::swap(pixel[2], pixel[3]);
     }
 
-    const size_t row_size_bytes = width * sizeof(uint32_t);
+    // The game hands us the destination tile geometry (stride / tile_height),
+    // but the stored gamerpic can be any resolution. Resample the decoded
+    // image (nearest-neighbour) to exactly fill the requested tile so it never
+    // shears or overflows when the source size differs from the tile size.
+    const uint32_t dest_width =
+        static_cast<uint32_t>(stride) / static_cast<uint32_t>(sizeof(uint32_t));
+    const uint32_t dest_height = static_cast<uint32_t>(valid_tile_height);
     std::vector<uint8_t> final_tile(buffer_size, 0);
 
-    /*
-     Process image rows to include stride padding
-
-     Row (32px) = 128 Bytes
-     Stride = 256 Bytes
-     Padding Bytes = Stride - Row
-    */
-    for (int y = 0; y < height; ++y) {
-      const unsigned char* src_row_start = &imageData[y * row_size_bytes];
-      uint8_t* dest_row_start = final_tile.data() + (y * stride);
-
-      memcpy(dest_row_start, src_row_start, row_size_bytes);
+    if (dest_width > 0 && dest_height > 0) {
+      const uint32_t* src_pixels = reinterpret_cast<const uint32_t*>(imageData);
+      for (uint32_t ty = 0; ty < dest_height; ++ty) {
+        const uint32_t sy =
+            std::min<uint32_t>(ty * static_cast<uint32_t>(height) / dest_height,
+                               static_cast<uint32_t>(height) - 1);
+        uint32_t* dest_row = reinterpret_cast<uint32_t*>(final_tile.data() +
+                                                         size_t(ty) * stride);
+        for (uint32_t tx = 0; tx < dest_width; ++tx) {
+          const uint32_t sx =
+              std::min<uint32_t>(tx * static_cast<uint32_t>(width) / dest_width,
+                                 static_cast<uint32_t>(width) - 1);
+          dest_row[tx] = src_pixels[size_t(sy) * width + sx];
+        }
+      }
     }
 
     memcpy(buffer_ptr, final_tile.data(), buffer_size);

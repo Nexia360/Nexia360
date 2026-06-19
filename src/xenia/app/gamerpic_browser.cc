@@ -79,6 +79,12 @@ void TitleGamerpicBrowser::OnClose() {
 
   CloseTitleImagesThreads();
   CloseGamerpicsThreads();
+
+  // Picker mode: notify the opener (profile editor) that the browser closed -
+  // whether a gamerpic was selected or it was cancelled - so it can re-open.
+  if (on_closed_) {
+    on_closed_();
+  }
 }
 
 void TitleGamerpicBrowser::CleanupTitleImagesThreads() {
@@ -128,6 +134,17 @@ void TitleGamerpicBrowser::OnDraw(ImGuiIO& io) {
           "Gamerpic Browser", &titles_args_.browser_open,
           ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize)) {
     CleanupTitleImagesThreads();
+
+    // B / Back / Esc cancels the whole browser, but only when this window is
+    // focused (no nested gamerpic-grid / page popup on top) and not while
+    // typing in a text field. Release-based so it never closes on press.
+    if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+        !io.WantTextInput &&
+        (ImGui::IsKeyReleased(ImGuiKey_GamepadFaceRight) ||
+         ImGui::IsKeyReleased(ImGuiKey_GamepadBack) ||
+         ImGui::IsKeyReleased(ImGuiKey_Escape))) {
+      titles_args_.browser_open = false;
+    }
 
     // loaded_page_ isn't reliable enough?
     if (!loaded_page_ && IsFutureReady(gamerpic_page_)) {
@@ -715,7 +732,7 @@ void TitleGamerpicBrowser::DrawGamerpicsBrowser(xe::kernel::GameTitle game,
             ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedSame |
                 ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_ScrollY,
             table_size)) {
-      if (ImGui::IsKeyPressed(ImGuiKey::ImGuiKey_GamepadFaceRight, false)) {
+      if (ImGui::IsKeyReleased(ImGuiKey::ImGuiKey_GamepadFaceRight)) {
         ImGui::CloseCurrentPopup();
       }
 
@@ -766,7 +783,7 @@ void TitleGamerpicBrowser::DrawGamerpicsBrowser(xe::kernel::GameTitle game,
                 xe::ui::default_image_icon_size)) {
           // Check if gamerpic has changed, we don't want to broadcast and
           // download the gamerpics if it hasn't
-          if (!IsCurrentGamerpic(game, gamerpic)) {
+          if (picker_mode_ || !IsCurrentGamerpic(game, gamerpic)) {
             new_gamerpic_ = gamerpic;
             update_gamerpic_ = true;
             small_gamerpic_ = xe::kernel::XLiveAPI::DownloadGamerpicTileAsync(
@@ -904,6 +921,25 @@ bool TitleGamerpicBrowser::IsCurrentGamerpic(xe::kernel::GameTitle game,
 
 void TitleGamerpicBrowser::UpdateGamerpicIfRequested(
     xe::kernel::GameTitle game) {
+  if (picker_mode_) {
+    // Working-copy flow: hand the full-size gamerpic PNG back to the caller
+    // (profile editor) and close, without applying it to any profile. Use the
+    // BIG tile from the already-loaded gamerpics - that is the full image the
+    // user sees and the size the profile icon expects (the small tile is the
+    // wrong size for UpdateUserIcon).
+    if (update_gamerpic_) {
+      const auto gamerpics = title_gamerpics_->load(std::memory_order_acquire);
+      if (gamerpics && gamerpics->contains(game.id) &&
+          gamerpics->at(game.id).contains(new_gamerpic_.big_tile_id)) {
+        update_gamerpic_ = false;
+        if (on_picked_) {
+          on_picked_(gamerpics->at(game.id).at(new_gamerpic_.big_tile_id));
+        }
+        titles_args_.browser_open = false;  // triggers close in OnDraw
+      }
+    }
+    return;
+  }
   if (update_gamerpic_) {
     if (IsFutureReady(small_gamerpic_)) {
       bool updated = false;

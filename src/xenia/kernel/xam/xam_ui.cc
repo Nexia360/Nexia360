@@ -24,6 +24,7 @@
 #include "xenia/ui/imgui_drawer.h"
 #include "xenia/ui/imgui_guest_notification.h"
 #include "xenia/ui/imgui_host_notification.h"
+#include "xenia/ui/keyboard_ui.h"
 
 #include "xenia/kernel/xam/ui/community_sessions_ui.h"
 #include "xenia/kernel/xam/ui/create_profile_ui.h"
@@ -482,33 +483,35 @@ dword_result_t XamShowKeyboardUI_entry(
     };
     result = xeXamDispatchHeadless(run, overlapped);
   } else {
-    auto close = [buffer, buffer_length](KeyboardInputDialog* dialog,
+    const Emulator* emulator = kernel_state()->emulator();
+    xe::ui::ImGuiDrawer* imgui_drawer = emulator->imgui_drawer();
+
+    std::string title_str = title ? xe::to_utf8(title.value()) : "Enter Text";
+    std::string def_text_str =
+        default_text ? xe::to_utf8(default_text.value()) : "";
+
+    // Route guest text entry to our on-screen keyboard (keyboard_ui).
+    auto close = [buffer, buffer_length](xe::ui::KeyboardDialog* dialog,
                                          uint32_t& extended_error,
                                          uint32_t& length) -> X_RESULT {
-      if (dialog->cancelled()) {
+      if (dialog->was_cancelled()) {
         extended_error = X_ERROR_CANCELLED;
         length = 0;
         return X_ERROR_SUCCESS;
       } else {
-        // Zero the output buffer.
-        auto text = xe::to_utf16(dialog->text());
+        auto text = xe::to_utf16(dialog->result_text());
         string_util::copy_and_swap_truncating(buffer, text, buffer_length);
         extended_error = X_ERROR_SUCCESS;
         length = 0;
         return X_ERROR_SUCCESS;
       }
     };
-    const Emulator* emulator = kernel_state()->emulator();
-    xe::ui::ImGuiDrawer* imgui_drawer = emulator->imgui_drawer();
 
-    std::string title_str = title ? xe::to_utf8(title.value()) : "";
-    std::string desc_str = description ? xe::to_utf8(description.value()) : "";
-    std::string def_text_str =
-        default_text ? xe::to_utf8(default_text.value()) : "";
-
-    result = xeXamDispatchDialogEx<KeyboardInputDialog>(
-        new KeyboardInputDialog(imgui_drawer, title_str, desc_str, def_text_str,
-                                buffer_length),
+    result = xeXamDispatchDialogEx<xe::ui::KeyboardDialog>(
+        xe::ui::KeyboardDialog::ShowKeyboard(
+            imgui_drawer, title_str, def_text_str,
+            xe::ui::KeyboardDialog::InputType::kText,
+            nullptr),  // Callback not used - we use the close callback instead
         close, overlapped);
   }
   return result;
@@ -594,7 +597,7 @@ void XamShowDirtyDiscErrorUI_entry(dword_t user_index) {
 DECLARE_XAM_EXPORT1(XamShowDirtyDiscErrorUI, kUI, kImplemented);
 
 dword_result_t XamShowPartyUI_entry(dword_t user_index) {
-  if (cvars::network_mode != NETWORK_MODE::XBOXLIVE) {
+  if (cvars::network_mode < NETWORK_MODE::XBOXLIVE) {
     return X_ERROR_ACCESS_DENIED;
   }
 
@@ -1151,6 +1154,129 @@ bool xeDrawFriendContent(xe::ui::ImGuiDrawer* imgui_drawer,
   return true;
 }
 
+// "Find Friends" player browser, opened from the Add Friend dialog. Lists the
+// hub's player directory and lets the user add any of them as a friend, with
+// "Online Now" / "Same Title" filters.
+bool xeDrawFindFriends(xe::ui::ImGuiDrawer* imgui_drawer, UserProfile* profile,
+                       ui::AddFriendArgs& args) {
+  // Only one Find Friends popup exists at a time, so file-static directory
+  // state is fine; it is refetched each time the dialog is (re)opened.
+  static std::vector<XLiveAPI::FindFriendsEntry> players;
+  static bool loaded = false;
+
+  ImGuiViewport* viewport = ImGui::GetMainViewport();
+  ImVec2 center = viewport->GetCenter();
+
+  ImGui::SetNextWindowSizeConstraints(ImVec2(420, 240), ImVec2(420, 600));
+  ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+
+  if (ImGui::BeginPopupModal(
+          "Find Friends", &args.find_friends_open,
+          ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize)) {
+    ImGui::SetWindowFontScale(1.05f);
+
+    if (!loaded) {
+      players = XLiveAPI::GetPlayersList();
+      loaded = true;
+    }
+
+    if (ImGui::IsKeyReleased(ImGuiKey::ImGuiKey_GamepadFaceRight)) {
+      ImGui::CloseCurrentPopup();
+    }
+
+    ImGui::Checkbox("Online Now", &args.find_friends_online_only);
+    ImGui::SameLine();
+    ImGui::Checkbox("Same Title", &args.find_friends_same_title);
+    ImGui::SameLine();
+    if (ImGui::Button("Refresh")) {
+      players = XLiveAPI::GetPlayersList();
+    }
+
+    ImGui::Separator();
+
+    const uint32_t user_index =
+        kernel_state()->xam_state()->GetUserIndexAssignedToProfileFromXUID(
+            profile->GetLogonXUID());
+    const uint64_t self_xuid = profile->GetOnlineXUID();
+    const uint32_t current_title = kernel_state()->title_id();
+    const bool max_friends = profile->GetFriendsCount() >= X_ONLINE_MAX_FRIENDS;
+
+    if (max_friends) {
+      ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(240, 50, 50, 255));
+      ImGui::Text("Max Friends Reached!");
+      ImGui::PopStyleColor();
+    }
+
+    ImGui::BeginChild("##FindFriendsList", ImVec2(400, 320), true);
+
+    int shown = 0;
+    for (const auto& player : players) {
+      if (player.xuid == 0 || player.xuid == self_xuid) {
+        continue;
+      }
+      if (profile->IsFriend(player.xuid)) {
+        continue;
+      }
+      if (args.find_friends_online_only && !(player.state & 0x1)) {
+        continue;
+      }
+      if (args.find_friends_same_title && player.title_id != current_title) {
+        continue;
+      }
+
+      shown++;
+
+      ImGui::PushID(
+          reinterpret_cast<void*>(static_cast<uintptr_t>(player.xuid)));
+
+      ImGui::BeginDisabled(max_friends);
+      if (ImGui::SmallButton("Add")) {
+        if (profile->AddFriendFromXUID(player.xuid)) {
+          AddFriendToConfig(player.xuid);
+          kernel_state()->BroadcastNotification(
+              kXNotificationFriendsFriendAdded, user_index);
+
+          const std::string desc = player.gamertag;
+          kernel_state()
+              ->emulator()
+              ->display_window()
+              ->app_context()
+              .CallInUIThread([imgui_drawer, desc]() {
+                new xe::ui::HostNotificationWindow(imgui_drawer, "Added Friend",
+                                                   desc, 0);
+              });
+        }
+      }
+      ImGui::EndDisabled();
+
+      ImGui::SameLine();
+      ImGui::TextUnformatted(player.gamertag.c_str());
+
+      if (!args.find_friends_same_title && player.title_id) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(%08X)", player.title_id);
+      }
+
+      ImGui::PopID();
+    }
+
+    if (shown == 0) {
+      ImGui::TextDisabled("No players found.");
+    }
+
+    ImGui::EndChild();
+
+    ImGui::EndPopup();
+  } else {
+    // Popup isn't open (incl. closed via B/CloseCurrentPopup, which doesn't
+    // clear the bound bool). Keep state in sync and refetch on next open.
+    loaded = false;
+    args.find_friends_open = false;
+  }
+
+  return true;
+}
+
 bool xeDrawAddFriend(xe::ui::ImGuiDrawer* imgui_drawer, UserProfile* profile,
                      ui::AddFriendArgs& args) {
   ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -1166,8 +1292,8 @@ bool xeDrawAddFriend(xe::ui::ImGuiDrawer* imgui_drawer, UserProfile* profile,
   ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
   if (ImGui::BeginPopupModal("Add Friend", &args.add_friend_open,
                              ImGuiWindowFlags_AlwaysAutoResize)) {
-    if (!args.add_friend_context_open &&
-        ImGui::IsKeyPressed(ImGuiKey::ImGuiKey_GamepadFaceRight, false)) {
+    if (!args.add_friend_context_open && !args.find_friends_open &&
+        ImGui::IsKeyReleased(ImGuiKey::ImGuiKey_GamepadFaceRight)) {
       ImGui::CloseCurrentPopup();
     }
 
@@ -1303,6 +1429,15 @@ bool xeDrawAddFriend(xe::ui::ImGuiDrawer* imgui_drawer, UserProfile* profile,
     }
     ImGui::EndDisabled();
 
+    ImGui::Separator();
+
+    if (ImGui::Button("Find Friends", btn_size)) {
+      args.find_friends_open = true;
+      ImGui::OpenPopup("Find Friends");
+    }
+
+    xeDrawFindFriends(imgui_drawer, profile, args);
+
     ImGui::EndPopup();
   }
 
@@ -1336,7 +1471,7 @@ bool xeDrawFriendsContent(
 
     if (!args.add_friend_args.add_friend_open &&
         !args.add_friend_args.search_filter_context_open &&
-        ImGui::IsKeyPressed(ImGuiKey::ImGuiKey_GamepadFaceRight, false)) {
+        ImGui::IsKeyReleased(ImGuiKey::ImGuiKey_GamepadFaceRight)) {
       ImGui::CloseCurrentPopup();
     }
 
@@ -1677,7 +1812,7 @@ bool xeDrawSessionsContent(
                                  ImGuiWindowFlags_AlwaysVerticalScrollbar)) {
     ImGui::SetWindowFontScale(1.05f);
 
-    if (ImGui::IsKeyPressed(ImGuiKey::ImGuiKey_GamepadFaceRight, false)) {
+    if (ImGui::IsKeyReleased(ImGuiKey::ImGuiKey_GamepadFaceRight)) {
       ImGui::CloseCurrentPopup();
     }
 
@@ -1761,7 +1896,7 @@ bool xeDrawMyDeletedProfiles(
   ImGui::SetNextWindowSizeConstraints(ImVec2(250, 115), ImVec2(250, 415));
   if (ImGui::BeginPopupModal("Deleted Profiles", &args.deleted_profiles_open,
                              ImGuiWindowFlags_AlwaysAutoResize)) {
-    if (ImGui::IsKeyPressed(ImGuiKey::ImGuiKey_GamepadFaceRight, false)) {
+    if (ImGui::IsKeyReleased(ImGuiKey::ImGuiKey_GamepadFaceRight)) {
       ImGui::CloseCurrentPopup();
     }
 
@@ -1828,7 +1963,7 @@ void xeDrawUPnPAndPorts(xe::ui::ImGuiDrawer* imgui_drawer,
                              ImGuiWindowFlags_AlwaysAutoResize |
                                  ImGuiWindowFlags_NoResize |
                                  ImGuiWindowFlags_NoMove)) {
-    if (ImGui::IsKeyPressed(ImGuiKey::ImGuiKey_GamepadFaceRight, false)) {
+    if (ImGui::IsKeyReleased(ImGuiKey::ImGuiKey_GamepadFaceRight)) {
       ImGui::CloseCurrentPopup();
     }
 
@@ -2273,7 +2408,7 @@ dword_result_t XamShowGamerCardUIForXUID_entry(dword_t user_index,
     return X_ERROR_INVALID_PARAMETER;
   }
 
-  if (IsOnlineXUID(xuid) && cvars::network_mode != NETWORK_MODE::XBOXLIVE) {
+  if (IsOnlineXUID(xuid) && cvars::network_mode < NETWORK_MODE::XBOXLIVE) {
     return X_ERROR_ACCESS_DENIED;
   }
 

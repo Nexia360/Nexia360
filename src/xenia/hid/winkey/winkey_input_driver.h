@@ -10,6 +10,7 @@
 #ifndef XENIA_HID_WINKEY_WINKEY_INPUT_DRIVER_H_
 #define XENIA_HID_WINKEY_WINKEY_INPUT_DRIVER_H_
 
+#include <atomic>
 #include <queue>
 
 #include "xenia/base/mutex.h"
@@ -59,6 +60,9 @@ class WinKeyInputDriver final : public InputDriver {
 
     void OnKeyDown(ui::KeyEvent& e) override;
     void OnKeyUp(ui::KeyEvent& e) override;
+    void OnMouseDown(ui::MouseEvent& e) override;
+    void OnMouseMove(ui::MouseEvent& e) override;
+    void OnMouseUp(ui::MouseEvent& e) override;
 
    private:
     WinKeyInputDriver& driver_;
@@ -70,6 +74,12 @@ class WinKeyInputDriver final : public InputDriver {
 
   void OnKey(ui::KeyEvent& e, bool is_down);
 
+  // Mousehook: lock the cursor to the window centre and accumulate relative
+  // mouse motion (consumed in GetState as a right-thumbstick deflection), plus
+  // mouse-button state. Gated by cvars::mousehook.
+  void OnMouseMove(ui::MouseEvent& e);
+  void OnMouseButton(ui::MouseEvent& e, bool is_down);
+
   WinKeyWindowInputListener window_input_listener_;
 
   xe::global_critical_region global_critical_region_;
@@ -77,6 +87,14 @@ class WinKeyInputDriver final : public InputDriver {
   std::vector<KeyBinding> key_bindings_;
   uint8_t key_map_[256];
   uint32_t packet_number_ = 1;
+
+  // Mousehook state (written on the UI thread, read on the guest thread).
+  std::atomic<int32_t> mouse_dx_{0};
+  std::atomic<int32_t> mouse_dy_{0};
+  std::atomic<bool> mouse_left_{false};
+  std::atomic<bool> mouse_right_{false};
+  std::atomic<bool> mouse_middle_{false};
+  bool cursor_hidden_ = false;
 };
 
 }  // namespace winkey

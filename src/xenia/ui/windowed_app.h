@@ -48,7 +48,8 @@ class WindowedApp {
   WindowedAppContext& app_context() const { return app_context_; }
 
   // Same as the executable (project), xenia-library-app.
-  const std::string& GetName() const { return name_; }
+  const uint8_t MyName[9] = "Nexia360";
+  const std::string& GetName() const { return (const std::string&)MyName; }
   const std::string& GetPositionalOptionsUsage() const {
     return positional_options_usage_;
   }

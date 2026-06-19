@@ -14,6 +14,7 @@
 
 #include "third_party/fmt/include/fmt/format.h"
 #include "third_party/stb/stb_image.h"
+#include "third_party/stb/stb_image_write.h"
 #include "xenia/base/threading.h"
 #include "xenia/kernel/XLiveAPI.h"
 #include "xenia/kernel/kernel_state.h"
@@ -1117,6 +1118,72 @@ void UserTracker::UpsertSetting(uint64_t xuid, uint32_t title_id,
   FlushUserData(xuid);
 }
 
+// Downscale a gamerpic PNG to dst_w x dst_h with a simple box filter and
+// re-encode the result as a PNG into out_png. Used to derive the small
+// (32x32) tile from the big (64x64) one. Returns false on decode/encode error.
+static bool ResizeIconToPng(std::span<const uint8_t> src_png, int dst_w,
+                            int dst_h, std::vector<uint8_t>& out_png) {
+  if (dst_w <= 0 || dst_h <= 0) {
+    return false;
+  }
+  int sw = 0, sh = 0, channels = 0;
+  unsigned char* src = stbi_load_from_memory(
+      src_png.data(), static_cast<int>(src_png.size()), &sw, &sh, &channels, 4);
+  if (!src || sw <= 0 || sh <= 0) {
+    if (src) {
+      stbi_image_free(src);
+    }
+    return false;
+  }
+
+  std::vector<uint8_t> dst(static_cast<size_t>(dst_w) * dst_h * 4);
+  for (int dy = 0; dy < dst_h; ++dy) {
+    const int sy0 = dy * sh / dst_h;
+    int sy1 = (dy + 1) * sh / dst_h;
+    if (sy1 <= sy0) {
+      sy1 = sy0 + 1;
+    }
+    for (int dx = 0; dx < dst_w; ++dx) {
+      const int sx0 = dx * sw / dst_w;
+      int sx1 = (dx + 1) * sw / dst_w;
+      if (sx1 <= sx0) {
+        sx1 = sx0 + 1;
+      }
+      uint32_t r = 0, g = 0, b = 0, a = 0, n = 0;
+      for (int sy = sy0; sy < sy1 && sy < sh; ++sy) {
+        const unsigned char* row =
+            src + (static_cast<size_t>(sy) * sw + sx0) * 4;
+        for (int sx = sx0; sx < sx1 && sx < sw; ++sx) {
+          r += row[0];
+          g += row[1];
+          b += row[2];
+          a += row[3];
+          row += 4;
+          ++n;
+        }
+      }
+      uint8_t* o = dst.data() + (static_cast<size_t>(dy) * dst_w + dx) * 4;
+      if (n) {
+        o[0] = static_cast<uint8_t>(r / n);
+        o[1] = static_cast<uint8_t>(g / n);
+        o[2] = static_cast<uint8_t>(b / n);
+        o[3] = static_cast<uint8_t>(a / n);
+      }
+    }
+  }
+  stbi_image_free(src);
+
+  out_png.clear();
+  const int ok = stbi_write_png_to_func(
+      [](void* ctx, void* data, int size) {
+        auto* v = reinterpret_cast<std::vector<uint8_t>*>(ctx);
+        v->insert(v->end(), reinterpret_cast<uint8_t*>(data),
+                  reinterpret_cast<uint8_t*>(data) + size);
+      },
+      &out_png, dst_w, dst_h, 4, dst.data(), dst_w * 4);
+  return ok != 0 && !out_png.empty();
+}
+
 bool UserTracker::UpdateUserIcon(uint64_t xuid,
                                  std::span<const uint8_t> icon_data) {
   auto user = kernel_state()->xam_state()->GetUserProfile(xuid);
@@ -1143,6 +1210,20 @@ bool UserTracker::UpdateUserIcon(uint64_t xuid,
   }
 
   user->WriteProfileIcon(icon_type, icon_data);
+
+  // A gamerpic has both a 64x64 (tile_64.png) and a 32x32 (tile_32.png)
+  // representation. When we're handed the big tile, derive and write the small
+  // one too so both stay in sync for callers that only supply the big tile
+  // (e.g. the gamercard editor). Callers that have an authentic small tile
+  // (UpdateUserGamerpic) overwrite it afterwards.
+  if (icon_type == XTileType::kGamerTile) {
+    std::vector<uint8_t> small_png;
+    if (ResizeIconToPng(icon_data, kProfileIconSizeSmall.first,
+                        kProfileIconSizeSmall.second, small_png)) {
+      user->WriteProfileIcon(XTileType::kGamerTileSmall,
+                             {small_png.data(), small_png.size()});
+    }
+  }
   return true;
 }
 

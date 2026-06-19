@@ -26,6 +26,10 @@ struct AddFriendArgs {
   bool are_friends;
   bool valid_xuid;
   char add_xuid_[17];
+  // "Find Friends" player browser (opened from the Add Friend dialog).
+  bool find_friends_open = false;
+  bool find_friends_online_only = true;  // "Online Now" checkbox
+  bool find_friends_same_title = true;   // "Same Title" checkbox
 };
 
 struct FriendsContentArgs {

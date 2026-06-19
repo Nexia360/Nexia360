@@ -193,6 +193,10 @@ class X64Backend : public Backend {
  private:
   static bool ExceptionCallbackThunk(Exception* ex, void* data);
   bool ExceptionCallback(Exception* ex);
+  // Recovers from a JIT-emitted guest load/store that faulted on a bad page by
+  // skipping the faulting instruction (defined value + advance PC) so emulation
+  // continues instead of pausing/crashing.
+  bool TrySkipFaultingGuestMemoryAccess(Exception* ex);
 
   uintptr_t capstone_handle_ = 0;
 

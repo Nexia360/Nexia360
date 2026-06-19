@@ -10,6 +10,8 @@
 #include "xenia/app/emulator_window.h"
 
 #include "third_party/imgui/imgui.h"
+#include "xenia/app/title_update_dialog.h"
+#include "xenia/vfs/devices/xcontent_container_device.h"
 #include "third_party/libcurl/include/curl/curl.h"
 #include "third_party/stb/stb_image_write.h"
 #include "third_party/tomlplusplus/toml.hpp"
@@ -168,7 +170,7 @@ using namespace xe::hid;
 using namespace xe::gpu;
 
 constexpr std::string_view kRecentlyPlayedTitlesFilename = "recent.toml";
-constexpr std::string_view kBaseTitle = "Xenia-canary-netplay";
+constexpr std::string_view kBaseTitle = "Nexia360";
 
 EmulatorWindow::EmulatorWindow(Emulator* emulator,
                                ui::WindowedAppContext& app_context,
@@ -282,36 +284,15 @@ void EmulatorWindow::OnEmulatorInitialized() {
         "controller hotkeys!!!");
   }
 
-  // Create a thread to listen for controller hotkeys.
-  if (cvars::controller_hotkeys) {
-    Gamepad_HotKeys_Listener =
-        threading::Thread::Create({}, [&] { GamepadHotKeys(); });
-    Gamepad_HotKeys_Listener->set_name("Gamepad HotKeys Listener");
-  }
+  // Create a thread to listen for controller hotkeys and the guide button.
+  // Started unconditionally so the guide button can open the manager/profile
+  // menu even when controller_hotkeys is disabled; the hotkey map itself still
+  // respects cvars::controller_hotkeys below.
+  Gamepad_HotKeys_Listener =
+      threading::Thread::Create({}, [&] { GamepadHotKeys(); });
+  Gamepad_HotKeys_Listener->set_name("Gamepad HotKeys Listener");
 
-// Check for updates
-#if !defined(DEBUG) && !defined(XE_BUILD_IS_PR)
-  bool should_update = cvars::auto_check_updates &&
-                       !(cvar::updated_arg_present && cvar::updated);
-
-  auto run = [=, this]() {
-    std::string commit, date, tag;
-    uint32_t response = 0;
-
-    update_found_ = updater_->StartupUpdateCheck(&commit, &date, &response);
-
-    if (update_found_) {
-      app_context_.CallInUIThread(
-          [this, commit, date]() { ShowUpdateAvailableDialog(commit, date); });
-    }
-  };
-
-  if (should_update) {
-    std::thread check_for_updates = std::thread(run);
-
-    check_for_updates.detach();
-  }
-#endif
+  // Startup auto-update check disabled (update + update checker removed).
 }
 
 void EmulatorWindow::ShowUpdateAvailableDialog(const std::string& commit,
@@ -767,13 +748,17 @@ bool EmulatorWindow::Initialize() {
   auto main_menu = MenuItem::Create(MenuItem::Type::kNormal);
   auto file_menu = MenuItem::Create(MenuItem::Type::kPopup, "&File");
   auto recent_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Open Recent");
+  auto recent_with_tu_menu =
+      MenuItem::Create(MenuItem::Type::kPopup, "Open Recent with &TU");
   auto zar_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Zar Package");
   FillRecentlyLaunchedTitlesMenu(recent_menu.get());
+  FillRecentlyLaunchedTitlesWithTUMenu(recent_with_tu_menu.get());
   {
     file_menu->AddChild(
         MenuItem::Create(MenuItem::Type::kString, "&Open...", "Ctrl+O",
                          std::bind(&EmulatorWindow::FileOpen, this)));
     file_menu->AddChild(std::move(recent_menu));
+    file_menu->AddChild(std::move(recent_with_tu_menu));
     file_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
     file_menu->AddChild(
         MenuItem::Create(MenuItem::Type::kString, "Install Content...",
@@ -955,6 +940,10 @@ bool EmulatorWindow::Initialize() {
         MenuItem::Create(MenuItem::Type::kString, "Xbox Live", "",
                          std::bind(&EmulatorWindow::SetNetworkMode, this,
                                    xe::kernel::NETWORK_MODE::XBOXLIVE)));
+    Network_mode_menu->AddChild(
+        MenuItem::Create(MenuItem::Type::kString, "Nexia Hub", "",
+                         std::bind(&EmulatorWindow::SetNetworkMode, this,
+                                   xe::kernel::NETWORK_MODE::NEXIAHUB)));
 
     Netplay_menu->AddChild(std::move(API_list_menu));
     Netplay_menu->AddChild(std::move(Network_interfaces_menu));
@@ -963,25 +952,6 @@ bool EmulatorWindow::Initialize() {
     Netplay_menu->AddChild(MenuItem::Create(
         MenuItem::Type::kString, "&Manager", "",
         std::bind(&EmulatorWindow::ToggleFriendsDialog, this)));
-
-    Netplay_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
-
-    Netplay_menu->AddChild(MenuItem::Create(
-        MenuItem::Type::kString, "&Update Checker",
-        std::bind(&EmulatorWindow::ToggleUpdaterDialog, this)));
-
-    Netplay_menu->AddChild(MenuItem::Create(
-        MenuItem::Type::kString,
-        "Check for Updates on Startup (Enable/Disable)", [this]() {
-          OVERRIDE_bool(auto_check_updates, !cvars::auto_check_updates);
-          std::string title_text = "Startup Update Check";
-          std::string message = cvars::auto_check_updates
-                                    ? "Auto-check for updates enabled."
-                                    : "Auto-check for updates disabled.";
-
-          new xe::ui::HostNotificationWindow(imgui_drawer(), title_text,
-                                             message, 0, 9);
-        }));
   }
   main_menu->AddChild(std::move(Netplay_menu));
 
@@ -1197,7 +1167,13 @@ void EmulatorWindow::OnKeyDown(ui::KeyEvent& e) {
     } break;
 
     case ui::VirtualKey::kF9: {
-      RunPreviouslyPlayedTitle();
+      if (e.is_shift_pressed() && !recently_launched_titles_.empty()) {
+        // Shift+F9: pick a title update before launching the last title.
+        const RecentTitleEntry& recent = recently_launched_titles_[0];
+        OpenTitleUpdateSelector(recent.path_to_file, recent.title_id);
+      } else {
+        RunPreviouslyPlayedTitle();
+      }
     } break;
 
     default:
@@ -1719,6 +1695,17 @@ void EmulatorWindow::SetNetworkMode(uint32_t mode) {
     case xe::kernel::NETWORK_MODE::XBOXLIVE: {
       mode_desc = "Xbox Live";
     } break;
+    case xe::kernel::NETWORK_MODE::NEXIAHUB: {
+      mode_desc = "Nexia Hub";
+      xe::kernel::XLiveAPI::SetAPIAddress("https://nexia360hub.com/");
+      // Nexia Hub relies on inbound port forwarding; enable UPnP automatically.
+      // Run discovery off the UI thread so the menu doesn't stall.
+      xe::kernel::UPnP::SetUPnPState(true);
+      if (emulator_ && emulator_->GetUPnP()) {
+        auto* upnp = emulator_->GetUPnP();
+        std::thread([upnp] { upnp->Start(); }).detach();
+      }
+    } break;
   }
 
   if (cvars::network_mode == mode) {
@@ -1758,6 +1745,16 @@ void EmulatorWindow::SetNetworkMode(uint32_t mode) {
           kXNotificationLiveLinkStateChanged, 1);
 
       mode_desc = "Xbox Live";
+    } break;
+    case xe::kernel::NETWORK_MODE::NEXIAHUB: {
+      emulator_->kernel_state()->BroadcastNotification(
+          kXNotificationLiveConnectionChanged,
+          X_ONLINE_S_LOGON_CONNECTION_ESTABLISHED);
+
+      emulator_->kernel_state()->BroadcastNotification(
+          kXNotificationLiveLinkStateChanged, 1);
+      xe::kernel::XLiveAPI::SetAPIAddress("https://nexia360hub.com/");
+      mode_desc = "Nexia Hub";
     } break;
   }
 
@@ -1826,6 +1823,25 @@ void EmulatorWindow::ToggleGamerpicBrowserDialog() {
     }
     emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
   }
+}
+
+void EmulatorWindow::OpenGamerpicPicker(
+    std::function<void(const std::vector<uint8_t>&)> on_picked,
+    std::function<void()> on_closed) {
+  // Reuses the gamerpic_browser_dialog_ slot so it closes through the same
+  // ToggleGamerpicBrowserDialog path. If a browser is already open, signal
+  // closed immediately so the caller doesn't get stuck waiting.
+  if (gamerpic_browser_dialog_) {
+    if (on_closed) {
+      on_closed();
+    }
+    return;
+  }
+  disable_hotkeys_ = true;
+  emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 1);
+  gamerpic_browser_dialog_ = TitleGamerpicBrowser::CreatePicker(
+      imgui_drawer_.get(), this, std::move(on_picked), std::move(on_closed));
+  emulator_->kernel_state()->xam_state()->xam_dialogs_shown_++;
 }
 
 void EmulatorWindow::ToggleXMPConfigDialog() {
@@ -2093,7 +2109,14 @@ EmulatorWindow::ControllerHotKey EmulatorWindow::ProcessControllerHotkey(
     return Unknown_hotkey;
   }
 
-  if (disable_hotkeys_.load()) {
+  // Don't fire emulator hotkeys (recent-title up/down nav, fullscreen, etc.)
+  // while a UI dialog is open - the dialog owns controller input, otherwise
+  // up/down "falls through" and ClearDialogs() closes the dialog.
+  // disable_hotkeys_ covers the toggle dialogs; IsAnyDialogOpen() also covers
+  // dialogs opened directly (e.g. the profile editor / gamercard via "Modify")
+  // that don't set it.
+  if (disable_hotkeys_.load() || imgui_drawer_->IsAnyDialogOpen() ||
+      emulator_->kernel_state()->xam_state()->xam_dialogs_shown_ > 0) {
     return Unknown_hotkey;
   }
 
@@ -2309,6 +2332,13 @@ void EmulatorWindow::GamepadHotKeys() {
 
   auto input_sys = emulator_->input_system();
 
+  // Monotonic millisecond clock for guide-button long-press timing.
+  auto now_ms = []() -> uint64_t {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+  };
+
   if (input_sys) {
     while (true) {
       // Collect controller states while holding the lock
@@ -2328,9 +2358,36 @@ void EmulatorWindow::GamepadHotKeys() {
       for (uint32_t user_index = 0; user_index < XUserMaxUserCount;
            ++user_index) {
         if (controller_states[user_index].first) {
-          if (ProcessControllerHotkey(
-                  controller_states[user_index].second.gamepad.buttons)
-                  .rumble) {
+          const uint16_t buttons =
+              controller_states[user_index].second.gamepad.buttons;
+
+          // Guide button: long press opens the netplay manager, short press
+          // opens the profile menu. Marshalled to the UI thread.
+          bool guide_pressed = (buttons & X_INPUT_GAMEPAD_GUIDE) != 0;
+          bool solo_guide =
+              guide_pressed && (buttons & ~X_INPUT_GAMEPAD_GUIDE) == 0;
+          if (solo_guide && !guide_button_was_pressed_[user_index]) {
+            guide_button_was_pressed_[user_index] = true;
+            guide_button_press_time_[user_index] = now_ms();
+          } else if (!guide_pressed && guide_button_was_pressed_[user_index]) {
+            guide_button_was_pressed_[user_index] = false;
+            uint64_t duration = now_ms() - guide_button_press_time_[user_index];
+            if (duration >= kGuideLongPressMs) {
+              // Long press - profile menu.
+              app_context_.CallInUIThread(
+                  [this]() { ToggleProfilesConfigDialog(); });
+            } else if (duration > 50) {
+              // Short press - netplay manager (debounce very short presses).
+              app_context_.CallInUIThread([this]() { ToggleFriendsDialog(); });
+            }
+          } else if (guide_pressed && !solo_guide) {
+            // Guide with other buttons - cancel solo tracking, let the hotkey
+            // map handle the combo.
+            guide_button_was_pressed_[user_index] = false;
+          }
+
+          if (cvars::controller_hotkeys &&
+              ProcessControllerHotkey(buttons).rumble) {
             // Enable Vibration
             VibrateController(input_sys, user_index, true);
 
@@ -2404,6 +2461,9 @@ void EmulatorWindow::NetplayStatus() {
     } break;
     case xe::kernel::NETWORK_MODE::XBOXLIVE: {
       network_mode = "Xbox Live";
+    } break;
+    case xe::kernel::NETWORK_MODE::NEXIAHUB: {
+      network_mode = "Nexia Hub";
     } break;
   }
 
@@ -2615,7 +2675,8 @@ xe::X_STATUS EmulatorWindow::RunTitle(
 
     emulator_->file_system()->Clear();
   } else {
-    AddRecentlyLaunchedTitle(path_to_file, emulator_->title_name());
+    AddRecentlyLaunchedTitle(path_to_file, emulator_->title_name(),
+                             emulator_->title_id());
 
     auto xam =
         emulator_->kernel_state()->GetKernelModule<kernel::xam::XamModule>(
@@ -2646,6 +2707,37 @@ void EmulatorWindow::FillRecentlyLaunchedTitlesMenu(
     recent_menu->AddChild(MenuItem::Create(
         MenuItem::Type::kString, item_text, hotkey,
         std::bind(&EmulatorWindow::RunTitle, this, entry.path_to_file)));
+  }
+}
+
+void EmulatorWindow::FillRecentlyLaunchedTitlesWithTUMenu(
+    xe::ui::MenuItem* recent_menu) {
+  for (size_t i = 0; i < recently_launched_titles_.size(); ++i) {
+    const RecentTitleEntry& entry = recently_launched_titles_[i];
+    const std::string item_text = entry.title_name.empty()
+                                      ? entry.path_to_file.string()
+                                      : entry.title_name;
+
+    recent_menu->AddChild(MenuItem::Create(
+        MenuItem::Type::kString, item_text, "",
+        std::bind(&EmulatorWindow::OpenTitleUpdateSelector, this,
+                  entry.path_to_file, entry.title_id)));
+  }
+}
+
+void EmulatorWindow::OpenTitleUpdateSelector(
+    const std::filesystem::path& path, uint32_t title_id) {
+  if (title_id == 0) {
+    auto header = xe::vfs::XContentContainerDevice::ReadContainerHeader(path);
+    if (header && header->content_header.is_magic_valid()) {
+      title_id = header->content_metadata.execution_info.title_id.get();
+    }
+  }
+  if (title_id != 0) {
+    new TitleUpdateDialog(imgui_drawer(), this, title_id, path);
+  } else {
+    // Couldn't resolve a title id (e.g. a folder/disc) - just launch it.
+    RunTitle(path);
   }
 }
 
@@ -2683,13 +2775,20 @@ void EmulatorWindow::LoadRecentlyLaunchedTitles() {
         continue;
       }
 
-      recently_launched_titles_.push_back({title_name, path, last_run_time});
+      uint32_t title_id = 0;
+      if (auto id_node = entry_table->get_as<int64_t>("title_id")) {
+        title_id = static_cast<uint32_t>(id_node->get());
+      }
+
+      recently_launched_titles_.push_back(
+          {title_name, path, last_run_time, title_id});
     }
   }
 }
 
 void EmulatorWindow::AddRecentlyLaunchedTitle(
-    std::filesystem::path path_to_file, std::string title_name) {
+    std::filesystem::path path_to_file, std::string title_name,
+    uint32_t title_id) {
   if (cvars::recent_titles_entry_amount <= 0) {
     return;
   }
@@ -2704,8 +2803,9 @@ void EmulatorWindow::AddRecentlyLaunchedTitle(
     recently_launched_titles_.erase(entry_index);
   }
 
-  recently_launched_titles_.insert(recently_launched_titles_.cbegin(),
-                                   {title_name, path_to_file, time(nullptr)});
+  recently_launched_titles_.insert(
+      recently_launched_titles_.cbegin(),
+      {title_name, path_to_file, time(nullptr), title_id});
   // Serialize to toml
   auto toml_table = toml::table();
 
@@ -2718,6 +2818,7 @@ void EmulatorWindow::AddRecentlyLaunchedTitle(
     entry_table.insert("title_name", entry.title_name);
     entry_table.insert("path", str_path);
     entry_table.insert("last_run_time", entry.last_run_time);
+    entry_table.insert("title_id", static_cast<int64_t>(entry.title_id));
 
     toml_table.insert(std::to_string(index++), entry_table);
 

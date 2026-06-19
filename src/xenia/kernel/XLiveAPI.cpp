@@ -19,6 +19,10 @@
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xam/friends_util.h"
 
+extern "C" {
+#include "third_party/FFmpeg/libavutil/base64.h"
+}
+
 DEFINE_string(api_address, "192.168.0.1:36000/",
               "Xenia Server Address e.g. IP:PORT", "Live");
 
@@ -88,7 +92,7 @@ void XLiveAPI::IpGetConsoleXnAddr(XNADDR* XnAddr_ptr) {
     }
   }
 
-  if (cvars::network_mode == NETWORK_MODE::XBOXLIVE) {
+  if (cvars::network_mode >= NETWORK_MODE::XBOXLIVE) {
     XnAddr_ptr->wPortOnline = GetPlayerPort();
   }
 
@@ -658,7 +662,7 @@ std::unique_ptr<HTTPResponseObjectJSON> XLiveAPI::RegisterPlayer(
     return response;
   }
 
-  if (cvars::network_mode == NETWORK_MODE::XBOXLIVE &&
+  if (cvars::network_mode >= NETWORK_MODE::XBOXLIVE &&
       !user_profile->IsLiveEnabled()) {
     XELOGE("Cancelled registering profile, profile is not live enabled!");
     return response;
@@ -680,6 +684,7 @@ std::unique_ptr<HTTPResponseObjectJSON> XLiveAPI::RegisterPlayer(
   const std::set<xam::UserSettingId> default_dashboard_settings = {
       xam::UserSettingId::XPROFILE_GAMER_DIFFICULTY,
       xam::UserSettingId::XPROFILE_GAMER_TYPE,
+      xam::UserSettingId::XPROFILE_OPTION_CONTROLLER_VIBRATION,
       xam::UserSettingId::XPROFILE_GAMERCARD_PICTURE_KEY,
       xam::UserSettingId::XPROFILE_GAMERCARD_MOTTO,
       xam::UserSettingId::XPROFILE_GAMERCARD_ZONE,
@@ -688,7 +693,8 @@ std::unique_ptr<HTTPResponseObjectJSON> XLiveAPI::RegisterPlayer(
       xam::UserSettingId::XPROFILE_GAMERCARD_REP,
       xam::UserSettingId::XPROFILE_GAMERCARD_TITLES_PLAYED,
       xam::UserSettingId::XPROFILE_GAMERCARD_ACHIEVEMENTS_EARNED,
-      xam::UserSettingId::XPROFILE_GAMERCARD_TITLE_CRED_EARNED};
+      xam::UserSettingId::XPROFILE_GAMERCARD_TITLE_CRED_EARNED,
+      xam::UserSettingId::XPROFILE_GAMERCARD_TITLE_ACHIEVEMENTS_EARNED};
 
   const std::set<xam::UserSettingId> default_title_settings = {
       xam::UserSettingId::XPROFILE_TITLE_SPECIFIC1,
@@ -757,6 +763,11 @@ std::unique_ptr<HTTPResponseObjectJSON> XLiveAPI::RegisterPlayer(
   } else {
     xuid_mismatch = false;
   }
+
+  // Push the profile's actual gamerpic so the hub can serve it directly (covers
+  // custom gamerpics, no external CDN call). Read by the on-disk local xuid,
+  // stored under the hub-registered xuid.
+  UploadGamerpic(user_profile->xuid(), registered_xuid);
 
   return response;
 }
@@ -1937,6 +1948,96 @@ TitleGamerpicsObjectJSON XLiveAPI::GetTitleGamerpic(uint32_t title_id) {
   }
 
   return *response->Deserialize<TitleGamerpicsObjectJSON>();
+}
+
+std::vector<XLiveAPI::FindFriendsEntry> XLiveAPI::GetPlayersList() {
+  std::vector<FindFriendsEntry> players = {};
+
+  const std::string endpoint = BuildEndpoint("players/list");
+
+  std::unique_ptr<HTTPResponseObjectJSON> response = Get(endpoint);
+
+  if (response->StatusCode() != HTTP_STATUS_CODE::HTTP_OK) {
+    XELOGE("{} error message: {}", __func__, response->Message());
+    return players;
+  }
+
+  rapidjson::Document doc;
+  doc.Parse(response->RawResponse().response);
+
+  if (!doc.IsArray()) {
+    return players;
+  }
+
+  for (const auto& entry : doc.GetArray()) {
+    if (!entry.IsObject()) {
+      continue;
+    }
+
+    FindFriendsEntry player = {};
+
+    if (entry.HasMember("xuid") && entry["xuid"].IsString()) {
+      player.xuid =
+          string_util::from_string<uint64_t>(entry["xuid"].GetString(), true);
+    }
+    if (entry.HasMember("gamertag") && entry["gamertag"].IsString()) {
+      player.gamertag = entry["gamertag"].GetString();
+    }
+    if (entry.HasMember("titleId") && entry["titleId"].IsString()) {
+      player.title_id = string_util::from_string<uint32_t>(
+          entry["titleId"].GetString(), true);
+    }
+    if (entry.HasMember("state") && entry["state"].IsUint()) {
+      player.state = entry["state"].GetUint();
+    }
+    if (entry.HasMember("gamerpic") && entry["gamerpic"].IsString()) {
+      player.gamerpic_url = entry["gamerpic"].GetString();
+    }
+    if (entry.HasMember("richPresence") && entry["richPresence"].IsString()) {
+      player.rich_presence = entry["richPresence"].GetString();
+    }
+
+    players.push_back(player);
+  }
+
+  return players;
+}
+
+void XLiveAPI::UploadGamerpic(uint64_t local_xuid, uint64_t hub_xuid) {
+  const auto user_tracker = kernel_state()->xam_state()->user_tracker();
+
+  const auto key = user_tracker->GetUserGamerpicSetting(local_xuid);
+  if (!key) {
+    return;
+  }
+
+  const std::span<const uint8_t> icon =
+      user_tracker->GetIcon(local_xuid, key->GetTitleId(),
+                            xam::XTileType::kGamerTile, key->GetBigTileId());
+  if (icon.empty()) {
+    return;
+  }
+
+  const uint32_t in_size = static_cast<uint32_t>(icon.size());
+  const uint32_t out_size = AV_BASE64_SIZE(in_size);
+
+  std::vector<char> encoded(out_size);
+  if (!av_base64_encode(encoded.data(), out_size, icon.data(), in_size)) {
+    return;
+  }
+
+  // Base64 contains no characters that require JSON string escaping.
+  const std::string body = fmt::format(
+      "{{\"xuid\":\"{:016X}\",\"gamerpic\":\"{}\"}}", hub_xuid, encoded.data());
+
+  const std::string endpoint = BuildEndpoint("players/gamerpic");
+
+  std::unique_ptr<HTTPResponseObjectJSON> response = Post(
+      endpoint, reinterpret_cast<const uint8_t*>(body.c_str()), body.size());
+
+  if (response->StatusCode() != HTTP_STATUS_CODE::HTTP_CREATED) {
+    XELOGE("{} error message: {}", __func__, response->Message());
+  }
 }
 
 std::set<uint32_t> XLiveAPI::GetSupportedGamerpicTitles() {

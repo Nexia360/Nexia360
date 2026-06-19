@@ -187,15 +187,45 @@ void ProfileConfigDialog::OnDraw(ImGuiIO& io) {
     return;
   }
 
+  // B / Back closes the profile menu, but only when this window itself is
+  // focused (no child popup/dialog such as a profile context menu or Create
+  // Profile on top - those are separate roots and won't satisfy
+  // RootAndChildWindows), and only on release, deferred until all gamepad
+  // buttons are released. Closing a child must not also close this menu.
+  auto* focus_manager = imgui_drawer()->GetFocusManager();
+  focus_manager->UISetFocus("ProfileConfigDialog");
+  if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+      focus_manager->XamInputFocus("ProfileConfigDialog").ShouldClose()) {
+    close_pending_ = true;
+  }
+  if (close_pending_ && !imgui_drawer()->IsAnyGamepadActionPressed()) {
+    dialog_open = false;
+  }
+
   // For whatever reason dialog wasn't opened. It's probably in closing state.
   // We need to handle it here before it will make icons allocation.
   if (!dialog_open) {
+    focus_manager->UIDropFocus("ProfileConfigDialog");
     ImGui::CloseCurrentPopup();
     Close();
     ImGui::End();
     emulator_window_->ToggleProfilesConfigDialog();
     return;
   }
+
+  // When this menu regains focus after a child dialog closed (gamerpic browser
+  // / profile editor / context menu), force-reload every profile icon. A
+  // gamerpic changed via the editor updates only the icon bytes, not the
+  // gamerpic key the per-frame change-detection below watches, so it would
+  // otherwise show the stale icon until relaunch.
+  const bool menu_focused =
+      ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+  if (child_was_open_ && menu_focused) {
+    for (const auto& profile_entry : *profiles) {
+      LoadProfileIcon(profile_entry.first);
+    }
+  }
+  child_was_open_ = !menu_focused;
 
   if (profiles->empty()) {
     ImGui::TextUnformatted("No profiles found!");
@@ -208,7 +238,10 @@ void ProfileConfigDialog::OnDraw(ImGuiIO& io) {
              ImGui::GetWindowPos().y);
 
   for (auto& [xuid, account] : *profiles) {
-    ImGui::PushID(static_cast<int>(xuid));
+    // Use the FULL 64-bit XUID for the ImGui ID. static_cast<int>(xuid) only
+    // keeps the low 32 bits, and offline XUIDs commonly share those (e.g.
+    // ...524552AF), which collides and triggers "conflicting ID" errors.
+    ImGui::PushID(reinterpret_cast<void*>(static_cast<uintptr_t>(xuid)));
 
     const uint8_t user_index =
         profile_manager->GetUserIndexAssignedToProfile(xuid);
@@ -278,9 +311,23 @@ void ProfileConfigDialog::OnDraw(ImGuiIO& io) {
         }
 
         if (ImGui::MenuItem("Modify")) {
-          new kernel::xam::ui::GamercardUI(
+          auto* gamercard = new kernel::xam::ui::GamercardUI(
               emulator_window_->window(), emulator_window_->imgui_drawer(),
               emulator_window_->emulator()->kernel_state(), xuid);
+          // The profile picture opens the gamerpic browser as a picker; the
+          // chosen gamerpic updates only the editor's working copy (applied on
+          // Save), not the profile directly.
+          EmulatorWindow* ew = emulator_window_;
+          gamercard->set_change_icon_callback([ew, gamercard]() {
+            // Keep the editor alive (don't let the browser's modal close it)
+            // until the browser closes (select or cancel).
+            gamercard->set_gamerpic_browser_open(true);
+            ew->OpenGamerpicPicker(
+                [gamercard](const std::vector<uint8_t>& png) {
+                  gamercard->SetWorkingProfileIcon(png);
+                },
+                [gamercard]() { gamercard->set_gamerpic_browser_open(false); });
+          });
         }
 
         if (ImGui::BeginMenu("Copy")) {
@@ -445,6 +492,12 @@ void ManagerDialog::OnDraw(ImGuiIO& io) {
     sessions_args.filter_own = true;
   }
 
+  // Keep the manager registered with the focus manager. The actual B/Back close
+  // is handled inside the popup below, gated on the manager window being
+  // focused so that closing a child popup (Friends/Sessions/...) with B does
+  // not also close the manager.
+  imgui_drawer()->GetFocusManager()->UISetFocus("ManagerDialog");
+
   // Add profile dropdown selector?
   const uint32_t user_index = 0;
 
@@ -457,9 +510,34 @@ void ManagerDialog::OnDraw(ImGuiIO& io) {
   ImGuiViewport* viewport = ImGui::GetMainViewport();
   ImVec2 center = viewport->GetCenter();
 
+  // ImGui's gamepad nav-cancel (B) closes popups on press. If the modal was
+  // closed that way while we have NOT requested a close, re-open it so only the
+  // release-based logic above actually closes the manager. Calling OpenPopup in
+  // the same frame as BeginPopupModal re-opens it with no visible flicker, and
+  // this is a no-op if ImGui didn't close it (the popup is still open).
+  if (manager_opened_ && !close_pending_ && !ImGui::IsPopupOpen("Manager")) {
+    ImGui::OpenPopup("Manager");
+  }
+
   ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
   if (ImGui::BeginPopupModal("Manager", &manager_opened_,
                              ImGuiWindowFlags_AlwaysAutoResize)) {
+    // B / Back closes the manager only when the manager window itself is
+    // focused - i.e. no child popup (Friends/Sessions/...) is on top, since a
+    // child popup is a separate root window and won't satisfy
+    // RootAndChildWindows. Close on release only, deferred until all gamepad
+    // buttons are released. A child popup handles its own B-close.
+    if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+        imgui_drawer()
+            ->GetFocusManager()
+            ->XamInputFocus("ManagerDialog")
+            .ShouldClose()) {
+      close_pending_ = true;
+    }
+    if (close_pending_ && !imgui_drawer()->IsAnyGamepadActionPressed()) {
+      manager_opened_ = false;
+    }
+
     ImVec2 btn_size = ImVec2(200, 40);
 
     if (is_profile_signed_in) {
@@ -565,7 +643,7 @@ void ManagerDialog::OnDraw(ImGuiIO& io) {
     ImGui::SetNextWindowSizeConstraints(ImVec2(225, -1), ImVec2(225, -1));
     if (ImGui::BeginPopupModal("Delete Profiles", nullptr,
                                ImGuiWindowFlags_AlwaysAutoResize)) {
-      if (ImGui::IsKeyPressed(ImGuiKey::ImGuiKey_GamepadFaceRight, false)) {
+      if (ImGui::IsKeyReleased(ImGuiKey::ImGuiKey_GamepadFaceRight)) {
         ImGui::CloseCurrentPopup();
       }
 
@@ -645,6 +723,7 @@ void ManagerDialog::OnDraw(ImGuiIO& io) {
   }
 
   if (!manager_opened_) {
+    imgui_drawer()->GetFocusManager()->UIDropFocus("ManagerDialog");
     Close();
     ImGui::CloseCurrentPopup();
     emulator_window_->ToggleFriendsDialog();

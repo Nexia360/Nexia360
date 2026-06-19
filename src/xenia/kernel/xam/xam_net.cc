@@ -7,7 +7,9 @@
  ******************************************************************************
  */
 
+#include <mutex>
 #include <random>
+#include <unordered_map>
 
 #include "xenia/base/logging.h"
 #include "xenia/kernel/kernel_state.h"
@@ -60,6 +62,34 @@ enum XNET_CONNECT {
   STATUS_CONNECTED = 0x02,
   STATUS_LOST = 0x03,
 };
+
+// Tracks the secure-link connection status per peer for XNetGetConnectStatus,
+// instead of reporting CONNECTED unconditionally. Mirrors the XDK lifecycle: a
+// peer is IDLE until we send to it (PENDING) and only CONNECTED once we have
+// actually received a packet back from it. Keyed by the peer IPv4 in the same
+// host-order form the title passes to XNetGetConnectStatus (the inaOnline that
+// XNetXnAddrToInAddr produced). Titles that gate their session/transport setup
+// on the IDLE->PENDING->CONNECTED progression then behave as they do on
+// console.
+static std::mutex xnet_connect_status_mutex_;
+static std::unordered_map<uint32_t, uint32_t> xnet_connect_status_;
+
+static void XNetUpdateConnectStatus(uint32_t peer_ip, uint32_t status) {
+  if (!peer_ip) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(xnet_connect_status_mutex_);
+  uint32_t& current = xnet_connect_status_[peer_ip];
+  // Only ever advance the state (IDLE -> PENDING -> CONNECTED).
+  if (status > current) {
+    current = status;
+  }
+}
+
+// Host-order peer key matching the value titles pass to XNetGetConnectStatus.
+static inline uint32_t XNetPeerKey(const in_addr& addr) {
+  return xe::byte_swap(static_cast<uint32_t>(addr.s_addr));
+}
 
 enum XNET_STARTUP {
   BYPASS_SECURITY = 0x01,
@@ -207,16 +237,16 @@ dword_result_t NetDll_XNetStartup_entry(dword_t caller,
 
     switch (xnet_startup_params.cfgFlags) {
       case BYPASS_SECURITY:
-        XELOGI("XNetStartup BYPASS_SECURITY");
+        XELOGD("XNetStartup BYPASS_SECURITY");
         break;
       case ALLOCATE_MAX_DGRAM_SOCKETS:
-        XELOGI("XNetStartup ALLOCATE_MAX_DGRAM_SOCKETS");
+        XELOGD("XNetStartup ALLOCATE_MAX_DGRAM_SOCKETS");
         break;
       case ALLOCATE_MAX_STREAM_SOCKETS:
-        XELOGI("XNetStartup ALLOCATE_MAX_STREAM_SOCKETS");
+        XELOGD("XNetStartup ALLOCATE_MAX_STREAM_SOCKETS");
         break;
       case DISABLE_PEER_ENCRYPTION:
-        XELOGI("XNetStartup DISABLE_PEER_ENCRYPTION");
+        XELOGD("XNetStartup DISABLE_PEER_ENCRYPTION");
         break;
       default:
         break;
@@ -371,7 +401,7 @@ DECLARE_XAM_EXPORT1(NetDll_XNetRandom, kNetworking, kImplemented);
 dword_result_t NetDll_WSAStartup_entry(dword_t caller, word_t version,
                                        pointer_t<X_WSADATA> data_ptr) {
   // NetDll_WSAStartup is called multiple times?
-  XELOGI("NetDll_WSAStartup");
+  XELOGD("NetDll_WSAStartup");
 
   XLiveAPI::Init();
 
@@ -445,13 +475,25 @@ dword_result_t NetDll_WSAGetLastError_entry() {
 }
 DECLARE_XAM_EXPORT1(NetDll_WSAGetLastError, kNetworking, kImplemented);
 
+#ifdef XE_PLATFORM_WIN32
+#ifndef SIO_UDP_CONNRESET
+#define SIO_UDP_CONNRESET 0x9800000C  // from mstcpip.h
+#endif
+// Turn off the "ICMP Port Unreachable => WSAECONNRESET on next recvfrom"
+// behavior (ported from Nexia; needed for the overlapped UDP recv path).
+static void DisableUdpConnReset(SOCKET s) {
+  BOOL new_behavior = FALSE;
+  DWORD bytes_returned = 0;
+  (void)WSAIoctl(s, SIO_UDP_CONNRESET, &new_behavior, sizeof(new_behavior),
+                 nullptr, 0, &bytes_returned, nullptr, nullptr);
+}
+#endif
+
 dword_result_t NetDll_WSARecvFrom_entry(
     dword_t caller, dword_t socket_handle, pointer_t<XWSABUF> buffers,
     dword_t num_buffers, lpdword_t num_bytes_recv_ptr, lpdword_t flags_ptr,
     pointer_t<XSOCKADDR_IN> from_ptr, lpdword_t fromlen_ptr,
     pointer_t<XWSAOVERLAPPED> overlapped_ptr, lpvoid_t completion_routine_ptr) {
-  InitalizeSockaddr(from_ptr);
-
   auto socket =
       kernel_state()->object_table()->LookupObject<XSocket>(socket_handle);
   if (!socket) {
@@ -459,16 +501,48 @@ dword_result_t NetDll_WSARecvFrom_entry(
     return -1;
   }
 
-  int ret =
-      socket->WSARecvFrom(buffers, num_buffers, num_bytes_recv_ptr, flags_ptr,
-                          from_ptr, fromlen_ptr, overlapped_ptr);
+#ifdef XE_PLATFORM_WIN32
+  // Ensure we never get stuck in WSAECONNRESET limbo in local UDP mode.
+  if (cvars::network_mode >= 2) {
+    DisableUdpConnReset(socket->native_handle());
+  }
+#endif
+
+  XELOGD("NetDll_WSARecvFrom: sock={} bufs={} overlapped={} completion={}",
+         (uint32_t)socket_handle, (uint32_t)num_buffers,
+         overlapped_ptr.guest_address(),
+         completion_routine_ptr.guest_address());
+
+  int ret = socket->WSARecvFrom(
+      buffers, num_buffers, num_bytes_recv_ptr, flags_ptr, from_ptr,
+      fromlen_ptr, overlapped_ptr, completion_routine_ptr.guest_address(),
+      overlapped_ptr.guest_address());
   if (ret < 0) {
-    XThread::SetLastError(socket->GetLastWSAError());
-  } else if (ret >= 0 && !cvars::log_mask_ips && from_ptr) {
-    XELOGI("NetDll_WSARecvFrom: Received {} bytes from: {}:{}({})",
+    auto err = socket->GetLastWSAError();
+    // On Xbox 360: WSA_IO_PENDING == WSAEWOULDBLOCK == 0x2733.
+    // Return SOCKET_ERROR (-1) so the game waits on the overlapped event.
+    XELOGD("NetDll_WSARecvFrom: err={} sock={}", err, (uint32_t)socket_handle);
+    XThread::SetLastError(err);
+    return -1;
+  }
+
+  XThread::SetLastError(0);
+
+  if (from_ptr && num_bytes_recv_ptr &&
+      static_cast<uint32_t>(*num_bytes_recv_ptr) > 0) {
+    // Heard back from this peer -> the secure link is live.
+    XNetUpdateConnectStatus(XNetPeerKey(from_ptr->address_ip),
+                            STATUS_CONNECTED);
+  }
+
+  if (!cvars::log_mask_ips && from_ptr && num_bytes_recv_ptr &&
+      static_cast<uint32_t>(*num_bytes_recv_ptr) > 0) {
+    XELOGD("NetDll_WSARecvFrom: {} bytes from {}.{}.{}.{}",
            static_cast<uint32_t>(*num_bytes_recv_ptr),
-           ip_to_string(from_ptr->address_ip), from_ptr->address_port.get(),
-           socket->GetProtocolUPnPString());
+           from_ptr->address_ip.S_un.S_un_b.s_b1,
+           from_ptr->address_ip.S_un.S_un_b.s_b2,
+           from_ptr->address_ip.S_un.S_un_b.s_b3,
+           from_ptr->address_ip.S_un.S_un_b.s_b4);
   }
 
   return ret;
@@ -503,13 +577,6 @@ dword_result_t NetDll_WSASendTo_entry(
     dword_t num_buffers, lpdword_t num_bytes_sent, dword_t flags,
     pointer_t<XSOCKADDR_IN> to_ptr, dword_t to_len,
     pointer_t<XWSAOVERLAPPED> overlapped, lpvoid_t completion_routine) {
-  assert(!overlapped);
-  assert(!completion_routine);
-
-  if (overlapped) {
-    XELOGW("NetDll_WSASendTo: overlapped!");
-  }
-
   auto socket =
       kernel_state()->object_table()->LookupObject<XSocket>(socket_handle);
   if (!socket) {
@@ -517,40 +584,56 @@ dword_result_t NetDll_WSASendTo_entry(
     return -1;
   }
 
-  // Our sockets implementation doesn't support multiple buffers, so we need
-  // to combine the buffers the game has given us!
-  std::vector<uint8_t> combined_buffer_mem;
-  uint32_t combined_buffer_size = 0;
-  uint32_t combined_buffer_offset = 0;
-  for (uint32_t i = 0; i < num_buffers; i++) {
-    combined_buffer_size += buffers[i].len;
-    combined_buffer_mem.resize(combined_buffer_size);
-    uint8_t* combined_buffer = combined_buffer_mem.data();
+#ifdef XE_PLATFORM_WIN32
+  // In local UDP mode, proactively disable UDP connreset on this socket.
+  if (cvars::network_mode >= 2) {
+    DisableUdpConnReset(socket->native_handle());
+  }
+#endif
 
-    std::memcpy(combined_buffer + combined_buffer_offset,
-                kernel_memory()->TranslateVirtual(buffers[i].buf_ptr),
-                buffers[i].len);
-    combined_buffer_offset += buffers[i].len;
+  XELOGD(
+      "NetDll_WSASendTo: sock={} bufs={} flags={} overlapped={} completion={}",
+      (uint32_t)socket_handle, (uint32_t)num_buffers, (uint32_t)flags,
+      overlapped.guest_address(), completion_routine.guest_address());
+
+  int ret = socket->WSASendTo(
+      buffers, num_buffers, num_bytes_sent, flags, to_ptr, to_len, overlapped,
+      completion_routine.guest_address(), overlapped.guest_address());
+  if (ret < 0) {
+    auto err = socket->GetLastWSAError();
+    switch (err) {
+      case (uint32_t)X_WSAError::X_WSAENOTSOCK:
+      case (uint32_t)X_WSAError::X_WSA_INVALID_PARAMETER:
+      case (uint32_t)X_WSAError::X_WSAENOTCONN:
+        // Fatal -- return error to caller.
+        XELOGD("NetDll_WSASendTo: FATAL sock={} err={}",
+               (uint32_t)socket_handle, err);
+        XThread::SetLastError(err);
+        return -1;
+      default:
+        // Non-fatal -- return 0, set error for WSAGetLastError.
+        XELOGD("NetDll_WSASendTo: non-fatal sock={} err={}",
+               (uint32_t)socket_handle, err);
+        XThread::SetLastError(err);
+        return 0;
+    }
   }
 
-  const int result = socket->SendTo(
-      combined_buffer_mem.data(), combined_buffer_size, flags, to_ptr, to_len);
-
-  if (result == -1) {
-    XThread::SetLastError(socket->GetLastWSAError());
-    return result;
-  } else if (result != -1 && to_ptr && !cvars::log_mask_ips) {
-    XELOGI("NetDll_WSASendTo: Send {} bytes to: {}:{}({})", result,
-           ip_to_string(to_ptr->address_ip), to_ptr->address_port.get(),
-           socket->GetProtocolUPnPString());
+  XThread::SetLastError(0);
+  if (to_ptr) {
+    // Sent to this peer -> connection at least pending until we hear back.
+    XNetUpdateConnectStatus(XNetPeerKey(to_ptr->address_ip),
+                            XNET_CONNECT_STATUS_PENDING);
   }
-
-  if (num_bytes_sent && !overlapped) {
-    *num_bytes_sent = result;
+  if (num_bytes_sent && !cvars::log_mask_ips && to_ptr) {
+    XELOGD("NetDll_WSASendTo: sent {} bytes to {}.{}.{}.{}",
+           static_cast<uint32_t>(*num_bytes_sent),
+           to_ptr->address_ip.S_un.S_un_b.s_b1,
+           to_ptr->address_ip.S_un.S_un_b.s_b2,
+           to_ptr->address_ip.S_un.S_un_b.s_b3,
+           to_ptr->address_ip.S_un.S_un_b.s_b4);
   }
-  // TODO: Instantly complete overlapped
-
-  return 0;
+  return ret;
 }
 DECLARE_XAM_EXPORT1(NetDll_WSASendTo, kNetworking, kImplemented);
 
@@ -662,7 +745,7 @@ dword_result_t NetDll_XNetGetTitleXnAddr_entry(dword_t caller,
               XNADDR_STATUS::XNADDR_GATEWAY | XNADDR_STATUS::XNADDR_DNS;
   }
 
-  if (cvars::network_mode == NETWORK_MODE::XBOXLIVE) {
+  if (cvars::network_mode >= NETWORK_MODE::XBOXLIVE) {
     status |= XNADDR_STATUS::XNADDR_ONLINE;
   }
 
@@ -723,7 +806,7 @@ dword_result_t NetDll_XNetXnAddrToMachineId_entry(dword_t caller,
 DECLARE_XAM_EXPORT1(NetDll_XNetXnAddrToMachineId, kNetworking, kImplemented);
 
 dword_result_t NetDll_XNetUnregisterInAddr_entry(dword_t caller, dword_t addr) {
-  XELOGI("NetDll_XNetUnregisterInAddr({:08X})",
+  XELOGD("NetDll_XNetUnregisterInAddr({:08X})",
          cvars::log_mask_ips ? 0 : addr.value());
 
   // return static_cast<uint32_t>(X_WSAError::X_WSAEINVAL);
@@ -733,7 +816,11 @@ dword_result_t NetDll_XNetUnregisterInAddr_entry(dword_t caller, dword_t addr) {
 DECLARE_XAM_EXPORT1(NetDll_XNetUnregisterInAddr, kNetworking, kStub);
 
 dword_result_t NetDll_XNetConnect_entry(dword_t caller, dword_t addr) {
-  XELOGI("XNetConnect({:08X})", cvars::log_mask_ips ? 0 : addr.value());
+  XELOGD("XNetConnect({:08X})", cvars::log_mask_ips ? 0 : addr.value());
+
+  // Connection requested: mark the peer pending. XNetGetConnectStatus reports
+  // CONNECTED once we actually receive traffic from it.
+  XNetUpdateConnectStatus(addr.value(), XNET_CONNECT_STATUS_PENDING);
 
   // 43430806, 43430821 and 5841124E fail to connect without sleep.
   xe::threading::Sleep(150ms);
@@ -743,10 +830,25 @@ dword_result_t NetDll_XNetConnect_entry(dword_t caller, dword_t addr) {
 DECLARE_XAM_EXPORT1(NetDll_XNetConnect, kNetworking, kStub);
 
 dword_result_t NetDll_XNetGetConnectStatus_entry(dword_t caller, dword_t addr) {
-  XELOGI("XNetGetConnectStatus({:08X})",
-         cvars::log_mask_ips ? 0 : addr.value());
+  const uint32_t peer_ip = addr.value();
 
-  return STATUS_CONNECTED;
+  uint32_t status = STATUS_IDLE;
+
+  // Loopback / self is always connected.
+  if ((peer_ip >> 24) == 0x7F) {
+    status = STATUS_CONNECTED;
+  } else {
+    std::lock_guard<std::mutex> lock(xnet_connect_status_mutex_);
+    const auto it = xnet_connect_status_.find(peer_ip);
+    if (it != xnet_connect_status_.end()) {
+      status = it->second;
+    }
+  }
+
+  XELOGD("XNetGetConnectStatus({:08X}) = {}", cvars::log_mask_ips ? 0 : peer_ip,
+         status);
+
+  return status;
 }
 DECLARE_XAM_EXPORT1(NetDll_XNetGetConnectStatus, kNetworking, kStub);
 
@@ -754,7 +856,7 @@ dword_result_t NetDll_XNetServerToInAddr_entry(dword_t caller,
                                                dword_t server_addr,
                                                dword_t service_id,
                                                pointer_t<in_addr> pina) {
-  XELOGI("XNetServerToInAddr");
+  XELOGD("XNetServerToInAddr");
 
   if (XLiveAPI::GetInitState() != XLiveAPI::InitState::Success) {
     return static_cast<uint32_t>(X_WSAError::X_WSANOTINITIALISED);
@@ -766,7 +868,7 @@ dword_result_t NetDll_XNetServerToInAddr_entry(dword_t caller,
 
   pina->s_addr = htonl(server_addr);
 
-  XELOGI("Server IP: {}", ip_to_string(*pina));
+  XELOGD("Server IP: {}", ip_to_string(*pina));
 
   return X_ERROR_SUCCESS;
 }
@@ -775,7 +877,7 @@ DECLARE_XAM_EXPORT1(NetDll_XNetServerToInAddr, kNetworking, kImplemented);
 dword_result_t NetDll_XNetInAddrToServer_entry(dword_t caller,
                                                dword_t server_addr,
                                                pointer_t<in_addr> pina) {
-  XELOGI("XNetInAddrToServer");
+  XELOGD("XNetInAddrToServer");
 
   if (!server_addr) {
     return static_cast<uint32_t>(X_WSAError::X_WSAEINVAL);
@@ -783,7 +885,7 @@ dword_result_t NetDll_XNetInAddrToServer_entry(dword_t caller,
 
   pina->s_addr = htonl(server_addr);
 
-  XELOGI("Server IP: {}", ip_to_string(*pina));
+  XELOGD("Server IP: {}", ip_to_string(*pina));
 
   return X_ERROR_SUCCESS;
 }
@@ -794,7 +896,7 @@ dword_result_t NetDll_XNetTsAddrToInAddr_entry(dword_t caller,
                                                dword_t service_id,
                                                pointer_t<XNKID> xnkid_ptr,
                                                pointer_t<in_addr> ina_ptr) {
-  XELOGI("XNetTsAddrToInAddr");
+  XELOGD("XNetTsAddrToInAddr");
 
   if (!tsaddr_ptr || !service_id || !xnkid_ptr || !ina_ptr) {
     return static_cast<uint32_t>(X_WSAError::X_WSAEINVAL);
@@ -806,7 +908,7 @@ dword_result_t NetDll_XNetTsAddrToInAddr_entry(dword_t caller,
 
   IsValidXNKID(xnkid_ptr->as_uintBE64());
 
-  XELOGI("Server IP: {}, Service ID: {:08X}", ip_to_string(*ina_ptr),
+  XELOGD("Server IP: {}, Service ID: {:08X}", ip_to_string(*ina_ptr),
          static_cast<uint32_t>(service_id));
 
   return X_ERROR_SUCCESS;
@@ -836,7 +938,7 @@ dword_result_t NetDll_XNetXnAddrToInAddr_entry(dword_t caller,
   }
 
   if (GetConsoleMacAddress() == MacAddress(xn_addr->abEnet)) {
-    XELOGI("Resolving XNetXnAddrToInAddr to LOOPBACK!");
+    XELOGD("Resolving XNetXnAddrToInAddr to LOOPBACK!");
     in_addr->s_addr = xe::byte_swap(LOOPBACK);
 
     return X_ERROR_SUCCESS;
@@ -869,11 +971,11 @@ dword_result_t NetDll_XNetInAddrToXnAddr_entry(dword_t caller, dword_t in_addr,
   }
 
   if (in_addr == BROADCAST) {
-    XELOGI("Resolving XnAddr via BROADCAST!");
+    XELOGD("Resolving XnAddr via BROADCAST!");
   }
 
   if (in_addr == LOOPBACK || in_addr == BROADCAST) {
-    XELOGI("Resolving XnAddr via LOOPBACK!");
+    XELOGD("Resolving XnAddr via LOOPBACK!");
     XLiveAPI::IpGetConsoleXnAddr(xn_addr);
 
     return X_STATUS_SUCCESS;
@@ -955,7 +1057,7 @@ dword_result_t NetDll_XNetSetSystemLinkPort_entry(dword_t caller, word_t port) {
 
   // XNET_SYSTEMLINK_PORT = port;
 
-  XELOGI("XNetSetSystemLinkPort: {}", port.value());
+  XELOGD("XNetSetSystemLinkPort: {}", port.value());
 
   return static_cast<uint32_t>(X_WSAError::X_WSAEADDRINUSE);
 }
@@ -970,7 +1072,7 @@ dword_result_t NetDll_XNetGetSystemLinkPort_entry(dword_t caller,
 
   *port = XNET_SYSTEMLINK_PORT;
 
-  XELOGI("XNetGetSystemLinkPort: {}", static_cast<uint16_t>(*port));
+  XELOGD("XNetGetSystemLinkPort: {}", static_cast<uint16_t>(*port));
 
   return X_STATUS_SUCCESS;
 }
@@ -997,7 +1099,7 @@ DECLARE_XAM_EXPORT1(NetDll_XNetGetEthernetLinkStatus, kNetworking,
 dword_result_t NetDll_XNetDnsLookup_entry(dword_t caller, lpstring_t host,
                                           dword_t event_handle,
                                           lpdword_t dns_ptr) {
-  XELOGI("DNS Lookup: {}", host.value());
+  XELOGD("DNS Lookup: {}", host.value());
 
   if (!dns_ptr) {
     return static_cast<uint32_t>(X_WSAError::X_WSAEINVAL);
@@ -1023,13 +1125,13 @@ dword_result_t NetDll_XNetDnsLookup_entry(dword_t caller, lpstring_t host,
     const int status = getaddrinfo(host, nullptr, &hints, &addr_info);
 
     if (status) {
-      XELOGI("DNS Lookup: Failed");
-      dns->status = XSocket::GetLastWSAError();
+      XELOGD("DNS Lookup: Failed");
+      dns->status = XSocket::GetLastWSAErrorStatic();
       xboxkrnl::xeNtSetEvent(event_handle, nullptr);
       return;
     }
 
-    XELOGI("DNS Lookup: Success");
+    XELOGD("DNS Lookup: Success");
 
     uint32_t address_index = 0;
     addrinfo* info = addr_info;
@@ -1042,7 +1144,7 @@ dword_result_t NetDll_XNetDnsLookup_entry(dword_t caller, lpstring_t host,
     }
 
     dns->cina = address_index;
-    dns->status = XSocket::GetLastWSAError();
+    dns->status = XSocket::GetLastWSAErrorStatic();
 
     xboxkrnl::xeNtSetEvent(event_handle, nullptr);
   };
@@ -1070,7 +1172,7 @@ dword_result_t NetDll_XNetDnsRelease_entry(dword_t caller,
   std::unique_lock lock(dns_lookup_mutex);
 
   if (!dns_lookup_threads.contains(dns_address)) {
-    XELOGI("XNetDnsRelease: DNS already released {:08X}",
+    XELOGD("XNetDnsRelease: DNS already released {:08X}",
            dns_ptr.guest_address());
     return X_ERROR_SUCCESS;
   }
@@ -1088,7 +1190,7 @@ DECLARE_XAM_EXPORT1(NetDll_XNetDnsRelease, kNetworking, kImplemented);
 dword_result_t NetDll_XNetQosServiceLookup_entry(dword_t caller, dword_t flags,
                                                  dword_t event_handle,
                                                  lpdword_t qos_ptr) {
-  XELOGI("XNetQosServiceLookup({}, {:08X}, {:08X}, {:08X})", caller.value(),
+  XELOGD("XNetQosServiceLookup({}, {:08X}, {:08X}, {:08X})", caller.value(),
          flags.value(), event_handle.value(), qos_ptr.guest_address());
 
   if (!qos_ptr) {
@@ -1153,7 +1255,7 @@ dword_result_t NetDll_XNetQosRelease_entry(dword_t caller,
   std::unique_lock lock(qos_lookup_mutex);
 
   if (!qos_lookup_threads.contains(qos_address)) {
-    XELOGI("XNetQosRelease: QoS already released {:08X}",
+    XELOGD("XNetQosRelease: QoS already released {:08X}",
            qos_ptr.guest_address());
     return X_ERROR_SUCCESS;
   }
@@ -1181,24 +1283,24 @@ DECLARE_XAM_EXPORT1(NetDll_XNetQosRelease, kNetworking, kStub);
 dword_result_t NetDll_XNetQosListen_entry(
     dword_t caller, pointer_t<XNKID> sessionId, pointer_t<uint32_t> data,
     dword_t data_size, dword_t bits_per_second, dword_t flags) {
-  XELOGI("XNetQosListen({:08X}, {:016X}, {:016X}, {}, {:08X}, {:08X})",
+  XELOGD("XNetQosListen({:08X}, {:016X}, {:016X}, {}, {:08X}, {:08X})",
          caller.value(), sessionId.host_address(), data.host_address(),
          data_size.value(), bits_per_second.value(), flags.value());
 
   if (flags & LISTEN_ENABLE) {
-    XELOGI("XNetQosListen LISTEN_ENABLE");
+    XELOGD("XNetQosListen LISTEN_ENABLE");
   }
 
   if (flags & LISTEN_DISABLE) {
-    XELOGI("XNetQosListen LISTEN_DISABLE");
+    XELOGD("XNetQosListen LISTEN_DISABLE");
   }
 
   if (flags & LISTEN_SET_BITSPERSEC) {
-    XELOGI("XNetQosListen LISTEN_SET_BITSPERSEC");
+    XELOGD("XNetQosListen LISTEN_SET_BITSPERSEC");
   }
 
   if (flags & XLISTEN_RELEASE) {
-    XELOGI("XNetQosListen XLISTEN_RELEASE");
+    XELOGD("XNetQosListen XLISTEN_RELEASE");
   }
 
   if (data_size <= 0) {
@@ -1222,7 +1324,7 @@ dword_result_t NetDll_XNetQosListen_entry(
     memcpy(qos_buffer.data(), data, data_size);
 
     if (XLiveAPI::UpdateQoSCache(session_id, qos_buffer)) {
-      XELOGI("XNetQosListen LISTEN_SET_DATA");
+      XELOGD("XNetQosListen LISTEN_SET_DATA");
 
       auto run = [](uint64_t sessionId, std::vector<uint8_t> qosData) {
         XLiveAPI::QoSPost(sessionId, qosData.data(), qosData.size());
@@ -1305,7 +1407,7 @@ dword_result_t NetDll_XNetQosLookup_entry(
   }
 
   if (num_gateways) {
-    XELOGI("XNetQosLookup: Gateways & Service Ids");
+    XELOGD("XNetQosLookup: Gateways & Service Ids");
   }
 
   if (service_ids_array) {
@@ -1394,7 +1496,7 @@ dword_result_t NetDll_XNetQosLookup_entry(
   if (probes_count) {
     qos_lookup_thread.detach();
   } else {
-    XELOGI("XNetQosLookup: Sync Lookup!");
+    XELOGD("XNetQosLookup: Sync Lookup!");
     qos_lookup_thread.join();
   }
 
@@ -1405,7 +1507,7 @@ DECLARE_XAM_EXPORT1(NetDll_XNetQosLookup, kNetworking, kImplemented);
 dword_result_t NetDll_XNetQosGetListenStats_entry(
     dword_t caller, pointer_t<XNKID> xnkid_ptr,
     pointer_t<XNQOSLISTENSTATS> qos_stats_ptr) {
-  XELOGI("XNetQosGetListenStats({:08X}, {:08X}, {:08X})", caller.value(),
+  XELOGD("XNetQosGetListenStats({:08X}, {:08X}, {:08X})", caller.value(),
          xnkid_ptr.guest_address(), qos_stats_ptr.guest_address());
 
   if (qos_stats_ptr) {
@@ -1458,11 +1560,11 @@ dword_result_t XamGetServiceEndpoint_entry(
         return X_ERROR_FUNCTION_FAILED;
       } else {
         strcpy(service_endpoint_ptr, fallback_service_endpoint.c_str());
-        XELOGI("XamGetServiceEndpoint: {}", fallback_service_endpoint.c_str());
+        XELOGD("XamGetServiceEndpoint: {}", fallback_service_endpoint.c_str());
       }
     } else {
       strcpy(service_endpoint_ptr, service_endpoint.c_str());
-      XELOGI("XamGetServiceEndpoint: {}", service_endpoint.c_str());
+      XELOGD("XamGetServiceEndpoint: {}", service_endpoint.c_str());
     }
 
     return X_ERROR_SUCCESS;
@@ -1485,7 +1587,7 @@ dword_result_t XampXAuthStartup_entry(pointer_t<XAUTH_SETTINGS> setttings) {
     return 0x80158401;
   }
 
-  if (cvars::network_mode != NETWORK_MODE::XBOXLIVE) {
+  if (cvars::network_mode < NETWORK_MODE::XBOXLIVE) {
     return 0x80158406;
   }
 
@@ -1824,7 +1926,7 @@ dword_result_t NetDll_XHttpOpenRequest_entry(
     object_name = *path;
   }
 
-  XELOGI("OpenRequest: {} {}", http_verb, object_name);
+  XELOGD("OpenRequest: {} {}", http_verb, object_name);
 
   // Return invalid handle (not NULL)
   return 1;
@@ -1850,7 +1952,7 @@ dword_result_t NetDll_XHttpSendRequest_entry(dword_t caller, dword_t hrequest,
     request_headers = *headers;
   }
 
-  XELOGI("Headers {}", request_headers);
+  XELOGD("Headers {}", request_headers);
   return false;
 }
 DECLARE_XAM_EXPORT1(NetDll_XHttpSendRequest, kNetworking, kStub);
@@ -1964,8 +2066,8 @@ dword_result_t NetDll_setsockopt_entry(dword_t caller, dword_t socket_handle,
     return -1;
   }
 
-  auto ret = socket->SetOption(level, optname, optval_ptr, optlen);
-  if (ret < 0) {
+  X_STATUS ret = socket->SetOption(level, optname, optval_ptr, optlen);
+  if (XFAILED(ret)) {
     XThread::SetLastError(socket->GetLastWSAError());
     return -1;
   }
@@ -2004,7 +2106,7 @@ dword_result_t NetDll_ioctlsocket_entry(dword_t caller, dword_t socket_handle,
     return -1;
   }
 
-  X_STATUS status = socket->IOControl(cmd, arg_ptr.as<uint32_t*>());
+  X_STATUS status = socket->IOControl(cmd, arg_ptr.as<uint8_t*>());
   if (XFAILED(status)) {
     XThread::SetLastError(socket->GetLastWSAError());
     XELOGE("NetDll_ioctlsocket: failed with error {:08X}",
@@ -2045,6 +2147,13 @@ dword_result_t NetDll_bind_entry(dword_t caller, dword_t socket_handle,
     return -1;
   }
 
+  XELOGE(
+      "NetDll_bind: sock={:08X} requested {}:{} -> bound_port {} adapter_ip {} "
+      "proto {}",
+      (uint32_t)socket_handle, ip_to_string(name->address_ip),
+      name->address_port.get(), socket->bound_port(), local_ip,
+      socket->GetProtocolUPnPString());
+
   const auto upnp = kernel_state()->emulator()->GetUPnP();
 
   uint16_t upnp_internal_port = name->address_port;
@@ -2072,7 +2181,7 @@ dword_result_t NetDll_bind_entry(dword_t caller, dword_t socket_handle,
   }
 
   if (cvars::logging) {
-    XELOGI("Bind port {}", upnp_internal_port);
+    XELOGD("Bind port {}", upnp_internal_port);
   }
 
   return 0;
@@ -2314,7 +2423,7 @@ dword_result_t NetDll_recvfrom_entry(dword_t caller, dword_t socket_handle,
     return -1;
   }
 
-  socklen_t native_fromlen = fromlen_ptr ? fromlen_ptr.value() : 0;
+  uint32_t native_fromlen = fromlen_ptr ? fromlen_ptr.value() : 0;
   int ret = socket->RecvFrom(buf_ptr, buf_len, flags, from_ptr,
                              fromlen_ptr ? &native_fromlen : nullptr);
   if (fromlen_ptr) {
@@ -2323,8 +2432,11 @@ dword_result_t NetDll_recvfrom_entry(dword_t caller, dword_t socket_handle,
 
   if (ret == -1) {
     XThread::SetLastError(socket->GetLastWSAError());
-  } else if (ret >= 0 && !cvars::log_mask_ips && from_ptr) {
-    XELOGI("NetDll_recvfrom: Received {} bytes from: {}:{}({})", ret,
+  } else if (ret >= 0 && from_ptr) {
+    // Heard back from this peer -> the secure link is live.
+    XNetUpdateConnectStatus(XNetPeerKey(from_ptr->address_ip),
+                            STATUS_CONNECTED);
+    XELOGE("NetDll_recvfrom: Received {} bytes from: {}:{}({})", ret,
            ip_to_string(from_ptr->address_ip), from_ptr->address_port.get(),
            socket->GetProtocolUPnPString());
   }
@@ -2366,8 +2478,16 @@ dword_result_t NetDll_sendto_entry(dword_t caller, dword_t socket_handle,
   int ret = socket->SendTo(buf_ptr, buf_len, flags, to_ptr, to_len);
   if (ret < 0) {
     XThread::SetLastError(socket->GetLastWSAError());
-  } else if (ret >= 0 && to_ptr && !cvars::log_mask_ips) {
-    XELOGI("NetDll_sendto: Send {} bytes to: {}:{}({})", ret,
+    if (to_ptr) {
+      XELOGE("NetDll_sendto: FAILED to {}:{}({}) err={:08X}",
+             ip_to_string(to_ptr->address_ip), to_ptr->address_port.get(),
+             socket->GetProtocolUPnPString(), socket->GetLastWSAError());
+    }
+  } else if (ret >= 0 && to_ptr) {
+    // Sent to this peer -> connection at least pending until we hear back.
+    XNetUpdateConnectStatus(XNetPeerKey(to_ptr->address_ip),
+                            XNET_CONNECT_STATUS_PENDING);
+    XELOGE("NetDll_sendto: Send {} bytes to: {}:{}({})", ret,
            ip_to_string(to_ptr->address_ip), to_ptr->address_port.get(),
            socket->GetProtocolUPnPString());
   }
@@ -2495,23 +2615,23 @@ dword_result_t NetDll_XNetRegisterKey_entry(dword_t caller,
                                             pointer_t<XNKID> session_key,
                                             pointer_t<XNKEY> exchange_key) {
   if (IsSystemlink(session_key->as_uintBE64())) {
-    XELOGI("XNetRegisterKey: Systemlink");
+    XELOGD("XNetRegisterKey: Systemlink");
     XLiveAPI::systemlink_id = session_key->as_uintBE64();
     return 0;
   }
 
   if (IsOnlinePeer(session_key->as_uintBE64())) {
-    XELOGI("XNetRegisterKey: Xbox Live");
+    XELOGD("XNetRegisterKey: Xbox Live");
     EXPLICIT_XBOXLIVE_KEY = true;
     return 0;
   }
 
   if (IsServer(session_key->as_uintBE64())) {
-    XELOGI("XNetRegisterKey: Server");
+    XELOGD("XNetRegisterKey: Server");
     return 0;
   }
 
-  XELOGI(fmt::format("XNetRegisterKey: {:016X} (Unknown)",
+  XELOGD(fmt::format("XNetRegisterKey: {:016X} (Unknown)",
                      session_key->as_uintBE64()));
 
   return 0;
@@ -2522,7 +2642,7 @@ dword_result_t NetDll_XNetUnregisterKey_entry(dword_t caller,
                                               pointer_t<XNKID> session_key) {
   if (XLiveAPI::systemlink_id) {
     if (IsSystemlink(XLiveAPI::systemlink_id)) {
-      XELOGI("XNetUnregisterKey: Systemlink");
+      XELOGD("XNetUnregisterKey: Systemlink");
     }
 
     XLiveAPI::systemlink_id = 0;
@@ -2531,7 +2651,7 @@ dword_result_t NetDll_XNetUnregisterKey_entry(dword_t caller,
   if (EXPLICIT_XBOXLIVE_KEY) {
     EXPLICIT_XBOXLIVE_KEY = false;
 
-    XELOGI("XNetUnregisterKey: Xbox Live");
+    XELOGD("XNetUnregisterKey: Xbox Live");
   }
 
   return 0;

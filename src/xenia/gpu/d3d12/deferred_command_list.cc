@@ -67,6 +67,21 @@ void DeferredCommandList::Execute(ID3D12GraphicsCommandList* command_list,
             args.num_rects ? reinterpret_cast<const D3D12_RECT*>(&args + 1)
                            : nullptr);
       } break;
+      case Command::kD3DBeginQuery: {
+        auto& args = *reinterpret_cast<const D3DQueryArguments*>(stream);
+        command_list->BeginQuery(args.query_heap, args.type, args.index);
+      } break;
+      case Command::kD3DEndQuery: {
+        auto& args = *reinterpret_cast<const D3DQueryArguments*>(stream);
+        command_list->EndQuery(args.query_heap, args.type, args.index);
+      } break;
+      case Command::kD3DResolveQueryData: {
+        auto& args =
+            *reinterpret_cast<const D3DResolveQueryDataArguments*>(stream);
+        command_list->ResolveQueryData(args.query_heap, args.type,
+                                       args.start_index, args.num_queries,
+                                       args.dst_buffer, args.dst_offset);
+      } break;
       case Command::kD3DCopyBufferRegion: {
         auto& args =
             *reinterpret_cast<const D3DCopyBufferRegionArguments*>(stream);

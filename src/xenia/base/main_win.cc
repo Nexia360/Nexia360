@@ -121,12 +121,11 @@ int InitializeWin32App(const std::string_view app_name) {
   xe::InitializeLogging(app_name);
 
   // Print version info.
-  XELOGI(
-      "Build: "
-#ifdef XE_BUILD_IS_PR
-      "PR#" XE_BUILD_PR_NUMBER " - "
-#endif
-      XE_BUILD_BRANCH "@" XE_BUILD_COMMIT_SHORT " on " XE_BUILD_DATE);
+  XELOGI("Build: "
+         // #ifdef XE_BUILD_IS_PR
+         //      "PR#" XE_BUILD_PR_NUMBER " - "
+         // #endif
+         /*XE_BUILD_BRANCH "@" XE_BUILD_COMMIT_SHORT " on " */ XE_BUILD_DATE);
 
   // Request high-performance timing and scheduling.
   if (cvars::win32_high_resolution_timer) {

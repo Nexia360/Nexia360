@@ -2,7 +2,7 @@
  ******************************************************************************
  * Xenia : Xbox 360 Emulator Research Project                                 *
  ******************************************************************************
- * Copyright 2013 Ben Vanik. All rights reserved.                             *
+ * Copyright 2013 Ben Vanik. All rights reserved.
  * Released under the BSD license - see LICENSE in the root for more details. *
  ******************************************************************************
  */
@@ -13,11 +13,14 @@
 #include <algorithm>
 #include <atomic>
 #include <cstddef>
+#include <memory>
 #include <string>
+#include <vector>
 
 #include "xenia/base/threading.h"
 #include "xenia/kernel/kernel.h"
 #include "xenia/memory.h"
+#include "xenia/xbox.h"
 
 namespace xe {
 class ByteStream;
@@ -33,6 +36,12 @@ class KernelState;
 
 template <typename T>
 class object_ref;
+
+// Internal storage for an XObject's parent/child relationships. Defined
+// out-of-line so that the header doesn't need the full definition of
+// object_ref<XObject> at the point where XObject declares its `children_`
+// pointer. See xobject.cc for the implementation.
+struct XChildren;
 
 // https://www.nirsoft.net/kernel_struct/vista/DISPATCHER_HEADER.html
 typedef struct {
@@ -169,7 +178,11 @@ class XObject {
   Type type() const;
 
   // Returns the primary handle of this object.
-  X_HANDLE handle() const { return handles_[0]; }
+  // Lazily allocates handle on first access.
+  X_HANDLE handle();
+
+  // Check if handle has been allocated without triggering allocation.
+  bool has_handle() const { return !handles_.empty(); }
 
   // Returns all associated handles with this object.
   std::vector<X_HANDLE> handles() const { return handles_; }
@@ -177,6 +190,13 @@ class XObject {
 
   const std::string& name() const { return name_; }
   uint32_t guest_object() const { return guest_object_ptr_; }
+  // LLE bridge only: repoint this host wrapper at an EXISTING guest object (the
+  // live per-CPU KPCR current_thread). Bypasses the X_OBJECT_HEADER setup that
+  // SetNativePointer does, so it must only be used to track a guest-owned object
+  // the kernel already created - never for a Nexia-allocated object.
+  void set_guest_object_ptr(uint32_t guest_address) {
+    guest_object_ptr_ = guest_address;
+  }
 
   // Has this object been created for use by the host?
   // Host objects are persisted through reloads/etc.
@@ -225,6 +245,68 @@ class XObject {
                                        void* native_ptr, int32_t as_type = -1,
                                        bool already_locked = false);
 
+  // ---------------------------------------------------------------------
+  // Parent / child ("XChildren") tree.
+  //
+  // Models NT-style ownership relationships between kernel objects. The
+  // tree is self-collapsing: when a parent is destroyed, its destructor
+  // releases the strong refs it holds to its `owned` children, and those
+  // children's destructors do the same for their own children, recursively.
+  //
+  // Three relationship flavors:
+  //   * Owned     - parent holds a strong ref; on parent destruction the
+  //                 ref is released. If it was the last ref, the child
+  //                 cascade-destructs. Models a job's kill-on-close
+  //                 children.
+  //   * Dependent - parent holds a weak (raw) pointer. On parent
+  //                 destruction the child receives an OnOwnerDeath()
+  //                 callback but is NOT destroyed by the parent — the
+  //                 child must be independently kept alive (typically by
+  //                 outstanding handles). Models NT mutant abandonment:
+  //                 a mutant whose owning thread dies is "abandoned" but
+  //                 stays a valid kernel object until its handles close.
+  //
+  // Other supported transitions:
+  //   * Adoption / reparenting - Disown from old parent, then call
+  //                              Adopt / AddDependent on the new parent.
+  //   * Emancipation           - Disown() while the parent is still
+  //                              alive; the parent's slot for this child
+  //                              is released.
+  //   * Zombie                 - orthogonal to this mechanism: handles
+  //                              held in the global object table keep
+  //                              the object's refcount above zero even
+  //                              after its parent has unregistered it
+  //                              (e.g., XThread after Exit).
+  //
+  // All operations are serialized on the global critical region; the
+  // recursive lock makes it safe for cascading destructors to call back
+  // into Disown / etc.
+
+  // Take ownership of `child`. Asserts that `child` is currently
+  // unparented. After this call `child->parent() == this` and the parent
+  // holds a strong ref to it.
+  void Adopt(object_ref<XObject> child);
+
+  // Register `child` as a dependent. Asserts that `child` is currently
+  // unparented. The parent does NOT keep `child` alive; the caller is
+  // responsible for ensuring the dependent outlives whatever notification
+  // it expects. On parent destruction `child->OnOwnerDeath()` runs.
+  void AddDependent(XObject* child);
+
+  // Detach from the current parent (if any). For an owned child this
+  // releases the parent's strong ref, which may delete `this`. For a
+  // dependent child this just removes the weak entry. Safe to call even
+  // when not parented; no-op in that case.
+  void Disown();
+
+  // Hook fired on a dependent child when its parent is being destroyed.
+  // Default does nothing; classes like XMutant override to mark the
+  // object as abandoned. Runs while the parent's destructor holds the
+  // global lock; do not block / take other long-running locks here.
+  virtual void OnOwnerDeath() {}
+
+  XObject* parent() const { return parent_; }
+
  protected:
   bool SaveObject(ByteStream* stream);
   bool RestoreObject(ByteStream* stream);
@@ -266,6 +348,23 @@ class XObject {
   // if we allocated it!
   uint32_t guest_object_ptr_ = 0;
   bool allocated_guest_object_ = false;
+
+  // Parent/child tree state. See the public Adopt / AddDependent / Disown
+  // methods above for semantics. All access serialized on the global
+  // critical region. `parent_` is a weak back-pointer (no ref held); the
+  // parent is guaranteed to outlive this->parent_ because (a) for owned
+  // children the parent holds the only authoritative strong ref, and
+  // (b) the parent's destructor clears every child's parent_ before
+  // releasing them. `children_` is lazily allocated to keep the per-
+  // object overhead small for objects that never adopt.
+  enum class ParentLink : uint8_t {
+    kNone = 0,
+    kOwned = 1,
+    kDependent = 2,
+  };
+  XObject* parent_ = nullptr;
+  ParentLink parent_link_ = ParentLink::kNone;
+  std::unique_ptr<XChildren> children_;
 };
 
 template <typename T>

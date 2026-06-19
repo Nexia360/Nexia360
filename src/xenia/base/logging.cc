@@ -59,7 +59,7 @@ DEFINE_uint32(log_mask, 0,
               "Logging");
 
 DEFINE_int32(
-    log_level, 2,
+    log_level, 1,
     "Maximum level to be logged. (0=error, 1=warning, 2=info, 3=debug)",
     "Logging");
 
@@ -440,9 +440,8 @@ void InitializeLogging(const std::string_view app_name) {
 #else
   FILE* log_file = nullptr;
   if (cvars::log_file.empty()) {
-    // Default to app name.
-    auto file_name = fmt::format("{}.log", app_name);
-    auto file_path = xe::filesystem::GetExecutableFolder() / file_name;
+    // Default to "nexia.log" next to the executable (Nexia branding).
+    auto file_path = xe::filesystem::GetExecutableFolder() / "nexia.log";
     log_file = xe::filesystem::OpenFile(file_path, "wt");
   } else {
     xe::filesystem::CreateParentFolder(cvars::log_file);

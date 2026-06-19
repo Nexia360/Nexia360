@@ -359,7 +359,7 @@ constexpr size_t kTMSTitleMaxSize = 5_MiB;  // 5 MB
 constexpr size_t kTMSClipMaxSize = 11_MiB;  // 11 MB
 constexpr size_t kTMSFileMaxSize = 20_MiB;  // 20 MB (Custom)
 
-enum NETWORK_MODE : uint32_t { OFFLINE, LAN, XBOXLIVE };
+enum NETWORK_MODE : uint32_t { OFFLINE, LAN, XBOXLIVE, NEXIAHUB };
 
 enum X_USER_AGE_GROUP : uint32_t { CHILD, TEEN, ADULT };
 

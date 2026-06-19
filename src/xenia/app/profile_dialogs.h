@@ -57,6 +57,13 @@ class ProfileConfigDialog final : public ui::ImGuiDialog {
   std::map<uint64_t, kernel::xam::GamerPictureKey> profile_gamerpic_key_;
 
   uint64_t selected_xuid_ = 0;
+  // Set when B/Back requests close; the actual close waits until all gamepad
+  // buttons are released.
+  bool close_pending_ = false;
+  // Tracks whether a child popup/dialog (gamerpic browser / profile editor /
+  // context menu) was on top last frame, so we can force-reload icons when this
+  // menu regains focus (e.g. after the editor changed a gamerpic).
+  bool child_was_open_ = false;
   EmulatorWindow* emulator_window_;
 };
 
@@ -73,6 +80,9 @@ class ManagerDialog final : public ui::ImGuiDialog {
 
  private:
   bool manager_opened_ = false;
+  // Set when B/Back requests close; the actual close waits until all gamepad
+  // buttons are released.
+  bool close_pending_ = false;
   uint64_t selected_xuid_ = 0;
   uint64_t removed_xuid_ = 0;
   xe::kernel::xam::ui::FriendsContentArgs friends_args = {};

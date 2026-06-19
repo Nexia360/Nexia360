@@ -480,9 +480,58 @@ bool EmulatorApp::OnInitialize() {
   amd64::InitFeatureFlags();
 #endif
 
+  // New VFD layout: the host content/cache folders and the guest device
+  // folders all live under <storage_root>/Device rather than scattered at the
+  // storage root. On startup, move any legacy root-level folder into the Device
+  // tree so existing data (saves, profiles, caches) carries over and the root
+  // stays clean. If the Device copy already exists, merge in whatever the root
+  // copy still has (the Device copy wins on conflicts), then delete the root
+  // folder entirely.
+  {
+    std::error_code ec;
+    const auto device_root = storage_root / "Device";
+    std::filesystem::create_directories(device_root, ec);
+    auto migrate = [&](const char* name) {
+      const auto old_p = storage_root / name;
+      const auto new_p = device_root / name;
+      if (!std::filesystem::exists(old_p, ec)) {
+        return;
+      }
+      if (!std::filesystem::exists(new_p, ec)) {
+        // Device folder doesn't exist yet - a plain rename moves it wholesale.
+        ec.clear();
+        std::filesystem::rename(old_p, new_p, ec);
+        if (!ec) {
+          XELOGI("VFD migrated {} -> {}", old_p.string(), new_p.string());
+          return;
+        }
+        // Rename failed (e.g. cross-volume) - fall through to copy + remove.
+      }
+      // Device folder already exists (or rename failed): copy in any files the
+      // root copy still has that Device doesn't, then delete the root folder.
+      ec.clear();
+      std::filesystem::copy(old_p, new_p,
+                            std::filesystem::copy_options::recursive |
+                                std::filesystem::copy_options::skip_existing,
+                            ec);
+      if (ec) {
+        XELOGW("VFD merge {} -> {} failed: {}", old_p.string(), new_p.string(),
+               ec.message());
+        return;
+      }
+      std::error_code rec;
+      std::filesystem::remove_all(old_p, rec);
+      XELOGI("VFD migrated {} -> {} (merged)", old_p.string(), new_p.string());
+    };
+    for (const char* name : {"content", "cache_host", "cache", "cache0",
+                             "cache1", "xstorage", "scratch", "devkit"}) {
+      migrate(name);
+    }
+  }
+
   std::filesystem::path content_root = cvars::content_root;
   if (content_root.empty()) {
-    content_root = storage_root / "content";
+    content_root = storage_root / "Device" / "content";
   } else {
     // If content root isn't an absolute path, then it should be relative to the
     // storage root.
@@ -495,7 +544,7 @@ bool EmulatorApp::OnInitialize() {
 
   std::filesystem::path cache_root = cvars::cache_root;
   if (cache_root.empty()) {
-    cache_root = storage_root / "cache_host";
+    cache_root = storage_root / "Device" / "cache_host";
     // TODO(Triang3l): Point to the app's external storage "cache" directory on
     // Android.
   } else {
@@ -601,7 +650,7 @@ void EmulatorApp::EmulatorThread() {
 
   if (cvars::mount_scratch) {
     auto scratch_device = std::make_unique<xe::vfs::HostPathDevice>(
-        "\\SCRATCH", emulator_->storage_root() / "scratch", false);
+        "\\SCRATCH", emulator_->storage_root() / "Device" / "scratch", false);
     if (!scratch_device->Initialize()) {
       XELOGE("Unable to scan scratch path");
     } else {
@@ -615,7 +664,7 @@ void EmulatorApp::EmulatorThread() {
 
   if (cvars::mount_cache) {
     auto cache0_device = std::make_unique<xe::vfs::HostPathDevice>(
-        "\\CACHE0", emulator_->storage_root() / "cache0", false);
+        "\\CACHE0", emulator_->storage_root() / "Device" / "cache0", false);
     if (!cache0_device->Initialize()) {
       XELOGE("Unable to scan cache0 path");
     } else {
@@ -627,7 +676,7 @@ void EmulatorApp::EmulatorThread() {
     }
 
     auto cache1_device = std::make_unique<xe::vfs::HostPathDevice>(
-        "\\CACHE1", emulator_->storage_root() / "cache1", false);
+        "\\CACHE1", emulator_->storage_root() / "Device" / "cache1", false);
     if (!cache1_device->Initialize()) {
       XELOGE("Unable to scan cache1 path");
     } else {
@@ -643,7 +692,7 @@ void EmulatorApp::EmulatorThread() {
     // substring/start_with logic inside VirtualFileSystem::ResolvePath, else
     // accesses to those devices will go here instead
     auto cache_device = std::make_unique<xe::vfs::HostPathDevice>(
-        "\\CACHE", emulator_->storage_root() / "cache", false);
+        "\\CACHE", emulator_->storage_root() / "Device" / "cache", false);
     if (!cache_device->Initialize()) {
       XELOGE("Unable to scan cache path");
     } else {
@@ -655,7 +704,7 @@ void EmulatorApp::EmulatorThread() {
     }
 
     auto xstorage_device = std::make_unique<xe::vfs::HostPathDevice>(
-        "\\XSTORAGE", "xstorage", false);
+        "\\XSTORAGE", emulator_->storage_root() / "Device" / "xstorage", false);
     if (!xstorage_device->Initialize()) {
       XELOGE("Unable to scan xstorage path");
     } else {
@@ -670,8 +719,8 @@ void EmulatorApp::EmulatorThread() {
   }
 
   if (cvars::force_mount_devkit) {
-    auto devkit_device =
-        std::make_unique<xe::vfs::HostPathDevice>("\\DEVKIT", "devkit", false);
+    auto devkit_device = std::make_unique<xe::vfs::HostPathDevice>(
+        "\\DEVKIT", emulator_->storage_root() / "Device" / "devkit", false);
 
     if (!devkit_device->Initialize()) {
       XELOGE("Unable to scan devkit path");

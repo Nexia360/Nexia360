@@ -11,7 +11,6 @@
 
 #include <cfloat>
 #include <cstring>
-#include <ranges>
 
 #include "third_party/imgui/imgui.h"
 #include "xenia/base/assert.h"
@@ -20,6 +19,7 @@
 #include "xenia/base/math.h"
 #include "xenia/ui/imgui_dialog.h"
 #include "xenia/ui/imgui_notification.h"
+#include "xenia/ui/keyboard_ui.h"
 #include "xenia/ui/resources.h"
 #include "xenia/ui/ui_event.h"
 #include "xenia/ui/window.h"
@@ -29,14 +29,8 @@
 
 #if XE_PLATFORM_WIN32
 #include <ShlObj_core.h>
-#endif
-
-#if XE_PLATFORM_LINUX
-#include <fontconfig/fontconfig.h>
-#endif
-
-#ifdef XE_PLATFORM_LINUX
-#include <gtk/gtk.h>
+#include <Xinput.h>
+#pragma comment(lib, "xinput.lib")
 #endif
 
 DEFINE_path(
@@ -142,18 +136,6 @@ void ImGuiDrawer::RemoveNotification(ImGuiNotification* dialog) {
   DetachIfLastWindowRemoved();
 }
 
-#ifdef XE_PLATFORM_LINUX
-static void SetClipboardText(void* user_data, const char* text) {
-  GtkClipboard* clipboard = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
-  gtk_clipboard_set_text(clipboard, text, -1);
-}
-
-static const char* GetClipboardText(void* user_data) {
-  GtkClipboard* clipboard = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
-  return gtk_clipboard_wait_for_text(clipboard);
-}
-#endif
-
 void ImGuiDrawer::Initialize() {
   // Setup ImGui internal state.
   // This will give us state we can swap to the ImGui globals when in use.
@@ -161,18 +143,14 @@ void ImGuiDrawer::Initialize() {
   ImGui::SetCurrentContext(internal_state_);
 
   auto& io = ImGui::GetIO();
-  io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+  // Enable keyboard navigation - this allows Tab/Enter/Escape to work
+  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
   const float font_size = std::max((float)cvars::font_size, 8.f);
   const float title_font_size = font_size + 6.f;
 
   InitializeFonts(font_size);
   InitializeFonts(title_font_size);
-
-#ifdef XE_PLATFORM_LINUX
-  io.SetClipboardTextFn = SetClipboardText;
-  io.GetClipboardTextFn = GetClipboardText;
-#endif
 
   auto& style = ImGui::GetStyle();
   style.ScrollbarRounding = 6.0f;
@@ -236,18 +214,6 @@ void ImGuiDrawer::Initialize() {
   reset_mouse_position_after_next_frame_ = false;
 }
 
-void ImGuiDrawer::LoadInputSystem(hid::InputSystem* input_system) {
-  if (input_system_) {
-    return;
-  }
-
-  input_system_ = input_system;
-}
-
-void ImGuiDrawer::SetGuideButtonAction(std::function<void(uint8_t)> func) {
-  onGuidePressFunction_ = func;
-}
-
 std::optional<ImGuiKey> ImGuiDrawer::VirtualKeyToImGuiKey(VirtualKey vkey) {
   static const std::map<VirtualKey, ImGuiKey> map = {
       {ui::VirtualKey::kTab, ImGuiKey_Tab},
@@ -267,6 +233,71 @@ std::optional<ImGuiKey> ImGuiDrawer::VirtualKeyToImGuiKey(VirtualKey vkey) {
       {ui::VirtualKey::kX, ImGuiKey_X},
       {ui::VirtualKey::kY, ImGuiKey_Y},
       {ui::VirtualKey::kZ, ImGuiKey_Z},
+
+      // XInput controller mappings
+      {ui::VirtualKey::kXInputPadDpadUp, ImGuiKey_GamepadDpadUp},
+      {ui::VirtualKey::kXInputPadDpadDown, ImGuiKey_GamepadDpadDown},
+      {ui::VirtualKey::kXInputPadDpadLeft, ImGuiKey_GamepadDpadLeft},
+      {ui::VirtualKey::kXInputPadDpadRight, ImGuiKey_GamepadDpadRight},
+      {ui::VirtualKey::kXInputPadA, ImGuiKey_GamepadFaceDown},
+      {ui::VirtualKey::kXInputPadB, ImGuiKey_GamepadFaceRight},
+      {ui::VirtualKey::kXInputPadX, ImGuiKey_GamepadFaceLeft},
+      {ui::VirtualKey::kXInputPadY, ImGuiKey_GamepadFaceUp},
+      {ui::VirtualKey::kXInputPadLShoulder, ImGuiKey_GamepadL1},
+      {ui::VirtualKey::kXInputPadRShoulder, ImGuiKey_GamepadR1},
+      {ui::VirtualKey::kXInputPadLTrigger, ImGuiKey_GamepadL2},
+      {ui::VirtualKey::kXInputPadRTrigger, ImGuiKey_GamepadR2},
+      {ui::VirtualKey::kXInputPadLThumbPress, ImGuiKey_GamepadL3},
+      {ui::VirtualKey::kXInputPadRThumbPress, ImGuiKey_GamepadR3},
+      {ui::VirtualKey::kXInputPadStart, ImGuiKey_GamepadStart},
+      {ui::VirtualKey::kXInputPadBack, ImGuiKey_GamepadBack},
+      // Left stick
+      {ui::VirtualKey::kXInputPadLThumbUp, ImGuiKey_GamepadLStickUp},
+      {ui::VirtualKey::kXInputPadLThumbDown, ImGuiKey_GamepadLStickDown},
+      {ui::VirtualKey::kXInputPadLThumbLeft, ImGuiKey_GamepadLStickLeft},
+      {ui::VirtualKey::kXInputPadLThumbRight, ImGuiKey_GamepadLStickRight},
+      // Right stick
+      {ui::VirtualKey::kXInputPadRThumbUp, ImGuiKey_GamepadRStickUp},
+      {ui::VirtualKey::kXInputPadRThumbDown, ImGuiKey_GamepadRStickDown},
+      {ui::VirtualKey::kXInputPadRThumbLeft, ImGuiKey_GamepadRStickLeft},
+      {ui::VirtualKey::kXInputPadRThumbRight, ImGuiKey_GamepadRStickRight},
+
+      // Xbox One controller mappings (Windows 10+)
+      {ui::VirtualKey::kXboxOneGamepadDpadUp, ImGuiKey_GamepadDpadUp},
+      {ui::VirtualKey::kXboxOneGamepadDpadDown, ImGuiKey_GamepadDpadDown},
+      {ui::VirtualKey::kXboxOneGamepadDpadLeft, ImGuiKey_GamepadDpadLeft},
+      {ui::VirtualKey::kXboxOneGamepadDpadRight, ImGuiKey_GamepadDpadRight},
+      {ui::VirtualKey::kXboxOneGamepadA, ImGuiKey_GamepadFaceDown},
+      {ui::VirtualKey::kXboxOneGamepadB, ImGuiKey_GamepadFaceRight},
+      {ui::VirtualKey::kXboxOneGamepadX, ImGuiKey_GamepadFaceLeft},
+      {ui::VirtualKey::kXboxOneGamepadY, ImGuiKey_GamepadFaceUp},
+      {ui::VirtualKey::kXboxOneGamepadLeftShoulder, ImGuiKey_GamepadL1},
+      {ui::VirtualKey::kXboxOneGamepadRightShoulder, ImGuiKey_GamepadR1},
+      {ui::VirtualKey::kXboxOneGamepadLeftTrigger, ImGuiKey_GamepadL2},
+      {ui::VirtualKey::kXboxOneGamepadRightTrigger, ImGuiKey_GamepadR2},
+      {ui::VirtualKey::kXboxOneGamepadLeftThumbstickButton, ImGuiKey_GamepadL3},
+      {ui::VirtualKey::kXboxOneGamepadRightThumbstickButton,
+       ImGuiKey_GamepadR3},
+      {ui::VirtualKey::kXboxOneGamepadMenu, ImGuiKey_GamepadStart},
+      {ui::VirtualKey::kXboxOneGamepadView, ImGuiKey_GamepadBack},
+      // Xbox One left stick
+      {ui::VirtualKey::kXboxOneGamepadLeftThumbstickUp,
+       ImGuiKey_GamepadLStickUp},
+      {ui::VirtualKey::kXboxOneGamepadLeftThumbstickDown,
+       ImGuiKey_GamepadLStickDown},
+      {ui::VirtualKey::kXboxOneGamepadLeftThumbstickLeft,
+       ImGuiKey_GamepadLStickLeft},
+      {ui::VirtualKey::kXboxOneGamepadLeftThumbstickRight,
+       ImGuiKey_GamepadLStickRight},
+      // Xbox One right stick
+      {ui::VirtualKey::kXboxOneGamepadRightThumbstickUp,
+       ImGuiKey_GamepadRStickUp},
+      {ui::VirtualKey::kXboxOneGamepadRightThumbstickDown,
+       ImGuiKey_GamepadRStickDown},
+      {ui::VirtualKey::kXboxOneGamepadRightThumbstickLeft,
+       ImGuiKey_GamepadRStickLeft},
+      {ui::VirtualKey::kXboxOneGamepadRightThumbstickRight,
+       ImGuiKey_GamepadRStickRight},
   };
   if (auto search = map.find(vkey); search != map.end()) {
     return search->second;
@@ -289,13 +320,9 @@ std::unique_ptr<ImmediateTexture> ImGuiDrawer::LoadImGuiIcon(
     return {};
   }
 
-  auto texture = immediate_drawer_->CreateTexture(
+  return immediate_drawer_->CreateTexture(
       width, height, ImmediateTextureFilter::kLinear, true,
       reinterpret_cast<uint8_t*>(image_data));
-
-  stbi_image_free(image_data);
-
-  return texture;
 }
 
 std::map<uint32_t, std::unique_ptr<ImmediateTexture>> ImGuiDrawer::LoadIcons(
@@ -337,14 +364,9 @@ void ImGuiDrawer::SetupNotificationTextures() {
 
 static constexpr ImWchar font_glyph_ranges[] = {
     0x0020, 0x00FF,  // Basic Latin + Latin Supplement
-    0x0100, 0x024F,  // Extended Latin
     0x0370, 0x03FF,  // Greek
     0x0400, 0x04FF,  // Cyrillic
     0x2000, 0x206F,  // General Punctuation
-    0x2070, 0x209F,  // Superscripts & Subscripts
-    0x2100, 0x214F,  // Letterlike Symbols
-    0x2150, 0x218F,  // Number Forms
-    0x20A0, 0x20CF,  // Currency Symbols
     0,
 };
 
@@ -406,6 +428,7 @@ bool ImGuiDrawer::LoadWindowsFont(ImGuiIO& io, ImFontConfig& font_config,
 }
 
 bool ImGuiDrawer::LoadJapaneseFont(ImGuiIO& io, float font_size) {
+  // TODO(benvanik): jp font on other platforms?
 #if XE_PLATFORM_WIN32
   PWSTR fonts_dir;
   HRESULT result = SHGetKnownFolderPath(FOLDERID_Fonts, 0, NULL, &fonts_dir);
@@ -431,63 +454,6 @@ bool ImGuiDrawer::LoadJapaneseFont(ImGuiIO& io, float font_size) {
   CoTaskMemFree(static_cast<void*>(fonts_dir));
   return true;
 #endif
-
-#if XE_PLATFORM_LINUX
-  // On Linux, find and merge CJK font using fontconfig
-  FcConfig* config = FcInitLoadConfigAndFonts();
-  if (!config) {
-    XELOGW(
-        "Unable to initialize fontconfig; CJK characters may not display "
-        "correctly");
-    return false;
-  }
-
-  // Create a pattern to search for fonts with CJK support
-  FcPattern* pattern = FcPatternCreate();
-  FcCharSet* charset = FcCharSetCreate();
-  FcCharSetAddChar(charset, 0x4E00);  // Add a CJK character to the charset
-  FcPatternAddCharSet(pattern, FC_CHARSET, charset);
-
-  // Configure the search
-  FcConfigSubstitute(config, pattern, FcMatchPattern);
-  FcDefaultSubstitute(pattern);
-
-  // Find the best matching font
-  FcResult result;
-  FcPattern* font = FcFontMatch(config, pattern, &result);
-
-  bool success = false;
-  if (font) {
-    FcChar8* file = nullptr;
-    if (FcPatternGetString(font, FC_FILE, 0, &file) == FcResultMatch) {
-      const char* font_path = reinterpret_cast<const char*>(file);
-
-      if (std::filesystem::exists(font_path)) {
-        ImFontConfig jp_font_config;
-        jp_font_config.MergeMode = true;
-        jp_font_config.OversampleH = jp_font_config.OversampleV = 2;
-        jp_font_config.PixelSnapH = true;
-
-        io.Fonts->AddFontFromFileTTF(font_path, font_size, &jp_font_config,
-                                     io.Fonts->GetGlyphRangesJapanese());
-        success = true;
-      }
-    }
-    FcPatternDestroy(font);
-  }
-
-  FcCharSetDestroy(charset);
-  FcPatternDestroy(pattern);
-  FcConfigDestroy(config);
-
-  if (!success) {
-    XELOGW(
-        "Unable to find CJK font; Japanese characters may not display "
-        "correctly");
-  }
-  return success;
-#endif
-
   return false;
 };
 
@@ -573,15 +539,225 @@ void ImGuiDrawer::SetImmediateDrawer(ImmediateDrawer* new_immediate_drawer) {
     locked_achievement_icon_ = immediate_drawer_->CreateTexture(
         width, height, ImmediateTextureFilter::kLinear, true,
         reinterpret_cast<uint8_t*>(image_data));
-
-    // Load loading tile icon.
-    image_data =
-        stbi_load_from_memory(loading_tile_icon.first, loading_tile_icon.second,
-                              &width, &height, &channels, STBI_rgb_alpha);
-    loading_tile_icon_ = immediate_drawer_->CreateTexture(
-        width, height, ImmediateTextureFilter::kLinear, true,
-        reinterpret_cast<uint8_t*>(image_data));
   }
+}
+
+void ImGuiDrawer::PollXInput() {
+#if XE_PLATFORM_WIN32
+  auto& io = GetIO();
+
+  // Get XInputGetStateEx for guide button support (ordinal 100)
+  // Must explicitly load the DLL since it may not be loaded yet
+  static HMODULE xinput_module = nullptr;
+  static auto XInputGetStateEx = (DWORD(WINAPI*)(DWORD, XINPUT_STATE*)) nullptr;
+  static bool init_attempted = false;
+
+  if (!init_attempted) {
+    init_attempted = true;
+    // Try to load xinput DLL explicitly
+    xinput_module = LoadLibraryA("xinput1_4.dll");
+    if (!xinput_module) {
+      xinput_module = LoadLibraryA("xinput1_3.dll");
+    }
+    if (!xinput_module) {
+      xinput_module = LoadLibraryA("xinput9_1_0.dll");
+    }
+    if (xinput_module) {
+      // Get the hidden XInputGetStateEx function (ordinal 100)
+      XInputGetStateEx = (DWORD(WINAPI*)(DWORD, XINPUT_STATE*))GetProcAddress(
+          xinput_module, (LPCSTR)100);
+    }
+  }
+
+  // Poll all 4 controllers, use first one that's connected
+  bool found_controller = false;
+  for (DWORD i = 0; i < XUSER_MAX_COUNT; i++) {
+    XINPUT_STATE state;
+    ZeroMemory(&state, sizeof(XINPUT_STATE));
+
+    // Use XInputGetStateEx if available (for guide button), otherwise fall back
+    DWORD result;
+    if (XInputGetStateEx) {
+      result = XInputGetStateEx(i, &state);
+    } else {
+      result = XInputGetState(i, &state);
+    }
+
+    if (result != ERROR_SUCCESS) {
+      continue;
+    }
+
+    found_controller = true;
+
+    // Found a connected controller - enable gamepad navigation
+    if (!controller_navigation_enabled_) {
+      controller_navigation_enabled_ = true;
+      io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+      io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
+    }
+
+    const XINPUT_GAMEPAD& pad = state.Gamepad;
+
+    // Guide button handling (0x0400) - only works with XInputGetStateEx
+    if (XInputGetStateEx) {
+      const WORD XINPUT_GAMEPAD_GUIDE = 0x0400;
+      bool guide_currently_pressed = (pad.wButtons & XINPUT_GAMEPAD_GUIDE) != 0;
+
+      if (guide_currently_pressed && !guide_button_pressed_) {
+        // Guide button just pressed - record time
+        guide_button_pressed_ = true;
+        guide_button_press_time_ = GetTickCount64();
+      } else if (!guide_currently_pressed && guide_button_pressed_) {
+        // Guide button just released - check duration
+        uint64_t press_duration = GetTickCount64() - guide_button_press_time_;
+        guide_button_pressed_ = false;
+
+        if (press_duration >= kGuideLongPressMs) {
+          // Long press - open netplay manager
+          if (on_guide_long_press_) {
+            on_guide_long_press_(i);
+          }
+        } else {
+          // Short press - open profile menu
+          if (on_guide_short_press_) {
+            on_guide_short_press_(i);
+          }
+        }
+      }
+    }
+
+    // Track current button states for release detection
+    bool a_pressed = (pad.wButtons & XINPUT_GAMEPAD_A) != 0;
+    bool b_pressed = (pad.wButtons & XINPUT_GAMEPAD_B) != 0;
+    bool back_pressed = (pad.wButtons & XINPUT_GAMEPAD_BACK) != 0;
+    bool start_pressed = (pad.wButtons & XINPUT_GAMEPAD_START) != 0;
+    bool x_pressed = (pad.wButtons & XINPUT_GAMEPAD_X) != 0;
+    bool y_pressed = (pad.wButtons & XINPUT_GAMEPAD_Y) != 0;
+    bool lb_pressed = (pad.wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0;
+    bool rb_pressed = (pad.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER) != 0;
+    bool ls_pressed = (pad.wButtons & XINPUT_GAMEPAD_LEFT_THUMB) != 0;
+    bool rs_pressed = (pad.wButtons & XINPUT_GAMEPAD_RIGHT_THUMB) != 0;
+
+    // Triggers
+    const BYTE trigger_threshold = 30;
+    bool lt_pressed = pad.bLeftTrigger > trigger_threshold;
+    bool rt_pressed = pad.bRightTrigger > trigger_threshold;
+
+    // Check if ANY action button is pressed
+    bool any_action_pressed = a_pressed || b_pressed || back_pressed ||
+                              start_pressed || x_pressed || y_pressed ||
+                              lb_pressed || rb_pressed || ls_pressed ||
+                              rs_pressed || lt_pressed || rt_pressed;
+
+    // Process pending callback when all buttons released
+    if (pending_gamepad_callback_) {
+      if (!any_action_pressed && gamepad_buttons_were_pressed_) {
+        // Buttons were released, fire callback
+        auto callback = std::move(pending_gamepad_callback_);
+        pending_gamepad_callback_ = nullptr;
+        callback();
+      }
+    }
+    gamepad_buttons_were_pressed_ = any_action_pressed;
+
+    // D-pad and stick navigation are handled by UIFocusManager, not ImGui
+    // ImGui navigation is disabled for dialogs using UIFocusManager
+
+    // Left stick navigation is handled by UIFocusManager
+    // No ImGui gamepad navigation - all input goes through focus manager
+
+    // Compute "just released" flags before updating current state
+    gamepad_a_just_released_ = gamepad_a_was_pressed_ && !a_pressed;
+    gamepad_b_just_released_ = gamepad_b_was_pressed_ && !b_pressed;
+    gamepad_back_just_released_ = gamepad_back_was_pressed_ && !back_pressed;
+
+    // Update previous frame states
+    gamepad_a_was_pressed_ = a_pressed;
+    gamepad_b_was_pressed_ = b_pressed;
+    gamepad_back_was_pressed_ = back_pressed;
+
+    // Store current button states for dialogs to query
+    gamepad_a_pressed_ = a_pressed;
+    gamepad_b_pressed_ = b_pressed;
+    gamepad_back_pressed_ = back_pressed;
+    gamepad_start_pressed_ = start_pressed;
+
+    // D-pad state
+    bool dpad_up = (pad.wButtons & XINPUT_GAMEPAD_DPAD_UP) != 0;
+    bool dpad_down = (pad.wButtons & XINPUT_GAMEPAD_DPAD_DOWN) != 0;
+    bool dpad_left = (pad.wButtons & XINPUT_GAMEPAD_DPAD_LEFT) != 0;
+    bool dpad_right = (pad.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) != 0;
+
+    // Left stick for navigation
+    float lx = pad.sThumbLX / 32767.0f;
+    float ly = pad.sThumbLY / 32767.0f;
+    const float deadzone = 0.3f;
+    bool lstick_up = ly > deadzone;
+    bool lstick_down = ly < -deadzone;
+    bool lstick_left = lx < -deadzone;
+    bool lstick_right = lx > deadzone;
+
+    // Update the focus manager with all input state
+    // UIFocusManager handles A, B, X, Y, Start, Back, LB, RB, D-pad
+    focus_manager_.UpdateInput(
+        back_pressed, b_pressed, a_pressed, start_pressed, x_pressed, y_pressed,
+        lb_pressed, rb_pressed, dpad_up, dpad_down, dpad_left, dpad_right,
+        lstick_up, lstick_down, lstick_left, lstick_right);
+
+    // Forward all gamepad input to ImGui for navigation
+    // Only if ImGui context is active (dialogs are open)
+    if (ImGui::GetCurrentContext() != nullptr) {
+      auto& imgui_io = ImGui::GetIO();
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadFaceDown, a_pressed);   // A
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadFaceRight, b_pressed);  // B
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadFaceLeft, x_pressed);   // X
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadFaceUp, y_pressed);     // Y
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadStart, start_pressed);
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadBack, back_pressed);
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadL1, lb_pressed);  // LB
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadR1, rb_pressed);  // RB
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadL2, lt_pressed);  // LT
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadR2, rt_pressed);  // RT
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadL3, ls_pressed);  // LS click
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadR3, rs_pressed);  // RS click
+
+      // D-pad
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadDpadUp, dpad_up);
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadDpadDown, dpad_down);
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadDpadLeft, dpad_left);
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadDpadRight, dpad_right);
+
+      // Left stick
+      imgui_io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickUp, lstick_up,
+                                 lstick_up ? ly : 0.0f);
+      imgui_io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickDown, lstick_down,
+                                 lstick_down ? -ly : 0.0f);
+      imgui_io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickLeft, lstick_left,
+                                 lstick_left ? -lx : 0.0f);
+      imgui_io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickRight, lstick_right,
+                                 lstick_right ? lx : 0.0f);
+    }
+
+    // Only use first connected controller
+    break;
+  }
+
+  // If no controller found, clear gamepad state
+  if (!found_controller && controller_navigation_enabled_) {
+    gamepad_a_pressed_ = false;
+    gamepad_b_pressed_ = false;
+    gamepad_back_pressed_ = false;
+    gamepad_start_pressed_ = false;
+    gamepad_a_just_released_ = false;
+    gamepad_b_just_released_ = false;
+    gamepad_back_just_released_ = false;
+
+    // Clear focus manager input state
+    focus_manager_.UpdateInput(false, false, false, false, false, false, false,
+                               false, false, false, false, false, false, false,
+                               false, false);
+  }
+#endif
 }
 
 void ImGuiDrawer::Draw(UIDrawContext& ui_draw_context) {
@@ -601,6 +777,9 @@ void ImGuiDrawer::Draw(UIDrawContext& ui_draw_context) {
 
   ImGuiIO& io = ImGui::GetIO();
 
+  // Poll gamepad input directly
+  PollXInput();
+
   uint64_t current_frame_time_ticks = Clock::QueryHostTickCount();
   io.DeltaTime =
       float(double(current_frame_time_ticks - last_frame_time_ticks_) /
@@ -618,10 +797,6 @@ void ImGuiDrawer::Draw(UIDrawContext& ui_draw_context) {
   io.DisplaySize.x = window_->GetActualPhysicalWidth() * physical_to_logical;
   io.DisplaySize.y = window_->GetActualPhysicalHeight() * physical_to_logical;
 
-  if (!dialogs_.empty()) {
-    UpdateGamepads();
-  }
-
   ImGui::NewFrame();
 
   assert_true(!IsDrawingDialogs());
@@ -631,26 +806,36 @@ void ImGuiDrawer::Draw(UIDrawContext& ui_draw_context) {
   }
   dialog_loop_next_index_ = SIZE_MAX;
 
+  // Auto-show the on-screen keyboard when a text input field becomes active.
+  CheckAndShowKeyboardForTextInput();
+
   if (!notifications_.empty() && are_notifications_enabled_) {
-    auto guest_notifications =
-        notifications_ | std::views::filter([](auto* notification) {
-          return notification->GetNotificationType() == NotificationType::Guest;
-        });
+    std::vector<ui::ImGuiNotification*> guest_notifications = {};
+    std::vector<ui::ImGuiNotification*> host_notifications = {};
 
-    auto host_notifications =
-        notifications_ | std::views::filter([](auto* notification) {
-          return notification->GetNotificationType() == NotificationType::Host;
-        });
+    std::copy_if(notifications_.cbegin(), notifications_.cend(),
+                 std::back_inserter(guest_notifications),
+                 [](ui::ImGuiNotification* notification) {
+                   return notification->GetNotificationType() ==
+                          NotificationType::Guest;
+                 });
 
-    if (!guest_notifications.empty()) {
-      guest_notifications.front()->Draw();
+    std::copy_if(notifications_.cbegin(), notifications_.cend(),
+                 std::back_inserter(host_notifications),
+                 [](ui::ImGuiNotification* notification) {
+                   return notification->GetNotificationType() ==
+                          NotificationType::Host;
+                 });
+
+    if (guest_notifications.size() > 0) {
+      guest_notifications.at(0)->Draw();
     }
 
-    if (!host_notifications.empty()) {
-      host_notifications.front()->Draw();
+    if (host_notifications.size() > 0) {
+      host_notifications.at(0)->Draw();
 
-      if (std::ranges::distance(host_notifications) > 1) {
-        host_notifications.front()->SetDeletionPending();
+      if (host_notifications.size() > 1) {
+        host_notifications.at(0)->SetDeletionPending();
       }
     }
   }
@@ -849,7 +1034,7 @@ void ImGuiDrawer::ClearInput() {
   }
   io.MousePos = ImVec2(-FLT_MAX, -FLT_MAX);
   std::memset(io.MouseDown, 0, sizeof(io.MouseDown));
-  io.ClearInputKeys();
+  io.ClearInputKeys();  // also clears the current-frame text input buffer
   touch_pointer_id_ = TouchEvent::kPointerIDNone;
   reset_mouse_position_after_next_frame_ = false;
 }
@@ -857,6 +1042,21 @@ void ImGuiDrawer::ClearInput() {
 void ImGuiDrawer::OnKey(KeyEvent& e, bool is_down) {
   auto& io = GetIO();
   const VirtualKey virtual_key = e.virtual_key();
+
+  // Check if this is a controller key and enable navigation if so
+  if (IsControllerKey(virtual_key)) {
+    if (!controller_navigation_enabled_) {
+      SetControllerNavigationEnabled(true);
+      // Enable ImGui's built-in gamepad navigation
+      io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+    }
+    // Don't forward controller keys to ImGui here — PollXInput() already
+    // polls XInput every frame and forwards all gamepad state to ImGui.
+    // Forwarding here too causes duplicate events (e.g. double character
+    // input on the on-screen keyboard when pressing A).
+    return;
+  }
+
   if (auto imGuiKey = VirtualKeyToImGuiKey(virtual_key); imGuiKey) {
     io.AddKeyEvent(*imGuiKey, is_down);
   }
@@ -886,6 +1086,18 @@ void ImGuiDrawer::UpdateMousePosition(float x, float y) {
   io.MousePos.x = x * physical_to_logical;
   io.MousePos.y = y * physical_to_logical;
 }
+bool ImGuiDrawer::IsControllerKey(VirtualKey vkey) const {
+  // Check for XInput keys (0x5800+)
+  uint16_t key_value = static_cast<uint16_t>(vkey);
+  if (key_value >= 0x5800 && key_value <= 0x5840) {
+    return true;
+  }
+  // Check for Xbox One gamepad keys (0xC3-0xDA)
+  if (key_value >= 0xC3 && key_value <= 0xDA) {
+    return true;
+  }
+  return false;
+}
 
 void ImGuiDrawer::SwitchToPhysicalMouseAndUpdateMousePosition(
     const MouseEvent& e) {
@@ -900,6 +1112,43 @@ void ImGuiDrawer::SwitchToPhysicalMouseAndUpdateMousePosition(
   }
   reset_mouse_position_after_next_frame_ = false;
   UpdateMousePosition(float(e.x()), float(e.y()));
+}
+
+void ImGuiDrawer::CheckAndShowKeyboardForTextInput() {
+  auto& io = GetIO();
+
+  // io.WantTextInput is ImGui's request for an on-screen/virtual keyboard while
+  // a text field is being edited. Fire on the rising edge so the keyboard pops
+  // once when a field becomes active (works for mouse clicks and controller A
+  // alike). Not gated on controller navigation - any active text field shows
+  // the on-screen keyboard.
+  const bool want_text_input = io.WantTextInput;
+  const bool just_wanted = want_text_input && !prev_want_text_input_;
+  prev_want_text_input_ = want_text_input;
+
+  // Don't stack keyboards.
+  if (active_keyboard_dialog_ != nullptr) {
+    return;
+  }
+
+  if (just_wanted) {
+    active_keyboard_dialog_ = KeyboardDialog::ShowKeyboard(
+        this, "Enter Text", "", KeyboardDialog::InputType::kText,
+        [this](const std::string& result) {
+          // When the keyboard closes, inject the text as input characters into
+          // whichever ImGui field is currently active.
+          auto& keyboard_io = GetIO();
+          for (char c : result) {
+            keyboard_io.AddInputCharacter(static_cast<unsigned int>(c));
+          }
+          active_keyboard_dialog_ = nullptr;
+          // Suppress an immediate re-open if the field is still active.
+          prev_want_text_input_ = true;
+        },
+        // Register as the deepest focus (child of whatever dialog is focused)
+        // so B/backspace goes to the keyboard, not the parent dialog.
+        "", "OnScreenKeyboard");
+  }
 }
 
 void ImGuiDrawer::DetachIfLastWindowRemoved() {
@@ -919,125 +1168,6 @@ void ImGuiDrawer::DetachIfLastWindowRemoved() {
   // which will be persistent until new events actualize individual input
   // properties.
   ClearInput();
-}
-
-void ImGuiDrawer::UpdateGamepads() {
-  if (!input_system_) {
-    return;
-  }
-
-  hid::X_INPUT_CAPABILITIES caps = {};
-
-  bool is_gamepad_connected = false;
-
-  for (uint8_t i = 0; i < XUserMaxUserCount; i++) {
-    if (input_system_->GetCapabilities(i, 1, &caps) == X_ERROR_SUCCESS) {
-      // Special case to skip keyboard being set in gamepad mode.
-      if (caps.gamepad.buttons == 0xFFFF &&
-          caps.vibration.left_motor_speed == 0 &&
-          caps.vibration.right_motor_speed == 0) {
-        continue;
-      }
-
-      is_gamepad_connected = true;
-      break;
-    }
-  }
-
-  auto& io = GetIO();
-
-  if (!is_gamepad_connected) {
-    io.BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
-    return;
-  }
-
-  uint8_t controller_to_poke = XUserIndexNone;
-  hid::X_INPUT_STATE gamepad_state;
-  for (uint8_t i = 0; i < XUserMaxUserCount; i++) {
-    if (input_system_->GetState(i, 1, &gamepad_state) == X_ERROR_SUCCESS) {
-      if (gamepad_state.gamepad.buttons != 0) {
-        controller_to_poke = i;
-        break;
-      }
-    }
-  }
-  if (controller_to_poke == XUserIndexNone) {
-    io.ClearInputKeys();
-    return;
-  }
-
-  io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
-  hid::X_INPUT_GAMEPAD& gamepad = gamepad_state.gamepad;
-
-  // GUIDE BUTTON - More info needed
-  if (gamepad_state.gamepad.buttons ==
-      hid::X_INPUT_GAMEPAD_BUTTON::X_INPUT_GAMEPAD_GUIDE) {
-    if (onGuidePressFunction_) {
-      onGuidePressFunction_(controller_to_poke);
-    }
-  }
-
-#define IM_SATURATE(V) (V < 0.0f ? 0.0f : V > 1.0f ? 1.0f : V)
-#define MAP_BUTTON(KEY_NO, BUTTON_ENUM)                           \
-  {                                                               \
-    io.AddKeyEvent(KEY_NO, (gamepad.buttons & BUTTON_ENUM) != 0); \
-  }
-#define MAP_ANALOG(KEY_NO, VALUE, V0, V1)                      \
-  {                                                            \
-    float vn = (float)(VALUE - V0) / (float)(V1 - V0);         \
-    io.AddKeyAnalogEvent(KEY_NO, vn > 0.10f, IM_SATURATE(vn)); \
-  }
-
-  MAP_BUTTON(ImGuiKey_GamepadStart,
-             hid::X_INPUT_GAMEPAD_BUTTON::X_INPUT_GAMEPAD_START);
-  MAP_BUTTON(ImGuiKey_GamepadBack,
-             hid::X_INPUT_GAMEPAD_BUTTON::X_INPUT_GAMEPAD_BACK);
-  MAP_BUTTON(ImGuiKey_GamepadFaceLeft,
-             hid::X_INPUT_GAMEPAD_BUTTON::X_INPUT_GAMEPAD_X);
-  MAP_BUTTON(ImGuiKey_GamepadFaceRight,
-             hid::X_INPUT_GAMEPAD_BUTTON::X_INPUT_GAMEPAD_B);
-  MAP_BUTTON(ImGuiKey_GamepadFaceUp,
-             hid::X_INPUT_GAMEPAD_BUTTON::X_INPUT_GAMEPAD_Y);
-  MAP_BUTTON(ImGuiKey_GamepadFaceDown,
-             hid::X_INPUT_GAMEPAD_BUTTON::X_INPUT_GAMEPAD_A);
-  MAP_BUTTON(ImGuiKey_GamepadDpadLeft,
-             hid::X_INPUT_GAMEPAD_BUTTON::X_INPUT_GAMEPAD_DPAD_LEFT);
-  MAP_BUTTON(ImGuiKey_GamepadDpadRight,
-             hid::X_INPUT_GAMEPAD_BUTTON::X_INPUT_GAMEPAD_DPAD_RIGHT);
-  MAP_BUTTON(ImGuiKey_GamepadDpadUp,
-             hid::X_INPUT_GAMEPAD_BUTTON::X_INPUT_GAMEPAD_DPAD_UP);
-  MAP_BUTTON(ImGuiKey_GamepadDpadDown,
-             hid::X_INPUT_GAMEPAD_BUTTON::X_INPUT_GAMEPAD_DPAD_DOWN);
-  MAP_BUTTON(ImGuiKey_GamepadL1,
-             hid::X_INPUT_GAMEPAD_BUTTON::X_INPUT_GAMEPAD_LEFT_SHOULDER);
-  MAP_BUTTON(ImGuiKey_GamepadR1,
-             hid::X_INPUT_GAMEPAD_BUTTON::X_INPUT_GAMEPAD_RIGHT_SHOULDER);
-  MAP_ANALOG(ImGuiKey_GamepadL2, gamepad.left_trigger,
-             hid::X_INPUT_GAMEPAD_TRIGGER_THRESHOLD, 255);
-  MAP_ANALOG(ImGuiKey_GamepadR2, gamepad.right_trigger,
-             hid::X_INPUT_GAMEPAD_TRIGGER_THRESHOLD, 255);
-  MAP_BUTTON(ImGuiKey_GamepadL3,
-             hid::X_INPUT_GAMEPAD_BUTTON::X_INPUT_GAMEPAD_LEFT_THUMB);
-  MAP_BUTTON(ImGuiKey_GamepadR3,
-             hid::X_INPUT_GAMEPAD_BUTTON::X_INPUT_GAMEPAD_RIGHT_THUMB);
-  MAP_ANALOG(ImGuiKey_GamepadLStickLeft, gamepad.thumb_lx,
-             -hid::X_INPUT_GAMEPAD_LEFT_THUMB_DEADZONE, -32768);
-  MAP_ANALOG(ImGuiKey_GamepadLStickRight, gamepad.thumb_lx,
-             +hid::X_INPUT_GAMEPAD_LEFT_THUMB_DEADZONE, +32767);
-  MAP_ANALOG(ImGuiKey_GamepadLStickUp, gamepad.thumb_ly,
-             +hid::X_INPUT_GAMEPAD_LEFT_THUMB_DEADZONE, +32767);
-  MAP_ANALOG(ImGuiKey_GamepadLStickDown, gamepad.thumb_ly,
-             -hid::X_INPUT_GAMEPAD_LEFT_THUMB_DEADZONE, -32768);
-  MAP_ANALOG(ImGuiKey_GamepadRStickLeft, gamepad.thumb_rx,
-             -hid::X_INPUT_GAMEPAD_LEFT_THUMB_DEADZONE, -32768);
-  MAP_ANALOG(ImGuiKey_GamepadRStickRight, gamepad.thumb_rx,
-             +hid::X_INPUT_GAMEPAD_LEFT_THUMB_DEADZONE, +32767);
-  MAP_ANALOG(ImGuiKey_GamepadRStickUp, gamepad.thumb_ry,
-             +hid::X_INPUT_GAMEPAD_LEFT_THUMB_DEADZONE, +32767);
-  MAP_ANALOG(ImGuiKey_GamepadRStickDown, gamepad.thumb_ry,
-             -hid::X_INPUT_GAMEPAD_LEFT_THUMB_DEADZONE, -32768);
-#undef MAP_BUTTON
-#undef MAP_ANALOG
 }
 
 }  // namespace ui

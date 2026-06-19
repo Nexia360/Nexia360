@@ -48,6 +48,23 @@ class GamercardUI final : public XamDialog {
 
   ~GamercardUI() = default;
 
+  // If set, clicking the profile picture invokes this instead of the native
+  // file picker (wired by the app layer to open the gamerpic browser). The
+  // browser hands the chosen 64x64 PNG back via SetWorkingProfileIcon, which
+  // updates only the editor's working copy (applied on Save).
+  void set_change_icon_callback(std::function<void()> cb) {
+    change_icon_callback_ = std::move(cb);
+  }
+  void SetWorkingProfileIcon(const std::vector<uint8_t>& png);
+
+  // While the gamerpic browser is open on top, this dialog must stay alive but
+  // NOT draw its popup: opening the browser's modal closes this one (same-level
+  // popup), and BeginPopupModal returning false would otherwise Close()/delete
+  // this dialog (and the browser's callback would then write into freed
+  // memory). Cleared via the browser's on-closed callback so the popup
+  // re-opens.
+  void set_gamerpic_browser_open(bool open) { gamerpic_browser_open_ = open; }
+
  private:
   void OnDraw(ImGuiIO& io) override;
   void DrawBaseSettings(ImGuiIO& io);
@@ -70,6 +87,9 @@ class GamercardUI final : public XamDialog {
       std::function<bool(std::span<char>)> on_input_change = {});
 
   void SelectNewIcon();
+
+  std::function<void()> change_icon_callback_;
+  bool gamerpic_browser_open_ = false;
 
   const uint64_t xuid_ = 0;
   const bool is_signed_in_ = false;

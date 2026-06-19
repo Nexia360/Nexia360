@@ -117,7 +117,7 @@ class UserProfile {
 
   std::string name() const { return account_info_.GetGamertagString(); }
   X_USER_SIGNIN_STATE signin_state() const {
-    return IsLiveEnabled() && cvars::network_mode == NETWORK_MODE::XBOXLIVE
+    return IsLiveEnabled() && cvars::network_mode >= NETWORK_MODE::XBOXLIVE
                ? X_USER_SIGNIN_STATE::SignedInToLive
                : X_USER_SIGNIN_STATE::SignedInLocally;
   }

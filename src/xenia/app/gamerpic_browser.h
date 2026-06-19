@@ -45,6 +45,22 @@ class TitleGamerpicBrowser final : public ui::ImGuiDialog {
     return browser_ptr;
   }
 
+  // Opens the browser as a picker: selecting a gamerpic returns its 64x64 PNG
+  // bytes via on_picked and closes the browser, WITHOUT applying it to any
+  // profile. Used by the profile editor's working-copy flow.
+  static std::unique_ptr<TitleGamerpicBrowser> CreatePicker(
+      ui::ImGuiDrawer* imgui_drawer, EmulatorWindow* emulator_window,
+      std::function<void(const std::vector<uint8_t>&)> on_picked,
+      std::function<void()> on_closed) {
+    auto browser_ptr =
+        std::make_unique<TitleGamerpicBrowser>(imgui_drawer, emulator_window);
+    browser_ptr->picker_mode_ = true;
+    browser_ptr->on_picked_ = std::move(on_picked);
+    browser_ptr->on_closed_ = std::move(on_closed);
+    browser_ptr->Initalize();
+    return browser_ptr;
+  }
+
  protected:
   void OnDraw(ImGuiIO& io) override;
 
@@ -224,6 +240,14 @@ class TitleGamerpicBrowser final : public ui::ImGuiDialog {
   bool page_selection_open_ = false;
   int selected_page_step_ = 1;
   uint32_t selected_page_pos_ = 1;
+
+  // Picker mode (profile-editor working-copy flow): when set, selecting a
+  // gamerpic returns its PNG bytes via on_picked_ and closes instead of
+  // applying it to a profile.
+  bool picker_mode_ = false;
+  std::function<void(const std::vector<uint8_t>&)> on_picked_;
+  // Fired from OnClose (select OR cancel) so the profile editor can re-open.
+  std::function<void()> on_closed_;
 };
 
 }  // namespace app

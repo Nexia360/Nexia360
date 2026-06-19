@@ -585,7 +585,193 @@ void X64Backend::RecordMMIOExceptionForGuestInstruction(void* host_address) {
     }
   }
 }
+// Maps a Capstone x86 GPR id (any width) to the 0..15 integer register index
+// used by Exception::ModifyIntRegister. Returns -1 for non-GPR registers.
+static int CapstoneX86RegToGprIndex(unsigned int cs_reg) {
+  switch (cs_reg) {
+    case X86_REG_AL:
+    case X86_REG_AH:
+    case X86_REG_AX:
+    case X86_REG_EAX:
+    case X86_REG_RAX:
+      return 0;
+    case X86_REG_CL:
+    case X86_REG_CH:
+    case X86_REG_CX:
+    case X86_REG_ECX:
+    case X86_REG_RCX:
+      return 1;
+    case X86_REG_DL:
+    case X86_REG_DH:
+    case X86_REG_DX:
+    case X86_REG_EDX:
+    case X86_REG_RDX:
+      return 2;
+    case X86_REG_BL:
+    case X86_REG_BH:
+    case X86_REG_BX:
+    case X86_REG_EBX:
+    case X86_REG_RBX:
+      return 3;
+    case X86_REG_SPL:
+    case X86_REG_SP:
+    case X86_REG_ESP:
+    case X86_REG_RSP:
+      return 4;
+    case X86_REG_BPL:
+    case X86_REG_BP:
+    case X86_REG_EBP:
+    case X86_REG_RBP:
+      return 5;
+    case X86_REG_SIL:
+    case X86_REG_SI:
+    case X86_REG_ESI:
+    case X86_REG_RSI:
+      return 6;
+    case X86_REG_DIL:
+    case X86_REG_DI:
+    case X86_REG_EDI:
+    case X86_REG_RDI:
+      return 7;
+    case X86_REG_R8B:
+    case X86_REG_R8W:
+    case X86_REG_R8D:
+    case X86_REG_R8:
+      return 8;
+    case X86_REG_R9B:
+    case X86_REG_R9W:
+    case X86_REG_R9D:
+    case X86_REG_R9:
+      return 9;
+    case X86_REG_R10B:
+    case X86_REG_R10W:
+    case X86_REG_R10D:
+    case X86_REG_R10:
+      return 10;
+    case X86_REG_R11B:
+    case X86_REG_R11W:
+    case X86_REG_R11D:
+    case X86_REG_R11:
+      return 11;
+    case X86_REG_R12B:
+    case X86_REG_R12W:
+    case X86_REG_R12D:
+    case X86_REG_R12:
+      return 12;
+    case X86_REG_R13B:
+    case X86_REG_R13W:
+    case X86_REG_R13D:
+    case X86_REG_R13:
+      return 13;
+    case X86_REG_R14B:
+    case X86_REG_R14W:
+    case X86_REG_R14D:
+    case X86_REG_R14:
+      return 14;
+    case X86_REG_R15B:
+    case X86_REG_R15W:
+    case X86_REG_R15D:
+    case X86_REG_R15:
+      return 15;
+    default:
+      return -1;
+  }
+}
+
+// Maps a Capstone x86 XMM register id to the 0..15 XMM index used by
+// Exception::ModifyXmmRegister. Returns -1 for non-XMM registers.
+static int CapstoneX86RegToXmmIndex(unsigned int cs_reg) {
+  if (cs_reg >= X86_REG_XMM0 && cs_reg <= X86_REG_XMM15) {
+    return static_cast<int>(cs_reg - X86_REG_XMM0);
+  }
+  return -1;
+}
+
+bool X64Backend::TrySkipFaultingGuestMemoryAccess(Exception* ex) {
+  // Only access violations (a guest load/store that hit a bad page) are
+  // recoverable here. If we can skip the faulting instruction the host keeps
+  // running instead of pausing/crashing.
+  if (ex->code() != Exception::Code::kAccessViolation) {
+    return false;
+  }
+  auto op = ex->access_violation_operation();
+  if (op != Exception::AccessViolationOperation::kRead &&
+      op != Exception::AccessViolationOperation::kWrite) {
+    // DEP / unknown - leave for the host to crash on cleanly.
+    return false;
+  }
+  if (!code_cache_) {
+    return false;
+  }
+
+  // Only skip faults inside JIT-emitted guest code; host-code faults are real
+  // bugs we don't want to mask.
+  uintptr_t pc = static_cast<uintptr_t>(ex->pc());
+  uintptr_t code_base = code_cache_->execute_base_address();
+  uintptr_t code_end = code_base + code_cache_->total_size();
+  if (pc < code_base || pc >= code_end) {
+    return false;
+  }
+
+  // Decode the faulting host instruction to get its length and, for loads, the
+  // destination register, so we can advance past it and give the load a
+  // defined value instead of crashing.
+  cs_insn* insn = nullptr;
+  size_t count =
+      cs_disasm(static_cast<csh>(capstone_handle_),
+                reinterpret_cast<const uint8_t*>(pc), 16u, pc, 1, &insn);
+  if (count != 1 || insn == nullptr) {
+    if (insn) {
+      cs_free(insn, count);
+    }
+    return false;
+  }
+
+  size_t insn_size = insn->size;
+  bool is_load = (op == Exception::AccessViolationOperation::kRead);
+  int dest_gpr = -1;
+  int dest_xmm = -1;
+  if (is_load && insn->detail) {
+    const cs_x86& x86 = insn->detail->x86;
+    for (uint8_t i = 0; i < x86.op_count; ++i) {
+      const cs_x86_op& opnd = x86.operands[i];
+      if (opnd.type == X86_OP_REG && (opnd.access & CS_AC_WRITE)) {
+        int idx = CapstoneX86RegToGprIndex(opnd.reg);
+        if (idx >= 0) {
+          dest_gpr = idx;
+          break;
+        }
+        idx = CapstoneX86RegToXmmIndex(opnd.reg);
+        if (idx >= 0) {
+          dest_xmm = idx;
+          break;
+        }
+      }
+    }
+  }
+  cs_free(insn, count);
+
+  // Give a faulting load's destination a defined zero value so downstream code
+  // sees something deterministic instead of a stale register.
+  if (dest_gpr >= 0) {
+    ex->ModifyIntRegister(static_cast<uint32_t>(dest_gpr)) = 0;
+  } else if (dest_xmm >= 0) {
+    ex->ModifyXmmRegister(static_cast<uint32_t>(dest_xmm)) = vec128_t{};
+  }
+
+  // Advance past the faulting instruction and resume execution.
+  ex->set_resume_pc(static_cast<uint64_t>(pc + insn_size));
+  return true;
+}
+
 bool X64Backend::ExceptionCallback(Exception* ex) {
+  // First, try to recover from a JIT-emitted guest load/store that hit a bad
+  // page (wild guest pointer): skip the faulting instruction and keep running
+  // instead of pausing.
+  if (TrySkipFaultingGuestMemoryAccess(ex)) {
+    return true;
+  }
+
   if (ex->code() != Exception::Code::kIllegalInstruction) {
     // We only care about illegal instructions. Other things will be handled by
     // other handlers (probably). If nothing else picks it up we'll be called

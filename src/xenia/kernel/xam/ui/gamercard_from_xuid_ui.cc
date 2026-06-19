@@ -110,7 +110,7 @@ void GamercardFromXUIDUI::OnDraw(ImGuiIO& io) {
   ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
   if (ImGui::BeginPopupModal(title_.c_str(), &card_opened,
                              ImGuiWindowFlags_AlwaysAutoResize)) {
-    if (ImGui::IsKeyPressed(ImGuiKey::ImGuiKey_GamepadFaceRight, false)) {
+    if (ImGui::IsKeyReleased(ImGuiKey::ImGuiKey_GamepadFaceRight)) {
       ImGui::CloseCurrentPopup();
     }
 

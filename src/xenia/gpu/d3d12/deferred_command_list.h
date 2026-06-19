@@ -113,6 +113,37 @@ class DeferredCommandList {
     args.num_bytes = num_bytes;
   }
 
+  void D3DBeginQuery(ID3D12QueryHeap* query_heap, D3D12_QUERY_TYPE type,
+                     UINT index) {
+    auto& args = *reinterpret_cast<D3DQueryArguments*>(
+        WriteCommand(Command::kD3DBeginQuery, sizeof(D3DQueryArguments)));
+    args.query_heap = query_heap;
+    args.type = type;
+    args.index = index;
+  }
+
+  void D3DEndQuery(ID3D12QueryHeap* query_heap, D3D12_QUERY_TYPE type,
+                   UINT index) {
+    auto& args = *reinterpret_cast<D3DQueryArguments*>(
+        WriteCommand(Command::kD3DEndQuery, sizeof(D3DQueryArguments)));
+    args.query_heap = query_heap;
+    args.type = type;
+    args.index = index;
+  }
+
+  void D3DResolveQueryData(ID3D12QueryHeap* query_heap, D3D12_QUERY_TYPE type,
+                           UINT start_index, UINT num_queries,
+                           ID3D12Resource* dst_buffer, UINT64 dst_offset) {
+    auto& args = *reinterpret_cast<D3DResolveQueryDataArguments*>(WriteCommand(
+        Command::kD3DResolveQueryData, sizeof(D3DResolveQueryDataArguments)));
+    args.query_heap = query_heap;
+    args.type = type;
+    args.start_index = start_index;
+    args.num_queries = num_queries;
+    args.dst_buffer = dst_buffer;
+    args.dst_offset = dst_offset;
+  }
+
   void D3DCopyResource(ID3D12Resource* dst_resource,
                        ID3D12Resource* src_resource) {
     auto& args = *reinterpret_cast<D3DCopyResourceArguments*>(WriteCommand(
@@ -410,6 +441,9 @@ class DeferredCommandList {
     kD3DClearDepthStencilView,
     kD3DClearRenderTargetView,
     kD3DClearUnorderedAccessViewUint,
+    kD3DBeginQuery,
+    kD3DEndQuery,
+    kD3DResolveQueryData,
     kD3DCopyBufferRegion,
     kD3DCopyResource,
     kCopyTexture,
@@ -470,6 +504,21 @@ class DeferredCommandList {
       UINT values_uint[4];
     };
     UINT num_rects;
+  };
+
+  struct D3DQueryArguments {
+    ID3D12QueryHeap* query_heap;
+    D3D12_QUERY_TYPE type;
+    UINT index;
+  };
+
+  struct D3DResolveQueryDataArguments {
+    ID3D12QueryHeap* query_heap;
+    D3D12_QUERY_TYPE type;
+    UINT start_index;
+    UINT num_queries;
+    ID3D12Resource* dst_buffer;
+    UINT64 dst_offset;
   };
 
   struct D3DCopyBufferRegionArguments {

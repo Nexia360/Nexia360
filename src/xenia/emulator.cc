@@ -145,6 +145,10 @@ Emulator::Emulator(const std::filesystem::path& command_line,
 
   network_adapter_manager_ = std::make_unique<kernel::NetworkAdapterManager>();
   upnp_ = std::make_unique<kernel::UPnP>();
+  title_update_manager_ =
+      std::make_unique<kernel::util::TitleUpdateManager>(content_root_);
+  // Auto-migrate any pre-existing (pre-library) title updates into the library.
+  title_update_manager_->MigrateAllLegacy();
 
   if (cvars::upnp) {
     upnp_->Initialize();
@@ -845,6 +849,11 @@ X_STATUS Emulator::ProcessContentPackageHeader(
   if (header->content_metadata.content_type == XContentType::kSavedGame &&
       profile) {
     xuid = profile->xuid();
+  } else if (header->content_metadata.content_type ==
+             XContentType::kInstaller) {
+    // Title updates aren't profile-specific; FindTitleUpdate always looks
+    // under xuid 0, so install them there or they won't be found on launch.
+    xuid = 0;
   }
 
   installation_info.data_installation_path_ = fmt::format(
@@ -863,6 +872,8 @@ X_STATUS Emulator::ProcessContentPackageHeader(
       xe::to_utf8(header->content_metadata.display_name(XLanguage::kEnglish));
   installation_info.content_type_ =
       static_cast<XContentType>(header->content_metadata.content_type);
+  installation_info.title_id_ =
+      header->content_metadata.execution_info.title_id.get();
   installation_info.content_size_ = header->content_metadata.content_size;
   installation_info.installation_state_ = InstallState::pending;
 
@@ -942,6 +953,16 @@ X_STATUS Emulator::InstallContentPackage(
 
   if (installation_info.content_type_ == XContentType::kProfile) {
     kernel_state_->xam_state()->profile_manager()->ReloadProfiles();
+  }
+
+  // Title updates are moved into the per-title library and (by default) linked
+  // active, so the user can name and swap between them.
+  if (installation_info.content_type_ == XContentType::kInstaller &&
+      title_update_manager_) {
+    title_update_manager_->ImportFromContent(
+        installation_info.title_id_,
+        xe::path_to_utf8(installation_info.data_installation_path_.filename()),
+        /*auto_activate=*/true);
   }
 
   return error_code;
@@ -1490,6 +1511,12 @@ X_STATUS Emulator::CompleteLaunch(const std::filesystem::path& path,
     kernel_state_->UnloadUserModule(module, false);
     XELOGE("Failed to load user module {}", path);
     return X_STATUS_NOT_SUPPORTED;
+  }
+
+  // Pull any legacy (pre-library) title updates into the library so the manager
+  // sees them and one is linked active before the loader scans.
+  if (title_update_manager_) {
+    title_update_manager_->MigrateLegacy(module->title_id());
   }
 
   X_RESULT result = kernel_state_->ApplyTitleUpdate(module);

@@ -36,6 +36,7 @@ struct RecentTitleEntry {
   std::string title_name;
   std::filesystem::path path_to_file;
   std::time_t last_run_time;
+  uint32_t title_id = 0;
 };
 
 class EmulatorWindow {
@@ -105,6 +106,12 @@ class EmulatorWindow {
 
   void ToggleProfilesConfigDialog();
   void ToggleGamerpicBrowserDialog();
+  // Opens the gamerpic browser as a picker (profile-editor working-copy flow):
+  // selecting a gamerpic returns its PNG bytes via on_picked and closes the
+  // browser without applying it to a profile.
+  void OpenGamerpicPicker(
+      std::function<void(const std::vector<uint8_t>&)> on_picked,
+      std::function<void()> on_closed);
   void ToggleXMPConfigDialog();
   void ToggleFriendsDialog();
   void ToggleUpdaterDialog();
@@ -305,9 +312,14 @@ class EmulatorWindow {
 
   void RunPreviouslyPlayedTitle();
   void FillRecentlyLaunchedTitlesMenu(xe::ui::MenuItem* recent_menu);
+  void FillRecentlyLaunchedTitlesWithTUMenu(xe::ui::MenuItem* recent_menu);
+  // Opens the title update selector for a title, resolving title_id from the
+  // package if it isn't known, then launching once a choice is made.
+  void OpenTitleUpdateSelector(const std::filesystem::path& path,
+                               uint32_t title_id);
   void LoadRecentlyLaunchedTitles();
   void AddRecentlyLaunchedTitle(std::filesystem::path path_to_file,
-                                std::string title_name);
+                                std::string title_name, uint32_t title_id);
 
   void ClearDialogs();
 
@@ -348,6 +360,12 @@ class EmulatorWindow {
   std::unique_ptr<UpdaterCompletionDialog> updater_completion_dialog_;
 
   std::vector<RecentTitleEntry> recently_launched_titles_;
+
+  // Guide button tracking for long press detection (long = manager, short =
+  // profile menu).
+  bool guide_button_was_pressed_[XUserMaxUserCount] = {};
+  uint64_t guide_button_press_time_[XUserMaxUserCount] = {};
+  static constexpr uint64_t kGuideLongPressMs = 500;  // 500ms for long press
 };
 
 }  // namespace app

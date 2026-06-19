@@ -30,6 +30,14 @@ DECLARE_int32(query_occlusion_sample_lower_threshold);
 
 DECLARE_int32(query_occlusion_sample_upper_threshold);
 
+DECLARE_string(query_occlusion_mode);
+
+DECLARE_bool(query_occlusion_log);
+
+DECLARE_int32(query_occlusion_querybatch_range);
+
+DECLARE_double(query_occlusion_saturation);
+
 DECLARE_bool(disassemble_pm4);
 
 #define XE_GPU_FINE_GRAINED_DRAW_SCOPES 1

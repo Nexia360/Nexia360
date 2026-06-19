@@ -954,45 +954,46 @@ bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE_EXT(
   return true;
 }
 
-static uint32_t samples = cvars::query_occlusion_sample_upper_threshold;
-
 XE_NOINLINE
 bool COMMAND_PROCESSOR::ExecutePacketType3_EVENT_WRITE_ZPD(
     uint32_t packet, uint32_t count) XE_RESTRICT {
-  // Set by D3D as BE but struct ABI is LE
-  const uint32_t kQueryFinished = xe::byte_swap(0xFFFFFEED);
   assert_true(count == 1);
   uint32_t initiator = reader_.ReadAndSwap<uint32_t>();
   // Writeback initiator.
   COMMAND_PROCESSOR::WriteEventInitiator(initiator & 0x3F);
 
   if (cvars::query_occlusion_sample_lower_threshold < 0) {
+    // Occlusion query writeback disabled; games may hang.
     return true;
   }
-  // Occlusion queries:
-  // This command is send on query begin and end.
-  // As a workaround report some fixed amount of passed samples.
-  auto* pSampleCounts = memory_->TranslatePhysical<xe_gpu_depth_sample_counts*>(
-      register_file_->values[XE_GPU_REG_RB_SAMPLE_COUNT_ADDR]);
-  // 0xFFFFFEED is written to this two locations by D3D only on D3DISSUE_END
-  // and used to detect a finished query.
-  bool is_end_via_z_pass = pSampleCounts->ZPass_A == kQueryFinished &&
-                           pSampleCounts->ZPass_B == kQueryFinished;
-  // Older versions of D3D also checks for ZFail (4D5307D5).
-  bool is_end_via_z_fail = pSampleCounts->ZFail_A == kQueryFinished &&
-                           pSampleCounts->ZFail_B == kQueryFinished;
-  std::memset(pSampleCounts, 0, sizeof(xe_gpu_depth_sample_counts));
-  if (is_end_via_z_pass || is_end_via_z_fail) {
-    pSampleCounts->ZPass_A = samples;
-    pSampleCounts->Total_A = samples;
+
+  uint32_t report_address =
+      register_file_->values[XE_GPU_REG_RB_SAMPLE_COUNT_ADDR];
+
+  // EVENT_WRITE_ZPD is issued on both occlusion query begin and end. The fake
+  // path synthesizes a sample count (historical behavior); the real paths drive
+  // host occlusion queries, falling back to the fake path whenever the backend
+  // query pool isn't ready.
+  ZPDMode mode = GetZPDMode();
+  if (mode == ZPDMode::kFake || zpd_force_fake_fallback_ ||
+      !IsZPDQueryPoolReady()) {
+    WriteFakeZPDReport(report_address);
+    return true;
   }
 
-  samples =
-      samples <= static_cast<uint32_t>(
-                     cvars::query_occlusion_sample_lower_threshold)
-          ? static_cast<uint32_t>(cvars::query_occlusion_sample_upper_threshold)
-          : samples - 1;
-
+  // An END is the call that finds the D3D pending sentinel in the targeted
+  // record (the signal the fake path keyed on); otherwise treat it as a BEGIN.
+  // Alignment is only a fallback when no sentinel is present.
+  auto* record =
+      memory_->TranslatePhysical<xe_gpu_depth_sample_counts*>(report_address);
+  bool is_end = XenosZPDReport::HasPendingSentinel(record) ||
+                (!XenosZPDReport::IsBeginRecord(report_address) &&
+                 XenosZPDReport::IsEndRecord(report_address));
+  if (is_end) {
+    EndZPDReport(report_address, false);
+  } else {
+    BeginZPDReport(report_address);
+  }
   return true;
 }
 
