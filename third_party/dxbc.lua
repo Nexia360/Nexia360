@@ -1,0 +1,11 @@
+group("third_party")
+project("dxbc")
+  uuid("c96688ca-51ca-406e-aeef-068734a67abe")
+  kind("StaticLib")
+  language("C++")
+  includedirs({
+    "dxbc",
+  })
+  files({
+    "dxbc/DXBCChecksum.cpp",
+  })
