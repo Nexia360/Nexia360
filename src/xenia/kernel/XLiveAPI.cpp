@@ -23,7 +23,7 @@ extern "C" {
 #include "third_party/FFmpeg/libavutil/base64.h"
 }
 
-DEFINE_string(api_address, "192.168.0.1:36000/",
+DEFINE_string(api_address, "https://nexia360hub.com/",
               "Xenia Server Address e.g. IP:PORT", "Live");
 
 DEFINE_string(
@@ -36,8 +36,9 @@ DEFINE_bool(logging, false, "Log Network Activity & Stats", "Live");
 DEFINE_bool(log_mask_ips, true, "Do not include P2P IPs inside the log",
             "Live");
 
-DEFINE_int32(network_mode, 2,
-             "Network mode types: 0 - Offline, 1 - Systemlink, 2 - Xbox Live.",
+DEFINE_int32(network_mode, 3,
+             "Network mode types: 0 - Offline, 1 - Systemlink, 2 - Xbox Live, "
+             "3 - Nexia Hub.",
              "Live");
 
 DEFINE_bool(xlink_kai_systemlink_hack, false,

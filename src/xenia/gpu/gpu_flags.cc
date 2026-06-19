@@ -68,7 +68,7 @@ DEFINE_int32(
     "GPU");
 
 DEFINE_string(
-    query_occlusion_mode, "fake",
+    query_occlusion_mode, "fast-alt",
     "Occlusion query (EVENT_WRITE_ZPD) handling mode:\n"
     "  fake     - No real GPU queries; report synthesized sample counts using\n"
     "             query_occlusion_sample_lower/upper_threshold (default, fast).\n"

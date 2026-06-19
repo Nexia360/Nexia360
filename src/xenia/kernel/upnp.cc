@@ -18,7 +18,7 @@
 
 DEFINE_string(upnp_root, "", "UPnP Root Device", "Live");
 
-DEFINE_bool(upnp, false, "Automatically port forward using UPnP", "Live");
+DEFINE_bool(upnp, true, "Automatically port forward using UPnP", "Live");
 
 DECLARE_bool(logging);
 
