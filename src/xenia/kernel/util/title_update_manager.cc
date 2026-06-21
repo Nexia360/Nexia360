@@ -87,8 +87,8 @@ std::string TitleUpdateManager::SanitizeId(const std::string& name) {
   std::string out;
   out.reserve(name.size());
   for (char c : name) {
-    if (c == '\\' || c == '/' || c == ':' || c == '*' || c == '?' ||
-        c == '"' || c == '<' || c == '>' || c == '|') {
+    if (c == '\\' || c == '/' || c == ':' || c == '*' || c == '?' || c == '"' ||
+        c == '<' || c == '>' || c == '|') {
       out.push_back('_');
     } else {
       out.push_back(c);
@@ -138,10 +138,9 @@ bool TitleUpdateManager::ReadXexpVersion(const std::filesystem::path& xexp,
   }
   xex2_version version = exec->version();
   out_value = version.value;
-  out_version =
-      fmt::format("{}.{}.{}.{}", uint32_t(version.major),
-                  uint32_t(version.minor), uint32_t(version.build),
-                  uint32_t(version.qfe));
+  out_version = fmt::format("{}.{}.{}.{}", uint32_t(version.major),
+                            uint32_t(version.minor), uint32_t(version.build),
+                            uint32_t(version.qfe));
   return true;
 }
 
@@ -306,9 +305,9 @@ bool TitleUpdateManager::SetActive(uint32_t title_id, const std::string& id) {
   std::vector<TitleUpdateEntry> entries;
   LoadManifest(title_id, active, entries);
 
-  bool exists = std::any_of(
-      entries.begin(), entries.end(),
-      [&](const TitleUpdateEntry& e) { return e.id == id; });
+  bool exists =
+      std::any_of(entries.begin(), entries.end(),
+                  [&](const TitleUpdateEntry& e) { return e.id == id; });
   if (!id.empty() && !exists) {
     return false;
   }
@@ -356,11 +355,10 @@ bool TitleUpdateManager::Remove(uint32_t title_id, const std::string& id) {
   std::filesystem::remove_all(library_root(title_id) / id, ec);
   std::filesystem::remove(library_root(title_id) / (id + ".header"), ec);
 
-  entries.erase(std::remove_if(entries.begin(), entries.end(),
-                               [&](const TitleUpdateEntry& e) {
-                                 return e.id == id;
-                               }),
-                entries.end());
+  entries.erase(
+      std::remove_if(entries.begin(), entries.end(),
+                     [&](const TitleUpdateEntry& e) { return e.id == id; }),
+      entries.end());
   if (active == id) {
     active.clear();
   }
@@ -370,8 +368,7 @@ bool TitleUpdateManager::Remove(uint32_t title_id, const std::string& id) {
 std::string TitleUpdateManager::ImportFromContent(
     uint32_t title_id, const std::string& source_dirname, bool auto_activate) {
   auto src_dir = content_update_dir(title_id) / source_dirname;
-  auto src_header =
-      content_header_dir(title_id) / (source_dirname + ".header");
+  auto src_header = content_header_dir(title_id) / (source_dirname + ".header");
   if (!std::filesystem::exists(src_dir)) {
     return "";
   }
@@ -410,8 +407,8 @@ std::string TitleUpdateManager::ImportFromContent(
   }
 
   if (std::filesystem::exists(src_header)) {
-    std::filesystem::rename(src_header, library_root(title_id) / (id + ".header"),
-                            ec);
+    std::filesystem::rename(src_header,
+                            library_root(title_id) / (id + ".header"), ec);
     if (ec) {
       ec.clear();
       std::filesystem::copy_file(
@@ -461,8 +458,8 @@ void TitleUpdateManager::MigrateLegacy(uint32_t title_id) {
   // Collect real (non-link) directories that aren't already tracked.
   std::vector<std::string> to_import;
   for (const auto& entry : std::filesystem::directory_iterator(
-           update_dir, std::filesystem::directory_options::skip_permission_denied,
-           ec)) {
+           update_dir,
+           std::filesystem::directory_options::skip_permission_denied, ec)) {
     if (!entry.is_directory(ec)) {
       continue;
     }
@@ -482,8 +479,7 @@ void TitleUpdateManager::MigrateLegacy(uint32_t title_id) {
   bool had_active = !active.empty();
   for (const auto& name : to_import) {
     // Activate the first migrated update only if nothing is active yet.
-    std::string imported =
-        ImportFromContent(title_id, name, !had_active);
+    std::string imported = ImportFromContent(title_id, name, !had_active);
     if (!imported.empty() && !had_active) {
       had_active = true;
     }

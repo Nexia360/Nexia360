@@ -20,9 +20,9 @@ namespace kernel {
 namespace util {
 
 struct TitleUpdateEntry {
-  std::string id;           // library folder name
-  std::string name;         // editable display name (defaults to version)
-  std::string version;      // patch version string read from the .xexp
+  std::string id;       // library folder name
+  std::string name;     // editable display name (defaults to version)
+  std::string version;  // patch version string read from the .xexp
   uint32_t version_value = 0;
   uint64_t size_bytes = 0;
   std::string source_file;  // original installed package filename

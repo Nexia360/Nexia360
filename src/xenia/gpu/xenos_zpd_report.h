@@ -84,9 +84,8 @@ struct XenosZPDReport {
   // query_occlusion_saturation (1.0 = pass-through) to tame flicker from titles
   // driving exposure/lens-flare straight off raw occlusion counts.
   static uint32_t SaturateSampleCount(uint32_t sample_count) {
-    double saturation =
-        std::clamp(static_cast<double>(cvars::query_occlusion_saturation), 0.0,
-                   1.0);
+    double saturation = std::clamp(
+        static_cast<double>(cvars::query_occlusion_saturation), 0.0, 1.0);
     if (sample_count == 0 || saturation >= 1.0) {
       return sample_count;
     }

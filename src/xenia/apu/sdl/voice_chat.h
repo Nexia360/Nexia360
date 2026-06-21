@@ -75,8 +75,8 @@ class VoiceChat {
   void UpdateRunningLocked();
   void OpenCaptureLocked();
   void OpenPlaybackLocked();
-  void SaveSettingsLocked();   // write settings_path_ from current state
-  void LoadSettingsLocked();   // read settings_path_ into current state
+  void SaveSettingsLocked();  // write settings_path_ from current state
+  void LoadSettingsLocked();  // read settings_path_ into current state
 
   void OnCapture(const int16_t* samples, size_t count);
   void FillPlayback(int16_t* out, size_t count);

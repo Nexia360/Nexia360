@@ -36,7 +36,8 @@ namespace xam {
 constexpr uint32_t kVoiceObjectSize = 0x2000;
 
 dword_result_t XamVoiceIsActiveProcess_entry() {
-  // Returning non-zero keeps the title's voice path alive (0 short-circuits it).
+  // Returning non-zero keeps the title's voice path alive (0 short-circuits
+  // it).
   return 1;
 }
 DECLARE_XAM_EXPORT1(XamVoiceIsActiveProcess, kNone, kImplemented);
@@ -86,12 +87,12 @@ DECLARE_XAM_EXPORT1(XamVoiceHeadsetPresent, kNone, kImplemented);
 // the entry VA or 0.
 static uint32_t FindG726Adpcm() {
   // 7 fixed (non-relocated) instructions at entry+0x08, anchored by mflr r12 at
-  // entry: li r14,0; stw r4,0x1C(r1); mr r8,r4; stw r5,0x24(r1); stw r6,0x2C(r1);
-  // cmpwi cr6,r6,0; stb r14,0xFF60(r1).
-  static const uint8_t kSig[28] = {
-      0x39, 0xC0, 0x00, 0x00, 0x90, 0x81, 0x00, 0x1C, 0x7C, 0x88, 0x23, 0x78,
-      0x90, 0xA1, 0x00, 0x24, 0x90, 0xC1, 0x00, 0x2C, 0x2F, 0x06, 0x00, 0x00,
-      0x99, 0xC1, 0xFF, 0x60};
+  // entry: li r14,0; stw r4,0x1C(r1); mr r8,r4; stw r5,0x24(r1); stw
+  // r6,0x2C(r1); cmpwi cr6,r6,0; stb r14,0xFF60(r1).
+  static const uint8_t kSig[28] = {0x39, 0xC0, 0x00, 0x00, 0x90, 0x81, 0x00,
+                                   0x1C, 0x7C, 0x88, 0x23, 0x78, 0x90, 0xA1,
+                                   0x00, 0x24, 0x90, 0xC1, 0x00, 0x2C, 0x2F,
+                                   0x06, 0x00, 0x00, 0x99, 0xC1, 0xFF, 0x60};
   static const uint8_t kMflr[4] = {0x7D, 0x88, 0x02, 0xA6};
   auto module = kernel_state()->GetExecutableModule();
   if (!module) return 0;
@@ -104,8 +105,9 @@ static uint32_t FindG726Adpcm() {
   auto* memory = kernel_state()->memory();
   const uint32_t end = base + size;
   XELOGD("XBADPCM: scanning {:08X}..{:08X}", base, end);
-  // Walk page by page; only touch pages that are actually mapped-readable, since
-  // the image has uncommitted gaps between sections and reading one faults.
+  // Walk page by page; only touch pages that are actually mapped-readable,
+  // since the image has uncommitted gaps between sections and reading one
+  // faults.
   for (uint32_t page = base & ~0xFFFu; page < end; page += 0x1000) {
     auto* heap = memory->LookupHeap(page);
     uint32_t protect = 0;
@@ -113,11 +115,12 @@ static uint32_t FindG726Adpcm() {
         !(protect & kMemoryProtectRead)) {
       continue;
     }
-    // Keep the whole 36-byte window (mflr at a-8 .. sig end at a+28) inside this
-    // readable page so we never touch a possibly-unmapped neighbor.
+    // Keep the whole 36-byte window (mflr at a-8 .. sig end at a+28) inside
+    // this readable page so we never touch a possibly-unmapped neighbor.
     uint32_t a = page + 8;
     if (a < base + 8) a = base + 8;
-    for (; a + sizeof(kSig) <= page + 0x1000 && a + sizeof(kSig) < end; a += 4) {
+    for (; a + sizeof(kSig) <= page + 0x1000 && a + sizeof(kSig) < end;
+         a += 4) {
       auto* p = memory->TranslateVirtual<uint8_t*>(a);
       if (p[0] == 0x39 && std::memcmp(p, kSig, sizeof(kSig)) == 0 &&
           std::memcmp(p - 8, kMflr, 4) == 0) {
@@ -185,8 +188,8 @@ static void G726AdpcmHook(cpu::ppc::PPCContext* ctx, KernelState* ks) {
   }
 }
 
-// Install the import-style guest->host thunk (sc 2; blr) at a guest function and
-// route it to a host handler -- the same mechanism Xenia uses for kernel
+// Install the import-style guest->host thunk (sc 2; blr) at a guest function
+// and route it to a host handler -- the same mechanism Xenia uses for kernel
 // imports. Works for any title (the codec code is identical across them).
 static bool InstallExternHook(uint32_t addr,
                               cpu::GuestFunction::ExternHandler handler) {
@@ -207,9 +210,9 @@ static bool InstallExternHook(uint32_t addr,
   static_cast<cpu::GuestFunction*>(fn)->SetupExtern(handler);
   fn->set_status(cpu::Symbol::Status::kDeclared);
   XELOGD("XBADPCM: hook {:08X} declared extern", addr);
-  // Write the import-style thunk into guest memory, then drop any cached compile
-  // so it re-JITs into a host call on next invocation. Ensure the entry page is
-  // writable first -- .text is often mapped read+execute only.
+  // Write the import-style thunk into guest memory, then drop any cached
+  // compile so it re-JITs into a host call on next invocation. Ensure the entry
+  // page is writable first -- .text is often mapped read+execute only.
   auto* memory = kernel_state()->memory();
   if (auto* heap = memory->LookupHeap(addr)) {
     uint32_t old_protect = 0;
@@ -217,9 +220,9 @@ static bool InstallExternHook(uint32_t addr,
                   kMemoryProtectRead | kMemoryProtectWrite, &old_protect);
   }
   auto* p = memory->TranslateVirtual<uint8_t*>(addr);
-  xe::store_and_swap<uint32_t>(p + 0, 0x44000042);   // sc 2 (LEV=2 -> host call)
-  xe::store_and_swap<uint32_t>(p + 4, 0x4E800020);   // blr
-  xe::store_and_swap<uint32_t>(p + 8, 0x60000000);   // nop
+  xe::store_and_swap<uint32_t>(p + 0, 0x44000042);  // sc 2 (LEV=2 -> host call)
+  xe::store_and_swap<uint32_t>(p + 4, 0x4E800020);  // blr
+  xe::store_and_swap<uint32_t>(p + 8, 0x60000000);  // nop
   xe::store_and_swap<uint32_t>(p + 12, 0x60000000);  // nop
   processor->RemoveFunctionByAddress(addr);
   XELOGD("XBADPCM: hook {:08X} armed", addr);
@@ -250,7 +253,6 @@ dword_result_t XamVoiceGetMicArrayStatus_entry() {
 }
 DECLARE_XAM_EXPORT1(XamVoiceGetMicArrayStatus, kNone, kStub);
 
-
 dword_result_t XamVoiceGetBatteryStatus_entry() { return X_ERROR_SUCCESS; }
 DECLARE_XAM_EXPORT1(XamVoiceGetBatteryStatus, kNone, kStub);
 
@@ -277,14 +279,10 @@ DECLARE_XAM_EXPORT1(XamVoiceGetMicArrayUnderrunStatus, kNone, kStub);
 dword_result_t XamVoiceDisableMicArray_entry() { return X_ERROR_SUCCESS; }
 DECLARE_XAM_EXPORT1(XamVoiceDisableMicArray, kNone, kStub);
 
-dword_result_t XamVoiceSetMicArrayBeamAngle_entry() {
-  return X_ERROR_SUCCESS;
-}
+dword_result_t XamVoiceSetMicArrayBeamAngle_entry() { return X_ERROR_SUCCESS; }
 DECLARE_XAM_EXPORT1(XamVoiceSetMicArrayBeamAngle, kNone, kStub);
 
-dword_result_t XamVoiceRecordUserPrivileges_entry() {
-  return X_ERROR_SUCCESS;
-}
+dword_result_t XamVoiceRecordUserPrivileges_entry() { return X_ERROR_SUCCESS; }
 DECLARE_XAM_EXPORT1(XamVoiceRecordUserPrivileges, kNone, kStub);
 
 }  // namespace xam

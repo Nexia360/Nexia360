@@ -496,11 +496,12 @@ uint32_t XamUserReadProfileSettingsEx(uint32_t title_id, uint32_t user_index,
         // Voice volume is owned by the host Sound menu (AudioSettings.config),
         // not the profile GPD. Report the live value so XHV's remote-talker mix
         // is scaled by what the user actually set.
-        if (setting_id_val == static_cast<uint32_t>(
-                                   xam::UserSettingId::XPROFILE_OPTION_VOICE_VOLUME)) {
-          setting = xam::UserSetting(
-              xam::UserSettingId::XPROFILE_OPTION_VOICE_VOLUME,
-              apu::sdl::VoiceChat::Get().voice_volume());
+        if (setting_id_val ==
+            static_cast<uint32_t>(
+                xam::UserSettingId::XPROFILE_OPTION_VOICE_VOLUME)) {
+          setting =
+              xam::UserSetting(xam::UserSettingId::XPROFILE_OPTION_VOICE_VOLUME,
+                               apu::sdl::VoiceChat::Get().voice_volume());
         }
 
         out_setting->setting_id = setting->get_setting_id();

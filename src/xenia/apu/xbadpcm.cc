@@ -19,11 +19,11 @@ namespace xbadpcm {
 static const int16_t kQtab[7] = {-124, 80, 178, 246, 300, 349, 400};
 static const int16_t kDqln[16] = {-2048, 4,   135, 213, 273, 323, 373, 425,
                                   425,   373, 323, 273, 213, 135, 4,   -2048};
-static const int16_t kWi[16] = {-12,  18,   41,  64,  112, 198, 355, 1122,
-                                1122, 355,  198, 112, 64,  41,  18,  -12};
+static const int16_t kWi[16] = {-12,  18,  41,  64,  112, 198, 355, 1122,
+                                1122, 355, 198, 112, 64,  41,  18,  -12};
 static const int16_t kFi[16] = {0, 0, 0, 1, 1, 1, 3, 7, 7, 3, 1, 1, 1, 0, 0, 0};
-static const int16_t kPow2[15] = {1,     2,     4,     8,    0x10,
-                                  0x20,  0x40,  0x80,  0x100, 0x200,
+static const int16_t kPow2[15] = {1,     2,     4,      8,      0x10,
+                                  0x20,  0x40,  0x80,   0x100,  0x200,
                                   0x400, 0x800, 0x1000, 0x2000, 0x4000};
 
 static int Quan(int val, const int16_t* table, int size) {
@@ -40,7 +40,8 @@ static int Fmult(int an, int srn) {
       (anmag == 0) ? 32 : ((anexp >= 0) ? (anmag >> anexp) : (anmag << -anexp));
   int16_t wanexp = anexp + ((srn >> 6) & 0xF) - 13;
   int16_t wanmant = (anmant * (srn & 0x3F) + 0x30) >> 4;
-  int16_t r = (wanexp >= 0) ? ((wanmant << wanexp) & 0x7FFF) : (wanmant >> -wanexp);
+  int16_t r =
+      (wanexp >= 0) ? ((wanmant << wanexp) & 0x7FFF) : (wanmant >> -wanexp);
   return ((an ^ srn) < 0) ? -r : r;
 }
 
@@ -101,8 +102,10 @@ static void Update(int y, int wi, int fi, int dq, int sr, int dqsez, State* s) {
     tr = 1;
 
   s->yu = y + ((wi - y) >> 5);
-  if (s->yu < 544) s->yu = 544;
-  else if (s->yu > 5120) s->yu = 5120;
+  if (s->yu < 544)
+    s->yu = 544;
+  else if (s->yu > 5120)
+    s->yu = 5120;
   s->yl += s->yu + ((-s->yl) >> 6);
 
   if (tr == 1) {
@@ -120,21 +123,29 @@ static void Update(int y, int wi, int fi, int dq, int sr, int dqsez, State* s) {
       else
         a2p += fa1 >> 5;
       if (pk0 ^ s->pk[1]) {
-        if (a2p <= -12160) a2p = -12288;
-        else if (a2p >= 12416) a2p = 12288;
-        else a2p -= 0x80;
+        if (a2p <= -12160)
+          a2p = -12288;
+        else if (a2p >= 12416)
+          a2p = 12288;
+        else
+          a2p -= 0x80;
       } else {
-        if (a2p <= -12416) a2p = -12288;
-        else if (a2p >= 12160) a2p = 12288;
-        else a2p += 0x80;
+        if (a2p <= -12416)
+          a2p = -12288;
+        else if (a2p >= 12160)
+          a2p = 12288;
+        else
+          a2p += 0x80;
       }
     }
     s->a[1] = a2p;
     s->a[0] -= s->a[0] >> 8;
     if (dqsez != 0) s->a[0] += (pks1 == 0) ? 192 : -192;
     a1ul = 15360 - a2p;
-    if (s->a[0] < -a1ul) s->a[0] = -a1ul;
-    else if (s->a[0] > a1ul) s->a[0] = a1ul;
+    if (s->a[0] < -a1ul)
+      s->a[0] = -a1ul;
+    else if (s->a[0] > a1ul)
+      s->a[0] = a1ul;
     for (int c = 0; c < 6; c++) {
       s->b[c] -= s->b[c] >> 8;
       if (dq & 0x7FFF) s->b[c] += ((dq ^ s->dq[c]) >= 0) ? 128 : -128;

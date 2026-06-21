@@ -301,7 +301,8 @@ void CommandProcessor::SetZPDMode(ZPDMode mode) {
 
 void CommandProcessor::WriteFakeZPDReport(uint32_t report_address) {
   // Historical fake behavior: detect the END sentinel D3D writes, then report a
-  // sawtooth sample count that walks down from the upper to the lower threshold.
+  // sawtooth sample count that walks down from the upper to the lower
+  // threshold.
   const uint32_t kQueryFinished = xe::byte_swap(0xFFFFFEEDu);
   auto* sample_counts =
       memory_->TranslatePhysical<xe_gpu_depth_sample_counts*>(report_address);
@@ -515,7 +516,8 @@ bool CommandProcessor::EndZPDReport(uint32_t report_address,
 }
 
 void CommandProcessor::OpenQuerySegment(bool can_close_submission) {
-  if (!zpd_active_segment_.logical_active || zpd_active_segment_.segment_active) {
+  if (!zpd_active_segment_.logical_active ||
+      zpd_active_segment_.segment_active) {
     return;
   }
   if (!IsZPDQueryPoolReady() || !CanOpenZPDQuery()) {

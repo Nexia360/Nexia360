@@ -42,9 +42,9 @@ bool D3D12ZPDQueryPool::EnsureInitialized(
   }
 
   D3D12_RESOURCE_DESC buffer_desc;
-  ui::d3d12::util::FillBufferResourceDesc(
-      buffer_desc, uint64_t(capacity) * sizeof(uint64_t),
-      D3D12_RESOURCE_FLAG_NONE);
+  ui::d3d12::util::FillBufferResourceDesc(buffer_desc,
+                                          uint64_t(capacity) * sizeof(uint64_t),
+                                          D3D12_RESOURCE_FLAG_NONE);
   Microsoft::WRL::ComPtr<ID3D12Resource> readback_buffer;
   if (FAILED(device->CreateCommittedResource(
           &ui::d3d12::util::kHeapPropertiesReadback,

@@ -71,7 +71,8 @@ DEFINE_string(
     query_occlusion_mode, "fast-alt",
     "Occlusion query (EVENT_WRITE_ZPD) handling mode:\n"
     "  fake     - No real GPU queries; report synthesized sample counts using\n"
-    "             query_occlusion_sample_lower/upper_threshold (default, fast).\n"
+    "             query_occlusion_sample_lower/upper_threshold (default, "
+    "fast).\n"
     "  fast     - Real host occlusion queries with speculative cached "
     "writeback;\n"
     "             corrects the guest report once the query resolves.\n"

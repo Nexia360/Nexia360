@@ -56,7 +56,8 @@ class D3D12ZPDQueryPool {
   void ReleaseQueryIndex(uint32_t query_index, uint32_t query_generation);
   bool GenerationMatches(uint32_t query_index, uint32_t query_generation) const;
 
-  void BeginQuery(DeferredCommandList& command_list, uint32_t query_index) const;
+  void BeginQuery(DeferredCommandList& command_list,
+                  uint32_t query_index) const;
   void EndQuery(DeferredCommandList& command_list, uint32_t query_index) const;
   void QueueQueryResolve(uint32_t query_index);
   void FlushResolveBatch(DeferredCommandList& command_list);

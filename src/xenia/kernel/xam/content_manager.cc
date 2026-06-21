@@ -91,8 +91,7 @@ std::filesystem::path ContentManager::ActiveTitleUpdateContentRoot(
   if (library_path.empty()) {
     return {};
   }
-  auto content_root =
-      library_path / "Content" / fmt::format("{:016X}", xuid);
+  auto content_root = library_path / "Content" / fmt::format("{:016X}", xuid);
   std::error_code ec;
   if (!std::filesystem::exists(content_root, ec)) {
     return {};

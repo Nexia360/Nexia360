@@ -143,7 +143,8 @@ bool CreateDirectoryJunction(const std::filesystem::path& link_path,
 
 bool RemoveDirectoryJunction(const std::filesystem::path& link_path) {
   std::error_code ec;
-  if (!std::filesystem::is_symlink(std::filesystem::symlink_status(link_path, ec))) {
+  if (!std::filesystem::is_symlink(
+          std::filesystem::symlink_status(link_path, ec))) {
     return false;
   }
   return std::filesystem::remove(link_path, ec) && !ec;

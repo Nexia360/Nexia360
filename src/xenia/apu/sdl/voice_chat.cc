@@ -20,7 +20,7 @@ namespace xe {
 namespace apu {
 namespace sdl {
 
-constexpr int kSampleRate = 16000;          // XHV_PCM_SAMPLE_RATE
+constexpr int kSampleRate = 16000;  // XHV_PCM_SAMPLE_RATE
 constexpr int kSdlBufferSamples = 512;
 constexpr size_t kMaxRingSamples = kSampleRate;  // ~1 s ceiling per ring
 
@@ -345,8 +345,8 @@ size_t VoiceChat::ReadCapturePcm(int16_t* out, size_t max_samples) {
     } else {
       agc_env_ = agc_env_ * 0.98f + block_peak * 0.02f;
     }
-    constexpr float kTarget = 0.5f * 32767.0f;   // aim ~ -6 dBFS on peaks
-    constexpr float kNoiseFloor = 250.0f;        // below this = treat as silence
+    constexpr float kTarget = 0.5f * 32767.0f;  // aim ~ -6 dBFS on peaks
+    constexpr float kNoiseFloor = 250.0f;       // below this = treat as silence
     float gain = 1.0f;
     if (agc_env_ > kNoiseFloor) {
       gain = kTarget / agc_env_;

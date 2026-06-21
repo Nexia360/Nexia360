@@ -192,8 +192,8 @@ class XObject {
   uint32_t guest_object() const { return guest_object_ptr_; }
   // LLE bridge only: repoint this host wrapper at an EXISTING guest object (the
   // live per-CPU KPCR current_thread). Bypasses the X_OBJECT_HEADER setup that
-  // SetNativePointer does, so it must only be used to track a guest-owned object
-  // the kernel already created - never for a Nexia-allocated object.
+  // SetNativePointer does, so it must only be used to track a guest-owned
+  // object the kernel already created - never for a Nexia-allocated object.
   void set_guest_object_ptr(uint32_t guest_address) {
     guest_object_ptr_ = guest_address;
   }

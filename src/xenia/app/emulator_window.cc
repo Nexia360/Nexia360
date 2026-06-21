@@ -10,11 +10,10 @@
 #include "xenia/app/emulator_window.h"
 
 #include "third_party/imgui/imgui.h"
-#include "xenia/app/title_update_dialog.h"
-#include "xenia/vfs/devices/xcontent_container_device.h"
 #include "third_party/libcurl/include/curl/curl.h"
 #include "third_party/stb/stb_image_write.h"
 #include "third_party/tomlplusplus/toml.hpp"
+#include "xenia/app/title_update_dialog.h"
 #include "xenia/apu/sdl/voice_chat.h"
 #include "xenia/base/assert.h"
 #include "xenia/base/clock.h"
@@ -42,6 +41,7 @@
 #include "xenia/ui/presenter.h"
 #include "xenia/ui/ui_event.h"
 #include "xenia/ui/virtual_key.h"
+#include "xenia/vfs/devices/xcontent_container_device.h"
 
 #include "xenia/kernel/XLiveAPI.h"
 
@@ -2780,15 +2780,15 @@ void EmulatorWindow::FillRecentlyLaunchedTitlesWithTUMenu(
                                       ? entry.path_to_file.string()
                                       : entry.title_name;
 
-    recent_menu->AddChild(MenuItem::Create(
-        MenuItem::Type::kString, item_text, "",
-        std::bind(&EmulatorWindow::OpenTitleUpdateSelector, this,
-                  entry.path_to_file, entry.title_id)));
+    recent_menu->AddChild(
+        MenuItem::Create(MenuItem::Type::kString, item_text, "",
+                         std::bind(&EmulatorWindow::OpenTitleUpdateSelector,
+                                   this, entry.path_to_file, entry.title_id)));
   }
 }
 
-void EmulatorWindow::OpenTitleUpdateSelector(
-    const std::filesystem::path& path, uint32_t title_id) {
+void EmulatorWindow::OpenTitleUpdateSelector(const std::filesystem::path& path,
+                                             uint32_t title_id) {
   if (title_id == 0) {
     auto header = xe::vfs::XContentContainerDevice::ReadContainerHeader(path);
     if (header && header->content_header.is_magic_valid()) {
