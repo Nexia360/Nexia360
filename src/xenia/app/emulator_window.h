@@ -247,6 +247,10 @@ class EmulatorWindow {
     void OnDraw(ImGuiIO& io) override;
 
    private:
+    // Mic + output device pickers for voice chat. Safe to use with no title.
+    void DrawVoiceMicCombo();
+    void DrawVoiceOutputCombo();
+
     EmulatorWindow& emulator_window_;
     float volume_ = 0.0f;
   };

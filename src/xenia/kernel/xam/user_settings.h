@@ -534,8 +534,12 @@ class UserSetting : public UserData {
   }
 };
 
-const static std::array<UserSetting, 3> default_setting_values = {
+const static std::array<UserSetting, 4> default_setting_values = {
     UserSetting(UserSettingId::XPROFILE_OPTION_CONTROLLER_VIBRATION, 3),
+    // Unmuted by default; the live VOICE_VOLUME is injected from VoiceChat in
+    // XamUserReadProfileSettingsEx (Sound menu / AudioSettings.config), since a
+    // synthesized 0 makes XHV scale the remote-talker mix to silence.
+    UserSetting(UserSettingId::XPROFILE_OPTION_VOICE_MUTED, 0),
     UserSetting(
         UserSettingId::XPROFILE_GAMER_TIER,
         X_XAMACCOUNTINFO::AccountSubscriptionTier::kSubscriptionTierGold),

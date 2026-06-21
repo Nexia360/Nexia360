@@ -18,6 +18,7 @@
 #include "third_party/zarchive/include/zarchive/zarchivewriter.h"
 #include "third_party/zarchive/src/sha_256.h"
 #include "xenia/apu/audio_system.h"
+#include "xenia/apu/sdl/voice_chat.h"
 #include "xenia/base/assert.h"
 #include "xenia/base/byte_stream.h"
 #include "xenia/base/clock.h"
@@ -352,6 +353,11 @@ X_STATUS Emulator::Setup(
         audio_system_.get(), kernel_state_.get());
     audio_media_player_->Setup();
   }
+
+  // Voice chat settings persist in Device\AudioSettings.config (the device root
+  // is the content root's parent). Loads the saved enabled/mic/output here.
+  apu::sdl::VoiceChat::Get().SetSettingsPath(content_root_.parent_path() /
+                                             "AudioSettings.config");
 
   // Initialize emulator fallback exception handling last.
   ExceptionHandler::Install(Emulator::ExceptionCallbackThunk, this);

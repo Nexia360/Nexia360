@@ -9,6 +9,7 @@
 
 #include <ranges>
 
+#include "xenia/apu/sdl/voice_chat.h"
 #include "xenia/base/logging.h"
 #include "xenia/emulator.h"
 #include "xenia/kernel/XLiveAPI.h"
@@ -492,6 +493,16 @@ uint32_t XamUserReadProfileSettingsEx(uint32_t title_id, uint32_t user_index,
           continue;
         }
 
+        // Voice volume is owned by the host Sound menu (AudioSettings.config),
+        // not the profile GPD. Report the live value so XHV's remote-talker mix
+        // is scaled by what the user actually set.
+        if (setting_id_val == static_cast<uint32_t>(
+                                   xam::UserSettingId::XPROFILE_OPTION_VOICE_VOLUME)) {
+          setting = xam::UserSetting(
+              xam::UserSettingId::XPROFILE_OPTION_VOICE_VOLUME,
+              apu::sdl::VoiceChat::Get().voice_volume());
+        }
+
         out_setting->setting_id = setting->get_setting_id();
         out_setting->source = setting->get_setting_source();
 
@@ -606,6 +617,18 @@ dword_result_t XamUserCheckPrivilege_entry(dword_t user_index, dword_t type,
 
   // If we deny everything, games should hopefully not try to do stuff.
   *out_value = 0;
+
+  // Voice/communications must work over system-link/local play without a LIVE
+  // profile. XHV titles that init with bRelaxPrivileges=FALSE (e.g. the SDK
+  // HeadsetAudio sample) query this and MUTE the talker if it isn't granted, so
+  // grant communication privileges for any signed-in user regardless of LIVE.
+  constexpr uint32_t kXPrivilegeCommunications = 252;            // 0xFC
+  constexpr uint32_t kXPrivilegeCommunicationFriendsOnly = 251;  // 0xFB
+  if (type == kXPrivilegeCommunications ||
+      type == kXPrivilegeCommunicationFriendsOnly) {
+    *out_value = 1;
+    return X_ERROR_SUCCESS;
+  }
 
   if (user_index == XUserIndexAny) {
     if (!kernel_state()

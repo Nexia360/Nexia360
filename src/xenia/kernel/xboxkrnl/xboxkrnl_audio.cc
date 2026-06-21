@@ -99,6 +99,7 @@ dword_result_t XAudioSubmitRenderDriverFrame_entry(lpunknown_t driver_ptr,
   auto audio_system = kernel_state()->emulator()->audio_system();
   auto samples =
       kernel_state()->memory()->TranslateVirtual<float*>(samples_ptr);
+
   audio_system->SubmitFrame(driver_ptr.guest_address() & 0x0000FFFF, samples);
 
   return X_ERROR_SUCCESS;

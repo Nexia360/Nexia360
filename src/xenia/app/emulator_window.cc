@@ -15,6 +15,7 @@
 #include "third_party/libcurl/include/curl/curl.h"
 #include "third_party/stb/stb_image_write.h"
 #include "third_party/tomlplusplus/toml.hpp"
+#include "xenia/apu/sdl/voice_chat.h"
 #include "xenia/base/assert.h"
 #include "xenia/base/clock.h"
 #include "xenia/base/cvar.h"
@@ -685,7 +686,7 @@ void EmulatorWindow::XMPConfigDialog::OnDraw(ImGuiIO& io) {
   ImGui::SetNextWindowSize(ImVec2(20, 20), ImGuiCond_FirstUseEver);
 
   bool dialog_open = true;
-  if (!ImGui::Begin("Audio Player Menu", &dialog_open,
+  if (!ImGui::Begin("Sound", &dialog_open,
                     ImGuiWindowFlags_NoCollapse |
                         ImGuiWindowFlags_AlwaysAutoResize |
                         ImGuiWindowFlags_HorizontalScrollbar)) {
@@ -694,25 +695,31 @@ void EmulatorWindow::XMPConfigDialog::OnDraw(ImGuiIO& io) {
     return;
   }
 
+  ImGui::TextUnformatted("Audio Menu");
+  ImGui::Separator();
+
   auto audio_player = emulator_window_.emulator_->audio_media_player();
   using xmp_state = kernel::xam::apps::XmpApp::State;
+
+  const char* status = "Unavailable";
   if (audio_player) {
-    ImGui::Text("Audio player status:");
-    ImGui::SameLine();
     switch (audio_player->GetState()) {
       case xmp_state::kIdle:
-        ImGui::Text("Idle");
+        status = "Idle";
         break;
       case xmp_state::kPaused:
-        ImGui::Text("Paused");
+        status = "Paused";
         break;
       case xmp_state::kPlaying:
-        ImGui::Text("Playing");
+        status = "Playing";
         break;
       default:
         break;
     }
+  }
+  ImGui::Text("Audio Player Status: %s", status);
 
+  if (audio_player) {
     if (audio_player->IsPlaying()) {
       if (ImGui::Button("Pause")) {
         audio_player->Pause();
@@ -723,19 +730,74 @@ void EmulatorWindow::XMPConfigDialog::OnDraw(ImGuiIO& io) {
       }
     }
 
-    volume_ =
-        emulator_window_.emulator_->audio_media_player()->GetVolume()->load();
-
-    if (ImGui::SliderFloat("Audio player volume", &volume_, 0.0f, 1.0f)) {
+    volume_ = audio_player->GetVolume()->load();
+    if (ImGui::SliderFloat("Audio Player Volume", &volume_, 0.0f, 1.0f)) {
       audio_player->SetVolume(volume_);
     }
+  } else {
+    // Slider is harmless without a title; keep the layout stable.
+    ImGui::SliderFloat("Audio Player Volume", &volume_, 0.0f, 1.0f);
   }
+
+  ImGui::Spacing();
+  ImGui::TextUnformatted("Voice Chat");
+  ImGui::Separator();
+  bool voice_enabled = apu::sdl::VoiceChat::Get().enabled();
+  if (ImGui::Checkbox("Enable Voice Chat", &voice_enabled)) {
+    apu::sdl::VoiceChat::Get().SetEnabled(voice_enabled);
+  }
+  ImGui::BeginDisabled(!voice_enabled);
+  DrawVoiceMicCombo();
+  DrawVoiceOutputCombo();
+  int voice_volume = apu::sdl::VoiceChat::Get().voice_volume();
+  if (ImGui::SliderInt("Voice Chat Volume", &voice_volume, 0, 100)) {
+    apu::sdl::VoiceChat::Get().SetVoiceVolume(voice_volume);
+  }
+  int mic_gain = apu::sdl::VoiceChat::Get().mic_gain();
+  if (ImGui::SliderInt("Mic Gain", &mic_gain, 1, 32)) {
+    apu::sdl::VoiceChat::Get().SetMicGain(mic_gain);
+  }
+  ImGui::EndDisabled();
 
   ImGui::End();
 
   if (!dialog_open) {
     emulator_window_.ToggleXMPConfigDialog();
     return;
+  }
+}
+
+void EmulatorWindow::XMPConfigDialog::DrawVoiceMicCombo() {
+  auto& voice = apu::sdl::VoiceChat::Get();
+  std::string current = voice.mic_name();
+  const char* preview = current.empty() ? "System Default" : current.c_str();
+  if (ImGui::BeginCombo("Mic for Voice Chat", preview)) {
+    if (ImGui::Selectable("System Default", current.empty())) {
+      voice.SetMic("");
+    }
+    for (const auto& name : apu::sdl::VoiceChat::EnumerateMics()) {
+      if (ImGui::Selectable(name.c_str(), name == current)) {
+        voice.SetMic(name);
+      }
+    }
+    ImGui::EndCombo();
+  }
+}
+
+void EmulatorWindow::XMPConfigDialog::DrawVoiceOutputCombo() {
+  auto& voice = apu::sdl::VoiceChat::Get();
+  std::string current = voice.output_name();
+  const char* preview = current.empty() ? "System Default" : current.c_str();
+  if (ImGui::BeginCombo("Output for Voice Chat", preview)) {
+    if (ImGui::Selectable("System Default", current.empty())) {
+      voice.SetOutput("");
+    }
+    for (const auto& name : apu::sdl::VoiceChat::EnumerateOutputs()) {
+      if (ImGui::Selectable(name.c_str(), name == current)) {
+        voice.SetOutput(name);
+      }
+    }
+    ImGui::EndCombo();
   }
 }
 
@@ -881,14 +943,14 @@ bool EmulatorWindow::Initialize() {
   }
   main_menu->AddChild(std::move(hid_menu));
 
-  // XMP menu
-  auto xmp_menu = MenuItem::Create(MenuItem::Type::kPopup, "&XMP");
+  // Sound menu
+  auto sound_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Sound");
   {
-    xmp_menu->AddChild(MenuItem::Create(
-        MenuItem::Type::kString, "&Show XMP Menu", "",
+    sound_menu->AddChild(MenuItem::Create(
+        MenuItem::Type::kString, "&Show Sound Menu", "",
         std::bind(&EmulatorWindow::ToggleXMPConfigDialog, this)));
   }
-  main_menu->AddChild(std::move(xmp_menu));
+  main_menu->AddChild(std::move(sound_menu));
 
   // Netplay menu.
   auto Netplay_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Netplay");
