@@ -129,7 +129,7 @@ void HostExceptionReport::AddString(const char* s) {
 }
 
 const char* HostExceptionReport::GetFormattedAddress(uintptr_t address) {
-  char(&current_buffer)[128] =
+  char (&current_buffer)[128] =
       formatted_addresses[address_format_ring_index++ % 16];
 
   /* if (address >= g_xenia_exe_base &&
