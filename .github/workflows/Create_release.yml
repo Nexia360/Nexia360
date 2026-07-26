@@ -8,8 +8,8 @@ on:
         required: true
         type: string
       branch:
-        description: 'Branch name used as release tag suffix (e.g. canary_experimental)'
-        default: 'canary_experimental'
+        description: 'Branch name used as release tag suffix (e.g. Mousehook)'
+        default: 'Mousehook'
         type: string
 
 jobs:

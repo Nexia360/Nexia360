@@ -84,9 +84,9 @@ jobs:
   #   needs: [build-windows, build-linux]
   #   if: |-
   #     always() &&
-  #     github.repository == 'xenia-canary/xenia-canary' &&
+  #     github.repository == 'Nexia360/Nexia360' &&
   #     github.event_name == 'push' &&
-  #     github.ref == 'refs/heads/canary_experimental' &&
+  #     github.ref == 'refs/heads/Mousehook' &&
   #     (needs.build-windows.result == 'success' && needs.build-linux.result == 'success')
   #   uses: ./.github/workflows/Create_release.yml
   #   permissions:

@@ -6,7 +6,7 @@ else()
   add_executable(xenia-app)
 endif()
 
-set_target_properties(xenia-app PROPERTIES OUTPUT_NAME "nexia")
+set_target_properties(xenia-app PROPERTIES OUTPUT_NAME "Nexia360")
 
 # Main source
 target_sources(xenia-app PRIVATE
