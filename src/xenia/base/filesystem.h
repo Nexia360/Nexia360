@@ -52,6 +52,19 @@ std::error_code CreateFolder(const std::filesystem::path& path);
 // Creates an empty file at the given path, overwriting if it exists.
 bool CreateEmptyFile(const std::filesystem::path& path);
 
+// Creates a directory link at link_path pointing to target (an existing
+// directory). On Windows this is an NTFS junction (no elevation required); on
+// other platforms a directory symlink. Returns false on failure (the caller
+// may fall back to copying).
+bool CreateDirectoryJunction(const std::filesystem::path& link_path,
+                             const std::filesystem::path& target);
+
+// Removes link_path if (and only if) it is a directory junction / symlink,
+// without touching the link's target. Returns false if the path is not a link
+// (the caller may then remove it as a regular directory). Use this instead of
+// remove_all on junctions, which can recurse into and delete the target.
+bool RemoveDirectoryJunction(const std::filesystem::path& link_path);
+
 // Opens the file at the given path with the specified mode.
 // This behaves like fopen and the returned handle can be used with stdio.
 FILE* OpenFile(const std::filesystem::path& path, const std::string_view mode);

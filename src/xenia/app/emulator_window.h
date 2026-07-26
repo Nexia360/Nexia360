@@ -39,6 +39,7 @@ struct RecentTitleEntry {
   std::string title_name;
   std::filesystem::path path_to_file;
   std::time_t last_run_time;
+  uint32_t title_id = 0;
 };
 
 class EmulatorWindow {
@@ -93,6 +94,9 @@ class EmulatorWindow {
   void OnEmulatorInitialized();
 
   xe::X_STATUS RunTitle(const std::filesystem::path& path_to_file);
+  // Shows the title-update selector for the given file, then launches it.
+  void OpenTitleUpdateSelector(const std::filesystem::path& path,
+                               uint32_t title_id);
   void UpdateTitle();
   void SetFullscreen(bool fullscreen);
   void ToggleFullscreen();
@@ -106,6 +110,8 @@ class EmulatorWindow {
 
   void UpdateCompletionNotification();
 
+  void ToggleMousehook();
+  void OpenMousehookConfig();
   void ToggleProfilesConfigDialog();
   void ToggleGamerpicBrowserDialog();
   void ToggleXMPConfigDialog();
@@ -314,9 +320,11 @@ class EmulatorWindow {
 
   void RunPreviouslyPlayedTitle();
   void FillRecentlyLaunchedTitlesMenu(xe::ui::MenuItem* recent_menu);
+  void FillRecentlyLaunchedTitlesWithTUMenu(xe::ui::MenuItem* recent_menu);
   void LoadRecentlyLaunchedTitles();
   void AddRecentlyLaunchedTitle(std::filesystem::path path_to_file,
-                                std::string title_name);
+                                std::string title_name,
+                                uint32_t title_id = 0);
 
   void ClearDialogs();
 
@@ -340,6 +348,12 @@ class EmulatorWindow {
   std::shared_ptr<Updater> updater_;
   std::shared_future<CheckForUpdateInfo> update_info_;
   std::atomic<bool> cancel_request;
+
+  // Guide button: tracked per user so a solo press can be classified as a
+  // short press (netplay manager) or a long press (profile menu).
+  bool guide_button_was_pressed_[XUserMaxUserCount] = {};
+  uint64_t guide_button_press_time_[XUserMaxUserCount] = {};
+  static constexpr uint64_t kGuideLongPressMs = 500;  // 500ms for long press
 
   std::unique_ptr<DisplayConfigDialog> display_config_dialog_;
   std::unique_ptr<ConsoleSettingsDialog> console_settings_dialog_;

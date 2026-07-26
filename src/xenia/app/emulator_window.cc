@@ -21,7 +21,9 @@
 #endif
 
 #include "xenia/app/console_settings_dialog.h"
+#include "xenia/app/title_update_dialog.h"
 #include "xenia/base/assert.h"
+#include "xenia/vfs/devices/xcontent_container_device.h"
 #include "xenia/base/clock.h"
 #include "xenia/base/cvar.h"
 #include "xenia/base/debugging.h"
@@ -44,6 +46,7 @@
 #include "xenia/ui/graphics_provider.h"
 #include "xenia/ui/imgui_dialog.h"
 #include "xenia/ui/imgui_drawer.h"
+#include "xenia/hid/mousehook_config.h"
 #include "xenia/ui/imgui_host_notification.h"
 #include "xenia/ui/immediate_drawer.h"
 #include "xenia/ui/presenter.h"
@@ -180,7 +183,7 @@ using namespace xe::hid;
 using namespace xe::gpu;
 
 constexpr std::string_view kRecentlyPlayedTitlesFilename = "recent.toml";
-constexpr std::string_view kBaseTitle = "Xenia-canary-netplay";
+constexpr std::string_view kBaseTitle = "Nexia360";
 
 EmulatorWindow::EmulatorWindow(Emulator* emulator,
                                ui::WindowedAppContext& app_context,
@@ -307,8 +310,8 @@ void EmulatorWindow::OnEmulatorInitialized() {
     Gamepad_HotKeys_Listener->set_name("Gamepad HotKeys Listener");
   }
 
-  // Check for updates
-#if !defined(DEBUG) && !defined(XE_BUILD_IS_PR)
+  // Startup auto-update check disabled (Nexia does not use the Xenia updater).
+#if 0
   bool should_check_update = cvars::auto_check_updates &&
                              !(cvar::updated_arg_present && cvar::updated);
 
@@ -348,6 +351,17 @@ void EmulatorWindow::ShowUpdateAvailableDialog(const std::string& commit,
 }
 
 void EmulatorWindow::EmulatorWindowListener::OnClosing(ui::UIEvent& e) {
+  // Drop mouse capture before quitting. While mousehook is active every mouse
+  // move re-centres the cursor, which keeps generating fresh mouse messages on
+  // the UI thread - exactly the thread that has to drain its queue to process
+  // the quit. Suspended in memory only, so mousehook.json keeps the user's
+  // choice for next launch.
+  auto& mousehook = hid::MousehookConfig::Get();
+  if (mousehook.enabled()) {
+    mousehook.set_enabled(false);
+    mousehook.ResetMouseState();
+  }
+
   emulator_window_.app_context_.QuitFromUIThread();
 }
 
@@ -813,13 +827,17 @@ bool EmulatorWindow::Initialize() {
   auto main_menu = MenuItem::Create(MenuItem::Type::kNormal);
   auto file_menu = MenuItem::Create(MenuItem::Type::kPopup, "&File");
   auto recent_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Open Recent");
+  auto recent_with_tu_menu =
+      MenuItem::Create(MenuItem::Type::kPopup, "Open Recent with &TU");
   auto zar_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Zar Package");
   FillRecentlyLaunchedTitlesMenu(recent_menu.get());
+  FillRecentlyLaunchedTitlesWithTUMenu(recent_with_tu_menu.get());
   {
     file_menu->AddChild(
         MenuItem::Create(MenuItem::Type::kString, "&Open...", "Ctrl+O",
                          std::bind(&EmulatorWindow::FileOpen, this)));
     file_menu->AddChild(std::move(recent_menu));
+    file_menu->AddChild(std::move(recent_with_tu_menu));
     file_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
     file_menu->AddChild(
         MenuItem::Create(MenuItem::Type::kString, "Install Content...",
@@ -1127,6 +1145,18 @@ void EmulatorWindow::OnKeyDown(ui::KeyEvent& e) {
       }
       FileOpen();
     } break;
+    case ui::VirtualKey::kM: {
+      if (!e.is_ctrl_pressed()) {
+        return;
+      }
+      if (e.is_shift_pressed()) {
+        // Ctrl+Shift+M: open the mousehook config (suspends mousehook while
+        // the menu is up so the mouse is usable).
+        OpenMousehookConfig();
+      } else {
+        ToggleMousehook();
+      }
+    } break;
     case ui::VirtualKey::kMultiply: {
       CpuTimeScalarReset();
     } break;
@@ -1197,7 +1227,13 @@ void EmulatorWindow::OnKeyDown(ui::KeyEvent& e) {
     } break;
 
     case ui::VirtualKey::kF9: {
-      RunPreviouslyPlayedTitle();
+      if (e.is_shift_pressed() && !recently_launched_titles_.empty()) {
+        // Shift+F9: pick a title update before launching the last title.
+        const RecentTitleEntry& recent = recently_launched_titles_[0];
+        OpenTitleUpdateSelector(recent.path_to_file, recent.title_id);
+      } else {
+        RunPreviouslyPlayedTitle();
+      }
     } break;
 
     default:
@@ -2272,6 +2308,13 @@ void EmulatorWindow::GamepadHotKeys() {
 
   auto input_sys = emulator_->input_system();
 
+  // Monotonic millisecond clock for guide-button long-press timing.
+  auto now_ms = []() -> uint64_t {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+  };
+
   if (input_sys) {
     while (true) {
       // Collect controller states while holding the lock
@@ -2291,9 +2334,35 @@ void EmulatorWindow::GamepadHotKeys() {
       for (uint32_t user_index = 0; user_index < XUserMaxUserCount;
            ++user_index) {
         if (controller_states[user_index].first) {
-          if (ProcessControllerHotkey(
-                  controller_states[user_index].second.gamepad.buttons)
-                  .rumble) {
+          const uint16_t buttons =
+              controller_states[user_index].second.gamepad.buttons;
+
+          // Guide button: long press opens the profile menu, short press opens
+          // the netplay manager. Marshalled to the UI thread.
+          bool guide_pressed = (buttons & X_INPUT_GAMEPAD_GUIDE) != 0;
+          bool solo_guide =
+              guide_pressed && (buttons & ~X_INPUT_GAMEPAD_GUIDE) == 0;
+          if (solo_guide && !guide_button_was_pressed_[user_index]) {
+            guide_button_was_pressed_[user_index] = true;
+            guide_button_press_time_[user_index] = now_ms();
+          } else if (!guide_pressed && guide_button_was_pressed_[user_index]) {
+            guide_button_was_pressed_[user_index] = false;
+            uint64_t duration = now_ms() - guide_button_press_time_[user_index];
+            if (duration >= kGuideLongPressMs) {
+              // Long press - profile menu.
+              app_context_.CallInUIThread(
+                  [this]() { ToggleProfilesConfigDialog(); });
+            } else if (duration > 50) {
+              // Short press - netplay manager (debounce very short presses).
+              app_context_.CallInUIThread([this]() { ToggleFriendsDialog(); });
+            }
+          } else if (guide_pressed && !solo_guide) {
+            // Guide with other buttons - cancel solo tracking, let the hotkey
+            // map handle the combo.
+            guide_button_was_pressed_[user_index] = false;
+          }
+
+          if (ProcessControllerHotkey(buttons).rumble) {
             // Enable Vibration
             VibrateController(input_sys, user_index, true);
 
@@ -2498,7 +2567,8 @@ xe::X_STATUS EmulatorWindow::RunTitle(
 
     emulator_->file_system()->Clear();
   } else {
-    AddRecentlyLaunchedTitle(path_to_file, emulator_->title_name());
+    AddRecentlyLaunchedTitle(path_to_file, emulator_->title_name(),
+                             emulator_->title_id());
 
     auto xam =
         emulator_->kernel_state()->GetKernelModule<kernel::xam::XamModule>(
@@ -2508,6 +2578,47 @@ xe::X_STATUS EmulatorWindow::RunTitle(
   }
 
   return result;
+}
+
+void EmulatorWindow::OpenMousehookConfig() {
+  // Opening the console settings dialog suspends mousehook for as long as it
+  // is up (see ConsoleSettingsDialog's constructor) so the cursor is free to
+  // drive the UI. Closing it applies the checkbox state and resumes.
+  if (!console_settings_dialog_) {
+    ToggleConsoleSettingsDialog();
+  }
+
+  if (console_settings_dialog_) {
+    console_settings_dialog_->FocusMousehookTab();
+  }
+}
+
+void EmulatorWindow::ToggleMousehook() {
+  auto& mh = hid::MousehookConfig::Get();
+  const bool enabled = !mh.enabled();
+  mh.set_enabled(enabled);
+  mh.Save();
+
+  new xe::ui::HostNotificationWindow(
+      imgui_drawer(),
+      enabled ? "Mousehook Enabled, CTRL+M To disable" : "Mousehook Disabled",
+      "Mousehook", 0);
+}
+
+void EmulatorWindow::OpenTitleUpdateSelector(const std::filesystem::path& path,
+                                             uint32_t title_id) {
+  if (title_id == 0) {
+    auto header = xe::vfs::XContentContainerDevice::ReadContainerHeader(path);
+    if (header && header->content_header.is_magic_valid()) {
+      title_id = header->content_metadata.execution_info.title_id.get();
+    }
+  }
+  if (title_id != 0) {
+    new TitleUpdateDialog(imgui_drawer(), this, title_id, path);
+  } else {
+    // Couldn't resolve a title id (e.g. a folder/disc) - just launch it.
+    RunTitle(path);
+  }
 }
 
 void EmulatorWindow::RunPreviouslyPlayedTitle() {
@@ -2529,6 +2640,21 @@ void EmulatorWindow::FillRecentlyLaunchedTitlesMenu(
     recent_menu->AddChild(MenuItem::Create(
         MenuItem::Type::kString, item_text, hotkey,
         std::bind(&EmulatorWindow::RunTitle, this, entry.path_to_file)));
+  }
+}
+
+void EmulatorWindow::FillRecentlyLaunchedTitlesWithTUMenu(
+    xe::ui::MenuItem* recent_menu) {
+  for (size_t i = 0; i < recently_launched_titles_.size(); ++i) {
+    const RecentTitleEntry& entry = recently_launched_titles_[i];
+    const std::string item_text = entry.title_name.empty()
+                                      ? entry.path_to_file.string()
+                                      : entry.title_name;
+
+    recent_menu->AddChild(
+        MenuItem::Create(MenuItem::Type::kString, item_text, "",
+                         std::bind(&EmulatorWindow::OpenTitleUpdateSelector,
+                                   this, entry.path_to_file, entry.title_id)));
   }
 }
 
@@ -2566,13 +2692,20 @@ void EmulatorWindow::LoadRecentlyLaunchedTitles() {
         continue;
       }
 
-      recently_launched_titles_.push_back({title_name, path, last_run_time});
+      uint32_t title_id = 0;
+      if (auto id_node = entry_table->get_as<int64_t>("title_id")) {
+        title_id = static_cast<uint32_t>(id_node->get());
+      }
+
+      recently_launched_titles_.push_back(
+          {title_name, path, last_run_time, title_id});
     }
   }
 }
 
 void EmulatorWindow::AddRecentlyLaunchedTitle(
-    std::filesystem::path path_to_file, std::string title_name) {
+    std::filesystem::path path_to_file, std::string title_name,
+    uint32_t title_id) {
   if (cvars::recent_titles_entry_amount <= 0) {
     return;
   }
@@ -2587,8 +2720,9 @@ void EmulatorWindow::AddRecentlyLaunchedTitle(
     recently_launched_titles_.erase(entry_index);
   }
 
-  recently_launched_titles_.insert(recently_launched_titles_.cbegin(),
-                                   {title_name, path_to_file, time(nullptr)});
+  recently_launched_titles_.insert(
+      recently_launched_titles_.cbegin(),
+      {title_name, path_to_file, time(nullptr), title_id});
   // Serialize to toml
   auto toml_table = toml::table();
 
@@ -2601,6 +2735,7 @@ void EmulatorWindow::AddRecentlyLaunchedTitle(
     entry_table.insert("title_name", entry.title_name);
     entry_table.insert("path", str_path);
     entry_table.insert("last_run_time", entry.last_run_time);
+    entry_table.insert("title_id", static_cast<int64_t>(entry.title_id));
 
     toml_table.insert(std::to_string(index++), entry_table);
 

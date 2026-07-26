@@ -10,6 +10,7 @@
 #ifndef XENIA_HID_WINKEY_WINKEY_INPUT_DRIVER_H_
 #define XENIA_HID_WINKEY_WINKEY_INPUT_DRIVER_H_
 
+#include <atomic>
 #include <queue>
 
 #include "xenia/base/mutex.h"
@@ -59,6 +60,9 @@ class WinKeyInputDriver final : public InputDriver {
 
     void OnKeyDown(ui::KeyEvent& e) override;
     void OnKeyUp(ui::KeyEvent& e) override;
+    void OnMouseDown(ui::MouseEvent& e) override;
+    void OnMouseMove(ui::MouseEvent& e) override;
+    void OnMouseUp(ui::MouseEvent& e) override;
 
    private:
     WinKeyInputDriver& driver_;
@@ -70,6 +74,17 @@ class WinKeyInputDriver final : public InputDriver {
 
   void OnKey(ui::KeyEvent& e, bool is_down);
 
+  // Rebuilds key_bindings_ from mousehook.json. Called at construction and
+  // whenever the config's bindings generation changes.
+  void ReloadKeyBindings();
+  uint32_t bindings_generation_ = 0;
+
+  // Mousehook: lock the cursor to the window centre and accumulate relative
+  // mouse motion (consumed in GetState as a right-thumbstick deflection), plus
+  // mouse-button state. Gated by cvars::mousehook.
+  void OnMouseMove(ui::MouseEvent& e);
+  void OnMouseButton(ui::MouseEvent& e, bool is_down);
+
   WinKeyWindowInputListener window_input_listener_;
 
   xe::global_critical_region global_critical_region_;
@@ -77,6 +92,10 @@ class WinKeyInputDriver final : public InputDriver {
   std::vector<KeyBinding> key_bindings_;
   uint8_t key_map_[256];
   uint32_t packet_number_ = 1;
+
+  // Mousehook motion/button state lives in MousehookConfig so it can be applied
+  // to whichever driver owns the slot (see InputSystem::GetState).
+  bool cursor_hidden_ = false;
 };
 
 }  // namespace winkey

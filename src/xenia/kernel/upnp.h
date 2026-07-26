@@ -11,8 +11,10 @@
 #define XENIA_KERNEL_UPNP_H_
 
 #include <future>
+#include <mutex>
 #include <set>
 #include <shared_mutex>
+#include <string_view>
 
 #include <third_party/miniupnp/miniupnpc/include/miniupnpc.h>
 
@@ -120,6 +122,10 @@ class UPnP {
   uint16_t GetMappedConnectPort(uint16_t external_port);
 
   uint16_t GetMappedBindPort(uint16_t external_port);
+
+  // Nexia: the router-forwarded (external) port for an internal port. Falls
+  // back to the internal port when there is no mapping. Non-blocking.
+  uint16_t GetExternalPort(uint16_t internal_port, std::string_view protocol);
 
   const std::map<std::string, std::map<uint16_t, uint16_t>> GetOpenedPorts();
 

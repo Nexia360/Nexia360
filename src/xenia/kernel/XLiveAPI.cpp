@@ -16,6 +16,8 @@
 #include "third_party/libcurl/include/curl/curl.h"
 // clang-format on
 
+#include <random>
+
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/string_util.h"
@@ -25,7 +27,7 @@
 #include "xenia/kernel/util/friends_util.h"
 #include "xenia/kernel/util/shim_utils.h"
 
-DEFINE_string(api_address, "192.168.0.1:36000/",
+DEFINE_string(api_address, "https://nexia360hub.com/",
               "Xenia Server Address e.g. IP:PORT", "Live");
 
 DEFINE_string(
@@ -38,8 +40,9 @@ DEFINE_bool(logging, false, "Log Network Activity & Stats", "Live");
 DEFINE_bool(log_mask_ips, true, "Do not include P2P IPs inside the log",
             "Live");
 
-DEFINE_int32(network_mode, 2,
-             "Network mode types: 0 - Offline, 1 - Systemlink, 2 - Xbox Live.",
+DEFINE_int32(network_mode, 3,
+             "Network mode types: 0 - Offline, 1 - Systemlink, 2 - Xbox Live, "
+             "3 - Nexia Hub.",
              "Live");
 
 DEFINE_bool(bind_interface, false,
@@ -150,6 +153,13 @@ void XLiveAPI::GetXnAddrFromSessionObject(SessionObjectJSON session,
 
   XnAddr_ptr->wPortOnline = session.Port();
 
+  // Nexia: seed the port cache from the hub's session record so a joining
+  // client can reach the host on its mapped port during the first QoS probe,
+  // before any tagged packet has arrived from it.
+  if (server_supports_tag && session.Port()) {
+    packet_port_cache[XnAddr_ptr->inaOnline.s_addr] = session.Port();
+  }
+
   // 545407F2 will fail to join session if platform type does not match host's
   // platform type
   XnAddr_ptr->abOnline.platform_type = PLATFORM_TYPE::Xbox360;
@@ -249,7 +259,10 @@ void XLiveAPI::BroadcastNetworkStatus() const {
       kernel_state()->BroadcastNotification(kXNotificationLiveLinkStateChanged,
                                             1);
     } break;
-    case xe::kernel::NETWORK_MODE::XBOXLIVE: {
+    case xe::kernel::NETWORK_MODE::XBOXLIVE:
+    // Nexia Hub is an Xbox-Live-class online mode; the guest sees the same
+    // connection state.
+    case xe::kernel::NETWORK_MODE::NEXIAHUB: {
       kernel_state()->BroadcastNotification(
           kXNotificationLiveConnectionChanged,
           X_ONLINE_S_LOGON_CONNECTION_ESTABLISHED);
@@ -287,7 +300,21 @@ bool XLiveAPI::SelectNetworkMode(uint32_t mode) {
   // Don't automatically upgrade to Xbox-Live if LAN selected.
   bool lan_limit = mode == NETWORK_MODE::LAN;
 
-  if (mode == NETWORK_MODE::XBOXLIVE) {
+  if (mode == NETWORK_MODE::NEXIAHUB) {
+    // Nexia Hub always talks to the hub, and relies on inbound port forwarding,
+    // so pin the API address and enable UPnP when this mode is chosen.
+    SetAPIAddress("https://nexia360hub.com/");
+    UPnP::SetUPnPState(true);
+
+    if (auto* upnp = kernel_state()->emulator()->GetUPnP()) {
+      // Start() defers IGD discovery to its own future, so this doesn't block.
+      // Deliberately NOT spawned on a detached thread - it would outlive
+      // ShutdownUPnP() at exit and touch a destroyed UPnP object.
+      upnp->Start();
+    }
+  }
+
+  if (mode == NETWORK_MODE::XBOXLIVE || mode == NETWORK_MODE::NEXIAHUB) {
     StartWhoamiAsync();
   }
 
@@ -362,12 +389,21 @@ void XLiveAPI::Init() {
                                                        dummy_friends_count_);
   }
 
-  // Delete sessions on start-up.
-  DeleteAllSessions();
+  // Delete sessions on start-up. On a capable hub delete only OUR sessions -
+  // the legacy call deletes by IP, which wipes same-IP peers' sessions.
+  if (server_supports_delete_my_sessions) {
+    DeleteMySessions();
+  } else {
+    DeleteAllSessions();
+  }
 }
 
 NETWORK_MODE XLiveAPI::RefreshNetworkMode(bool lan_limit) {
   const bool is_initialized = initialized_ != InitState::Pending;
+
+  // Nexia Hub is an online mode like Xbox-Live; remember the user's choice so
+  // a successful connect doesn't silently downgrade it to plain Xbox-Live.
+  const bool prefer_hub = cvars::network_mode == NETWORK_MODE::NEXIAHUB;
 
   const auto adapter_manager =
       kernel_state()->emulator()->GetNetworkAdapterManager();
@@ -409,6 +445,9 @@ NETWORK_MODE XLiveAPI::RefreshNetworkMode(bool lan_limit) {
 
   if (connected) {
     initialized_ = InitState::Success;
+    // Nexia: (re)negotiate hub capabilities whenever a mode reaches Success -
+    // SelectNetworkMode can get here without going through Init().
+    ProbeServerCapabilities();
   } else {
     initialized_ = InitState::Failed;
   }
@@ -428,7 +467,8 @@ NETWORK_MODE XLiveAPI::RefreshNetworkMode(bool lan_limit) {
   if (lan_limit) {
     cvars::network_mode = NETWORK_MODE::LAN;
   } else {
-    cvars::network_mode = NETWORK_MODE::XBOXLIVE;
+    cvars::network_mode =
+        prefer_hub ? NETWORK_MODE::NEXIAHUB : NETWORK_MODE::XBOXLIVE;
   }
 
   return static_cast<NETWORK_MODE>(cvars::network_mode);
@@ -447,7 +487,111 @@ bool XLiveAPI::IsConnectedToServer() const {
   return initialized_ == InitState::Success;
 }
 
-uint16_t XLiveAPI::GetPlayerPort() const { return 36000; }
+uint16_t XLiveAPI::GetPlayerPort() const {
+  // Advertise the EXTERNAL (router-forwarded) port for our local player port.
+  // It differs from the local port only when PortMap picked a neighbor external
+  // on a NAT conflict (two consoles behind one router). Falls back to the local
+  // port when UPnP is inactive or the port isn't mapped.
+  if (auto upnp = kernel_state()->emulator()->GetUPnP()) {
+    return upnp->GetExternalPort(player_port_, "UDP");
+  }
+  return player_port_;
+}
+
+void XLiveAPI::ProbeServerCapabilities() {
+  server_supports_tag = false;
+  server_supports_delete_my_sessions = false;
+
+  auto caps = Get(BuildEndpoint("capabilities"));
+  if (!caps || caps->StatusCode() != HTTP_STATUS_CODE::HTTP_OK) {
+    // Old hub (404s the probe) -> every capability stays off.
+    return;
+  }
+
+  const auto& raw = caps->RawResponse();
+  const std::string body =
+      raw.response ? std::string(raw.response, raw.size) : std::string();
+
+  server_supports_tag = body.find("xuidTag") != std::string::npos;
+  server_supports_delete_my_sessions =
+      body.find("deleteMySessions") != std::string::npos;
+}
+
+bool XLiveAPI::ReservePort(const std::string& host_address, uint16_t port,
+                           const std::string& owner) {
+  Document doc;
+  doc.SetObject();
+  auto& alloc = doc.GetAllocator();
+  doc.AddMember("hostAddress", Value(host_address.c_str(), alloc).Move(), alloc);
+  doc.AddMember("port", port, alloc);
+  doc.AddMember("owner", Value(owner.c_str(), alloc).Move(), alloc);
+
+  rapidjson::StringBuffer buffer;
+  PrettyWriter<rapidjson::StringBuffer> writer(buffer);
+  doc.Accept(writer);
+
+  auto response = Post(BuildEndpoint("ports/reserve"),
+                       reinterpret_cast<const uint8_t*>(buffer.GetString()));
+
+  // 201 = reserved (free / ours). Anything else (409 taken, or hub unreachable)
+  // means "not ours" -> caller tries the next port.
+  return response && response->StatusCode() == HTTP_STATUS_CODE::HTTP_CREATED;
+}
+
+uint64_t XLiveAPI::GetInstanceId() {
+  // Per-process random id. Two instances on one machine share MAC/machineId
+  // (and may share a profile/XUID), so identity for reservation ownership must
+  // come from something unique per process.
+  static const uint64_t id = []() -> uint64_t {
+    std::random_device rd;
+    return (static_cast<uint64_t>(rd()) << 32) | static_cast<uint64_t>(rd());
+  }();
+  return id;
+}
+
+uint16_t XLiveAPI::AllocateHostPort(uint16_t base_port) {
+  const std::string ip = OnlineIP_str();
+  const std::string owner = fmt::format("{:016X}", GetInstanceId());
+
+  uint16_t port = base_port;
+  // Bounded walk so a broken/unreachable hub degrades to `base_port` rather
+  // than hanging the bind path forever.
+  for (int i = 0; i < 1000; i++, port++) {
+    if (ReservePort(ip, port, owner)) {
+      reserved_ports_.insert(port);
+      return port;
+    }
+  }
+  return base_port;
+}
+
+void XLiveAPI::ReleaseReservedPorts() {
+  if (reserved_ports_.empty()) {
+    return;
+  }
+
+  const std::string ip = OnlineIP_str();
+  const std::string owner = fmt::format("{:016X}", GetInstanceId());
+
+  for (const uint16_t port : reserved_ports_) {
+    Document doc;
+    doc.SetObject();
+    auto& alloc = doc.GetAllocator();
+    doc.AddMember("hostAddress", Value(ip.c_str(), alloc).Move(), alloc);
+    doc.AddMember("port", port, alloc);
+    doc.AddMember("owner", Value(owner.c_str(), alloc).Move(), alloc);
+
+    rapidjson::StringBuffer buffer;
+    PrettyWriter<rapidjson::StringBuffer> writer(buffer);
+    doc.Accept(writer);
+
+    // Best-effort — if the hub is unreachable the TTL reclaims it anyway.
+    Post(BuildEndpoint("ports/release"),
+         reinterpret_cast<const uint8_t*>(buffer.GetString()));
+  }
+
+  reserved_ports_.clear();
+}
 
 int8_t XLiveAPI::GetVersionStatus() const { return version_status_; }
 
@@ -913,14 +1057,36 @@ std::unique_ptr<HTTPResponseObjectJSON> XLiveAPI::RegisterPlayer(
 
   XELOGI("POST Success");
 
-  auto player_lookup = FindPlayer(OnlineIP_str());
+  // Cache our own online XUID so the socket send path can stamp outgoing VDP
+  // packets without a profile lookup.
+  local_online_xuid = registered_xuid;
 
-  // Check for erroneous profile lookup
-  if (player_lookup->XUID() != player.XUID()) {
+  // Advertise our net-protocol version if the hub supports the in-packet tag.
+  // Capabilities are probed when a mode reaches Success (RefreshNetworkMode).
+  if (server_supports_tag) {
+    Document cv;
+    cv.SetObject();
+    auto& cv_alloc = cv.GetAllocator();
+    const std::string xuid_str = fmt::format("{:016X}", registered_xuid);
+    cv.AddMember("xuid", Value(xuid_str.c_str(), cv_alloc).Move(), cv_alloc);
+    cv.AddMember("version", kNexiaNetProtocolVersion, cv_alloc);
+
+    rapidjson::StringBuffer cv_buf;
+    rapidjson::PrettyWriter<rapidjson::StringBuffer> cv_writer(cv_buf);
+    cv.Accept(cv_writer);
+
+    Post(BuildEndpoint("players/clientVersion"),
+         reinterpret_cast<const uint8_t*>(cv_buf.GetString()));
+  }
+
+  // Confirm the hub stored OUR record — keyed on the unique xuid, NOT the IP.
+  // Two consoles behind one public IP each read back their own record instead
+  // of colliding on hostAddress, so this no longer false-triggers.
+  auto player_lookup = FindPlayerByXuid(registered_xuid);
+
+  if (player_lookup->XUID().get() != registered_xuid) {
     XELOGI("XLiveAPI:: {} XUID mismatch!", player.Gamertag());
     xuid_mismatch_ = true;
-
-    // assert_always();
   } else {
     xuid_mismatch_ = false;
   }
@@ -944,6 +1110,34 @@ const std::map<uint64_t, std::string> XLiveAPI::DeleteMyProfiles() {
 }
 
 // Request clients player info via IP address
+std::unique_ptr<PlayerObjectJSON> XLiveAPI::FindPlayerByXuid(uint64_t xuid) {
+  std::unique_ptr<PlayerObjectJSON> player =
+      std::make_unique<PlayerObjectJSON>();
+
+  Document doc;
+  doc.SetObject();
+  std::string xuid_str = fmt::format("{:016X}", xuid);
+  doc.AddMember("xuid", xuid_str, doc.GetAllocator());
+
+  rapidjson::StringBuffer buffer;
+  PrettyWriter<rapidjson::StringBuffer> writer(buffer);
+  doc.Accept(writer);
+
+  const uint8_t* find_data =
+      reinterpret_cast<const uint8_t*>(buffer.GetString());
+
+  std::unique_ptr<HTTPResponseObjectJSON> response =
+      Post(BuildEndpoint("players/findByXuid"), find_data);
+
+  // A miss is legitimate (record not visible yet); no assert, return empty.
+  if (response->StatusCode() != HTTP_STATUS_CODE::HTTP_CREATED) {
+    return player;
+  }
+
+  player = response->Deserialize<PlayerObjectJSON>();
+  return player;
+}
+
 std::unique_ptr<PlayerObjectJSON> XLiveAPI::FindPlayer(std::string ip) {
   std::unique_ptr<PlayerObjectJSON> player =
       std::make_unique<PlayerObjectJSON>();
@@ -1336,6 +1530,26 @@ void XLiveAPI::DeleteSession(uint64_t sessionId) {
 
   clearXnaddrCache();
   qos_payload_cache_.erase(sessionId);
+}
+
+void XLiveAPI::DeleteMySessions() {
+  // Only THIS console's sessions, keyed on the unique online XUID — never IP or
+  // MAC, which two Nexia instances on one machine share.
+  const auto profile =
+      kernel_state()->xam_state()->GetUserProfile(static_cast<uint32_t>(0));
+  if (!profile) {
+    return;
+  }
+
+  const uint64_t xuid = profile->GetOnlineXUID();
+  const std::string endpoint =
+      BuildEndpoint(fmt::format("DeleteSessions/xuid/{:016X}", xuid));
+
+  std::unique_ptr<HTTPResponseObjectJSON> response = Delete(endpoint);
+
+  if (response->StatusCode() != HTTP_STATUS_CODE::HTTP_OK) {
+    XELOGE("Failed to delete my sessions");
+  }
 }
 
 void XLiveAPI::DeleteAllSessionsByMac() {

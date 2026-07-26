@@ -80,6 +80,25 @@ ContentManager::ContentManager(KernelState* kernel_state,
 
 ContentManager::~ContentManager() = default;
 
+std::filesystem::path ContentManager::ActiveTitleUpdateContentRoot(
+    uint64_t xuid, uint32_t title_id) const {
+  Emulator* emulator = kernel_state_->emulator();
+  if (!emulator || !emulator->title_update_manager()) {
+    return {};
+  }
+  auto library_path =
+      emulator->title_update_manager()->GetActiveLibraryPath(title_id);
+  if (library_path.empty()) {
+    return {};
+  }
+  auto content_root = library_path / "Content" / fmt::format("{:016X}", xuid);
+  std::error_code ec;
+  if (!std::filesystem::exists(content_root, ec)) {
+    return {};
+  }
+  return content_root;
+}
+
 std::filesystem::path ContentManager::ResolvePackageRoot(
     uint64_t xuid, uint32_t title_id, XContentType content_type) const {
   if (title_id == kCurrentlyRunningTitleId) {
@@ -90,6 +109,15 @@ std::filesystem::path ContentManager::ResolvePackageRoot(
   auto title_id_str = fmt::format("{:08X}", title_id);
   auto content_type_str =
       fmt::format("{:08X}", static_cast<uint32_t>(content_type));
+
+  // Saved games may be bundled with the title's active update; serve them from
+  // the library folder instead of the global content tree when present.
+  if (content_type == XContentType::kSavedGame) {
+    auto tu_content = ActiveTitleUpdateContentRoot(xuid, title_id);
+    if (!tu_content.empty()) {
+      return tu_content / content_type_str;
+    }
+  }
 
   // Package root path:
   // content_root/title_id/content_type/
@@ -106,8 +134,10 @@ std::filesystem::path ContentManager::ResolvePackagePath(
         (data.xuid != -1 && data.xuid != 0) ? data.xuid.get() : xuid;
 
     // All DLCs are stored in common directory, so we need to override xuid for
-    // them and probably some other types.
-    if (data.content_type == XContentType::kMarketplaceContent) {
+    // them and probably some other types. Title updates are likewise not
+    // profile-specific and always live under xuid 0.
+    if (data.content_type == XContentType::kMarketplaceContent ||
+        data.content_type == XContentType::kInstaller) {
       used_xuid = 0;
     }
 
@@ -147,7 +177,8 @@ std::filesystem::path ContentManager::ResolvePackageHeaderPath(
     title_id = kernel_state_->title_id();
   }
 
-  if (content_type == XContentType::kMarketplaceContent) {
+  if (content_type == XContentType::kMarketplaceContent ||
+      content_type == XContentType::kInstaller) {
     xuid = 0;
   }
 
@@ -156,6 +187,16 @@ std::filesystem::path ContentManager::ResolvePackageHeaderPath(
   auto content_type_str = fmt::format("{:08X}", uint32_t(content_type));
   std::string final_name =
       xe::string_util::trim(std::string(file_name)) + ".header";
+
+  // Match the saved-game redirect in ResolvePackageRoot so the header is read
+  // from the active title update's bundled content when present.
+  if (content_type == XContentType::kSavedGame) {
+    auto tu_content = ActiveTitleUpdateContentRoot(xuid, title_id);
+    if (!tu_content.empty()) {
+      return tu_content / kGameContentHeaderDirName / content_type_str /
+             final_name;
+    }
+  }
 
   // Header root path:
   // content_root/xuid/title_id/Headers/content_type/

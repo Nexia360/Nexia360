@@ -11,6 +11,8 @@
 
 #include "xenia/hid/input_system.h"
 
+#include "xenia/hid/mousehook_config.h"
+
 #include "xenia/base/profiling.h"
 #include "xenia/hid/hid_flags.h"
 #include "xenia/hid/input_driver.h"
@@ -121,11 +123,23 @@ X_RESULT InputSystem::GetState(uint32_t user_index, uint32_t flags,
     return X_ERROR_DEVICE_NOT_CONNECTED;
   }
 
+  auto& mousehook = MousehookConfig::Get();
+  const bool apply_mousehook =
+      mousehook.enabled() && mousehook.user_index() == user_index;
+
   for (auto& driver : filtered_drivers) {
     X_RESULT result = driver->GetState(user_index, out_state);
     if (result == X_ERROR_SUCCESS) {
       UpdateUsedSlot(driver, user_index, true);
       AdjustDeadzoneLevels(user_index, &out_state->gamepad);
+
+      // Fold in mouse-look AFTER the deadzone pass (which would otherwise
+      // swallow small deflections) and regardless of which driver answered -
+      // with a real controller plugged in the WinKey driver is never reached,
+      // since the loop stops at the first driver that succeeds.
+      if (apply_mousehook) {
+        mousehook.ApplyToGamepad(&out_state->gamepad);
+      }
 
       if (out_state->gamepad.buttons != 0) {
         last_used_slot = user_index;

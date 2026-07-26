@@ -10,6 +10,10 @@
 #ifndef XENIA_APP_CONSOLE_SETTING_DIALOG_H_
 #define XENIA_APP_CONSOLE_SETTING_DIALOG_H_
 
+#include <functional>
+#include <string>
+
+#include "xenia/hid/mousehook_config.h"
 #include "xenia/ui/imgui_dialog.h"
 #include "xenia/ui/imgui_drawer.h"
 #include "xenia/xbox.h"
@@ -39,13 +43,41 @@ class ConsoleSettingsDialog final : public ui::ImGuiDialog {
     for (const auto& [xuid, profile] : *profiles) {
       profiles_.insert({xuid, profile.GetGamertagString()});
     }
+
+    // Mousehook is suspended for as long as this dialog is open - it locks the
+    // cursor to the window centre, which would make the settings UI unusable.
+    // The desired state is remembered here and applied in ApplyMousehookState()
+    // when the dialog closes.
+    pending_mousehook_enabled_ = hid::MousehookConfig::Get().enabled();
+    hid::MousehookConfig::Get().set_enabled(false);
   }
+
+  // Selects the Mousehook tab on the next draw (Ctrl+Shift+M).
+  void FocusMousehookTab() { focus_mousehook_tab_ = true; }
 
  protected:
   void OnDraw(ImGuiIO& io) override;
 
  private:
   void SaveConfig();
+
+  // Voice chat device pickers (Voice tab).
+  void DrawVoiceMicCombo();
+  void DrawVoiceOutputCombo();
+
+  // Mouse button action picker (Mousehook tab).
+  void DrawMouseButtonCombo(
+      const char* label, hid::MouseButtonAction current,
+      std::function<void(hid::MouseButtonAction)> on_change);
+
+  // Commits the deferred mousehook enable state (see the constructor) and
+  // toasts when it comes on. Called on every path that closes the dialog.
+  void ApplyMousehookState();
+
+  bool pending_mousehook_enabled_ = false;
+  bool focus_mousehook_tab_ = false;
+  // Name of the keybind currently waiting for a key press ("" = none).
+  std::string capturing_keybind_;
 
   EmulatorWindow& emulator_window_;
   kernel::XConfig* xconfig_ = nullptr;

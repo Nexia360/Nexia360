@@ -138,10 +138,28 @@ Entry* VirtualFileSystem::ResolvePath(const std::string_view path) {
     normalized_path = resolved_path;
   }
 
-  // Find the device.
+  // Find the device. Match must end on a path-component boundary so that a
+  // shorter device mount ("\Device\Flash") doesn't swallow a request for a
+  // longer one ("\Device\FlashFs\MobileB.dat") just because the names share
+  // a prefix. Either the prefix consumes the whole path (exact match) or the
+  // character following the prefix is a path separator.
   auto it =
       std::find_if(devices_.cbegin(), devices_.cend(), [&](const auto& d) {
-        return xe::utf8::starts_with(normalized_path, d->mount_path());
+        const auto& mount = d->mount_path();
+        if (!xe::utf8::starts_with(normalized_path, mount)) {
+          return false;
+        }
+        if (normalized_path.size() == mount.size()) {
+          return true;  // exact device-root match
+        }
+        // A mount that already ends in a separator is itself a component
+        // boundary (content devices mount as "\Device\Content\N\").
+        const char mount_last = mount.back();
+        if (mount_last == '\\' || mount_last == '/') {
+          return true;
+        }
+        const char next = normalized_path[mount.size()];
+        return next == '\\' || next == '/';
       });
   if (it == devices_.cend()) {
     // Supress logging the error for ShaderDumpxe:\CompareBackEnds as this is

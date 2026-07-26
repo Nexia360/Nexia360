@@ -25,6 +25,9 @@ struct CreateProfileUIArgs {
   char gamertag[16] = {};
   bool live_enabled = true;
   bool valid_gamertag = false;
+  // True while the on-screen keyboard for the gamertag is open (prevents
+  // re-opening it every frame).
+  bool keyboard_open = false;
   std::shared_future<std::pair<std::vector<uint8_t>, std::vector<uint8_t>>>
       downloaded_gamerpics;
   std::unique_ptr<xe::ui::ImmediateTexture> big_gamerpic_texture;

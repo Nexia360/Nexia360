@@ -25,6 +25,7 @@
 #include "xenia/kernel/upnp.h"
 #include "xenia/kernel/util/game_info_database.h"
 #include "xenia/kernel/util/network_adapter_manager.h"
+#include "xenia/kernel/util/title_update_manager.h"
 #include "xenia/kernel/util/xlast.h"
 #include "xenia/memory.h"
 #include "xenia/patcher/patcher.h"
@@ -187,6 +188,10 @@ class Emulator {
   kernel::UPnP* GetUPnP() { return upnp_.get(); }
   void ShutdownUPnP() { upnp_.reset(); }
 
+  kernel::util::TitleUpdateManager* title_update_manager() {
+    return title_update_manager_.get();
+  }
+
   kernel::XLiveAPI* GetXboxLiveAPI() { return xbox_live_api_.get(); }
 
   // Initializes the emulator and configures all components.
@@ -271,6 +276,7 @@ class Emulator {
     uint64_t content_size_ = 0;
     uint64_t currently_installed_size_ = 0;
     XContentType content_type_{};
+    uint32_t title_id_ = 0;
 
     InstallState installation_state_{};
     X_STATUS installation_result_{};
@@ -383,6 +389,7 @@ class Emulator {
   std::unique_ptr<kernel::util::GameInfoDatabase> game_info_database_;
   std::unique_ptr<kernel::NetworkAdapterManager> network_adapter_manager_;
   std::unique_ptr<kernel::UPnP> upnp_;
+  std::unique_ptr<kernel::util::TitleUpdateManager> title_update_manager_;
   std::unique_ptr<kernel::XLiveAPI> xbox_live_api_;
 
   bool paused_;

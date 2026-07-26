@@ -18,7 +18,7 @@
 
 DEFINE_string(upnp_root, "", "UPnP Root Device", "Live");
 
-DEFINE_bool(upnp, false, "Automatically port forward using UPnP", "Live");
+DEFINE_bool(upnp, true, "Automatically port forward using UPnP", "Live");
 
 DECLARE_bool(logging);
 
@@ -408,6 +408,30 @@ uint16_t UPnP::GetMappedConnectPort(uint16_t external_port) {
   }
 
   return external_port;
+}
+
+uint16_t UPnP::GetExternalPort(uint16_t internal_port,
+                               std::string_view protocol) {
+  const uint16_t mapped_internal = GetMappedBindPort(internal_port);
+
+  // NON-BLOCKING: AddPort holds mutex_bindings_ across the (slow) router SOAP
+  // call, and this is called on the latency-sensitive XNADDR/session-
+  // registration path. If the lock is busy, fall back to the internal port
+  // (correct whenever external == internal, i.e. no NAT conflict) rather than
+  // stall registration.
+  std::unique_lock bindings_lock(mutex_bindings_, std::try_to_lock);
+  if (!bindings_lock.owns_lock()) {
+    return mapped_internal;
+  }
+
+  const auto proto_it = port_bindings_.find(std::string(protocol));
+  if (proto_it != port_bindings_.cend()) {
+    const auto it = proto_it->second.find(mapped_internal);
+    if (it != proto_it->second.cend()) {
+      return it->second;
+    }
+  }
+  return mapped_internal;
 }
 
 uint16_t UPnP::GetMappedBindPort(uint16_t external_port) {

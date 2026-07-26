@@ -52,6 +52,7 @@ class SDLInputDriver final : public InputDriver {
     X_INPUT_CAPABILITIES caps;
     X_INPUT_STATE state;
     bool state_changed;
+    bool is_active;
   };
 
   enum class RepeatState {

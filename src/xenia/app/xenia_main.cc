@@ -67,6 +67,7 @@
 #endif  // XE_PLATFORM_WIN32
 
 // Available input drivers:
+#include "xenia/hid/mousehook_config.h"
 #include "xenia/hid/nop/nop_hid.h"
 #if !XE_PLATFORM_ANDROID
 #include "xenia/hid/sdl/sdl_hid.h"
@@ -150,6 +151,31 @@ DECLARE_bool(upnp);
 
 namespace xe {
 namespace app {
+
+// Both VFS layouts are supported:
+//   Device-rooted : <storage_root>/Device/<name>   (Nexia layout - the host
+//                   content/cache folders live alongside the guest device
+//                   folders, keeping the storage root clean)
+//   Legacy        : <storage_root>/<name>          (upstream layout)
+// A folder is used wherever it already exists, preferring the Device-rooted
+// copy when both are present. Nothing is moved or deleted, so an existing
+// install keeps working in place and either layout can be adopted by simply
+// creating the folder. Note the title-update library follows automatically:
+// TitleUpdateManager derives its root from content_root's parent.
+static std::filesystem::path ResolveStorageFolder(
+    const std::filesystem::path& storage_root, const char* name) {
+  std::error_code ec;
+  const auto device_path = storage_root / "Device" / name;
+  if (std::filesystem::exists(device_path, ec)) {
+    return device_path;
+  }
+  const auto legacy_path = storage_root / name;
+  if (std::filesystem::exists(legacy_path, ec)) {
+    return legacy_path;
+  }
+  // Neither exists yet - create new installs in the Device-rooted layout.
+  return device_path;
+}
 
 class EmulatorApp final : public xe::ui::WindowedApp {
  public:
@@ -315,7 +341,7 @@ void EmulatorApp::DebugWindowClosedListener::OnClosing(xe::ui::UIEvent& e) {
 }
 
 EmulatorApp::EmulatorApp(xe::ui::WindowedAppContext& app_context)
-    : xe::ui::WindowedApp(app_context, "xenia", "[Path to .iso/.xex]"),
+    : xe::ui::WindowedApp(app_context, "nexia", "[Path to .iso/.xex]"),
       debug_window_closed_listener_(*this) {
   AddPositionalOption("target");
 }
@@ -519,7 +545,7 @@ bool EmulatorApp::OnInitialize() {
 
   std::filesystem::path content_root = cvars::content_root;
   if (content_root.empty()) {
-    content_root = storage_root / "content";
+    content_root = ResolveStorageFolder(storage_root, "content");
   } else {
     // If content root isn't an absolute path, then it should be relative to the
     // storage root.
@@ -532,7 +558,7 @@ bool EmulatorApp::OnInitialize() {
 
   std::filesystem::path cache_root = cvars::cache_root;
   if (cache_root.empty()) {
-    cache_root = storage_root / "cache_host";
+    cache_root = ResolveStorageFolder(storage_root, "cache_host");
     // TODO(Triang3l): Point to the app's external storage "cache" directory on
     // Android.
   } else {
@@ -544,6 +570,10 @@ bool EmulatorApp::OnInitialize() {
   }
   cache_root = std::filesystem::absolute(cache_root);
   XELOGI("Host cache root: {}", cache_root);
+
+  // Mouse-look settings live in their own JSON next to the config, edited from
+  // Console settings -> Mousehook.
+  hid::MousehookConfig::Get().Load(storage_root / "mousehook.json");
 
   if (cvars::discord) {
     discord::DiscordPresence::Initialize();
@@ -596,8 +626,21 @@ void EmulatorApp::OnDestroy() {
 #pragma region NetplayCleanup
   emulator_->ShutdownUPnP();
 
-  // Delete sessions on shutdown.
-  emulator_->GetXboxLiveAPI()->DeleteAllSessionsByMac();
+  // Delete sessions on shutdown. On a capable hub delete only OUR sessions -
+  // deleting by MAC wipes the sessions of any other instance sharing it (two
+  // Nexia instances on one machine).
+  auto* xbox_live_api = emulator_->GetXboxLiveAPI();
+  if (kernel::XLiveAPI::server_supports_delete_my_sessions) {
+    xbox_live_api->DeleteMySessions();
+  } else {
+    xbox_live_api->DeleteAllSessionsByMac();
+  }
+
+  // Hand back the hub port reservations this instance owns. Must happen here
+  // rather than in ~Emulator: that destructor never runs (see quick_exit
+  // below), so reservations would linger until their TTL expired and the next
+  // launch would be pushed onto a different port.
+  xbox_live_api->ReleaseReservedPorts();
 
   emulator_->GetXboxLiveAPI()->~XLiveAPI();
 
@@ -641,7 +684,7 @@ void EmulatorApp::EmulatorThread() {
 
   if (cvars::mount_scratch) {
     auto scratch_device = std::make_unique<xe::vfs::HostPathDevice>(
-        "\\SCRATCH", emulator_->storage_root() / "scratch", false);
+        "\\SCRATCH", ResolveStorageFolder(emulator_->storage_root(), "scratch"), false);
     if (!scratch_device->Initialize()) {
       XELOGE("Unable to scan scratch path");
     } else {
@@ -655,7 +698,7 @@ void EmulatorApp::EmulatorThread() {
 
   if (cvars::mount_cache) {
     auto cache0_device = std::make_unique<xe::vfs::HostPathDevice>(
-        "\\CACHE0", emulator_->storage_root() / "cache0", false);
+        "\\CACHE0", ResolveStorageFolder(emulator_->storage_root(), "cache0"), false);
     if (!cache0_device->Initialize()) {
       XELOGE("Unable to scan cache0 path");
     } else {
@@ -667,7 +710,7 @@ void EmulatorApp::EmulatorThread() {
     }
 
     auto cache1_device = std::make_unique<xe::vfs::HostPathDevice>(
-        "\\CACHE1", emulator_->storage_root() / "cache1", false);
+        "\\CACHE1", ResolveStorageFolder(emulator_->storage_root(), "cache1"), false);
     if (!cache1_device->Initialize()) {
       XELOGE("Unable to scan cache1 path");
     } else {
@@ -683,7 +726,7 @@ void EmulatorApp::EmulatorThread() {
     // substring/start_with logic inside VirtualFileSystem::ResolvePath, else
     // accesses to those devices will go here instead
     auto cache_device = std::make_unique<xe::vfs::HostPathDevice>(
-        "\\CACHE", emulator_->storage_root() / "cache", false);
+        "\\CACHE", ResolveStorageFolder(emulator_->storage_root(), "cache"), false);
     if (!cache_device->Initialize()) {
       XELOGE("Unable to scan cache path");
     } else {
@@ -695,7 +738,7 @@ void EmulatorApp::EmulatorThread() {
     }
 
     auto xstorage_device = std::make_unique<xe::vfs::HostPathDevice>(
-        "\\XSTORAGE", emulator_->storage_root() / "xstorage", false);
+        "\\XSTORAGE", ResolveStorageFolder(emulator_->storage_root(), "xstorage"), false);
     if (!xstorage_device->Initialize()) {
       XELOGE("Unable to scan xstorage path");
     } else {

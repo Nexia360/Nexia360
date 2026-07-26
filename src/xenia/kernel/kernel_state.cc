@@ -16,6 +16,7 @@
 #include "xenia/emulator.h"
 #include "xenia/hid/input_system.h"
 #include "xenia/kernel/user_module.h"
+#include "xenia/vfs/devices/host_path_device.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_memory.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_module.h"
@@ -702,12 +703,59 @@ X_RESULT KernelState::FinishLoadingUserModule(
 
 X_RESULT KernelState::ApplyTitleUpdate(
     const object_ref<UserModule> title_module) {
-  const auto title_updates = FindTitleUpdate(title_module->title_id());
-  if (title_updates.empty()) {
-    return X_STATUS_SUCCESS;
+  object_ref<UserModule> patch_module = {};
+
+  // Prefer the library-managed active update, loaded directly from disk so
+  // large updates don't need to be copied or linked into the content tree.
+  if (cvars::apply_title_update && emulator_ &&
+      emulator_->title_update_manager()) {
+    std::filesystem::path lib_path =
+        emulator_->title_update_manager()->GetActiveLibraryPath(
+            title_module->title_id());
+    std::string mount_path;
+    if (!lib_path.empty() &&
+        file_system()->FindSymbolicLink("game:", mount_path) &&
+        title_module->path().starts_with(mount_path)) {
+      const std::string relative =
+          title_module->path().substr(mount_path.size() + 1) + 'p';
+      // Mount the library folder directly into the VFS as UPDATE: (no copy or
+      // link into the content tree) and load the patch from it. The mount is
+      // left registered so the title can also reach updated resources.
+      const std::string device_path = "\\Device\\TitleUpdate\\";
+      file_system()->UnregisterSymbolicLink("UPDATE:");
+      file_system()->UnregisterDevice(device_path);
+      auto device =
+          std::make_unique<vfs::HostPathDevice>(device_path, lib_path, true);
+      if (device->Initialize() &&
+          file_system()->RegisterDevice(std::move(device))) {
+        file_system()->RegisterSymbolicLink("UPDATE:", device_path);
+        xe::vfs::Entry* patch_entry =
+            file_system()->ResolvePath(device_path + relative);
+        if (patch_entry) {
+          auto candidate = object_ref<UserModule>(new UserModule(this));
+          if (candidate->LoadFromFile(patch_entry->absolute_path()) ==
+              X_STATUS_SUCCESS) {
+            patch_module = candidate;
+          }
+        }
+        if (!patch_module) {
+          // Clean up so the legacy fallback can mount UPDATE: itself.
+          file_system()->UnregisterSymbolicLink("UPDATE:");
+          file_system()->UnregisterDevice(device_path);
+        }
+      }
+    }
   }
 
-  auto patch_module = LoadTitleUpdate(&title_updates.front(), title_module);
+  // Fall back to the legacy content-tree lookup.
+  if (!patch_module) {
+    const auto title_updates = FindTitleUpdate(title_module->title_id());
+    if (title_updates.empty()) {
+      return X_STATUS_SUCCESS;
+    }
+    patch_module = LoadTitleUpdate(&title_updates.front(), title_module);
+  }
+
   if (!patch_module) {
     return X_STATUS_SUCCESS;
   }

@@ -1409,7 +1409,10 @@ uint32_t UserTracker::GetLogonState() const {
   //   return X_ONLINE_E_LOGON_NO_NETWORK_CONNECTION;
   // }
 
-  return network_state == NETWORK_MODE::XBOXLIVE
+  // >= XBOXLIVE: Nexia Hub (3) is an Xbox-Live-class online mode. Everything
+  // Live-gated funnels through here (LoggedInToLive), so an == check would
+  // report the console as disconnected while on the hub.
+  return network_state >= NETWORK_MODE::XBOXLIVE
              ? X_ONLINE_S_LOGON_CONNECTION_ESTABLISHED
              : X_ONLINE_S_LOGON_DISCONNECTED;
 }
@@ -1564,19 +1567,28 @@ void UserTracker::PeriodicMaintenance(uint64_t xuid, size_t iteration_count) {
     backend_avalability_ = xbox_live_api->Heartbeat();
   }
 
+  // Name the service the user actually selected - Nexia Hub is its own online
+  // mode, so the toasts must not claim "Xbox Live".
+  const auto service_name = [](NETWORK_MODE mode) -> std::string {
+    return mode == NETWORK_MODE::NEXIAHUB ? "Nexia Hub" : "Xbox Live";
+  };
+
   if (!(iteration_count % heartbeat_modulo)) {
     if (xbox_live_api->Heartbeat()) {
       // Refresh connection.
       if (!xbox_live_api->IsConnectedToServer() && !backend_avalability_) {
         if (xbox_live_api->SelectNetworkMode(cvars::network_mode)) {
+          const std::string service =
+              service_name(static_cast<NETWORK_MODE>(cvars::network_mode));
+
           if (LoggedInToLive()) {
             new xe::ui::HostNotificationWindow(
                 kernel_state()->emulator()->imgui_drawer(),
-                "Connected to Xbox Live", "Xbox Live", 0);
+                fmt::format("Connected to {}", service), service, 0);
           } else {
             new xe::ui::HostNotificationWindow(
                 kernel_state()->emulator()->imgui_drawer(),
-                "Xbox Live is now available", "Xbox Live", 0);
+                fmt::format("{} is now available", service), service, 0);
           }
         }
 
@@ -1588,14 +1600,16 @@ void UserTracker::PeriodicMaintenance(uint64_t xuid, size_t iteration_count) {
             static_cast<NETWORK_MODE>(cvars::network_mode);
 
         if (xbox_live_api->SelectNetworkMode(NETWORK_MODE::LAN)) {
-          if (current_mode == NETWORK_MODE::XBOXLIVE) {
+          const std::string service = service_name(current_mode);
+
+          if (current_mode >= NETWORK_MODE::XBOXLIVE) {
             new xe::ui::HostNotificationWindow(
                 kernel_state()->emulator()->imgui_drawer(),
-                "Disconnected from Xbox Live", "Xbox Live", 0);
+                fmt::format("Disconnected from {}", service), service, 0);
           } else {
             new xe::ui::HostNotificationWindow(
                 kernel_state()->emulator()->imgui_drawer(),
-                "Xbox Live is unavailable", "Xbox Live", 0);
+                fmt::format("{} is unavailable", service), service, 0);
           }
 
           backend_avalability_ = false;

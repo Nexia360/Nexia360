@@ -110,6 +110,28 @@ class XLiveAPI {
 
   uint16_t GetPlayerPort() const;
 
+  // Nexia: the local (pre-UPnP) port this instance reserved on the hub.
+  uint16_t GetLocalPlayerPort() const { return player_port_; }
+  void SetPlayerPort(uint16_t port) { player_port_ = port; }
+
+  // Nexia: hub capability negotiation. Runs once a mode reaches Success.
+  void ProbeServerCapabilities();
+
+  // Nexia: hub-arbitrated port reservation so two instances behind one IP
+  // (or on one machine) never collide. owner is a per-process instance id.
+  bool ReservePort(const std::string& host_address, uint16_t port,
+                   const std::string& owner);
+  uint16_t AllocateHostPort(uint16_t base_port = 20000);
+  uint64_t GetInstanceId();
+  void ReleaseReservedPorts();
+
+  // Nexia: identity lookup by XUID instead of by (shared) IP.
+  std::unique_ptr<PlayerObjectJSON> FindPlayerByXuid(uint64_t xuid);
+
+  // Nexia: delete only this profile's sessions (legacy delete was by IP and
+  // wiped same-IP peers' sessions).
+  void DeleteMySessions();
+
   int8_t GetVersionStatus() const;
 
   void clearXnaddrCache();
@@ -283,7 +305,65 @@ class XLiveAPI {
   inline static std::map<uint32_t, uint64_t> sessionIdCache = {};
   inline static std::map<uint32_t, uint64_t> macAddressCache = {};
 
+  // --- Nexia in-packet XUID identity tag (VDP) -----------------------------
+  // Bump when the on-wire tag format changes. Advertised to the hub via
+  // POST /players/clientVersion and compared against peers' advertised
+  // versions.
+  static constexpr uint32_t kNexiaNetProtocolVersion = 1;
+
+  // Set true only when the hub advertises the "xuidTag" capability (GET
+  // /capabilities). Old hubs 404 the probe -> stays false -> feature fully off.
+  inline static bool server_supports_tag = false;
+
+  // Set true when the hub advertises "deleteMySessions" (xuid-scoped session
+  // delete). Old hubs stay false -> we fall back to the legacy IP-based
+  // DeleteAllSessions().
+  inline static bool server_supports_delete_my_sessions = false;
+
+  // Our own online XUID, cached at register time so the socket send path can
+  // stamp outgoing VDP packets without a profile lookup.
+  inline static uint64_t local_online_xuid = 0;
+
+  // Per-peer capability, keyed on the UNIQUE XUID (never the IP, since two
+  // consoles can share one public IP). Populated from a peer's advertised
+  // clientVersion during resolution.
+  inline static std::map<uint64_t, bool> peer_supports_tag = {};
+
+  // Resolved peer online-IP(network order) -> XUID. Feeds the send gate
+  // (which only knows a destination IP) and the port-less XnAddr resolver.
+  inline static std::map<uint32_t, uint64_t> ip_to_xuid = {};
+
+  // Peer online-IP(be) -> the port the peer told us to reach it on, learned
+  // from its VDP tag. This is how a host learns a client's mapped port (the
+  // client can't be found by the shared public IP alone).
+  inline static std::map<uint32_t, uint16_t> packet_port_cache = {};
+
+  // Hub ports this instance has reserved, released on shutdown.
+  inline static std::unordered_set<uint16_t> reserved_ports_ = {};
+
+  // Record identity + reachable port carried by a received VDP tag. A peer that
+  // tags us is, by definition, capable, so mark it so.
+  static void CachePacketXuid(uint32_t ip_be, uint16_t advertised_port,
+                              uint64_t xuid) {
+    ip_to_xuid[ip_be] = xuid;
+    peer_supports_tag[xuid] = true;
+    packet_port_cache[ip_be] = advertised_port;
+  }
+
+  // True only when we've positively confirmed the peer at this destination IP
+  // can strip our tag. Unknown/old/unresolved -> false -> send plain.
+  static bool PeerSupportsTag(uint32_t dest_ip_be) {
+    if (!server_supports_tag) return false;
+    auto ix = ip_to_xuid.find(dest_ip_be);
+    if (ix == ip_to_xuid.end()) return false;
+    auto cx = peer_supports_tag.find(ix->second);
+    return cx != peer_supports_tag.end() && cx->second;
+  }
+
  private:
+  // Nexia: local reserved port (pre-UPnP). Was hardcoded 36000.
+  uint16_t player_port_ = 36000;
+
   const std::string default_local_server_ = "192.168.0.1:36000/";
 
   const std::string default_public_server_ =

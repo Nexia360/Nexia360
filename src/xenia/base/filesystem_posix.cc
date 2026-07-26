@@ -46,6 +46,27 @@ std::filesystem::path to_path(const std::u16string_view source) {
 
 namespace filesystem {
 
+bool CreateDirectoryJunction(const std::filesystem::path& link_path,
+                             const std::filesystem::path& target) {
+  std::error_code ec;
+  std::filesystem::path abs_target = std::filesystem::absolute(target, ec);
+  if (ec) {
+    return false;
+  }
+  std::filesystem::remove(link_path, ec);
+  std::filesystem::create_directory_symlink(abs_target, link_path, ec);
+  return !ec;
+}
+
+bool RemoveDirectoryJunction(const std::filesystem::path& link_path) {
+  std::error_code ec;
+  if (!std::filesystem::is_symlink(
+          std::filesystem::symlink_status(link_path, ec))) {
+    return false;
+  }
+  return std::filesystem::remove(link_path, ec) && !ec;
+}
+
 std::filesystem::path GetExecutablePath() {
 #if XE_PLATFORM_MAC
   char path[PATH_MAX];

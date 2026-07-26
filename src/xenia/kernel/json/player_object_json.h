@@ -65,6 +65,11 @@ class PlayerObjectJSON : public BaseObjectJSON {
   const uint16_t& Port() const { return port_; }
   void Port(const uint16_t& port) { port_ = port; }
 
+  // Nexia net-protocol version the peer advertised (0 = old/unknown). Used to
+  // decide whether to send the in-packet XUID tag to this peer.
+  uint32_t ClientVersion() const { return clientVersion_; }
+  void ClientVersion(uint32_t clientVersion) { clientVersion_ = clientVersion; }
+
  private:
   xe::be<uint64_t> xuid_;
   std::string hostAddress_;
@@ -74,6 +79,7 @@ class PlayerObjectJSON : public BaseObjectJSON {
   xe::be<uint64_t> sessionId_;
   std::map<uint32_t, std::vector<xam::UserSetting>> settings_;
   uint16_t port_;
+  uint32_t clientVersion_ = 0;
 };
 
 }  // namespace kernel

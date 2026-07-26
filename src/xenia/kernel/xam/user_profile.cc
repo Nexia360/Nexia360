@@ -57,7 +57,9 @@ bool UserProfile::IsSignedInToLive() const {
 }
 
 X_USER_SIGNIN_STATE UserProfile::signin_state() const {
-  return IsLiveEnabled() && cvars::network_mode == NETWORK_MODE::XBOXLIVE
+  // >= XBOXLIVE: Nexia Hub (3) is an Xbox-Live-class online mode and must
+  // report as signed in to Live, same as XBOXLIVE (2).
+  return IsLiveEnabled() && cvars::network_mode >= NETWORK_MODE::XBOXLIVE
              ? X_USER_SIGNIN_STATE::SignedInToLive
              : X_USER_SIGNIN_STATE::SignedInLocally;
 }

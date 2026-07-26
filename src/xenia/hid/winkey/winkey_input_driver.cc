@@ -12,6 +12,7 @@
 #include "xenia/base/logging.h"
 #include "xenia/base/platform_win.h"
 #include "xenia/hid/hid_flags.h"
+#include "xenia/hid/mousehook_config.h"
 #include "xenia/hid/input_system.h"
 #include "xenia/ui/virtual_key.h"
 #include "xenia/ui/window.h"
@@ -36,6 +37,7 @@ DEFINE_int32(
     "Controller port that keyboard emulates. [0, 3] - Keyboard is assigned to "
     "selected slot. Passthrough does not require assigning slot.",
     "HID");
+
 
 namespace xe {
 namespace hid {
@@ -174,6 +176,14 @@ bool static IsKeyboardForUserEnabled(uint32_t user_index) {
   return cvars::keyboard_user_index == user_index;
 }
 
+// Mousehook drives its own controller slot and does NOT require the keyboard
+// to be enabled - otherwise enabling mousehook would capture the cursor while
+// GetState bailed out with DEVICE_NOT_CONNECTED and no stick was ever injected.
+bool static IsMousehookForUserEnabled(uint32_t user_index) {
+  const auto& mh = MousehookConfig::Get();
+  return mh.enabled() && mh.user_index() == user_index;
+}
+
 bool __inline IsKeyToggled(uint8_t key) {
   return (GetKeyState(key) & 0x1) == 0x1;
 }
@@ -229,25 +239,53 @@ void WinKeyInputDriver::ParseKeyBinding(ui::VirtualKey output_key,
 WinKeyInputDriver::WinKeyInputDriver(xe::ui::Window* window,
                                      size_t window_z_order)
     : InputDriver(window, window_z_order), window_input_listener_(*this) {
-#define XE_HID_WINKEY_BINDING(button, description, cvar_name,          \
-                              cvar_default_value)                      \
-  ParseKeyBinding(xe::ui::VirtualKey::kXInputPad##button, description, \
-                  cvars::cvar_name);
-#include "winkey_binding_table.inc"
-#undef XE_HID_WINKEY_BINDING
+  // Seed mousehook.json's keybind table with mousehook's own defaults the
+  // first time around (WASD move, Q/E triggers, 1/4 bumpers, Space A, R B).
+  auto& mh = MousehookConfig::Get();
+  if (!mh.has_keybinds()) {
+    mh.SeedDefaultKeybinds();
+    mh.Save();
+  }
+
+  ReloadKeyBindings();
 
   window->AddInputListener(&window_input_listener_, window_z_order);
 }
 
+void WinKeyInputDriver::ReloadKeyBindings() {
+  auto& mh = MousehookConfig::Get();
+  // Record the generation BEFORE reading, so an edit landing mid-rebuild is
+  // picked up on the next poll rather than lost.
+  bindings_generation_ = mh.bindings_generation();
+
+  key_bindings_.clear();
+
+#define XE_HID_WINKEY_BINDING(button, description, cvar_name,          \
+                              cvar_default_value)                      \
+  ParseKeyBinding(xe::ui::VirtualKey::kXInputPad##button, description, \
+                  mh.keybind(#cvar_name));
+#include "winkey_binding_table.inc"
+#undef XE_HID_WINKEY_BINDING
+}
+
 WinKeyInputDriver::~WinKeyInputDriver() {
   window()->RemoveInputListener(&window_input_listener_);
+
+  // Hand the cursor back. ShowCursor is a refcount, so leaving it decremented
+  // hides the pointer for the rest of the session.
+  if (cursor_hidden_) {
+    ShowCursor(TRUE);
+    cursor_hidden_ = false;
+  }
+  MousehookConfig::Get().ResetMouseState();
 }
 
 X_STATUS WinKeyInputDriver::Setup() { return X_STATUS_SUCCESS; }
 
 X_RESULT WinKeyInputDriver::GetCapabilities(uint32_t user_index, uint32_t flags,
                                             X_INPUT_CAPABILITIES* out_caps) {
-  if (!IsKeyboardForUserEnabled(user_index) && !IsPassthroughEnabled()) {
+  if (!IsKeyboardForUserEnabled(user_index) && !IsPassthroughEnabled() &&
+      !IsMousehookForUserEnabled(user_index)) {
     return X_ERROR_DEVICE_NOT_CONNECTED;
   }
 
@@ -274,8 +312,14 @@ X_RESULT WinKeyInputDriver::GetCapabilities(uint32_t user_index, uint32_t flags,
 
 X_RESULT WinKeyInputDriver::GetState(uint32_t user_index,
                                      X_INPUT_STATE* out_state) {
-  if (!IsKeyboardForUserEnabled(user_index)) {
+  if (!IsKeyboardForUserEnabled(user_index) &&
+      !IsMousehookForUserEnabled(user_index)) {
     return X_ERROR_DEVICE_NOT_CONNECTED;
+  }
+
+  // Pick up keybind edits made in the Console settings UI.
+  if (bindings_generation_ != MousehookConfig::Get().bindings_generation()) {
+    ReloadKeyBindings();
   }
 
   packet_number_++;
@@ -288,10 +332,18 @@ X_RESULT WinKeyInputDriver::GetState(uint32_t user_index,
   int16_t thumb_rx = 0;
   int16_t thumb_ry = 0;
 
-  if (window()->HasFocus()) {
+  if (window()->HasFocus() && is_active()) {
     bool capital = IsKeyToggled(VK_CAPITAL) || IsKeyDown(VK_SHIFT);
+    // Mousehook can own this slot without the keyboard being enabled for it;
+    // in that case the key bindings must not contribute.
+    // When mousehook owns this slot the bindings are applied by
+    // InputSystem (from mousehook.json) - applying them here too would
+    // double-press everything.
+    const bool keyboard_enabled = IsKeyboardForUserEnabled(user_index) &&
+                                  !IsMousehookForUserEnabled(user_index);
     for (const KeyBinding& b : key_bindings_) {
-      if (((b.lowercase == b.uppercase) || (b.lowercase && !capital) ||
+      if (keyboard_enabled &&
+          ((b.lowercase == b.uppercase) || (b.lowercase && !capital) ||
            (b.uppercase && capital)) &&
           IsKeyDown(b.input_key)) {
         switch (b.output_key) {
@@ -373,6 +425,7 @@ X_RESULT WinKeyInputDriver::GetState(uint32_t user_index,
         }
       }
     }
+
   }
 
   out_state->packet_number = packet_number_;
@@ -499,8 +552,8 @@ void WinKeyInputDriver::WinKeyWindowInputListener::OnKeyUp(ui::KeyEvent& e) {
 }
 
 void WinKeyInputDriver::OnKey(ui::KeyEvent& e, bool is_down) {
-  if (static_cast<KeyboardMode>(cvars::keyboard_mode) ==
-      KeyboardMode::Disabled) {
+  if (!is_active() || static_cast<KeyboardMode>(cvars::keyboard_mode) ==
+                          KeyboardMode::Disabled) {
     return;
   }
 
@@ -512,6 +565,86 @@ void WinKeyInputDriver::OnKey(ui::KeyEvent& e, bool is_down) {
 
   auto global_lock = global_critical_region_.Acquire();
   key_events_.push(key);
+}
+
+void WinKeyInputDriver::WinKeyWindowInputListener::OnMouseDown(
+    ui::MouseEvent& e) {
+  driver_.OnMouseButton(e, true);
+}
+
+void WinKeyInputDriver::WinKeyWindowInputListener::OnMouseUp(
+    ui::MouseEvent& e) {
+  driver_.OnMouseButton(e, false);
+}
+
+void WinKeyInputDriver::WinKeyWindowInputListener::OnMouseMove(
+    ui::MouseEvent& e) {
+  driver_.OnMouseMove(e);
+}
+
+void WinKeyInputDriver::OnMouseButton(ui::MouseEvent& e, bool is_down) {
+  if (!MousehookConfig::Get().enabled()) {
+    return;
+  }
+  switch (e.button()) {
+    case ui::MouseEvent::Button::kLeft:
+      MousehookConfig::Get().set_mouse_left(is_down);
+      break;
+    case ui::MouseEvent::Button::kRight:
+      MousehookConfig::Get().set_mouse_right(is_down);
+      break;
+    case ui::MouseEvent::Button::kMiddle:
+      MousehookConfig::Get().set_mouse_middle(is_down);
+      break;
+    default:
+      break;
+  }
+}
+
+void WinKeyInputDriver::OnMouseMove(ui::MouseEvent& e) {
+  // Cursor-lock relative aim. Only active when mousehook is on, this driver is
+  // active, and the window is focused; otherwise restore the system cursor.
+  const bool active =
+      MousehookConfig::Get().enabled() && is_active() && window()->HasFocus();
+  HWND hwnd = GetForegroundWindow();
+  if (!active || !hwnd) {
+    if (cursor_hidden_) {
+      ShowCursor(TRUE);
+      cursor_hidden_ = false;
+      MousehookConfig::Get().ResetMouseState();
+    }
+    return;
+  }
+
+  RECT client_rect;
+  if (!GetClientRect(hwnd, &client_rect)) {
+    return;
+  }
+  const int center_x = client_rect.right / 2;
+  const int center_y = client_rect.bottom / 2;
+  POINT screen_center{center_x, center_y};
+  ClientToScreen(hwnd, &screen_center);
+
+  if (!cursor_hidden_) {
+    // Just entered the lock: hide + re-centre, but ignore this initial jump so
+    // the aim doesn't lurch when the cursor was sitting elsewhere.
+    SetCursorPos(screen_center.x, screen_center.y);
+    ShowCursor(FALSE);
+    cursor_hidden_ = true;
+    return;
+  }
+
+  // MouseEvent x()/y() are client-relative; the delta from centre is the
+  // relative motion since our last re-centre.
+  const int dx = e.x() - center_x;
+  const int dy = e.y() - center_y;
+  if (dx == 0 && dy == 0) {
+    // The move our own SetCursorPos generated.
+    return;
+  }
+  MousehookConfig::Get().AccumulateMouseMotion(dx, dy);
+  // Re-centre so the cursor can never leave the window (unbounded aim).
+  SetCursorPos(screen_center.x, screen_center.y);
 }
 
 InputType WinKeyInputDriver::GetInputType() const {

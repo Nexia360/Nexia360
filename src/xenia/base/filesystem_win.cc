@@ -9,8 +9,12 @@
 
 #include <io.h>
 #include <shlobj.h>
+#include <winioctl.h>
 
+#include <cstddef>
+#include <cstring>
 #include <string>
+#include <vector>
 
 #undef CreateFile
 
@@ -38,6 +42,86 @@ std::filesystem::path to_path(const std::u16string_view source) {
 }
 
 namespace filesystem {
+
+bool CreateDirectoryJunction(const std::filesystem::path& link_path,
+                             const std::filesystem::path& target) {
+  std::error_code ec;
+  std::filesystem::path abs_target = std::filesystem::absolute(target, ec);
+  if (ec) {
+    return false;
+  }
+
+  if (!std::filesystem::exists(link_path, ec)) {
+    std::filesystem::create_directories(link_path, ec);
+    if (ec) {
+      return false;
+    }
+  }
+
+  HANDLE dir = CreateFileW(
+      link_path.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+      FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+  if (dir == INVALID_HANDLE_VALUE) {
+    return false;
+  }
+
+  const std::wstring substitute = L"\\??\\" + abs_target.wstring();
+  const std::wstring print_name = abs_target.wstring();
+  const USHORT subst_bytes =
+      static_cast<USHORT>(substitute.size() * sizeof(wchar_t));
+  const USHORT print_bytes =
+      static_cast<USHORT>(print_name.size() * sizeof(wchar_t));
+
+  struct ReparseMountPoint {
+    ULONG reparse_tag;
+    USHORT reparse_data_length;
+    USHORT reserved;
+    USHORT substitute_name_offset;
+    USHORT substitute_name_length;
+    USHORT print_name_offset;
+    USHORT print_name_length;
+    wchar_t path_buffer[1];
+  };
+
+  const size_t header_bytes = offsetof(ReparseMountPoint, path_buffer);
+  const size_t path_buffer_bytes =
+      subst_bytes + sizeof(wchar_t) + print_bytes + sizeof(wchar_t);
+  std::vector<uint8_t> buffer(header_bytes + path_buffer_bytes, 0);
+  auto* rp = reinterpret_cast<ReparseMountPoint*>(buffer.data());
+
+  rp->reparse_tag = IO_REPARSE_TAG_MOUNT_POINT;
+  rp->reparse_data_length = static_cast<USHORT>(8 + path_buffer_bytes);
+  rp->substitute_name_offset = 0;
+  rp->substitute_name_length = subst_bytes;
+  rp->print_name_offset = subst_bytes + sizeof(wchar_t);
+  rp->print_name_length = print_bytes;
+  std::memcpy(rp->path_buffer, substitute.c_str(), subst_bytes);
+  std::memcpy(reinterpret_cast<uint8_t*>(rp->path_buffer) + subst_bytes +
+                  sizeof(wchar_t),
+              print_name.c_str(), print_bytes);
+
+  DWORD bytes_returned = 0;
+  BOOL ok = DeviceIoControl(dir, FSCTL_SET_REPARSE_POINT, buffer.data(),
+                            static_cast<DWORD>(buffer.size()), nullptr, 0,
+                            &bytes_returned, nullptr);
+  CloseHandle(dir);
+  if (!ok) {
+    std::filesystem::remove(link_path, ec);
+    return false;
+  }
+  return true;
+}
+
+bool RemoveDirectoryJunction(const std::filesystem::path& link_path) {
+  DWORD attrs = GetFileAttributesW(link_path.c_str());
+  if (attrs == INVALID_FILE_ATTRIBUTES ||
+      !(attrs & FILE_ATTRIBUTE_REPARSE_POINT)) {
+    return false;
+  }
+  // RemoveDirectoryW on a reparse point removes the reparse point itself, not
+  // the target it points to.
+  return RemoveDirectoryW(link_path.c_str()) != 0;
+}
 
 std::filesystem::path GetExecutablePath() {
   wchar_t* path;

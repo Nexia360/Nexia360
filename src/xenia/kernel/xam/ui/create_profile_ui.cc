@@ -11,6 +11,7 @@
 #include "xenia/emulator.h"
 #include "xenia/kernel/XLiveAPI.h"
 #include "xenia/kernel/xam/user_settings.h"
+#include "xenia/ui/keyboard_ui.h"
 #include "xenia/ui/resources.h"
 
 namespace xe {
@@ -19,6 +20,17 @@ namespace xam {
 namespace ui {
 
 void CreateProfileUI::OnDraw(ImGuiIO& io) {
+  // While the on-screen keyboard is open, keep this dialog alive but do NOT
+  // draw the "Create Profile" popup. The keyboard is its own modal popup; ImGui
+  // closes a same-level popup when another opens, so drawing both fights and
+  // tears this dialog down (losing the entered name). Force a re-open once the
+  // keyboard closes - keyboard_open is cleared in the keyboard's close callback
+  // (which also writes the entered gamertag into args.gamertag).
+  if (create_profile_args_.keyboard_open) {
+    create_profile_args_.dialog_open = false;
+    return;
+  }
+
   if (!create_profile_args_.dialog_open) {
     ImGui::OpenPopup("Create Profile");
     create_profile_args_.dialog_open = true;
@@ -101,19 +113,36 @@ bool xeDrawCreateProfile(xe::ui::ImGuiDrawer* imgui_drawer, Emulator* emulator,
 
   ImGui::BeginGroup();
 
-  if (ImGui::IsWindowAppearing()) {
-    ImGui::SetKeyboardFocusHere();
-  }
-
   ImGui::TextUnformatted("Gamertag:");
 
-  const bool enter_pressed =
-      ImGui::InputText("##Gamertag", args.gamertag, sizeof(args.gamertag),
-                       ImGuiInputTextFlags_EnterReturnsTrue);
-
-  if (ImGui::IsItemEdited() || enter_pressed) {
-    args.valid_gamertag =
-        profile_manager->IsGamertagValid(std::string(args.gamertag));
+  // Gamertag entry goes through the on-screen keyboard so it works with a
+  // controller. The result is written straight back into args.gamertag (owned
+  // by the dialog), so it survives the keyboard stealing ImGui focus - the
+  // generic char-injection path can't reach this field once the OSK closes.
+  const std::string gamertag_display =
+      args.gamertag[0] ? std::string(args.gamertag) : "(click to enter)";
+  if (ImGui::Button(gamertag_display.c_str(), ImVec2(200, 0)) &&
+      !args.keyboard_open) {
+    args.keyboard_open = true;
+    CreateProfileUIArgs* args_ptr = &args;
+    auto* profile_manager_ptr = profile_manager;
+    auto* keyboard = xe::ui::KeyboardDialog::ShowKeyboard(
+        imgui_drawer, "Enter Gamertag", std::string(args.gamertag),
+        xe::ui::KeyboardDialog::InputType::kText, nullptr, "",
+        "OnScreenKeyboard");
+    keyboard->set_close_callback([args_ptr, profile_manager_ptr, keyboard]() {
+      if (!keyboard->was_cancelled()) {
+        const std::string& result = keyboard->result_text();
+        size_t i = 0;
+        for (; i + 1 < sizeof(args_ptr->gamertag) && i < result.size(); ++i) {
+          args_ptr->gamertag[i] = result[i];
+        }
+        args_ptr->gamertag[i] = '\0';
+        args_ptr->valid_gamertag = profile_manager_ptr->IsGamertagValid(
+            std::string(args_ptr->gamertag));
+      }
+      args_ptr->keyboard_open = false;
+    });
   }
 
   ImGui::Checkbox("Xbox Live Enabled", &args.live_enabled);
@@ -121,8 +150,7 @@ bool xeDrawCreateProfile(xe::ui::ImGuiDrawer* imgui_drawer, Emulator* emulator,
   ImGui::EndGroup();
 
   ImGui::BeginDisabled(!args.valid_gamertag);
-  if (ImGui::Button("Create", half_width_btn) ||
-      (enter_pressed && args.valid_gamertag)) {
+  if (ImGui::Button("Create", half_width_btn)) {
     bool autologin = (profile_manager->GetAccountCount() == 0);
 
     uint32_t reserved_flags = 0;

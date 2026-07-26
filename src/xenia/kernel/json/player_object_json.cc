@@ -63,6 +63,10 @@ bool PlayerObjectJSON::Deserialize(const rapidjson::Value& obj) {
     Port(obj["port"].GetInt());
   }
 
+  if (obj.HasMember("clientVersion") && obj["clientVersion"].IsUint()) {
+    ClientVersion(obj["clientVersion"].GetUint());
+  }
+
   return true;
 }
 
