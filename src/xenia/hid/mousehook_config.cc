@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <climits>
+#include <cmath>
 #include <string>
 #include <string_view>
 
@@ -231,16 +232,38 @@ void MousehookConfig::ApplyToGamepad(X_INPUT_GAMEPAD* gamepad) {
     return static_cast<int16_t>(v);
   };
 
+  double move_x = dx * scale;
+  double move_y = invert_y() ? (dy * scale) : -(dy * scale);
+
+  // Deadzone compensation. The mouse is a relative device but the stick is an
+  // absolute one, so a slow drag produces a tiny deflection that the title
+  // discards as deadzone - motion only "takes" once it crosses the threshold,
+  // which reads as jerky. Lift any non-zero motion to at least the deadzone
+  // magnitude and scale the remaining range above it, keeping the direction.
+  const double compensation = deadzone_compensation();
+  if (compensation > 0.0 && (move_x != 0.0 || move_y != 0.0)) {
+    const double magnitude = std::sqrt(move_x * move_x + move_y * move_y);
+    if (magnitude > 0.0) {
+      const double floor_units = compensation * 32767.0;
+      double adjusted =
+          floor_units + (std::min(magnitude, 32767.0) / 32767.0) *
+                            (32767.0 - floor_units);
+      adjusted = std::min(adjusted, 32767.0);
+
+      const double factor = adjusted / magnitude;
+      move_x *= factor;
+      move_y *= factor;
+    }
+  }
+
   // Mouse drives the right stick (look) by default, or the left stick (move)
   // when the sticks are swapped.
   if (swap_thumbsticks()) {
-    gamepad->thumb_lx = add_axis(gamepad->thumb_lx.get(), dx * scale);
-    gamepad->thumb_ly = add_axis(gamepad->thumb_ly.get(),
-                                 invert_y() ? (dy * scale) : -(dy * scale));
+    gamepad->thumb_lx = add_axis(gamepad->thumb_lx.get(), move_x);
+    gamepad->thumb_ly = add_axis(gamepad->thumb_ly.get(), move_y);
   } else {
-    gamepad->thumb_rx = add_axis(gamepad->thumb_rx.get(), dx * scale);
-    gamepad->thumb_ry = add_axis(gamepad->thumb_ry.get(),
-                                 invert_y() ? (dy * scale) : -(dy * scale));
+    gamepad->thumb_rx = add_axis(gamepad->thumb_rx.get(), move_x);
+    gamepad->thumb_ry = add_axis(gamepad->thumb_ry.get(), move_y);
   }
 
   auto apply_button = [&](MouseButtonAction action) {
@@ -336,6 +359,11 @@ void MousehookConfig::Load(const std::filesystem::path& path) {
   if (doc.HasMember("user_index") && doc["user_index"].IsUint()) {
     set_user_index(std::min(doc["user_index"].GetUint(), 3u));
   }
+  if (doc.HasMember("deadzone_compensation") &&
+      doc["deadzone_compensation"].IsNumber()) {
+    set_deadzone_compensation(
+        std::clamp(doc["deadzone_compensation"].GetDouble(), 0.0, 0.95));
+  }
   if (doc.HasMember("pixels_per_full_deflection") &&
       doc["pixels_per_full_deflection"].IsNumber()) {
     set_pixels_per_full_deflection(
@@ -383,6 +411,7 @@ void MousehookConfig::Save() const {
   doc.AddMember("invert_y", invert_y(), alloc);
   doc.AddMember("swap_thumbsticks", swap_thumbsticks(), alloc);
   doc.AddMember("user_index", user_index(), alloc);
+  doc.AddMember("deadzone_compensation", deadzone_compensation(), alloc);
   doc.AddMember("pixels_per_full_deflection", pixels_per_full_deflection(),
                 alloc);
   doc.AddMember("left_button", static_cast<int>(left_button()), alloc);

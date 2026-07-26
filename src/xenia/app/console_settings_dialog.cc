@@ -566,6 +566,19 @@ void ConsoleSettingsDialog::OnDraw(ImGuiIO& io) {
           mh.Save();
         }
 
+        float deadzone =
+            static_cast<float>(mh.deadzone_compensation() * 100.0);
+        if (ImGui::SliderFloat("Deadzone Compensation", &deadzone, 0.0f, 90.0f,
+                               "%.0f%%")) {
+          mh.set_deadzone_compensation(deadzone / 100.0);
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+          mh.Save();
+        }
+        ImGui::TextDisabled(
+            "Lifts small movements past the game's stick deadzone. Raise if "
+            "slow aiming feels jerky or dead; lower if it over-shoots.");
+
         bool invert_y = mh.invert_y();
         if (ImGui::Checkbox("Invert Y Axis", &invert_y)) {
           mh.set_invert_y(invert_y);

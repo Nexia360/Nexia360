@@ -88,6 +88,16 @@ class MousehookConfig {
     invert_y_.store(value, std::memory_order_relaxed);
   }
 
+  // Fraction of full deflection (0..1) that any non-zero mouse motion is
+  // lifted to, so slow movement isn't swallowed by the title's stick deadzone
+  // (~0.27 of full range on a stock pad). 0 disables the compensation.
+  double deadzone_compensation() const {
+    return deadzone_compensation_.load(std::memory_order_relaxed);
+  }
+  void set_deadzone_compensation(double value) {
+    deadzone_compensation_.store(value, std::memory_order_relaxed);
+  }
+
   // Pixels of motion in one poll that equal full stick deflection at
   // sensitivity 1.0. Lower = twitchier.
   double pixels_per_full_deflection() const {
@@ -197,6 +207,8 @@ class MousehookConfig {
   std::atomic<bool> swap_thumbsticks_{false};
   std::atomic<uint32_t> user_index_{0};
   std::atomic<double> pixels_per_full_deflection_{25.0};
+  // 8689/32767 - the stock right-stick deadzone, i.e. just enough to clear it.
+  std::atomic<double> deadzone_compensation_{0.27};
 
   std::atomic<MouseButtonAction> left_button_{MouseButtonAction::kRightTrigger};
   std::atomic<MouseButtonAction> right_button_{MouseButtonAction::kLeftTrigger};

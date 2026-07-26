@@ -15,8 +15,6 @@
 
 DECLARE_string(api_address);
 
-DECLARE_bool(auto_check_updates);
-
 DECLARE_bool(bind_interface);
 
 DECLARE_bool(xhttp);
@@ -233,12 +231,6 @@ void NetplaySettingsDialog::OnDraw(ImGuiIO& io) {
     ImGui::Spacing();
     ImGui::Separator();
 
-    if (ImGui::Checkbox("Auto Check for Updates", &auto_check_for_updates_)) {
-      emulator_window_->SetAutoCheckForUpdates(auto_check_for_updates_);
-    }
-
-    ImGui::SameLine();
-
     if (ImGui::Checkbox("NET Logging", &logging_)) {
       xlive_api->SetLogging(logging_);
     }
@@ -440,7 +432,6 @@ void xe::app::NetplaySettingsDialog::UpdateSelectedNetworkModeIndex() {
 
 void xe::app::NetplaySettingsDialog::InitializeCheckboxSettings() {
   xhttp_ = cvars::xhttp;
-  auto_check_for_updates_ = cvars::auto_check_updates;
   logging_ = cvars::logging;
   discord_ = cvars::discord;
   bind_interface_ = cvars::bind_interface;

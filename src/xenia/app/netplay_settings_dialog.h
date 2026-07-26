@@ -75,7 +75,6 @@ class NetplaySettingsDialog final : public ui::ImGuiDialog {
   const char* network_modes_[4] = {"Offline", "Systemlink", "Xbox Live",
                                    "Nexia Hub"};
 
-  bool auto_check_for_updates_ = false;
   bool bind_interface_ = false;
   bool logging_ = false;
   bool xhttp_ = false;

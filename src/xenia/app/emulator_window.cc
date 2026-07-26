@@ -995,11 +995,6 @@ bool EmulatorWindow::Initialize() {
         MenuItem::Type::kString, "&Manager", "",
         std::bind(&EmulatorWindow::ToggleFriendsDialog, this)));
 
-    Netplay_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
-
-    Netplay_menu->AddChild(MenuItem::Create(
-        MenuItem::Type::kString, "&Update Checker",
-        std::bind(&EmulatorWindow::ToggleUpdaterDialog, this)));
   }
   main_menu->AddChild(std::move(Netplay_menu));
 
@@ -1020,7 +1015,7 @@ bool EmulatorWindow::Initialize() {
     help_menu->AddChild(MenuItem::Create(
         MenuItem::Type::kString, "Recent changes on GitHub...", []() {
           LaunchWebBrowser(
-              "https://github.com/AdrianCassar/xenia-canary/"
+              "https://github.com/Nexia360/Nexia360/"
               "compare/" XE_BUILD_COMMIT "..." XE_BUILD_BRANCH);
         }));
     help_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
@@ -1921,10 +1916,10 @@ void EmulatorWindow::ShowFAQ() {
 void EmulatorWindow::ShowBuildCommit() {
 #ifdef XE_BUILD_IS_PR
   LaunchWebBrowser(
-      "https://github.com/AdrianCassar/xenia-canary/pull/" XE_BUILD_PR_NUMBER);
+      "https://github.com/Nexia360/Nexia360/pull/" XE_BUILD_PR_NUMBER);
 #else
   LaunchWebBrowser(
-      "https://github.com/AdrianCassar/xenia-canary/commit/" XE_BUILD_COMMIT);
+      "https://github.com/Nexia360/Nexia360/commit/" XE_BUILD_COMMIT);
 #endif
 }
 
