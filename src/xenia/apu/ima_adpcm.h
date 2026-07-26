@@ -80,9 +80,15 @@ inline uint8_t EncodeSample(State& s, int16_t sample) {
 inline int16_t DecodeSample(State& s, uint8_t code) {
   int32_t step = kStepTable[s.index];
   int32_t vpdiff = step >> 3;
-  if (code & 4) vpdiff += step;
-  if (code & 2) vpdiff += step >> 1;
-  if (code & 1) vpdiff += step >> 2;
+  if (code & 4) {
+    vpdiff += step;
+  }
+  if (code & 2) {
+    vpdiff += step >> 1;
+  }
+  if (code & 1) {
+    vpdiff += step >> 2;
+  }
   s.predictor =
       Clamp(s.predictor + ((code & 8) ? -vpdiff : vpdiff), -32768, 32767);
   s.index = Clamp(s.index + kIndexTable[code], 0, 88);

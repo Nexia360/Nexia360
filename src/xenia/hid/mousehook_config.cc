@@ -21,8 +21,8 @@
 #include "xenia/base/platform.h"
 #include "xenia/base/string_util.h"
 #include "xenia/base/utf8.h"
-#include "xenia/ui/virtual_key.h"
 #include "xenia/hid/hid_flags.h"
+#include "xenia/ui/virtual_key.h"
 #if XE_PLATFORM_WIN32
 #include "xenia/base/platform_win.h"
 #endif
@@ -33,8 +33,7 @@ namespace hid {
 
 namespace {
 
-constexpr uint32_t kMaxAction =
-    static_cast<uint32_t>(MouseButtonAction::kY);
+constexpr uint32_t kMaxAction = static_cast<uint32_t>(MouseButtonAction::kY);
 
 MouseButtonAction ActionFromInt(int value, MouseButtonAction fallback) {
   if (value < 0 || static_cast<uint32_t>(value) > kMaxAction) {
@@ -52,8 +51,8 @@ struct BindingTableEntry {
 };
 
 static const BindingTableEntry kBindingTable[] = {
-#define XE_HID_WINKEY_BINDING(button, description, cvar_name,   \
-                              cvar_default_value)               \
+#define XE_HID_WINKEY_BINDING(button, description, cvar_name, \
+                              cvar_default_value)             \
   {#cvar_name, ui::VirtualKey::kXInputPad##button, cvar_default_value},
 #include "xenia/hid/winkey/winkey_binding_table.inc"
 #undef XE_HID_WINKEY_BINDING
@@ -67,22 +66,30 @@ struct MousehookDefault {
 };
 
 static const MousehookDefault kMousehookDefaults[] = {
-    {"keybind_left_thumb_up", "W"},    {"keybind_left_thumb_left", "A"},
-    {"keybind_left_thumb_down", "S"},  {"keybind_left_thumb_right", "D"},
-    {"keybind_left_trigger", "Q"},     {"keybind_right_trigger", "E"},
-    {"keybind_left_shoulder", "1"},    {"keybind_right_shoulder", "4"},
+    {"keybind_left_thumb_up", "W"},
+    {"keybind_left_thumb_left", "A"},
+    {"keybind_left_thumb_down", "S"},
+    {"keybind_left_thumb_right", "D"},
+    {"keybind_left_trigger", "Q"},
+    {"keybind_right_trigger", "E"},
+    {"keybind_left_shoulder", "1"},
+    {"keybind_right_shoulder", "4"},
     {"keybind_a", "0x20"},  // Space
     {"keybind_b", "R"},
 
     // D-pad on the arrow keys. The stock layout puts it on Shift+WASD, which
     // would fire alongside the plain-WASD stick bindings above.
-    {"keybind_dpad_left", "0x25"},     {"keybind_dpad_up", "0x26"},
-    {"keybind_dpad_right", "0x27"},    {"keybind_dpad_down", "0x28"},
+    {"keybind_dpad_left", "0x25"},
+    {"keybind_dpad_up", "0x26"},
+    {"keybind_dpad_right", "0x27"},
+    {"keybind_dpad_down", "0x28"},
 
     // The arrows were the stock right-stick bindings; the mouse drives that
     // stick under mousehook, so clear them rather than double-book the keys.
-    {"keybind_right_thumb_up", ""},    {"keybind_right_thumb_down", ""},
-    {"keybind_right_thumb_left", ""},  {"keybind_right_thumb_right", ""},
+    {"keybind_right_thumb_up", ""},
+    {"keybind_right_thumb_down", ""},
+    {"keybind_right_thumb_left", ""},
+    {"keybind_right_thumb_right", ""},
 };
 
 // Host key state. Mirrors the WinKey driver's helpers; a no-op elsewhere.
@@ -100,37 +107,88 @@ void ApplyBoundKey(X_INPUT_GAMEPAD* gamepad, uint16_t output_key) {
   };
   auto axis = [](xe::be<int16_t>& field, int32_t delta) {
     int32_t v = static_cast<int32_t>(field.get()) + delta;
-    field = static_cast<int16_t>(std::clamp(v, int32_t(SHRT_MIN),
-                                            int32_t(SHRT_MAX)));
+    field = static_cast<int16_t>(
+        std::clamp(v, int32_t(SHRT_MIN), int32_t(SHRT_MAX)));
   };
 
   switch (static_cast<ui::VirtualKey>(output_key)) {
-    case ui::VirtualKey::kXInputPadA:            press(X_INPUT_GAMEPAD_A); break;
-    case ui::VirtualKey::kXInputPadB:            press(X_INPUT_GAMEPAD_B); break;
-    case ui::VirtualKey::kXInputPadX:            press(X_INPUT_GAMEPAD_X); break;
-    case ui::VirtualKey::kXInputPadY:            press(X_INPUT_GAMEPAD_Y); break;
-    case ui::VirtualKey::kXInputPadGuide:        press(X_INPUT_GAMEPAD_GUIDE); break;
-    case ui::VirtualKey::kXInputPadDpadLeft:     press(X_INPUT_GAMEPAD_DPAD_LEFT); break;
-    case ui::VirtualKey::kXInputPadDpadRight:    press(X_INPUT_GAMEPAD_DPAD_RIGHT); break;
-    case ui::VirtualKey::kXInputPadDpadDown:     press(X_INPUT_GAMEPAD_DPAD_DOWN); break;
-    case ui::VirtualKey::kXInputPadDpadUp:       press(X_INPUT_GAMEPAD_DPAD_UP); break;
-    case ui::VirtualKey::kXInputPadRThumbPress:  press(X_INPUT_GAMEPAD_RIGHT_THUMB); break;
-    case ui::VirtualKey::kXInputPadLThumbPress:  press(X_INPUT_GAMEPAD_LEFT_THUMB); break;
-    case ui::VirtualKey::kXInputPadBack:         press(X_INPUT_GAMEPAD_BACK); break;
-    case ui::VirtualKey::kXInputPadStart:        press(X_INPUT_GAMEPAD_START); break;
-    case ui::VirtualKey::kXInputPadLShoulder:    press(X_INPUT_GAMEPAD_LEFT_SHOULDER); break;
-    case ui::VirtualKey::kXInputPadRShoulder:    press(X_INPUT_GAMEPAD_RIGHT_SHOULDER); break;
-    case ui::VirtualKey::kXInputPadLTrigger:     gamepad->left_trigger = 0xFF; break;
-    case ui::VirtualKey::kXInputPadRTrigger:     gamepad->right_trigger = 0xFF; break;
-    case ui::VirtualKey::kXInputPadLThumbLeft:   axis(gamepad->thumb_lx, SHRT_MIN); break;
-    case ui::VirtualKey::kXInputPadLThumbRight:  axis(gamepad->thumb_lx, SHRT_MAX); break;
-    case ui::VirtualKey::kXInputPadLThumbDown:   axis(gamepad->thumb_ly, SHRT_MIN); break;
-    case ui::VirtualKey::kXInputPadLThumbUp:     axis(gamepad->thumb_ly, SHRT_MAX); break;
-    case ui::VirtualKey::kXInputPadRThumbUp:     axis(gamepad->thumb_ry, SHRT_MAX); break;
-    case ui::VirtualKey::kXInputPadRThumbDown:   axis(gamepad->thumb_ry, SHRT_MIN); break;
-    case ui::VirtualKey::kXInputPadRThumbRight:  axis(gamepad->thumb_rx, SHRT_MAX); break;
-    case ui::VirtualKey::kXInputPadRThumbLeft:   axis(gamepad->thumb_rx, SHRT_MIN); break;
-    default: break;
+    case ui::VirtualKey::kXInputPadA:
+      press(X_INPUT_GAMEPAD_A);
+      break;
+    case ui::VirtualKey::kXInputPadB:
+      press(X_INPUT_GAMEPAD_B);
+      break;
+    case ui::VirtualKey::kXInputPadX:
+      press(X_INPUT_GAMEPAD_X);
+      break;
+    case ui::VirtualKey::kXInputPadY:
+      press(X_INPUT_GAMEPAD_Y);
+      break;
+    case ui::VirtualKey::kXInputPadGuide:
+      press(X_INPUT_GAMEPAD_GUIDE);
+      break;
+    case ui::VirtualKey::kXInputPadDpadLeft:
+      press(X_INPUT_GAMEPAD_DPAD_LEFT);
+      break;
+    case ui::VirtualKey::kXInputPadDpadRight:
+      press(X_INPUT_GAMEPAD_DPAD_RIGHT);
+      break;
+    case ui::VirtualKey::kXInputPadDpadDown:
+      press(X_INPUT_GAMEPAD_DPAD_DOWN);
+      break;
+    case ui::VirtualKey::kXInputPadDpadUp:
+      press(X_INPUT_GAMEPAD_DPAD_UP);
+      break;
+    case ui::VirtualKey::kXInputPadRThumbPress:
+      press(X_INPUT_GAMEPAD_RIGHT_THUMB);
+      break;
+    case ui::VirtualKey::kXInputPadLThumbPress:
+      press(X_INPUT_GAMEPAD_LEFT_THUMB);
+      break;
+    case ui::VirtualKey::kXInputPadBack:
+      press(X_INPUT_GAMEPAD_BACK);
+      break;
+    case ui::VirtualKey::kXInputPadStart:
+      press(X_INPUT_GAMEPAD_START);
+      break;
+    case ui::VirtualKey::kXInputPadLShoulder:
+      press(X_INPUT_GAMEPAD_LEFT_SHOULDER);
+      break;
+    case ui::VirtualKey::kXInputPadRShoulder:
+      press(X_INPUT_GAMEPAD_RIGHT_SHOULDER);
+      break;
+    case ui::VirtualKey::kXInputPadLTrigger:
+      gamepad->left_trigger = 0xFF;
+      break;
+    case ui::VirtualKey::kXInputPadRTrigger:
+      gamepad->right_trigger = 0xFF;
+      break;
+    case ui::VirtualKey::kXInputPadLThumbLeft:
+      axis(gamepad->thumb_lx, SHRT_MIN);
+      break;
+    case ui::VirtualKey::kXInputPadLThumbRight:
+      axis(gamepad->thumb_lx, SHRT_MAX);
+      break;
+    case ui::VirtualKey::kXInputPadLThumbDown:
+      axis(gamepad->thumb_ly, SHRT_MIN);
+      break;
+    case ui::VirtualKey::kXInputPadLThumbUp:
+      axis(gamepad->thumb_ly, SHRT_MAX);
+      break;
+    case ui::VirtualKey::kXInputPadRThumbUp:
+      axis(gamepad->thumb_ry, SHRT_MAX);
+      break;
+    case ui::VirtualKey::kXInputPadRThumbDown:
+      axis(gamepad->thumb_ry, SHRT_MIN);
+      break;
+    case ui::VirtualKey::kXInputPadRThumbRight:
+      axis(gamepad->thumb_rx, SHRT_MAX);
+      break;
+    case ui::VirtualKey::kXInputPadRThumbLeft:
+      axis(gamepad->thumb_rx, SHRT_MIN);
+      break;
+    default:
+      break;
   }
 }
 
@@ -171,8 +229,7 @@ void MousehookConfig::ApplyToGamepad(X_INPUT_GAMEPAD* gamepad) {
         continue;
       }
 
-      for (const std::string_view token :
-           utf8::split(it->second, " ", true)) {
+      for (const std::string_view token : utf8::split(it->second, " ", true)) {
         ParsedBind bind = {};
         bind.output_key = static_cast<uint16_t>(entry.output);
 
@@ -188,9 +245,8 @@ void MousehookConfig::ApplyToGamepad(X_INPUT_GAMEPAD* gamepad) {
         if (utf8::starts_with(key, "0x")) {
           bind.input_vk =
               string_util::from_string<uint16_t>(key.substr(2), true);
-        } else if (key.size() == 1 &&
-                   ((key[0] >= 'A' && key[0] <= 'Z') ||
-                    (key[0] >= '0' && key[0] <= '9'))) {
+        } else if (key.size() == 1 && ((key[0] >= 'A' && key[0] <= 'Z') ||
+                                       (key[0] >= '0' && key[0] <= '9'))) {
           bind.input_vk = static_cast<uint16_t>(key[0]);
         } else {
           continue;
@@ -218,7 +274,6 @@ void MousehookConfig::ApplyToGamepad(X_INPUT_GAMEPAD* gamepad) {
     }
   }
 
-
   const int32_t dx = mouse_dx_.exchange(0, std::memory_order_relaxed);
   const int32_t dy = mouse_dy_.exchange(0, std::memory_order_relaxed);
 
@@ -227,8 +282,12 @@ void MousehookConfig::ApplyToGamepad(X_INPUT_GAMEPAD* gamepad) {
 
   auto add_axis = [](int32_t base, double delta) -> int16_t {
     double v = static_cast<double>(base) + delta;
-    if (v > SHRT_MAX) v = SHRT_MAX;
-    if (v < SHRT_MIN) v = SHRT_MIN;
+    if (v > SHRT_MAX) {
+      v = SHRT_MAX;
+    }
+    if (v < SHRT_MIN) {
+      v = SHRT_MIN;
+    }
     return static_cast<int16_t>(v);
   };
 
@@ -245,9 +304,8 @@ void MousehookConfig::ApplyToGamepad(X_INPUT_GAMEPAD* gamepad) {
     const double magnitude = std::sqrt(move_x * move_x + move_y * move_y);
     if (magnitude > 0.0) {
       const double floor_units = compensation * 32767.0;
-      double adjusted =
-          floor_units + (std::min(magnitude, 32767.0) / 32767.0) *
-                            (32767.0 - floor_units);
+      double adjusted = floor_units + (std::min(magnitude, 32767.0) / 32767.0) *
+                                          (32767.0 - floor_units);
       adjusted = std::min(adjusted, 32767.0);
 
       const double factor = adjusted / magnitude;
@@ -370,8 +428,7 @@ void MousehookConfig::Load(const std::filesystem::path& path) {
         std::clamp(doc["pixels_per_full_deflection"].GetDouble(), 1.0, 500.0));
   }
   if (doc.HasMember("left_button") && doc["left_button"].IsInt()) {
-    set_left_button(
-        ActionFromInt(doc["left_button"].GetInt(), left_button()));
+    set_left_button(ActionFromInt(doc["left_button"].GetInt(), left_button()));
   }
   if (doc.HasMember("right_button") && doc["right_button"].IsInt()) {
     set_right_button(

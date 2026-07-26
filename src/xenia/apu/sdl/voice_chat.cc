@@ -317,7 +317,9 @@ void VoiceChat::OnCapture(const int16_t* samples, size_t count) {
   int block_peak = 0;
   for (size_t i = 0; i < count; ++i) {
     int a = samples[i] < 0 ? -samples[i] : samples[i];
-    if (a > block_peak) block_peak = a;
+    if (a > block_peak) {
+      block_peak = a;
+    }
   }
   if (block_peak > agc_env_) {
     agc_env_ = static_cast<float>(block_peak);
@@ -346,7 +348,8 @@ size_t VoiceChat::ReadCapturePcm(int16_t* out, size_t max_samples) {
   const auto now = std::chrono::steady_clock::now();
   const bool first = (last_request_ == std::chrono::steady_clock::time_point{});
   // Advance the read offset by the REAL time elapsed since the last request, so
-  // the read tracks wall-clock (correct speed). Gaps between requests are skipped
+  // the read tracks wall-clock (correct speed). Gaps between requests are
+  // skipped
   // -- the lossy "crunch" is by design, not queued in order.
   if (first) {
     capture_read_ = capture_total_;  // first request: start at the write head
@@ -361,8 +364,12 @@ size_t VoiceChat::ReadCapturePcm(int16_t* out, size_t max_samples) {
   // [capture_total_ - 320, capture_total_ - 160].
   const uint64_t lo = capture_total_ > 320 ? capture_total_ - 320 : 0;
   const uint64_t hi = capture_total_ > kPage ? capture_total_ - kPage : 0;
-  if (capture_read_ < lo) capture_read_ = lo;
-  if (capture_read_ > hi) capture_read_ = hi;
+  if (capture_read_ < lo) {
+    capture_read_ = lo;
+  }
+  if (capture_read_ > hi) {
+    capture_read_ = hi;
+  }
   const size_t n = std::min(max_samples, kPage);
   for (size_t i = 0; i < n; ++i) {
     out[i] = capture_ring_[(capture_read_ + i) % 320];
@@ -403,7 +410,9 @@ void VoiceChat::FillPlayback(int16_t* out, size_t count) {
   for (size_t i = avail; i < count; ++i) {
     out[i] = 0;
   }
-  if (playback_pcm_.empty()) playback_primed_ = false;  // re-prime on underrun
+  if (playback_pcm_.empty()) {
+    playback_primed_ = false;  // re-prime on underrun
+  }
 }
 
 void VoiceChat::CaptureThunk(void* userdata, uint8_t* stream, int len) {

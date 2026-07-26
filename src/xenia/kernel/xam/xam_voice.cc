@@ -107,13 +107,21 @@ static uint32_t FindG726Adpcm() {
                                    0x06, 0x00, 0x00, 0x99, 0xC1, 0xFF, 0x60};
   static const uint8_t kMflr[4] = {0x7D, 0x88, 0x02, 0xA6};
   auto module = kernel_state()->GetExecutableModule();
-  if (!module) return 0;
+  if (!module) {
+    return 0;
+  }
   auto* xex = module->xex_module();
-  if (!xex) return 0;
+  if (!xex) {
+    return 0;
+  }
   const uint32_t base = xex->base_address();
   uint32_t size = xex->image_size();
-  if (!base || !size) return 0;
-  if (size > 0x4000000) size = 0x4000000;
+  if (!base || !size) {
+    return 0;
+  }
+  if (size > 0x4000000) {
+    size = 0x4000000;
+  }
   auto* memory = kernel_state()->memory();
   const uint32_t end = base + size;
   XELOGD("XBADPCM: scanning {:08X}..{:08X}", base, end);
@@ -130,7 +138,9 @@ static uint32_t FindG726Adpcm() {
     // Keep the whole 36-byte window (mflr at a-8 .. sig end at a+28) inside
     // this readable page so we never touch a possibly-unmapped neighbor.
     uint32_t a = page + 8;
-    if (a < base + 8) a = base + 8;
+    if (a < base + 8) {
+      a = base + 8;
+    }
     for (; a + sizeof(kSig) <= page + 0x1000 && a + sizeof(kSig) < end;
          a += 4) {
       auto* p = memory->TranslateVirtual<uint8_t*>(a);
@@ -156,14 +166,17 @@ static void G726AdpcmHook(cpu::ppc::PPCContext* ctx, KernelState* ks) {
   const uint32_t in = static_cast<uint32_t>(ctx->r[4]);
   const uint32_t out = static_cast<uint32_t>(ctx->r[5]);
   const uint32_t count = static_cast<uint32_t>(ctx->r[6]);
-  XELOGD("XBADPCM: g726 HIT mode={} in={:08X} out={:08X} count={}", mode, in, out,
+  XELOGD("XBADPCM: g726 HIT mode={} in={:08X} out={:08X} count={}", mode, in,
+         out,
          count);  // every call, ungated -- so we can see mode 0 (speaker) vs 1
   ctx->r[3] = mode;  // g726adpcm returns the mode
 
   // Defensive: bail on anything that doesn't look like a real codec call so a
   // bad/uninitialized arg can never fault the host.
   auto ok = [](uint32_t a) { return a >= 0x1000u && a < 0xC0000000u; };
-  if (count == 0 || count > 8192 || !ok(in) || !ok(out)) return;
+  if (count == 0 || count > 8192 || !ok(in) || !ok(out)) {
+    return;
+  }
 
   auto* memory = ks->memory();
   auto& voice = apu::sdl::VoiceChat::Get();
@@ -201,7 +214,9 @@ static void G726AdpcmHook(cpu::ppc::PPCContext* ctx, KernelState* ks) {
 // imports. Works for any title (the codec code is identical across them).
 static bool InstallExternHook(uint32_t addr,
                               cpu::GuestFunction::ExternHandler handler) {
-  if (!addr) return false;
+  if (!addr) {
+    return false;
+  }
   auto* processor = kernel_state()->processor();
   auto* module = processor->LookupModule(addr);
   if (!module) {

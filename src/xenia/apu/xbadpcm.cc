@@ -28,8 +28,11 @@ static const int16_t kPow2[15] = {1,     2,     4,      8,      0x10,
 
 static int Quan(int val, const int16_t* table, int size) {
   int i;
-  for (i = 0; i < size; i++)
-    if (val < *table++) break;
+  for (i = 0; i < size; i++) {
+    if (val < *table++) {
+      break;
+    }
+  }
   return i;
 }
 
@@ -47,24 +50,31 @@ static int Fmult(int an, int srn) {
 
 static int PredictZero(const State* s) {
   int z = Fmult(s->b[0] >> 2, s->dq[0]);
-  for (int i = 1; i < 6; i++) z += Fmult(s->b[i] >> 2, s->dq[i]);
+  for (int i = 1; i < 6; i++) {
+    z += Fmult(s->b[i] >> 2, s->dq[i]);
+  }
   return z;
 }
 static int PredictPole(const State* s) {
   return Fmult(s->a[1] >> 2, s->sr[1]) + Fmult(s->a[0] >> 2, s->sr[0]);
 }
 static int StepSize(const State* s) {
-  if (s->ap >= 256) return s->yu;
+  if (s->ap >= 256) {
+    return s->yu;
+  }
   int y = s->yl >> 6, dif = s->yu - y, al = s->ap >> 2;
-  if (dif > 0)
+  if (dif > 0) {
     y += (dif * al) >> 6;
-  else if (dif < 0)
+  } else if (dif < 0) {
     y += (dif * al + 0x3F) >> 6;
+  }
   return y;
 }
 static int Reconstruct(int sign, int dqln, int y) {
   int16_t dql = dqln + (y >> 2);
-  if (dql < 0) return sign ? -0x8000 : 0;
+  if (dql < 0) {
+    return sign ? -0x8000 : 0;
+  }
   int16_t dex = (dql >> 7) & 15;
   int16_t dqt = 128 + (dql & 127);
   int16_t dq = (dqt << 7) >> (14 - dex);
@@ -77,10 +87,11 @@ static int Quantize(int d, int y) {
   int16_t dl = (exp << 7) + mant;
   int16_t dln = dl - (y >> 2);
   int i = Quan(dln, kQtab, 7);
-  if (d < 0)
+  if (d < 0) {
     return 15 - i;
-  else if (i == 0)
+  } else if (i == 0) {
     return 15;
+  }
   return i;
 }
 
@@ -94,64 +105,78 @@ static void Update(int y, int wi, int fi, int dq, int sr, int dqsez, State* s) {
   ylfrac = (s->yl >> 10) & 0x1F;
   thr2 = (ylint > 9) ? (31 << 10) : ((32 + ylfrac) << ylint);
   dqthr = (thr2 + (thr2 >> 1)) >> 1;
-  if (!s->td)
+  if (!s->td) {
     tr = 0;
-  else if (mag <= dqthr)
+  } else if (mag <= dqthr) {
     tr = 0;
-  else
+  } else {
     tr = 1;
+  }
 
   s->yu = y + ((wi - y) >> 5);
-  if (s->yu < 544)
+  if (s->yu < 544) {
     s->yu = 544;
-  else if (s->yu > 5120)
+  } else if (s->yu > 5120) {
     s->yu = 5120;
+  }
   s->yl += s->yu + ((-s->yl) >> 6);
 
   if (tr == 1) {
     s->a[0] = s->a[1] = 0;
-    for (int c = 0; c < 6; c++) s->b[c] = 0;
+    for (int c = 0; c < 6; c++) {
+      s->b[c] = 0;
+    }
   } else {
     pks1 = pk0 ^ s->pk[0];
     a2p = s->a[1] - (s->a[1] >> 7);
     if (dqsez != 0) {
       fa1 = pks1 ? s->a[0] : -s->a[0];
-      if (fa1 < -8191)
+      if (fa1 < -8191) {
         a2p -= 0x100;
-      else if (fa1 > 8191)
+      } else if (fa1 > 8191) {
         a2p += 0xFF;
-      else
-        a2p += fa1 >> 5;
-      if (pk0 ^ s->pk[1]) {
-        if (a2p <= -12160)
-          a2p = -12288;
-        else if (a2p >= 12416)
-          a2p = 12288;
-        else
-          a2p -= 0x80;
       } else {
-        if (a2p <= -12416)
+        a2p += fa1 >> 5;
+      }
+      if (pk0 ^ s->pk[1]) {
+        if (a2p <= -12160) {
           a2p = -12288;
-        else if (a2p >= 12160)
+        } else if (a2p >= 12416) {
           a2p = 12288;
-        else
+        } else {
+          a2p -= 0x80;
+        }
+      } else {
+        if (a2p <= -12416) {
+          a2p = -12288;
+        } else if (a2p >= 12160) {
+          a2p = 12288;
+        } else {
           a2p += 0x80;
+        }
       }
     }
     s->a[1] = a2p;
     s->a[0] -= s->a[0] >> 8;
-    if (dqsez != 0) s->a[0] += (pks1 == 0) ? 192 : -192;
+    if (dqsez != 0) {
+      s->a[0] += (pks1 == 0) ? 192 : -192;
+    }
     a1ul = 15360 - a2p;
-    if (s->a[0] < -a1ul)
+    if (s->a[0] < -a1ul) {
       s->a[0] = -a1ul;
-    else if (s->a[0] > a1ul)
+    } else if (s->a[0] > a1ul) {
       s->a[0] = a1ul;
+    }
     for (int c = 0; c < 6; c++) {
       s->b[c] -= s->b[c] >> 8;
-      if (dq & 0x7FFF) s->b[c] += ((dq ^ s->dq[c]) >= 0) ? 128 : -128;
+      if (dq & 0x7FFF) {
+        s->b[c] += ((dq ^ s->dq[c]) >= 0) ? 128 : -128;
+      }
     }
   }
-  for (int c = 5; c > 0; c--) s->dq[c] = s->dq[c - 1];
+  for (int c = 5; c > 0; c--) {
+    s->dq[c] = s->dq[c - 1];
+  }
   if (mag == 0) {
     s->dq[0] = (dq >= 0) ? 0x20 : (int16_t)0xFC20;
   } else {
@@ -177,16 +202,17 @@ static void Update(int y, int wi, int fi, int dq, int sr, int dqsez, State* s) {
   s->td = (tr == 1) ? 0 : (a2p < -11776 ? 1 : 0);
   s->dms += (fi - s->dms) >> 5;
   s->dml += ((fi << 2) - s->dml) >> 7;
-  if (tr == 1)
+  if (tr == 1) {
     s->ap = 256;
-  else if (y < 1536)
+  } else if (y < 1536) {
     s->ap += (0x200 - s->ap) >> 4;
-  else if (s->td == 1)
+  } else if (s->td == 1) {
     s->ap += (0x200 - s->ap) >> 4;
-  else if (std::abs((s->dms << 2) - s->dml) >= (s->dml >> 3))
+  } else if (std::abs((s->dms << 2) - s->dml) >= (s->dml >> 3)) {
     s->ap += (0x200 - s->ap) >> 4;
-  else
+  } else {
     s->ap += (-s->ap) >> 4;
+  }
 }
 
 static int DecodeCode(int i, State* s) {

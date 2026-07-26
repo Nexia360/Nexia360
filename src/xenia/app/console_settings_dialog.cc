@@ -15,12 +15,12 @@
 #include "xenia/app/emulator_window.h"
 #include "xenia/app/profile_dialogs.h"
 #include "xenia/apu/sdl/voice_chat.h"
-#include "xenia/ui/imgui_host_notification.h"
 #include "xenia/base/png_utils.h"
 #include "xenia/base/system.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xam/xam_ui.h"
 #include "xenia/ui/file_picker.h"
+#include "xenia/ui/imgui_host_notification.h"
 
 #include "xenia/app/console_settings_dialog.h"
 
@@ -556,8 +556,7 @@ void ConsoleSettingsDialog::OnDraw(ImGuiIO& io) {
           mh.Save();
         }
 
-        float pixels =
-            static_cast<float>(mh.pixels_per_full_deflection());
+        float pixels = static_cast<float>(mh.pixels_per_full_deflection());
         if (ImGui::SliderFloat("Pixels for Full Deflection", &pixels, 1.0f,
                                200.0f, "%.0f")) {
           mh.set_pixels_per_full_deflection(pixels);
@@ -566,8 +565,7 @@ void ConsoleSettingsDialog::OnDraw(ImGuiIO& io) {
           mh.Save();
         }
 
-        float deadzone =
-            static_cast<float>(mh.deadzone_compensation() * 100.0);
+        float deadzone = static_cast<float>(mh.deadzone_compensation() * 100.0);
         if (ImGui::SliderFloat("Deadzone Compensation", &deadzone, 0.0f, 90.0f,
                                "%.0f%%")) {
           mh.set_deadzone_compensation(deadzone / 100.0);
@@ -716,18 +714,15 @@ void ConsoleSettingsDialog::OnDraw(ImGuiIO& io) {
 
       ImGui::BeginDisabled(!pending_mousehook_enabled_);
       GroupBox("Mouse Buttons", [&]() {
-        DrawMouseButtonCombo("Left Button", mh.left_button(),
-                             [&](hid::MouseButtonAction a) {
-                               mh.set_left_button(a);
-                             });
-        DrawMouseButtonCombo("Right Button", mh.right_button(),
-                             [&](hid::MouseButtonAction a) {
-                               mh.set_right_button(a);
-                             });
-        DrawMouseButtonCombo("Middle Button", mh.middle_button(),
-                             [&](hid::MouseButtonAction a) {
-                               mh.set_middle_button(a);
-                             });
+        DrawMouseButtonCombo(
+            "Left Button", mh.left_button(),
+            [&](hid::MouseButtonAction a) { mh.set_left_button(a); });
+        DrawMouseButtonCombo(
+            "Right Button", mh.right_button(),
+            [&](hid::MouseButtonAction a) { mh.set_right_button(a); });
+        DrawMouseButtonCombo(
+            "Middle Button", mh.middle_button(),
+            [&](hid::MouseButtonAction a) { mh.set_middle_button(a); });
       });
       ImGui::EndDisabled();
 

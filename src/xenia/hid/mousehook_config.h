@@ -30,9 +30,9 @@ namespace hid {
 // MouseButtonAction below.
 enum class MouseButtonAction : uint32_t {
   kNone = 0,
-  kRightTrigger,      // fire
-  kLeftTrigger,       // aim down sights
-  kRightThumbPress,   // stick click
+  kRightTrigger,     // fire
+  kLeftTrigger,      // aim down sights
+  kRightThumbPress,  // stick click
   kLeftThumbPress,
   kA,
   kB,

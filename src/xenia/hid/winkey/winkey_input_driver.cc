@@ -12,8 +12,8 @@
 #include "xenia/base/logging.h"
 #include "xenia/base/platform_win.h"
 #include "xenia/hid/hid_flags.h"
-#include "xenia/hid/mousehook_config.h"
 #include "xenia/hid/input_system.h"
+#include "xenia/hid/mousehook_config.h"
 #include "xenia/ui/virtual_key.h"
 #include "xenia/ui/window.h"
 
@@ -37,7 +37,6 @@ DEFINE_int32(
     "Controller port that keyboard emulates. [0, 3] - Keyboard is assigned to "
     "selected slot. Passthrough does not require assigning slot.",
     "HID");
-
 
 namespace xe {
 namespace hid {
@@ -425,7 +424,6 @@ X_RESULT WinKeyInputDriver::GetState(uint32_t user_index,
         }
       }
     }
-
   }
 
   out_state->packet_number = packet_number_;

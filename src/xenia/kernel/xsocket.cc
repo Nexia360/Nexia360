@@ -71,11 +71,16 @@ void BuildVdpTag(uint64_t xuid, uint16_t port, uint8_t* out) {
 // Validate the gathered tail. On a valid tag, fills *xuid/*port and returns
 // true; otherwise returns false.
 bool ParseVdpTag(const uint8_t* tail, uint64_t* xuid, uint16_t* port) {
-  for (int i = 0; i < 8; i++)
-    if (tail[i] != 0) return false;
+  for (int i = 0; i < 8; i++) {
+    if (tail[i] != 0) {
+      return false;
+    }
+  }
   xe::be<uint64_t> be_xuid;
   std::memcpy(&be_xuid, tail + 8, sizeof(be_xuid));
-  if (!IsPlausibleXuid(be_xuid)) return false;
+  if (!IsPlausibleXuid(be_xuid)) {
+    return false;
+  }
   xe::be<uint16_t> be_port;
   std::memcpy(&be_port, tail + 16, sizeof(be_port));
   *xuid = be_xuid;
@@ -88,9 +93,11 @@ bool ParseVdpTag(const uint8_t* tail, uint64_t* xuid, uint16_t* port) {
 // seg_ptr(i)/seg_len(i) describe the native segments in fill order; `total` is
 // bytes actually received. No copy of the payload — only the 16-byte tail.
 template <typename PtrFn, typename LenFn>
-bool GatherVdpTail(PtrFn seg_ptr, LenFn seg_len, uint32_t num_segs, size_t total,
-                   uint8_t* out16) {
-  if (total < kVdpTagSize) return false;
+bool GatherVdpTail(PtrFn seg_ptr, LenFn seg_len, uint32_t num_segs,
+                   size_t total, uint8_t* out16) {
+  if (total < kVdpTagSize) {
+    return false;
+  }
   const size_t start = total - kVdpTagSize;
   size_t seen = 0, produced = 0;
   for (uint32_t i = 0; i < num_segs && produced < kVdpTagSize; i++) {
@@ -98,11 +105,14 @@ bool GatherVdpTail(PtrFn seg_ptr, LenFn seg_len, uint32_t num_segs, size_t total
     if (seen + fill > start) {
       const size_t from = start > seen ? start - seen : 0;
       const uint8_t* p = seg_ptr(i);
-      for (size_t j = from; j < fill && produced < kVdpTagSize; j++)
+      for (size_t j = from; j < fill && produced < kVdpTagSize; j++) {
         out16[produced++] = p[j];
+      }
     }
     seen += fill;
-    if (seen >= total) break;
+    if (seen >= total) {
+      break;
+    }
   }
   return produced == kVdpTagSize;
 }
@@ -127,7 +137,6 @@ inline void SetSendSeg(XeSendSeg& seg, void* data, size_t length) {
 #endif
 }
 }  // namespace
-
 
 // Translate socket options to native
 // Note:
@@ -428,7 +437,8 @@ X_STATUS XSocket::Bind(const XSOCKADDR_IN* name, int name_len) {
     const auto network_adapter =
         kernel_state()->emulator()->GetNetworkAdapterManager();
 
-    forced_interface_addr = network_adapter->GetSelectedAdapterLocalIP().sin_addr;
+    forced_interface_addr =
+        network_adapter->GetSelectedAdapterLocalIP().sin_addr;
 
     // Title wants to bind to and interface but is it our bound interface?
     if (name->address_ip.s_addr) {
@@ -752,11 +762,10 @@ int XSocket::PushWSASendTo(bool wait, WSASendToData send_async_data) {
   int ret;
   // Identity-tag decision up front, before any `goto threadexit`, so its
   // initialization is never skipped. `tag` is filled just before the send.
-  const bool do_tag =
-      kEnableVdpIdentityTag && vdp_ && send_async_data.to &&
-      XLiveAPI::local_online_xuid &&
-      XLiveAPI::PeerSupportsTag(
-          uint32_t(send_async_data.to->address_ip.s_addr));
+  const bool do_tag = kEnableVdpIdentityTag && vdp_ && send_async_data.to &&
+                      XLiveAPI::local_online_xuid &&
+                      XLiveAPI::PeerSupportsTag(
+                          uint32_t(send_async_data.to->address_ip.s_addr));
   uint8_t tag[kVdpTagSize];
   const uint32_t send_count = send_async_data.num_buffers + (do_tag ? 1 : 0);
   do {
@@ -955,8 +964,8 @@ struct WSARecvFromData {
   XSOCKADDR_IN* from;
   xe::be<uint32_t>* from_len;
   XWSAOVERLAPPED* overlapped;
-  uint32_t completion_routine;         // guest function pointer for APC callback
-  uint32_t overlapped_guest_ptr;       // guest address of overlapped struct
+  uint32_t completion_routine;    // guest function pointer for APC callback
+  uint32_t overlapped_guest_ptr;  // guest address of overlapped struct
   object_ref<XThread> calling_thread;  // thread to enqueue APC to
 };
 

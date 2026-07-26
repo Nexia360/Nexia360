@@ -353,9 +353,13 @@ class XLiveAPI {
   // True only when we've positively confirmed the peer at this destination IP
   // can strip our tag. Unknown/old/unresolved -> false -> send plain.
   static bool PeerSupportsTag(uint32_t dest_ip_be) {
-    if (!server_supports_tag) return false;
+    if (!server_supports_tag) {
+      return false;
+    }
     auto ix = ip_to_xuid.find(dest_ip_be);
-    if (ix == ip_to_xuid.end()) return false;
+    if (ix == ip_to_xuid.end()) {
+      return false;
+    }
     auto cx = peer_supports_tag.find(ix->second);
     return cx != peer_supports_tag.end() && cx->second;
   }

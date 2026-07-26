@@ -46,8 +46,8 @@ class InputDriver {
 
   virtual InputType GetInputType() const = 0;
 
-  // Nexia: a driver can be gated "inactive" (e.g. while a UI dialog owns input);
-  // defaults to always-active when no callback is set.
+  // Nexia: a driver can be gated "inactive" (e.g. while a UI dialog owns
+  // input); defaults to always-active when no callback is set.
   void set_is_active_callback(std::function<bool()> is_active_callback) {
     is_active_callback_ = is_active_callback;
   }

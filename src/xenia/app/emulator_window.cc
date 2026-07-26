@@ -23,7 +23,6 @@
 #include "xenia/app/console_settings_dialog.h"
 #include "xenia/app/title_update_dialog.h"
 #include "xenia/base/assert.h"
-#include "xenia/vfs/devices/xcontent_container_device.h"
 #include "xenia/base/clock.h"
 #include "xenia/base/cvar.h"
 #include "xenia/base/debugging.h"
@@ -37,6 +36,7 @@
 #include "xenia/gpu/command_processor.h"
 #include "xenia/gpu/graphics_system.h"
 #include "xenia/hid/input_system.h"
+#include "xenia/hid/mousehook_config.h"
 #include "xenia/kernel/XLiveAPI.h"
 #include "xenia/kernel/xam/profile_manager.h"
 #include "xenia/kernel/xam/xam_module.h"
@@ -46,12 +46,12 @@
 #include "xenia/ui/graphics_provider.h"
 #include "xenia/ui/imgui_dialog.h"
 #include "xenia/ui/imgui_drawer.h"
-#include "xenia/hid/mousehook_config.h"
 #include "xenia/ui/imgui_host_notification.h"
 #include "xenia/ui/immediate_drawer.h"
 #include "xenia/ui/presenter.h"
 #include "xenia/ui/ui_event.h"
 #include "xenia/ui/virtual_key.h"
+#include "xenia/vfs/devices/xcontent_container_device.h"
 
 #include "version.h"
 
@@ -994,7 +994,6 @@ bool EmulatorWindow::Initialize() {
     Netplay_menu->AddChild(MenuItem::Create(
         MenuItem::Type::kString, "&Manager", "",
         std::bind(&EmulatorWindow::ToggleFriendsDialog, this)));
-
   }
   main_menu->AddChild(std::move(Netplay_menu));
 

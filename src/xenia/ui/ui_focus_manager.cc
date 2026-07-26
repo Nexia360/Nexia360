@@ -71,7 +71,9 @@ void UIFocusManager::UpdateInput(
 }
 
 void UIFocusManager::UISetFocus(const std::string& name) {
-  if (name.empty()) return;
+  if (name.empty()) {
+    return;
+  }
 
   // If already exists, just rebuild focus path
   auto it = nodes_.find(name);
@@ -106,7 +108,9 @@ void UIFocusManager::UISetFocus(const std::string& name) {
 
 void UIFocusManager::UIChildFocus(const std::string& parent,
                                   const std::string& child) {
-  if (parent.empty() || child.empty()) return;
+  if (parent.empty() || child.empty()) {
+    return;
+  }
 
   // Start input cooldown - block input for 500ms
   focus_change_time_ = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -119,7 +123,9 @@ void UIFocusManager::UIChildFocus(const std::string& parent,
     // Parent doesn't exist - create it as root first
     UISetFocus(parent);
     parent_it = nodes_.find(parent);
-    if (parent_it == nodes_.end()) return;
+    if (parent_it == nodes_.end()) {
+      return;
+    }
   }
 
   // If child already exists with same parent, just rebuild
@@ -149,10 +155,14 @@ void UIFocusManager::UIChildFocus(const std::string& parent,
 }
 
 void UIFocusManager::UIDropFocus(const std::string& name) {
-  if (name.empty()) return;
+  if (name.empty()) {
+    return;
+  }
 
   auto it = nodes_.find(name);
-  if (it == nodes_.end()) return;
+  if (it == nodes_.end()) {
+    return;
+  }
 
   // Recursively drop all children first
   if (!it->second.child.empty()) {
@@ -174,12 +184,16 @@ void UIFocusManager::UIDropFocus(const std::string& name) {
 }
 
 bool UIFocusManager::IsFocused(const std::string& name) const {
-  if (focus_path_.empty()) return false;
+  if (focus_path_.empty()) {
+    return false;
+  }
   return focus_path_.back() == name;
 }
 
 bool UIFocusManager::IsInputCoolingDown() const {
-  if (focus_change_time_ == 0) return false;
+  if (focus_change_time_ == 0) {
+    return false;
+  }
 
   uint64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
                      std::chrono::steady_clock::now().time_since_epoch())
@@ -233,7 +247,9 @@ void UIFocusManager::RebuildFocusPath() {
   while (!current.empty()) {
     focus_path_.push_back(current);
     auto it = nodes_.find(current);
-    if (it == nodes_.end()) break;
+    if (it == nodes_.end()) {
+      break;
+    }
     current = it->second.child;
   }
 }

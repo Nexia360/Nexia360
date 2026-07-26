@@ -99,14 +99,14 @@ class VoiceChat {
   std::filesystem::path settings_path_;  // "" = persistence off
 
   std::mutex queue_mutex_;
-  // 2-page capture ring: 640 bytes = 320 samples. OnCapture fills it circularly;
-  // ReadCapturePcm reads a 160-sample page at an offset advanced by the REAL time
-  // elapsed since the last request -- so the read tracks wall-clock (correct
-  // speed) and skips the gaps between requests (lossy by design, like the real
-  // 360) instead of queueing them in order.
+  // 2-page capture ring: 640 bytes = 320 samples. OnCapture fills it
+  // circularly; ReadCapturePcm reads a 160-sample page at an offset advanced by
+  // the REAL time elapsed since the last request -- so the read tracks
+  // wall-clock (correct speed) and skips the gaps between requests (lossy by
+  // design, like the real 360) instead of queueing them in order.
   int16_t capture_ring_[320] = {};
-  uint64_t capture_total_ = 0;        // total samples captured (absolute)
-  uint64_t capture_read_ = 0;         // read offset, advanced by elapsed real time
+  uint64_t capture_total_ = 0;  // total samples captured (absolute)
+  uint64_t capture_read_ = 0;   // read offset, advanced by elapsed real time
   std::chrono::steady_clock::time_point last_request_{};
   std::deque<int16_t> playback_pcm_;  // decoded remote voice ring
   bool playback_primed_ = false;      // jitter-buffer prime/underrun state

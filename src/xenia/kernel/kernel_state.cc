@@ -16,7 +16,6 @@
 #include "xenia/emulator.h"
 #include "xenia/hid/input_system.h"
 #include "xenia/kernel/user_module.h"
-#include "xenia/vfs/devices/host_path_device.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_memory.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_module.h"
@@ -28,6 +27,7 @@
 #include "xenia/kernel/xobject.h"
 #include "xenia/kernel/xthread.h"
 #include "xenia/ui/imgui_host_notification.h"
+#include "xenia/vfs/devices/host_path_device.h"
 
 #include "third_party/crypto/TinySHA1.hpp"
 

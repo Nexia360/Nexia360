@@ -323,8 +323,7 @@ class EmulatorWindow {
   void FillRecentlyLaunchedTitlesWithTUMenu(xe::ui::MenuItem* recent_menu);
   void LoadRecentlyLaunchedTitles();
   void AddRecentlyLaunchedTitle(std::filesystem::path path_to_file,
-                                std::string title_name,
-                                uint32_t title_id = 0);
+                                std::string title_name, uint32_t title_id = 0);
 
   void ClearDialogs();
 
