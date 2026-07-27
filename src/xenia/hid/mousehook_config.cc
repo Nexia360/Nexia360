@@ -326,10 +326,11 @@ void MousehookConfig::ApplyToGamepad(X_INPUT_GAMEPAD* gamepad) {
   }
 
   // A real thumbstick's reference is ROUND - magnitude never exceeds 32767 in
-  // any direction. Clamping each axis on its own (above, and for the keys) makes
-  // it SQUARE, so a diagonal reaches ~46340 and the corners sit 41% further out
-  // than a cardinal. The title's own radial clamp then pulls diagonals back and
-  // they read as weaker or snapped. Scale onto the circle, keeping direction.
+  // any direction. Clamping each axis on its own (above, and for the keys)
+  // makes it SQUARE, so a diagonal reaches ~46340 and the corners sit 41%
+  // further out than a cardinal. The title's own radial clamp then pulls
+  // diagonals back and they read as weaker or snapped. Scale onto the circle,
+  // keeping direction.
   auto clamp_to_circle = [](xe::be<int16_t>& x, xe::be<int16_t>& y) {
     const double vx = static_cast<double>(x.get());
     const double vy = static_cast<double>(y.get());
