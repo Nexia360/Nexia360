@@ -32,6 +32,62 @@ jobs:
       runs-on: ubuntu-24.04
       llvm_version: 20
 
+  # Parses the pushed commit message for release tags. Both word orders are
+  # accepted so a tag is never missed:
+  #   [Release Windows] / [Windows Release]        -> Windows build + release
+  #   [Release Linux]   / [Linux Release]          -> Linux build + release
+  #   [Release Windows, Linux] / [Windows, Linux Release] -> both
+  # Pull requests build every platform for verification but never release.
+  gate:
+    name: Release Gate
+    runs-on: ubuntu-24.04
+    outputs:
+      windows: ${{ steps.parse.outputs.windows }}
+      linux: ${{ steps.parse.outputs.linux }}
+      release: ${{ steps.parse.outputs.release }}
+    steps:
+      - name: Parse commit message
+        id: parse
+        env:
+          MSG: ${{ github.event.head_commit.message }}
+          EVENT: ${{ github.event_name }}
+        run: |-
+          windows=false
+          linux=false
+
+          case "$MSG" in
+            *"[Release Windows, Linux]"*|*"[Windows, Linux Release]"*)
+              windows=true
+              linux=true
+              ;;
+            *)
+              case "$MSG" in
+                *"[Release Windows]"*|*"[Windows Release]"*) windows=true ;;
+              esac
+              case "$MSG" in
+                *"[Release Linux]"*|*"[Linux Release]"*) linux=true ;;
+              esac
+              ;;
+          esac
+
+          release=false
+          if [ "$windows" = true ] || [ "$linux" = true ]; then
+            release=true
+          fi
+
+          # Pull requests verify builds but must never publish a release.
+          if [ "$EVENT" != "push" ]; then
+            windows=true
+            linux=true
+            release=false
+          fi
+
+          echo "windows=$windows" >> $GITHUB_OUTPUT
+          echo "linux=$linux" >> $GITHUB_OUTPUT
+          echo "release=$release" >> $GITHUB_OUTPUT
+
+          echo "windows=$windows linux=$linux release=$release"
+
   # Add optional steps here
 
   # ===========================================================================
@@ -39,8 +95,8 @@ jobs:
   # ===========================================================================
   build-windows:
     name: Windows (x86-64)
-    needs: [lint, commit-message]
-    if: ${{ !failure() && !cancelled() }}
+    needs: [lint, commit-message, gate]
+    if: ${{ !failure() && !cancelled() && needs.gate.outputs.windows == 'true' }}
     uses: ./.github/workflows/Windows_x86.yml
 
   # Uncomment when platform support is ready:
@@ -78,20 +134,24 @@ jobs:
   # ===========================================================================
   # Stage 3: Release
   # ===========================================================================
-  # Uncomment when nightly releases is ready:
-  # release:
-  #   name: Create Release
-  #   needs: [build-windows, build-linux]
-  #   if: |-
-  #     always() &&
-  #     github.repository == 'Nexia360/Nexia360' &&
-  #     github.event_name == 'push' &&
-  #     github.ref == 'refs/heads/Mousehook' &&
-  #     (needs.build-windows.result == 'success' && needs.build-linux.result == 'success')
-  #   uses: ./.github/workflows/Create_release.yml
-  #   permissions:
-  #     contents: write
-  #   secrets: inherit
-  #   with:
-  #     tag: ${{ github.sha }}
-  #     branch: ${{ github.ref_name }}
+  # Runs only when the pushed commit carries a release tag (see the gate job).
+  # A platform that was not requested is skipped, so its result is 'skipped'
+  # rather than 'success' - both are acceptable here, a 'failure' is not.
+  release:
+    name: Create Release
+    needs: [gate, build-windows]
+    if: |-
+      always() &&
+      github.repository == 'Nexia360/Nexia360' &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/Mousehook' &&
+      needs.gate.outputs.release == 'true' &&
+      needs.build-windows.result != 'failure' &&
+      needs.build-windows.result != 'cancelled'
+    uses: ./.github/workflows/Create_release.yml
+    permissions:
+      contents: write
+    secrets: inherit
+    with:
+      tag: ${{ github.sha }}
+      branch: ${{ github.ref_name }}

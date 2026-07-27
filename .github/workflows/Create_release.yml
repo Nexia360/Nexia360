@@ -34,8 +34,20 @@ jobs:
           FULL_SHA="${{ inputs.tag }}"
           SHORT_SHA="${FULL_SHA::7}"
           BRANCH="${{ inputs.branch }}"
-          TAG_NAME="$SHORT_SHA"
-          TITLE="${SHORT_SHA}_$BRANCH"
+
+          # Version comes from the VERSION file at the repo root - bump it to
+          # cut a new release. Falls back to the short SHA if it is missing.
+          if [ -f VERSION ]; then
+            VERSION="$(tr -d ' \t\r\n' < VERSION)"
+          fi
+
+          if [ -n "$VERSION" ]; then
+            TAG_NAME="Nexia_v$VERSION"
+            TITLE="Nexia360 v$VERSION"
+          else
+            TAG_NAME="$SHORT_SHA"
+            TITLE="${SHORT_SHA}_$BRANCH"
+          fi
 
           echo "tag_name=$TAG_NAME" >> $GITHUB_OUTPUT
           echo "title=$TITLE" >> $GITHUB_OUTPUT

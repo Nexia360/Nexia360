@@ -365,8 +365,12 @@ class XLiveAPI {
   }
 
  private:
-  // Nexia: local reserved port (pre-UPnP). Was hardcoded 36000.
-  uint16_t player_port_ = 36000;
+  // The LOCAL bound port of the player (VDP) socket. Set from the actual bind
+  // in XSocket::Bind - never hardcoded. ports.json (DownloadPortMappings)
+  // supplies the guest->external mapping that GetPlayerPort() resolves this
+  // through; it does not identify which port is the player socket, so the bind
+  // is the only ground truth. 0 until the guest has bound.
+  uint16_t player_port_ = 0;
 
   const std::string default_local_server_ = "192.168.0.1:36000/";
 

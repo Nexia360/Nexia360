@@ -78,7 +78,7 @@ class PlayerObjectJSON : public BaseObjectJSON {
   xe::be<uint64_t> macAddress_;  // 6 Bytes
   xe::be<uint64_t> sessionId_;
   std::map<uint32_t, std::vector<xam::UserSetting>> settings_;
-  uint16_t port_;
+  uint16_t port_ = 0;
   uint32_t clientVersion_ = 0;
 };
 

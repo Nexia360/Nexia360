@@ -955,6 +955,16 @@ void XLiveAPI::DownloadPortMappings() {
       upnp->AddMappedBindPort(port["port"].GetUint(),
                               port["mappedTo"].GetUint());
     }
+
+    // Seed the advertised player port from the hub's first bind entry so we
+    // register on a port this title actually uses, instead of a hardcoded
+    // guess. XSocket::Bind overwrites this with the real bound port once the
+    // guest binds - ports.json does not say which entry is the player socket.
+    const auto& bind_ports = doc["bind"].GetArray();
+    if (!player_port_ && !bind_ports.Empty()) {
+      player_port_ = static_cast<uint16_t>(bind_ports[0]["port"].GetUint());
+      XELOGD("Player port: seeded {} from ports.json", player_port_);
+    }
   }
 
   XELOGI("Requested Port Mappings");
@@ -1037,6 +1047,7 @@ std::unique_ptr<HTTPResponseObjectJSON> XLiveAPI::RegisterPlayer(
   player.MachineID(GetLocalMachineId(mac_address));
   player.HostAddress(OnlineIP_str());
   player.MacAddress(mac_address.to_uint64());
+  player.Port(GetPlayerPort());
   player.Settings(settings);
 
   std::string player_output;

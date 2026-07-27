@@ -26,6 +26,7 @@ DEFINE_int32(network_priority, 3,
              "Live");
 
 DECLARE_bool(bind_interface);
+DECLARE_bool(upnp);
 
 using namespace std::chrono_literals;
 
@@ -402,6 +403,17 @@ X_STATUS XSocket::Bind(const XSOCKADDR_IN* name, int name_len) {
 
   const auto upnp = kernel_state()->emulator()->GetUPnP();
 
+  // Do not let the guest bind before UPnP has finished its job. Binding the
+  // raw guest port publishes an address the router has not opened yet, so
+  // peers cannot reach us there and the title gives up on the join. Start()
+  // blocks on IGD discovery, and returns without going active if no IGD was
+  // found - in that case we fall through and bind as-is rather than hang.
+  if (cvars::upnp && upnp && !upnp->IsActive()) {
+    XELOGD("Bind: waiting for UPnP before binding port {}",
+           name->address_port.get());
+    upnp->Start();
+  }
+
   if (upnp) {
     sa_in.address_port = upnp->GetMappedBindPort(name->address_port);
   }
@@ -489,6 +501,17 @@ X_STATUS XSocket::Bind(const XSOCKADDR_IN* name, int name_len) {
 
   if (!bound_port_) {
     bound_port_ = GetImplicitlyBoundPort();
+  }
+
+  // Advertise the port we actually bound. The player port used to be a
+  // hardcoded 36000, so peers were told to reach us on a port nothing was
+  // listening on. ports.json only maps guest->external and never says which
+  // socket is the player one, so the VDP bind is the authoritative source.
+  if (vdp_ && bound_port_ && xlive_api &&
+      xlive_api->GetLocalPlayerPort() != bound_port_) {
+    XELOGD("Player port: advertising bound VDP port {} (was {})",
+           bound_port_.get(), xlive_api->GetLocalPlayerPort());
+    xlive_api->SetPlayerPort(bound_port_);
   }
 
   bound_ = true;

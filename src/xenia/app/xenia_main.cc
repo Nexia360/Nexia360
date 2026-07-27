@@ -152,31 +152,6 @@ DECLARE_bool(upnp);
 namespace xe {
 namespace app {
 
-// Both VFS layouts are supported:
-//   Device-rooted : <storage_root>/Device/<name>   (Nexia layout - the host
-//                   content/cache folders live alongside the guest device
-//                   folders, keeping the storage root clean)
-//   Legacy        : <storage_root>/<name>          (upstream layout)
-// A folder is used wherever it already exists, preferring the Device-rooted
-// copy when both are present. Nothing is moved or deleted, so an existing
-// install keeps working in place and either layout can be adopted by simply
-// creating the folder. Note the title-update library follows automatically:
-// TitleUpdateManager derives its root from content_root's parent.
-static std::filesystem::path ResolveStorageFolder(
-    const std::filesystem::path& storage_root, const char* name) {
-  std::error_code ec;
-  const auto device_path = storage_root / "Device" / name;
-  if (std::filesystem::exists(device_path, ec)) {
-    return device_path;
-  }
-  const auto legacy_path = storage_root / name;
-  if (std::filesystem::exists(legacy_path, ec)) {
-    return legacy_path;
-  }
-  // Neither exists yet - create new installs in the Device-rooted layout.
-  return device_path;
-}
-
 class EmulatorApp final : public xe::ui::WindowedApp {
  public:
   static std::unique_ptr<xe::ui::WindowedApp> Create(
@@ -533,6 +508,20 @@ bool EmulatorApp::OnInitialize() {
     }
   }
   storage_root = std::filesystem::absolute(storage_root);
+
+  // If a Device folder already exists in the storage root, the guest device
+  // tree lives inside it and it becomes the effective storage root - every
+  // folder below (content, cache, scratch, Library, ...) resolves under it.
+  // Adopted only when it is already there; never created, so an install
+  // without one keeps the flat layout untouched.
+  {
+    std::error_code ec;
+    const auto device_root = storage_root / "Device";
+    if (std::filesystem::is_directory(device_root, ec)) {
+      storage_root = device_root;
+    }
+  }
+
   XELOGI("Storage root: {}", storage_root);
 
   config::SetupConfig(storage_root);
@@ -545,7 +534,7 @@ bool EmulatorApp::OnInitialize() {
 
   std::filesystem::path content_root = cvars::content_root;
   if (content_root.empty()) {
-    content_root = ResolveStorageFolder(storage_root, "content");
+    content_root = storage_root / "content";
   } else {
     // If content root isn't an absolute path, then it should be relative to the
     // storage root.
@@ -558,7 +547,7 @@ bool EmulatorApp::OnInitialize() {
 
   std::filesystem::path cache_root = cvars::cache_root;
   if (cache_root.empty()) {
-    cache_root = ResolveStorageFolder(storage_root, "cache_host");
+    cache_root = storage_root / "cache_host";
     // TODO(Triang3l): Point to the app's external storage "cache" directory on
     // Android.
   } else {
@@ -684,7 +673,7 @@ void EmulatorApp::EmulatorThread() {
 
   if (cvars::mount_scratch) {
     auto scratch_device = std::make_unique<xe::vfs::HostPathDevice>(
-        "\\SCRATCH", ResolveStorageFolder(emulator_->storage_root(), "scratch"),
+        "\\SCRATCH", emulator_->storage_root() / "scratch",
         false);
     if (!scratch_device->Initialize()) {
       XELOGE("Unable to scan scratch path");
@@ -699,7 +688,7 @@ void EmulatorApp::EmulatorThread() {
 
   if (cvars::mount_cache) {
     auto cache0_device = std::make_unique<xe::vfs::HostPathDevice>(
-        "\\CACHE0", ResolveStorageFolder(emulator_->storage_root(), "cache0"),
+        "\\CACHE0", emulator_->storage_root() / "cache0",
         false);
     if (!cache0_device->Initialize()) {
       XELOGE("Unable to scan cache0 path");
@@ -712,7 +701,7 @@ void EmulatorApp::EmulatorThread() {
     }
 
     auto cache1_device = std::make_unique<xe::vfs::HostPathDevice>(
-        "\\CACHE1", ResolveStorageFolder(emulator_->storage_root(), "cache1"),
+        "\\CACHE1", emulator_->storage_root() / "cache1",
         false);
     if (!cache1_device->Initialize()) {
       XELOGE("Unable to scan cache1 path");
@@ -729,7 +718,7 @@ void EmulatorApp::EmulatorThread() {
     // substring/start_with logic inside VirtualFileSystem::ResolvePath, else
     // accesses to those devices will go here instead
     auto cache_device = std::make_unique<xe::vfs::HostPathDevice>(
-        "\\CACHE", ResolveStorageFolder(emulator_->storage_root(), "cache"),
+        "\\CACHE", emulator_->storage_root() / "cache",
         false);
     if (!cache_device->Initialize()) {
       XELOGE("Unable to scan cache path");
@@ -743,7 +732,7 @@ void EmulatorApp::EmulatorThread() {
 
     auto xstorage_device = std::make_unique<xe::vfs::HostPathDevice>(
         "\\XSTORAGE",
-        ResolveStorageFolder(emulator_->storage_root(), "xstorage"), false);
+        emulator_->storage_root() / "xstorage", false);
     if (!xstorage_device->Initialize()) {
       XELOGE("Unable to scan xstorage path");
     } else {

@@ -89,6 +89,13 @@ bool PlayerObjectJSON::Serialize(
   writer->String("macAddress");
   writer->String(fmt::format("{:012x}", macAddress_.get()));
 
+  // The port peers must reach us on. Sent on registration so the hub's player
+  // record tracks the port we actually bound instead of keeping a stale value
+  // from a previous run - the session record was previously the only place
+  // this was reported.
+  writer->String("port");
+  writer->Uint(port_);
+
   writer->String("settings");
   writer->StartObject();
 
