@@ -10,7 +10,9 @@
 #include "xenia/kernel/util/title_update_manager.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
+#include <utility>
 #include <vector>
 
 #include "third_party/fmt/include/fmt/format.h"
@@ -20,6 +22,7 @@
 #include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/string_util.h"
+#include "xenia/base/xxhash.h"
 #include "xenia/cpu/xex_module.h"
 #include "xenia/kernel/util/xex2_info.h"
 
@@ -31,6 +34,11 @@ static constexpr uint32_t kXex2Magic = 0x58455832;  // 'XEX2'
 static const char* kContentXuid = "0000000000000000";
 static const char* kInstallerType = "000B0000";
 static const char* kManifestName = "title_updates.json";
+static const char* kHeaderDirName = "Headers";
+// The update payload lives in its own subfolder so a game whose update
+// contains a folder called "Content" cannot collide with the per-update
+// save/DLC area that sits alongside it.
+static const char* kUpdateDirName = "UPDATE";
 
 TitleUpdateManager::TitleUpdateManager(
     const std::filesystem::path& content_root)
@@ -50,6 +58,11 @@ std::filesystem::path TitleUpdateManager::manifest_path(
   return library_root(title_id) / kManifestName;
 }
 
+std::filesystem::path TitleUpdateManager::update_dir(
+    uint32_t title_id, const std::string& id) const {
+  return library_root(title_id) / id / kUpdateDirName;
+}
+
 std::filesystem::path TitleUpdateManager::content_update_dir(
     uint32_t title_id) const {
   return content_root_ / kContentXuid / fmt::format("{:08X}", title_id) /
@@ -59,7 +72,7 @@ std::filesystem::path TitleUpdateManager::content_update_dir(
 std::filesystem::path TitleUpdateManager::content_header_dir(
     uint32_t title_id) const {
   return content_root_ / kContentXuid / fmt::format("{:08X}", title_id) /
-         "Headers" / kInstallerType;
+         kHeaderDirName / kInstallerType;
 }
 
 static bool ParseHexTitleId(const std::string& name, uint32_t& out) {
@@ -144,6 +157,259 @@ bool TitleUpdateManager::ReadXexpVersion(const std::filesystem::path& xexp,
   return true;
 }
 
+std::string TitleUpdateManager::ComputeUpdateHash(
+    const std::filesystem::path& dir) {
+  std::error_code ec;
+  if (!std::filesystem::exists(dir, ec)) {
+    return "";
+  }
+
+  // Collect every regular file keyed by its relative path, then sort, so the
+  // digest does not depend on directory iteration order.
+  std::vector<std::pair<std::string, std::filesystem::path>> files;
+  for (const auto& f : std::filesystem::recursive_directory_iterator(
+           dir, std::filesystem::directory_options::skip_permission_denied,
+           ec)) {
+    if (ec) {
+      return "";
+    }
+    if (!f.is_regular_file(ec)) {
+      continue;
+    }
+    auto rel = std::filesystem::relative(f.path(), dir, ec);
+    if (ec) {
+      return "";
+    }
+    std::string key = xe::path_to_utf8(rel);
+    // Normalize separators and case - these come off FAT/STFS.
+    std::replace(key.begin(), key.end(), '\\', '/');
+    std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) {
+      return static_cast<char>(std::tolower(c));
+    });
+    files.emplace_back(std::move(key), f.path());
+  }
+
+  if (files.empty()) {
+    return "";
+  }
+
+  std::sort(files.begin(), files.end(),
+            [](const auto& a, const auto& b) { return a.first < b.first; });
+
+  XXH3_state_t state;
+  XXH3_128bits_reset(&state);
+
+  std::vector<uint8_t> buffer(64 * 1024);
+  for (const auto& [key, path] : files) {
+    XXH3_128bits_update(&state, key.data(), key.size());
+
+    FILE* f = xe::filesystem::OpenFile(path, "rb");
+    if (!f) {
+      return "";
+    }
+    while (true) {
+      size_t read = fread(buffer.data(), 1, buffer.size(), f);
+      if (read) {
+        XXH3_128bits_update(&state, buffer.data(), read);
+      }
+      if (read < buffer.size()) {
+        break;
+      }
+    }
+    fclose(f);
+  }
+
+  XXH128_hash_t digest = XXH3_128bits_digest(&state);
+  return fmt::format("{:016x}{:016x}", digest.high64, digest.low64);
+}
+
+std::string TitleUpdateManager::FindByHash(
+    const std::string& hash,
+    const std::vector<TitleUpdateEntry>& entries) const {
+  if (hash.empty()) {
+    return "";
+  }
+  for (const auto& e : entries) {
+    if (e.hash == hash) {
+      return e.id;
+    }
+  }
+  return "";
+}
+
+void TitleUpdateManager::EnsureHashes(uint32_t title_id) {
+  std::string active;
+  std::vector<TitleUpdateEntry> entries;
+  if (!LoadManifest(title_id, active, entries)) {
+    return;
+  }
+
+  bool changed = false;
+  for (auto& e : entries) {
+    if (!e.hash.empty()) {
+      continue;
+    }
+    e.hash = ComputeUpdateHash(update_dir(title_id, e.id));
+    if (!e.hash.empty()) {
+      changed = true;
+      XELOGD("TitleUpdateManager: hashed existing update {:08X}/{} -> {}",
+             title_id, e.id, e.hash);
+    }
+  }
+
+  if (changed) {
+    SaveManifest(title_id, active, entries);
+  }
+}
+
+std::filesystem::path TitleUpdateManager::GetContentRoot(uint32_t title_id,
+                                                         const std::string& id,
+                                                         uint64_t xuid) const {
+  if (id.empty()) {
+    return {};
+  }
+  return library_root(title_id) / id / "Content" / fmt::format("{:016X}", xuid);
+}
+
+std::filesystem::path TitleUpdateManager::GetActiveContentRoot(
+    uint32_t title_id, uint64_t xuid) const {
+  std::string active = GetActive(title_id);
+
+  // "None" is an overlay of its own, not a fall-through to the global tree.
+  if (active.empty()) {
+    active = kNoTitleUpdateId;
+  }
+
+  return GetContentRoot(title_id, active, xuid);
+}
+
+void TitleUpdateManager::MigrateGlobalContentToNoTu(uint32_t title_id) {
+  std::error_code ec;
+  const auto title_str = fmt::format("{:08X}", title_id);
+
+  if (!std::filesystem::exists(content_root_, ec)) {
+    return;
+  }
+
+  for (const auto& xuid_dir : std::filesystem::directory_iterator(
+           content_root_,
+           std::filesystem::directory_options::skip_permission_denied, ec)) {
+    if (!xuid_dir.is_directory(ec)) {
+      continue;
+    }
+
+    const auto src = xuid_dir.path() / title_str;
+    if (!std::filesystem::exists(src, ec)) {
+      continue;
+    }
+
+    const auto xuid_name = xe::path_to_utf8(xuid_dir.path().filename());
+    const auto dst =
+        library_root(title_id) / kNoTitleUpdateId / "Content" / xuid_name;
+
+    // Installers stay in the global tree - that is where update packages are
+    // installed to and where ImportFromContent reads them from. That applies
+    // to their headers too, which live one level down in Headers/000B0000,
+    // so Headers must be descended into rather than moved wholesale.
+    auto move_type = [&](const std::filesystem::path& src_type,
+                         const std::filesystem::path& dst_type,
+                         const std::string& label) {
+      if (std::filesystem::exists(dst_type, ec)) {
+        return;  // already migrated
+      }
+
+      std::filesystem::create_directories(dst_type.parent_path(), ec);
+      std::filesystem::rename(src_type, dst_type, ec);
+      if (ec) {
+        ec.clear();
+        std::filesystem::copy(src_type, dst_type,
+                              std::filesystem::copy_options::recursive, ec);
+        if (!ec) {
+          std::filesystem::remove_all(src_type, ec);
+        }
+      }
+
+      XELOGD("TitleUpdateManager: migrated {:08X} {}/{} into {}", title_id,
+             xuid_name, label, kNoTitleUpdateId);
+    };
+
+    for (const auto& type_dir : std::filesystem::directory_iterator(
+             src, std::filesystem::directory_options::skip_permission_denied,
+             ec)) {
+      const auto type_name = xe::path_to_utf8(type_dir.path().filename());
+
+      if (type_name == kInstallerType) {
+        continue;
+      }
+
+      if (type_name == kHeaderDirName) {
+        // Move each header type individually, leaving the installer headers
+        // where the content manager still expects to find them.
+        for (const auto& hdr_type : std::filesystem::directory_iterator(
+                 type_dir.path(),
+                 std::filesystem::directory_options::skip_permission_denied,
+                 ec)) {
+          const auto hdr_name = xe::path_to_utf8(hdr_type.path().filename());
+          if (hdr_name == kInstallerType) {
+            continue;
+          }
+          move_type(hdr_type.path(), dst / kHeaderDirName / hdr_name,
+                    std::string(kHeaderDirName) + "/" + hdr_name);
+        }
+        continue;
+      }
+
+      move_type(type_dir.path(), dst / type_name, type_name);
+    }
+  }
+}
+
+std::vector<std::string> TitleUpdateManager::ImportNoTuContent(
+    uint32_t title_id, const std::string& target_id, uint64_t xuid,
+    bool dry_run) {
+  std::vector<std::string> conflicts;
+
+  const auto src = GetContentRoot(title_id, kNoTitleUpdateId, xuid);
+  const auto dst = GetContentRoot(title_id, target_id, xuid);
+
+  std::error_code ec;
+  if (src.empty() || dst.empty() || !std::filesystem::exists(src, ec)) {
+    return conflicts;
+  }
+
+  for (const auto& f : std::filesystem::recursive_directory_iterator(
+           src, std::filesystem::directory_options::skip_permission_denied,
+           ec)) {
+    if (!f.is_regular_file(ec)) {
+      continue;
+    }
+
+    auto rel = std::filesystem::relative(f.path(), src, ec);
+    if (ec) {
+      continue;
+    }
+
+    const auto target = dst / rel;
+    if (std::filesystem::exists(target, ec)) {
+      conflicts.push_back(xe::path_to_utf8(rel));
+    }
+
+    if (!dry_run) {
+      std::filesystem::create_directories(target.parent_path(), ec);
+      std::filesystem::copy_file(
+          f.path(), target, std::filesystem::copy_options::overwrite_existing,
+          ec);
+      if (ec) {
+        XELOGE("TitleUpdateManager: failed to import {} ({})",
+               xe::path_to_utf8(rel), ec.message());
+        ec.clear();
+      }
+    }
+  }
+
+  return conflicts;
+}
+
 bool TitleUpdateManager::LoadManifest(
     uint32_t title_id, std::string& active,
     std::vector<TitleUpdateEntry>& entries) const {
@@ -195,6 +461,9 @@ bool TitleUpdateManager::LoadManifest(
       if (u.HasMember("source_file") && u["source_file"].IsString()) {
         e.source_file = u["source_file"].GetString();
       }
+      if (u.HasMember("hash") && u["hash"].IsString()) {
+        e.hash = u["hash"].GetString();
+      }
       if (!e.id.empty()) {
         entries.push_back(std::move(e));
       }
@@ -219,6 +488,7 @@ bool TitleUpdateManager::SaveManifest(
     o.AddMember("version_value", e.version_value, al);
     o.AddMember("size_bytes", e.size_bytes, al);
     o.AddMember("source_file", rapidjson::Value(e.source_file.c_str(), al), al);
+    o.AddMember("hash", rapidjson::Value(e.hash.c_str(), al), al);
     arr.PushBack(o, al);
   }
   doc.AddMember("updates", arr, al);
@@ -259,7 +529,7 @@ std::filesystem::path TitleUpdateManager::GetActiveLibraryPath(
   if (active.empty()) {
     return {};
   }
-  auto path = library_root(title_id) / active;
+  auto path = update_dir(title_id, active);
   std::error_code ec;
   if (!std::filesystem::exists(path, ec)) {
     return {};
@@ -311,6 +581,12 @@ bool TitleUpdateManager::SetActive(uint32_t title_id, const std::string& id) {
   if (!id.empty() && !exists) {
     return false;
   }
+
+  // Anything sitting in the global content tree predates title-update
+  // management, so it belongs to the "None" overlay. Runs once per title -
+  // afterwards each selection owns its own content and switching is only a
+  // pointer change.
+  MigrateGlobalContentToNoTu(title_id);
 
   // The active update is read directly from the library at load time, so there
   // is nothing to copy or link. Just clean up any content-tree links left by
@@ -382,16 +658,38 @@ std::string TitleUpdateManager::ImportFromContent(
     version_value = parsed_value;
   }
 
+  // Hash the staged update before it moves, and make sure everything
+  // already in the library has a hash to compare against.
+  EnsureHashes(title_id);
+
   std::string active;
   std::vector<TitleUpdateEntry> entries;
   LoadManifest(title_id, active, entries);
+
+  const std::string incoming_hash = ComputeUpdateHash(src_dir);
+  const std::string duplicate_of = FindByHash(incoming_hash, entries);
+
+  if (!duplicate_of.empty()) {
+    XELOGD(
+        "TitleUpdateManager: {:08X} update {} is identical to installed "
+        "{} ({}), discarding",
+        title_id, source_dirname, duplicate_of, incoming_hash);
+    std::error_code dup_ec;
+    std::filesystem::remove_all(src_dir, dup_ec);
+    std::filesystem::remove(src_header, dup_ec);
+    if (auto_activate) {
+      SetActive(title_id, duplicate_of);
+    }
+    return duplicate_of;
+  }
 
   std::string id = MakeUniqueId(title_id, version, entries);
 
   std::error_code ec;
   std::filesystem::create_directories(library_root(title_id), ec);
-  auto lib_dir = library_root(title_id) / id;
+  auto lib_dir = update_dir(title_id, id);
   std::filesystem::remove_all(lib_dir, ec);
+  std::filesystem::create_directories(lib_dir.parent_path(), ec);
   std::filesystem::rename(src_dir, lib_dir, ec);
   if (ec) {
     // Cross-volume or busy - fall back to copy + delete.
@@ -434,6 +732,7 @@ std::string TitleUpdateManager::ImportFromContent(
   entry.version_value = version_value;
   entry.size_bytes = size_bytes;
   entry.source_file = source_dirname;
+  entry.hash = incoming_hash;
   entries.push_back(entry);
 
   SaveManifest(title_id, active, entries);
@@ -444,10 +743,64 @@ std::string TitleUpdateManager::ImportFromContent(
   return id;
 }
 
-void TitleUpdateManager::MigrateLegacy(uint32_t title_id) {
-  auto update_dir = content_update_dir(title_id);
+// Older libraries stored the update payload directly at <Library>/<id>/.
+// Move it down into <id>/UPDATE so the per-update Content folder cannot be
+// confused with an update that ships its own "Content" directory.
+void TitleUpdateManager::MigrateLegacyLibraryLayout(uint32_t title_id) {
+  std::string active;
+  std::vector<TitleUpdateEntry> entries;
+  if (!LoadManifest(title_id, active, entries)) {
+    return;
+  }
+
   std::error_code ec;
-  if (!std::filesystem::exists(update_dir)) {
+  for (const auto& e : entries) {
+    const auto id_dir = library_root(title_id) / e.id;
+    const auto payload = update_dir(title_id, e.id);
+
+    if (std::filesystem::exists(payload, ec) ||
+        !std::filesystem::exists(id_dir, ec)) {
+      continue;  // already migrated, or nothing there
+    }
+
+    // Everything except the per-update Content folder is payload.
+    std::vector<std::filesystem::path> payload_entries;
+    for (const auto& item : std::filesystem::directory_iterator(
+             id_dir, std::filesystem::directory_options::skip_permission_denied,
+             ec)) {
+      if (xe::path_to_utf8(item.path().filename()) == "Content") {
+        continue;
+      }
+      payload_entries.push_back(item.path());
+    }
+
+    if (payload_entries.empty()) {
+      continue;
+    }
+
+    std::filesystem::create_directories(payload, ec);
+    for (const auto& item : payload_entries) {
+      const auto dst = payload / item.filename();
+      std::filesystem::rename(item, dst, ec);
+      if (ec) {
+        ec.clear();
+        std::filesystem::copy(item, dst,
+                              std::filesystem::copy_options::recursive, ec);
+        if (!ec) {
+          std::filesystem::remove_all(item, ec);
+        }
+      }
+    }
+
+    XELOGD("TitleUpdateManager: moved {:08X}/{} payload into {}", title_id,
+           e.id, kUpdateDirName);
+  }
+}
+
+void TitleUpdateManager::MigrateLegacy(uint32_t title_id) {
+  auto content_updates = content_update_dir(title_id);
+  std::error_code ec;
+  if (!std::filesystem::exists(content_updates)) {
     return;
   }
 
@@ -458,7 +811,7 @@ void TitleUpdateManager::MigrateLegacy(uint32_t title_id) {
   // Collect real (non-link) directories that aren't already tracked.
   std::vector<std::string> to_import;
   for (const auto& entry : std::filesystem::directory_iterator(
-           update_dir,
+           content_updates,
            std::filesystem::directory_options::skip_permission_denied, ec)) {
     if (!entry.is_directory(ec)) {
       continue;
@@ -505,6 +858,26 @@ void TitleUpdateManager::MigrateAllLegacy() {
     if (std::filesystem::exists(content_update_dir(title_id), ec)) {
       MigrateLegacy(title_id);
     }
+  }
+
+  // Convert any library still holding its payload at <Library>/<id>/ over
+  // to the <id>/UPDATE layout. Walks the library, not the content tree, so
+  // titles whose content folder is long gone are converted too.
+  auto library = device_root() / "Library";
+  if (!std::filesystem::exists(library, ec)) {
+    return;
+  }
+  for (const auto& entry : std::filesystem::directory_iterator(
+           library, std::filesystem::directory_options::skip_permission_denied,
+           ec)) {
+    if (!entry.is_directory(ec)) {
+      continue;
+    }
+    uint32_t title_id = 0;
+    if (!ParseHexTitleId(xe::path_to_utf8(entry.path().filename()), title_id)) {
+      continue;
+    }
+    MigrateLegacyLibraryLayout(title_id);
   }
 }
 

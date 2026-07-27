@@ -272,6 +272,7 @@ void MousehookConfig::ApplyToGamepad(X_INPUT_GAMEPAD* gamepad) {
       }
       ApplyBoundKey(gamepad, bind.output_key);
     }
+
   }
 
   const int32_t dx = mouse_dx_.exchange(0, std::memory_order_relaxed);
@@ -323,6 +324,26 @@ void MousehookConfig::ApplyToGamepad(X_INPUT_GAMEPAD* gamepad) {
     gamepad->thumb_rx = add_axis(gamepad->thumb_rx.get(), move_x);
     gamepad->thumb_ry = add_axis(gamepad->thumb_ry.get(), move_y);
   }
+
+  // A real thumbstick's reference is ROUND - magnitude never exceeds 32767 in
+  // any direction. Clamping each axis on its own (above, and for the keys) makes
+  // it SQUARE, so a diagonal reaches ~46340 and the corners sit 41% further out
+  // than a cardinal. The title's own radial clamp then pulls diagonals back and
+  // they read as weaker or snapped. Scale onto the circle, keeping direction.
+  auto clamp_to_circle = [](xe::be<int16_t>& x, xe::be<int16_t>& y) {
+    const double vx = static_cast<double>(x.get());
+    const double vy = static_cast<double>(y.get());
+    const double magnitude = std::sqrt(vx * vx + vy * vy);
+    if (magnitude <= 32767.0 || magnitude <= 0.0) {
+      return;
+    }
+    const double factor = 32767.0 / magnitude;
+    x = static_cast<int16_t>(vx * factor);
+    y = static_cast<int16_t>(vy * factor);
+  };
+
+  clamp_to_circle(gamepad->thumb_lx, gamepad->thumb_ly);
+  clamp_to_circle(gamepad->thumb_rx, gamepad->thumb_ry);
 
   auto apply_button = [&](MouseButtonAction action) {
     switch (action) {

@@ -39,6 +39,10 @@ class TitleUpdateDialog final : public ui::ImGuiDialog {
  private:
   void Reload();
 
+  // Profile the save import applies to - content is per-profile, so this is
+  // the signed-in local XUID.
+  uint64_t ImportXuid() const;
+
   EmulatorWindow* emulator_window_;
   uint32_t title_id_;
   std::filesystem::path launch_path_;
@@ -48,6 +52,9 @@ class TitleUpdateDialog final : public ui::ImGuiDialog {
   std::string active_id_;
   std::string selected_id_;
   bool opened_ = false;
+
+  std::vector<std::string> import_conflicts_;
+  std::string import_status_;
 };
 
 }  // namespace app

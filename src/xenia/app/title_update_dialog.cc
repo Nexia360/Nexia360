@@ -15,9 +15,21 @@
 #include "third_party/imgui/imgui_internal.h"
 #include "xenia/app/emulator_window.h"
 #include "xenia/emulator.h"
+#include "xenia/kernel/kernel_state.h"
+#include "xenia/kernel/xam/xam_state.h"
 
 namespace xe {
 namespace app {
+
+uint64_t TitleUpdateDialog::ImportXuid() const {
+  auto* kernel_state = emulator_window_->emulator()->kernel_state();
+  if (!kernel_state || !kernel_state->xam_state()) {
+    return 0;
+  }
+  // Slot 0 - saves are per-profile and this dialog acts for the signed-in user.
+  const auto profile = kernel_state->xam_state()->GetUserProfile(uint32_t(0));
+  return profile ? profile->xuid() : 0;
+}
 
 TitleUpdateDialog::TitleUpdateDialog(ui::ImGuiDrawer* imgui_drawer,
                                      EmulatorWindow* emulator_window,
@@ -59,6 +71,33 @@ void TitleUpdateDialog::OnDraw(ImGuiIO& io) {
                              ImGuiWindowFlags_AlwaysAutoResize)) {
     auto* manager = emulator_window_->emulator()->title_update_manager();
 
+    // Overwrite confirmation is a MODE of this popup, not a second one.
+    // ImGui allows a single popup per level - opening a nested modal
+    // corrupts the popup stack, which breaks the on-screen keyboard and
+    // loses text typed into any form drawn above it.
+    if (!import_conflicts_.empty()) {
+      ImGui::Text("%zu file(s) already exist in this update and would be",
+                  import_conflicts_.size());
+      ImGui::TextUnformatted("overwritten:");
+      ImGui::BeginChild("##conflicts", ImVec2(420.0f, 160.0f), true);
+      for (const auto& file : import_conflicts_) {
+        ImGui::TextUnformatted(file.c_str());
+      }
+      ImGui::EndChild();
+      if (ImGui::Button("Overwrite") && manager) {
+        manager->ImportNoTuContent(title_id_, selected_id_, ImportXuid(),
+                                   /*dry_run=*/false);
+        import_status_ = "Saves imported (overwritten).";
+        import_conflicts_.clear();
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("Cancel")) {
+        import_conflicts_.clear();
+      }
+      ImGui::EndPopup();
+      return;
+    }
+
     ImGui::Text("Title %08X", title_id_);
     ImGui::Separator();
 
@@ -73,35 +112,60 @@ void TitleUpdateDialog::OnDraw(ImGuiIO& io) {
     }
 
     bool mutated = false;
-    for (size_t i = 0; i < entries_.size(); ++i) {
-      ImGui::PushID(static_cast<int>(i));
-      const auto& entry = entries_[i];
 
-      if (ImGui::RadioButton("##select", selected_id_ == entry.id)) {
-        selected_id_ = entry.id;
-      }
-      ImGui::SameLine();
-      ImGui::SetNextItemWidth(220.0f);
-      ImGui::InputText("##name", name_buffers_[i].data(),
-                       name_buffers_[i].size());
-      ImGui::SameLine();
-      ImGui::Text("v%s  (%.1f MB)", entry.version.c_str(),
-                  entry.size_bytes / (1024.0 * 1024.0));
-      if (entry.id == active_id_) {
-        ImGui::SameLine();
-        ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.4f, 1.0f), "[active]");
-      }
-      ImGui::SameLine();
-      if (ImGui::SmallButton("Delete")) {
-        if (manager) {
-          manager->Remove(title_id_, entry.id);
+    // Fixed columns rather than a SameLine chain: the name field then scrolls
+    // its own text instead of pushing Delete off the right edge.
+    if (!entries_.empty() &&
+        ImGui::BeginTable(
+            "##tu_table", 4,
+            ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoHostExtendX)) {
+      ImGui::TableSetupColumn("##sel", ImGuiTableColumnFlags_WidthFixed, 24.0f);
+      ImGui::TableSetupColumn("##name", ImGuiTableColumnFlags_WidthFixed,
+                              220.0f);
+      ImGui::TableSetupColumn("##ver", ImGuiTableColumnFlags_WidthFixed,
+                              140.0f);
+      ImGui::TableSetupColumn("##del", ImGuiTableColumnFlags_WidthFixed, 60.0f);
+
+      for (size_t i = 0; i < entries_.size(); ++i) {
+        ImGui::PushID(static_cast<int>(i));
+        const auto& entry = entries_[i];
+
+        ImGui::TableNextRow();
+
+        ImGui::TableSetColumnIndex(0);
+        if (ImGui::RadioButton("##select", selected_id_ == entry.id)) {
+          selected_id_ = entry.id;
         }
-        mutated = true;
+
+        ImGui::TableSetColumnIndex(1);
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::InputText("##name", name_buffers_[i].data(),
+                         name_buffers_[i].size());
+
+        ImGui::TableSetColumnIndex(2);
+        if (entry.id == active_id_) {
+          ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.4f, 1.0f), "v%s [active]",
+                             entry.version.c_str());
+        } else {
+          ImGui::Text("v%s  (%.1f MB)", entry.version.c_str(),
+                      entry.size_bytes / (1024.0 * 1024.0));
+        }
+
+        ImGui::TableSetColumnIndex(3);
+        if (ImGui::SmallButton("Delete")) {
+          if (manager) {
+            manager->Remove(title_id_, entry.id);
+          }
+          mutated = true;
+        }
+
+        ImGui::PopID();
+        if (mutated) {
+          break;
+        }
       }
-      ImGui::PopID();
-      if (mutated) {
-        break;
-      }
+
+      ImGui::EndTable();
     }
 
     ImGui::EndChild();
@@ -113,6 +177,33 @@ void TitleUpdateDialog::OnDraw(ImGuiIO& io) {
     }
 
     ImGui::Separator();
+
+    // Pull the pre-update saves (the "None" overlay) into the selected update.
+    // NO_TU is left intact so it can be imported into several updates.
+    const bool can_import = manager && !selected_id_.empty();
+    if (!can_import) {
+      ImGui::BeginDisabled();
+    }
+    if (ImGui::Button("Import Saves from None...")) {
+      import_conflicts_ = manager->ImportNoTuContent(
+          title_id_, selected_id_, ImportXuid(), /*dry_run=*/true);
+      if (import_conflicts_.empty()) {
+        manager->ImportNoTuContent(title_id_, selected_id_, ImportXuid(),
+                                   /*dry_run=*/false);
+        import_status_ = "Saves imported.";
+      }
+    }
+    if (!can_import) {
+      ImGui::EndDisabled();
+      ImGui::SameLine();
+      ImGui::TextDisabled("(select an update first)");
+    }
+
+    if (!import_status_.empty()) {
+      ImGui::SameLine();
+      ImGui::TextUnformatted(import_status_.c_str());
+    }
+
     if (ImGui::Button("Load")) {
       if (manager) {
         for (size_t i = 0; i < entries_.size(); ++i) {

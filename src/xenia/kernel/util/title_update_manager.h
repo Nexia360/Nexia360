@@ -26,7 +26,13 @@ struct TitleUpdateEntry {
   uint32_t version_value = 0;
   uint64_t size_bytes = 0;
   std::string source_file;  // original installed package filename
+  std::string hash;         // XXH128 of the update's contents (dedupe key)
 };
+
+// Reserved library id for the "None" selection. Content that existed before
+// any title update was chosen lives here, and it is a normal overlay - not a
+// fallback to the global content tree.
+inline constexpr const char* kNoTitleUpdateId = "NO_TU";
 
 // Manages installed title updates as a per-title library under
 // <Device>/Library/<title_id>/, with a JSON manifest, and links the active one
@@ -43,6 +49,37 @@ class TitleUpdateManager {
   // The loader reads the patch directly from here - no content-tree link/copy.
   std::filesystem::path GetActiveLibraryPath(uint32_t title_id) const;
 
+  // Per-profile content root for the ACTIVE selection, which is NO_TU when the
+  // user picked "None". Every content type except installers resolves under
+  // here, so each update keeps its own saves and DLC. Created on demand, so a
+  // freshly selected update starts with an empty save area.
+  std::filesystem::path GetActiveContentRoot(uint32_t title_id,
+                                             uint64_t xuid) const;
+
+  // Content root for a specific library id (a title update, or NO_TU).
+  std::filesystem::path GetContentRoot(uint32_t title_id, const std::string& id,
+                                       uint64_t xuid) const;
+
+  // Moves any pre-existing global content (content/<xuid>/<title_id>/) into
+  // the NO_TU overlay, once per title. Installers are left in the global tree.
+  void MigrateGlobalContentToNoTu(uint32_t title_id);
+
+  // Copies the NO_TU overlay's content for one profile into a title update.
+  // NO_TU is left intact so it can be imported into several updates. Returns
+  // the files that would be overwritten when dry_run is true; performs the
+  // copy (overwriting those files) when it is false.
+  std::vector<std::string> ImportNoTuContent(uint32_t title_id,
+                                             const std::string& target_id,
+                                             uint64_t xuid, bool dry_run);
+
+  // Backfills the content hash of every library entry that predates hashing.
+  void EnsureHashes(uint32_t title_id);
+
+  // XXH128 over a title update folder's contents. Deterministic across
+  // machines: files are visited in sorted relative-path order and both the
+  // path and the bytes are mixed in. Empty string if the folder is unreadable.
+  static std::string ComputeUpdateHash(const std::filesystem::path& dir);
+
   bool SetActive(uint32_t title_id, const std::string& id);
   bool Rename(uint32_t title_id, const std::string& id,
               const std::string& new_name);
@@ -56,6 +93,10 @@ class TitleUpdateManager {
                                 const std::string& source_dirname,
                                 bool auto_activate);
 
+  // One-time migration: move payloads stored at <Library>/<id>/ down into
+  // <Library>/<id>/UPDATE/, leaving any per-update Content folder in place.
+  void MigrateLegacyLibraryLayout(uint32_t title_id);
+
   // One-time migration: pull any real (non-linked) update folders already in
   // the content tree into the library and activate one if none is active.
   void MigrateLegacy(uint32_t title_id);
@@ -68,6 +109,10 @@ class TitleUpdateManager {
   std::filesystem::path device_root() const;
   std::filesystem::path library_root(uint32_t title_id) const;
   std::filesystem::path manifest_path(uint32_t title_id) const;
+  // <Library>/<title_id>/<id>/UPDATE - the update payload, kept apart from the
+  // per-update Content folder next to it.
+  std::filesystem::path update_dir(uint32_t title_id,
+                                   const std::string& id) const;
   std::filesystem::path content_update_dir(uint32_t title_id) const;
   std::filesystem::path content_header_dir(uint32_t title_id) const;
 
@@ -75,6 +120,10 @@ class TitleUpdateManager {
                     std::vector<TitleUpdateEntry>& entries) const;
   bool SaveManifest(uint32_t title_id, const std::string& active,
                     const std::vector<TitleUpdateEntry>& entries) const;
+
+  // Library id of an installed update whose contents hash to `hash`, or empty.
+  std::string FindByHash(const std::string& hash,
+                         const std::vector<TitleUpdateEntry>& entries) const;
 
   void DeactivateLink(uint32_t title_id, const std::string& id);
   std::string MakeUniqueId(uint32_t title_id, const std::string& preferred,

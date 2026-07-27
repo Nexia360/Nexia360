@@ -86,16 +86,19 @@ std::filesystem::path ContentManager::ActiveTitleUpdateContentRoot(
   if (!emulator || !emulator->title_update_manager()) {
     return {};
   }
-  auto library_path =
-      emulator->title_update_manager()->GetActiveLibraryPath(title_id);
-  if (library_path.empty()) {
+  // The active selection owns this profile's content. "None" is the NO_TU
+  // overlay, not a fall-through to the global tree, so every managed title
+  // resolves here. Created on demand - a freshly selected update starts with
+  // an empty save area rather than inheriting another update's saves.
+  auto content_root =
+      emulator->title_update_manager()->GetActiveContentRoot(title_id, xuid);
+  if (content_root.empty()) {
     return {};
   }
-  auto content_root = library_path / "Content" / fmt::format("{:016X}", xuid);
+
   std::error_code ec;
-  if (!std::filesystem::exists(content_root, ec)) {
-    return {};
-  }
+  std::filesystem::create_directories(content_root, ec);
+
   return content_root;
 }
 
@@ -110,9 +113,11 @@ std::filesystem::path ContentManager::ResolvePackageRoot(
   auto content_type_str =
       fmt::format("{:08X}", static_cast<uint32_t>(content_type));
 
-  // Saved games may be bundled with the title's active update; serve them from
-  // the library folder instead of the global content tree when present.
-  if (content_type == XContentType::kSavedGame) {
+  // Every content type except installers follows the active title update,
+  // so each update keeps its own saves and DLC. Installers must stay in the
+  // global tree: that is where update packages are installed to and where
+  // ImportFromContent reads them from.
+  if (content_type != XContentType::kInstaller) {
     auto tu_content = ActiveTitleUpdateContentRoot(xuid, title_id);
     if (!tu_content.empty()) {
       return tu_content / content_type_str;
@@ -188,9 +193,9 @@ std::filesystem::path ContentManager::ResolvePackageHeaderPath(
   std::string final_name =
       xe::string_util::trim(std::string(file_name)) + ".header";
 
-  // Match the saved-game redirect in ResolvePackageRoot so the header is read
-  // from the active title update's bundled content when present.
-  if (content_type == XContentType::kSavedGame) {
+  // Match the redirect in ResolvePackageRoot so headers travel with the
+  // content they describe.
+  if (content_type != XContentType::kInstaller) {
     auto tu_content = ActiveTitleUpdateContentRoot(xuid, title_id);
     if (!tu_content.empty()) {
       return tu_content / kGameContentHeaderDirName / content_type_str /

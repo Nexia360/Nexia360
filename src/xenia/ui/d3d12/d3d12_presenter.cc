@@ -29,6 +29,11 @@ DEFINE_bool(
     "cases.",
     "D3D12");
 
+// The guest frame limiter paces the emulated console, but it says nothing
+// about the host swap chain. Presenting with sync interval 0 and tearing
+// allowed means the display is never waited on, so enabling VSYNC still tore.
+DECLARE_bool(vsync);
+
 namespace xe {
 namespace ui {
 namespace d3d12 {
@@ -1083,10 +1088,16 @@ Presenter::PaintResult D3D12Presenter::PaintAndPresentImpl(
   // fullscreen is ever used in, the allow tearing flag must not be passed in
   // fullscreen, but DXGI fullscreen is largely unneeded with the flip
   // presentation model used in Direct3D 12).
-  HRESULT present_result = paint_context_.swap_chain->Present(
-      0, DXGI_PRESENT_RESTART | (paint_context_.swap_chain_allows_tearing
-                                     ? DXGI_PRESENT_ALLOW_TEARING
-                                     : 0));
+  // With VSYNC on, sync to the display: interval 1, and no tearing flag (it is
+  // only legal with interval 0 anyway). With VSYNC off, keep the original
+  // present-immediately behaviour.
+  const UINT sync_interval = cvars::vsync ? 1u : 0u;
+  UINT present_flags = DXGI_PRESENT_RESTART;
+  if (!cvars::vsync && paint_context_.swap_chain_allows_tearing) {
+    present_flags |= DXGI_PRESENT_ALLOW_TEARING;
+  }
+  HRESULT present_result =
+      paint_context_.swap_chain->Present(sync_interval, present_flags);
   // Even if presentation has failed, work might have been enqueued anyway
   // internally before the failure according to Jesse Natalie from the DirectX
   // Discord server.

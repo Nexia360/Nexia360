@@ -385,6 +385,18 @@ X_STATUS Emulator::TerminateTitle() {
   }
 
   kernel_state_->TerminateTitle();
+
+  // ApplyTitleUpdate mounts the active update as UPDATE: and leaves it
+  // registered for the running title. The file system outlives the title, so
+  // without this the mount survives into the next launch and the NEXT
+  // ApplyTitleUpdate is what destroys it - tearing down a device mid-load
+  // while the previous title's references can still be live. Drop it here so
+  // every launch starts from a clean VFS.
+  if (file_system_) {
+    file_system_->UnregisterSymbolicLink("UPDATE:");
+    file_system_->UnregisterDevice("\\Device\\TitleUpdate\\");
+  }
+
   title_id_ = std::nullopt;
   title_name_ = "";
   title_version_ = "";
@@ -913,6 +925,20 @@ X_STATUS Emulator::InstallContentPackage(
     installation_info.installation_result_ = X_STATUS_ACCESS_DENIED;
     XELOGE("Failed to initialize device");
     return X_STATUS_INVALID_PARAMETER;
+  }
+
+  // Title updates must not be installed while a title is running: the running
+  // title holds its update open and its content resolves through whichever
+  // update is active, so installing underneath it could swap files out from
+  // under the guest. Everything else (saves, DLC, profiles) is fine.
+  if (installation_info.content_type_ == XContentType::kInstaller &&
+      is_title_open()) {
+    installation_info.installation_state_ = InstallState::failed;
+    installation_info.installation_error_message_ =
+        "Close the game before installing a title update.";
+    installation_info.installation_result_ = X_STATUS_ACCESS_DENIED;
+    XELOGE("Refusing to install a title update while a title is running");
+    return X_STATUS_ACCESS_DENIED;
   }
 
   const std::filesystem::path installation_path =

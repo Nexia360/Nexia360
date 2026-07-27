@@ -430,16 +430,68 @@ inline void AppendParam(StringBuffer* string_buffer, lpdouble_t param) {
 inline void AppendParam(StringBuffer* string_buffer, ppc_context_t param) {
   string_buffer->Append("ContextArg");
 }
+// Reading a guest string for the log line can fault: the pointer may be
+// garbage, or the string may run off the end of a committed page. This runs on
+// EVERY logged kernel call, before the function itself, so a bad pointer took
+// the emulator down inside the logger. Copy defensively and fall back to
+// printing just the address. Deliberately free of C++ objects so SEH is usable.
+inline bool GuardedCopyGuestString(const char* src, char* dst, size_t max) {
+#if XE_PLATFORM_WIN32
+  __try {
+#endif  // XE_PLATFORM_WIN32
+    size_t i = 0;
+    for (; i + 1 < max && src[i]; ++i) {
+      dst[i] = src[i];
+    }
+    dst[i] = '\0';
+    return true;
+#if XE_PLATFORM_WIN32
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return false;
+  }
+#endif  // XE_PLATFORM_WIN32
+}
+
+inline bool GuardedCopyGuestString(const char16_t* src, char16_t* dst,
+                                   size_t max) {
+#if XE_PLATFORM_WIN32
+  __try {
+#endif  // XE_PLATFORM_WIN32
+    size_t i = 0;
+    for (; i + 1 < max && src[i]; ++i) {
+      dst[i] = static_cast<char16_t>(xe::byte_swap(uint16_t(src[i])));
+    }
+    dst[i] = 0;
+    return true;
+#if XE_PLATFORM_WIN32
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return false;
+  }
+#endif  // XE_PLATFORM_WIN32
+}
+
 inline void AppendParam(StringBuffer* string_buffer, lpstring_t param) {
   string_buffer->AppendFormat("{:08X}", param.guest_address());
   if (param) {
-    string_buffer->AppendFormat("({})", param.value());
+    char safe[512];
+    if (GuardedCopyGuestString(static_cast<const char*>(param), safe,
+                               xe::countof(safe))) {
+      string_buffer->AppendFormat("({})", safe);
+    } else {
+      string_buffer->Append("(<unreadable>)");
+    }
   }
 }
 inline void AppendParam(StringBuffer* string_buffer, lpu16string_t param) {
   string_buffer->AppendFormat("{:08X}", param.guest_address());
   if (param) {
-    string_buffer->AppendFormat("({})", xe::to_utf8(param.value()));
+    char16_t safe[512];
+    if (GuardedCopyGuestString(static_cast<const char16_t*>(param), safe,
+                               xe::countof(safe))) {
+      string_buffer->AppendFormat("({})", xe::to_utf8(safe));
+    } else {
+      string_buffer->Append("(<unreadable>)");
+    }
   }
 }
 inline void AppendParam(StringBuffer* string_buffer,
