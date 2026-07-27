@@ -272,7 +272,6 @@ void MousehookConfig::ApplyToGamepad(X_INPUT_GAMEPAD* gamepad) {
       }
       ApplyBoundKey(gamepad, bind.output_key);
     }
-
   }
 
   const int32_t dx = mouse_dx_.exchange(0, std::memory_order_relaxed);

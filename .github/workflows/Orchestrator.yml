@@ -146,8 +146,7 @@ jobs:
       github.event_name == 'push' &&
       github.ref == 'refs/heads/Mousehook' &&
       needs.gate.outputs.release == 'true' &&
-      needs.build-windows.result != 'failure' &&
-      needs.build-windows.result != 'cancelled'
+      needs.build-windows.result == 'success'
     uses: ./.github/workflows/Create_release.yml
     permissions:
       contents: write
