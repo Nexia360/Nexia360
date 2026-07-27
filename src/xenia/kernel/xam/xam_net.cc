@@ -2254,11 +2254,13 @@ dword_result_t NetDll_bind_entry(dword_t caller, dword_t socket_handle,
 
   const auto upnp = kernel_state()->emulator()->GetUPnP();
 
-  uint16_t upnp_internal_port = upnp->GetMappedBindPort(name->address_port);
+  uint16_t upnp_internal_port = name->address_port;
 
   if (upnp) {
     const uint16_t mapped_internal_port =
         upnp->GetMappedBindPort(name->address_port);
+
+    upnp_internal_port = mapped_internal_port;
 
     // Support wildcard port. Prefer the port the socket ACTUALLY bound - the
     // hub port allocator may have moved it off the guest-requested port on a
@@ -2275,12 +2277,26 @@ dword_result_t NetDll_bind_entry(dword_t caller, dword_t socket_handle,
     // Ports" and is closed on exit, even when a mapping is added actively.
     upnp->TrackPort(upnp_internal_port, protocol);
 
-    if (upnp->IsActive()) {
-      CleanupUPnPActions();
+    // Open the port SYNCHRONOUSLY, before returning to the guest. The title
+    // announces this port to matchmaking immediately after bind, so a mapping
+    // that is still in flight (or was never attempted) means peers are handed
+    // an address the router does not forward. Can be called multiple times.
+    const int32_t result =
+        upnp->AddPort(local_ip, upnp_internal_port, protocol);
 
-      auto open_port =
-          upnp->AddPortAsync(local_ip, upnp_internal_port, protocol);
-      upnp_actions_.push_back(std::move(open_port));
+    // A stale IGD control URL answers 401. Re-discover once and retry, rather
+    // than leaving the port closed for the rest of the session.
+    if (result == HTTP_UNAUTHORIZED && !upnp_refreshed_unauthorized) {
+      upnp_refreshed_unauthorized = true;
+
+      XELOGW("UPnP unauthorized on bind - re-discovering IGD");
+
+      const auto igd_desc = upnp->DiscoverValidIGD();
+
+      if (igd_desc.has_value()) {
+        upnp->LoadIGD(igd_desc.value());
+        upnp->AddPort(local_ip, upnp_internal_port, protocol);
+      }
     }
   }
 

@@ -501,6 +501,7 @@ uint16_t XLiveAPI::GetPlayerPort() const {
 void XLiveAPI::ProbeServerCapabilities() {
   server_supports_tag = false;
   server_supports_delete_my_sessions = false;
+  server_supports_host_xuid_delete = false;
 
   auto caps = Get(BuildEndpoint("capabilities"));
   if (!caps || caps->StatusCode() != HTTP_STATUS_CODE::HTTP_OK) {
@@ -515,6 +516,8 @@ void XLiveAPI::ProbeServerCapabilities() {
   server_supports_tag = body.find("xuidTag") != std::string::npos;
   server_supports_delete_my_sessions =
       body.find("deleteMySessions") != std::string::npos;
+  server_supports_host_xuid_delete =
+      body.find("hostXuidDelete") != std::string::npos;
 }
 
 bool XLiveAPI::ReservePort(const std::string& host_address, uint16_t port,
@@ -1528,8 +1531,18 @@ std::unique_ptr<LeaderboardObjectJSON> XLiveAPI::LeaderboardsFind(
 }
 
 void XLiveAPI::DeleteSession(uint64_t sessionId) {
+  // Identify ourselves ONLY to a hub that advertises "hostXuidDelete", so it
+  // can authorise the delete against the session host's XUID. Keying that on
+  // the client IP (what every other hub does) lets two players behind one
+  // public IP - or two instances on one machine - wipe each other's sessions.
+  // Against a hub without the capability we send no xuid and it keeps using
+  // the IP check, exactly as before.
   std::string endpoint = BuildEndpoint(fmt::format(
       "title/{:08X}/sessions/{:016x}", kernel_state()->title_id(), sessionId));
+
+  if (server_supports_host_xuid_delete && local_online_xuid) {
+    endpoint += fmt::format("?xuid={:016X}", local_online_xuid);
+  }
 
   std::unique_ptr<HTTPResponseObjectJSON> response = Delete(endpoint);
 

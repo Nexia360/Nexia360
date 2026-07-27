@@ -26,7 +26,6 @@ DEFINE_int32(network_priority, 3,
              "Live");
 
 DECLARE_bool(bind_interface);
-DECLARE_bool(upnp);
 
 using namespace std::chrono_literals;
 
@@ -45,6 +44,12 @@ namespace {
 //    is bound as-is and the advertised player port is never moved.
 constexpr bool kEnableVdpIdentityTag = false;
 constexpr bool kEnableHubPortRemap = false;
+
+// Async sends allowed in flight at once on a single socket. Every peer shares
+// the one VDP socket, so a limit of 1 (what this used to be) meant 3+ peers
+// constantly raced and the losers were silently discarded. Beyond this cap the
+// send is performed synchronously instead of being dropped.
+constexpr size_t kMaxOutstandingSends = 64;
 
 // Nexia in-packet identity trailer for VDP game traffic:
 //   [8 x 0x00][be64 sender XUID][be16 sender port]
@@ -403,17 +408,6 @@ X_STATUS XSocket::Bind(const XSOCKADDR_IN* name, int name_len) {
 
   const auto upnp = kernel_state()->emulator()->GetUPnP();
 
-  // Do not let the guest bind before UPnP has finished its job. Binding the
-  // raw guest port publishes an address the router has not opened yet, so
-  // peers cannot reach us there and the title gives up on the join. Start()
-  // blocks on IGD discovery, and returns without going active if no IGD was
-  // found - in that case we fall through and bind as-is rather than hang.
-  if (cvars::upnp && upnp && !upnp->IsActive()) {
-    XELOGD("Bind: waiting for UPnP before binding port {}",
-           name->address_port.get());
-    upnp->Start();
-  }
-
   if (upnp) {
     sa_in.address_port = upnp->GetMappedBindPort(name->address_port);
   }
@@ -674,7 +668,14 @@ int XSocket::WSASendTo(XWSABUF* buffers, uint32_t num_buffers,
     if (overlapped_ptr && wsa_error == (uint32_t)X_WSAError::X_WSAEWOULDBLOCK) {
       std::lock_guard lock(send_mutex_);
       CleanupCompletedTasks(send_tasks_);
-      if (send_tasks_.empty()) {
+
+      // Every peer shares this one VDP socket, so allowing a single
+      // outstanding send meant that with 3+ peers the loser of the race was
+      // dropped on the floor - the guest was told IO_PENDING for a packet that
+      // was never queued, and waited on an overlapped that never completed.
+      // UDP has no ordering guarantee, so several sends may be in flight.
+      // Bounded so a wedged socket cannot grow this without limit.
+      if (send_tasks_.size() < kMaxOutstandingSends) {
         // Point async worker at the REAL overlapped, not the probe.
         send_async_data.overlapped = overlapped_ptr;
         send_async_data.buffers = new XWSABUF[num_buffers];
@@ -700,7 +701,35 @@ int XSocket::WSASendTo(XWSABUF* buffers, uint32_t num_buffers,
         send_tasks_.push_back(std::async(std::launch::async,
                                          &XSocket::PushWSASendTo, this, true,
                                          send_async_data));
+      } else {
+        // At the cap. Send it here and block rather than report a pending
+        // send that was never queued - the guest would wait forever on an
+        // overlapped nothing is going to complete.
+        XELOGW("WSASendTo: {} sends outstanding, sending synchronously",
+               send_tasks_.size());
+
+        const int blocking_ret = PushWSASendTo(true, send_async_data);
+
+        if (blocking_ret >= 0) {
+          if (overlapped_ptr) {
+            overlapped_ptr->internal = probe_overlapped.internal;
+            overlapped_ptr->internal_high = probe_overlapped.internal_high;
+            overlapped_ptr->offset = probe_overlapped.offset;
+            overlapped_ptr->offset_high |= WSAInfo::complete;
+            if (overlapped_ptr->event_handle) {
+              xboxkrnl::xeNtSetEvent(overlapped_ptr->event_handle, nullptr);
+            }
+          }
+          if (num_bytes_sent_ptr) {
+            *num_bytes_sent_ptr = probe_overlapped.internal;
+          }
+          return 0;
+        }
+
+        SetLastWSAError((X_WSAError)probe_overlapped.internal_high.get());
+        return -1;
       }
+
       SetLastWSAError(X_WSAError::X_WSA_IO_PENDING);
       if (num_bytes_sent_ptr) {
         *num_bytes_sent_ptr = 0;

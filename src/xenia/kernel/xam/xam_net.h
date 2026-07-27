@@ -22,6 +22,10 @@ bool EXPLICIT_XBOXLIVE_KEY = false;
 
 std::vector<std::future<int32_t>> upnp_actions_;
 
+// Set once a 401 from the IGD has triggered a re-discovery, so a router that
+// keeps answering unauthorized does not send us rediscovering on every bind.
+bool upnp_refreshed_unauthorized = false;
+
 std::map<uint32_t, std::stop_source> qos_lookup_threads;
 std::mutex qos_lookup_mutex;
 

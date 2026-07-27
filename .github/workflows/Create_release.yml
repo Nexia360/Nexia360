@@ -35,10 +35,13 @@ jobs:
           SHORT_SHA="${FULL_SHA::7}"
           BRANCH="${{ inputs.branch }}"
 
-          # Version comes from the VERSION file at the repo root - bump it to
-          # cut a new release. Falls back to the short SHA if it is missing.
-          if [ -f VERSION ]; then
-            VERSION="$(tr -d ' \t\r\n' < VERSION)"
+          # Version comes from .github/VERSION - bump it to cut a new release.
+          # It must NOT live at the repo root: the root is an include dir, and
+          # on case-insensitive Windows a file named VERSION is picked up by
+          # #include <version>, which breaks the build. Falls back to the short
+          # SHA if the file is missing.
+          if [ -f .github/VERSION ]; then
+            VERSION="$(tr -d ' \t\r\n' < .github/VERSION)"
           fi
 
           if [ -n "$VERSION" ]; then

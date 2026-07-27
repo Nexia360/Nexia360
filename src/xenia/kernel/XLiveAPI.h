@@ -320,6 +320,11 @@ class XLiveAPI {
   // DeleteAllSessions().
   inline static bool server_supports_delete_my_sessions = false;
 
+  // Set true when the hub advertises "hostXuidDelete": it will authorise
+  // session deletes against the host XUID we send. Old hubs stay false -> we
+  // send no xuid and they keep using the legacy IP check.
+  inline static bool server_supports_host_xuid_delete = false;
+
   // Our own online XUID, cached at register time so the socket send path can
   // stamp outgoing VDP packets without a profile lookup.
   inline static uint64_t local_online_xuid = 0;

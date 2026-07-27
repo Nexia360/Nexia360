@@ -24,6 +24,7 @@
 #include "xenia/ui/imgui_drawer.h"
 #include "xenia/ui/imgui_guest_notification.h"
 #include "xenia/ui/imgui_host_notification.h"
+#include "xenia/ui/keyboard_ui.h"
 
 #include "xenia/kernel/xam/ui/community_sessions_ui.h"
 #include "xenia/kernel/xam/ui/create_profile_ui.h"
@@ -489,33 +490,36 @@ dword_result_t XamShowKeyboardUI_entry(
     };
     result = xeXamDispatchHeadless(run, overlapped);
   } else {
-    auto close = [buffer, buffer_length](KeyboardInputDialog* dialog,
+    const Emulator* emulator = kernel_state()->emulator();
+    xe::ui::ImGuiDrawer* imgui_drawer = emulator->imgui_drawer();
+
+    std::string title_str = title ? xe::to_utf8(title.value()) : "Enter Text";
+    std::string def_text_str =
+        default_text ? xe::to_utf8(default_text.value()) : "";
+
+    // Route guest text entry to our on-screen keyboard (keyboard_ui), so the
+    // field is usable with a controller instead of only a host keyboard.
+    auto close = [buffer, buffer_length](xe::ui::KeyboardDialog* dialog,
                                          uint32_t& extended_error,
                                          uint32_t& length) -> X_RESULT {
-      if (dialog->cancelled()) {
+      if (dialog->was_cancelled()) {
         extended_error = X_ERROR_CANCELLED;
         length = 0;
         return X_ERROR_SUCCESS;
       } else {
-        // Zero the output buffer.
-        auto text = xe::to_utf16(dialog->text());
+        auto text = xe::to_utf16(dialog->result_text());
         string_util::copy_and_swap_truncating(buffer, text, buffer_length);
         extended_error = X_ERROR_SUCCESS;
         length = 0;
         return X_ERROR_SUCCESS;
       }
     };
-    const Emulator* emulator = kernel_state()->emulator();
-    xe::ui::ImGuiDrawer* imgui_drawer = emulator->imgui_drawer();
 
-    std::string title_str = title ? xe::to_utf8(title.value()) : "";
-    std::string desc_str = description ? xe::to_utf8(description.value()) : "";
-    std::string def_text_str =
-        default_text ? xe::to_utf8(default_text.value()) : "";
-
-    result = xeXamDispatchDialogEx<KeyboardInputDialog>(
-        new KeyboardInputDialog(imgui_drawer, title_str, desc_str, def_text_str,
-                                buffer_length),
+    result = xeXamDispatchDialogEx<xe::ui::KeyboardDialog>(
+        xe::ui::KeyboardDialog::ShowKeyboard(
+            imgui_drawer, title_str, def_text_str,
+            xe::ui::KeyboardDialog::InputType::kText,
+            nullptr),  // Callback not used - we use the close callback instead
         close, overlapped);
   }
   return result;
