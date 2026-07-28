@@ -10,8 +10,10 @@
 #ifndef XENIA_APP_EMULATOR_WINDOW_H_
 #define XENIA_APP_EMULATOR_WINDOW_H_
 
+#include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "xenia/app/gamerpic_browser.h"
 #include "xenia/app/netplay_settings_dialog.h"
@@ -196,6 +198,47 @@ class EmulatorWindow {
 
    private:
     EmulatorWindow& emulator_window_;
+  };
+
+  // Asks which title update a DLC package belongs to before installing it.
+  // DLC resolves under a title update's own Content folder, so installing
+  // without naming a target would put it somewhere the guest never reads.
+  // Runs the supplied callback with the choices applied; the install itself
+  // does not start until the user confirms.
+  class DlcTargetDialog final : public ui::ImGuiDialog {
+   public:
+    DlcTargetDialog(
+        ui::ImGuiDrawer* imgui_drawer, EmulatorWindow& emulator_window,
+        std::shared_ptr<std::vector<Emulator::ContentInstallEntry>> entries,
+        std::function<void()> on_confirmed)
+        : ui::ImGuiDialog(imgui_drawer),
+          emulator_window_(emulator_window),
+          installation_entries_(entries),
+          on_confirmed_(std::move(on_confirmed)) {
+      window_id_ = GetWindowId();
+    }
+
+   protected:
+    void OnDraw(ImGuiIO& io) override;
+
+   private:
+    uint64_t window_id_;
+
+    EmulatorWindow& emulator_window_;
+    std::shared_ptr<std::vector<Emulator::ContentInstallEntry>>
+        installation_entries_;
+    std::function<void()> on_confirmed_;
+
+    // Built once on the first draw. Options are per entry because a batch can
+    // span several titles, each with its own set of installed updates.
+    bool initialized_ = false;
+    // Close() is not necessarily immediate, so latch it - otherwise a draw
+    // after the decision would fire the install a second time.
+    bool done_ = false;
+    std::vector<size_t> dlc_indices_;
+    std::vector<std::vector<std::string>> entry_option_ids_;
+    std::vector<std::vector<std::string>> entry_option_labels_;
+    std::vector<int> selection_;
   };
 
   class ContentInstallDialog final : public ui::ImGuiDialog {

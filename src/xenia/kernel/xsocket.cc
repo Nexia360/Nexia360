@@ -13,7 +13,9 @@
 #include <cstring>
 #include <vector>
 
+#include "third_party/fmt/include/fmt/format.h"
 #include "xenia/base/platform.h"
+#include "xenia/base/threading.h"
 #include "xenia/kernel/XLiveAPI.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/xam/xam_module.h"
@@ -45,11 +47,6 @@ namespace {
 constexpr bool kEnableVdpIdentityTag = false;
 constexpr bool kEnableHubPortRemap = false;
 
-// Async sends allowed in flight at once on a single socket. Every peer shares
-// the one VDP socket, so a limit of 1 (what this used to be) meant 3+ peers
-// constantly raced and the losers were silently discarded. Beyond this cap the
-// send is performed synchronously instead of being dropped.
-constexpr size_t kMaxOutstandingSends = 64;
 
 // Nexia in-packet identity trailer for VDP game traffic:
 //   [8 x 0x00][be64 sender XUID][be16 sender port]
@@ -176,6 +173,9 @@ XSocket::~XSocket() {
   if (!socket_closed_) {
     Close();
   }
+  // Close() stops it on the normal path; this covers a socket that was already
+  // closed by other means. The thread must not outlive the socket it sends on.
+  StopSendThread();
 }
 
 X_STATUS XSocket::Initialize(AddressFamily af, Type type, Protocol proto) {
@@ -228,6 +228,18 @@ void XSocket::CleanupCompletedTasks(std::vector<std::future<int>>& tasks) {
 }
 
 X_STATUS XSocket::Close() {
+  // Drain and stop this socket's send worker before the handle goes away -
+  // otherwise it would keep sending on a closed socket.
+  StopSendThread();
+
+  // Latch the drop before the handle is destroyed, not after. socket_closed_
+  // is only set at the end of this function, which would leave a window where
+  // a send could still start a fresh worker on an already-closed handle.
+  send_socket_dead_.store(true, std::memory_order_release);
+
+  // Anything queued after the drain (or racing it) is never going out.
+  AbortQueuedSends();
+
   std::unique_lock lock(receive_mutex_);
   if (active_overlapped_ &&
       !(active_overlapped_->offset_high & WSAInfo::complete)) {
@@ -622,18 +634,6 @@ int XSocket::RecvFrom(uint8_t* buf, uint32_t buf_len, uint32_t flags,
   return ret;
 }
 
-struct WSASendToData {
-  XWSABUF* buffers;
-  uint32_t num_buffers;
-  uint32_t flags;
-  XSOCKADDR_IN* to;
-  uint32_t to_len;
-  XWSAOVERLAPPED* overlapped;
-  bool heap_allocated;  // true when buffers/to were heap-copied for async
-  uint32_t completion_routine;    // guest function pointer for APC callback
-  uint32_t overlapped_guest_ptr;  // guest address of overlapped struct
-  object_ref<XThread> calling_thread;  // thread to enqueue APC to
-};
 
 int XSocket::WSASendTo(XWSABUF* buffers, uint32_t num_buffers,
                        xe::be<uint32_t>* num_bytes_sent_ptr, uint32_t flags,
@@ -666,69 +666,33 @@ int XSocket::WSASendTo(XWSABUF* buffers, uint32_t num_buffers,
     auto wsa_error = probe_overlapped.internal_high.get();
     SetLastWSAError((X_WSAError)wsa_error);
     if (overlapped_ptr && wsa_error == (uint32_t)X_WSAError::X_WSAEWOULDBLOCK) {
-      std::lock_guard lock(send_mutex_);
-      CleanupCompletedTasks(send_tasks_);
-
-      // Every peer shares this one VDP socket, so allowing a single
-      // outstanding send meant that with 3+ peers the loser of the race was
-      // dropped on the floor - the guest was told IO_PENDING for a packet that
-      // was never queued, and waited on an overlapped that never completed.
-      // UDP has no ordering guarantee, so several sends may be in flight.
-      // Bounded so a wedged socket cannot grow this without limit.
-      if (send_tasks_.size() < kMaxOutstandingSends) {
-        // Point async worker at the REAL overlapped, not the probe.
-        send_async_data.overlapped = overlapped_ptr;
-        send_async_data.buffers = new XWSABUF[num_buffers];
-        std::memcpy(send_async_data.buffers, buffers,
-                    num_buffers * sizeof(XWSABUF));
-        if (to_ptr) {
-          auto* to_copy = new XSOCKADDR_IN;
-          std::memcpy(to_copy, to_ptr, sizeof(XSOCKADDR_IN));
-          send_async_data.to = to_copy;
-        }
-        send_async_data.heap_allocated = true;
-        send_async_data.completion_routine = completion_routine;
-        send_async_data.overlapped_guest_ptr = overlapped_guest_ptr;
-        if (completion_routine) {
-          send_async_data.calling_thread =
-              retain_object(XThread::GetCurrentThread());
-        }
-        overlapped_ptr->offset_high &= ~WSAInfo::complete;
-        overlapped_ptr->offset_high |= WSAInfo::sendto_flag;
-        if (overlapped_ptr->event_handle) {
-          xboxkrnl::xeNtClearEvent(overlapped_ptr->event_handle);
-        }
-        send_tasks_.push_back(std::async(std::launch::async,
-                                         &XSocket::PushWSASendTo, this, true,
-                                         send_async_data));
-      } else {
-        // At the cap. Send it here and block rather than report a pending
-        // send that was never queued - the guest would wait forever on an
-        // overlapped nothing is going to complete.
-        XELOGW("WSASendTo: {} sends outstanding, sending synchronously",
-               send_tasks_.size());
-
-        const int blocking_ret = PushWSASendTo(true, send_async_data);
-
-        if (blocking_ret >= 0) {
-          if (overlapped_ptr) {
-            overlapped_ptr->internal = probe_overlapped.internal;
-            overlapped_ptr->internal_high = probe_overlapped.internal_high;
-            overlapped_ptr->offset = probe_overlapped.offset;
-            overlapped_ptr->offset_high |= WSAInfo::complete;
-            if (overlapped_ptr->event_handle) {
-              xboxkrnl::xeNtSetEvent(overlapped_ptr->event_handle, nullptr);
-            }
-          }
-          if (num_bytes_sent_ptr) {
-            *num_bytes_sent_ptr = probe_overlapped.internal;
-          }
-          return 0;
-        }
-
-        SetLastWSAError((X_WSAError)probe_overlapped.internal_high.get());
-        return -1;
+      // Hand it to this socket's own send worker. Nothing is dropped and the
+      // worker drains the queue in order, so packets leave in the order the
+      // guest issued them - previously each send became its own task, which
+      // left ordering undefined between peers sharing the socket.
+      send_async_data.overlapped = overlapped_ptr;
+      send_async_data.buffers = new XWSABUF[num_buffers];
+      std::memcpy(send_async_data.buffers, buffers,
+                  num_buffers * sizeof(XWSABUF));
+      if (to_ptr) {
+        auto* to_copy = new XSOCKADDR_IN;
+        std::memcpy(to_copy, to_ptr, sizeof(XSOCKADDR_IN));
+        send_async_data.to = to_copy;
       }
+      send_async_data.heap_allocated = true;
+      send_async_data.completion_routine = completion_routine;
+      send_async_data.overlapped_guest_ptr = overlapped_guest_ptr;
+      if (completion_routine) {
+        send_async_data.calling_thread =
+            retain_object(XThread::GetCurrentThread());
+      }
+      overlapped_ptr->offset_high &= ~WSAInfo::complete;
+      overlapped_ptr->offset_high |= WSAInfo::sendto_flag;
+      if (overlapped_ptr->event_handle) {
+        xboxkrnl::xeNtClearEvent(overlapped_ptr->event_handle);
+      }
+
+      EnqueueSend(send_async_data);
 
       SetLastWSAError(X_WSAError::X_WSA_IO_PENDING);
       if (num_bytes_sent_ptr) {
@@ -752,6 +716,140 @@ int XSocket::WSASendTo(XWSABUF* buffers, uint32_t num_buffers,
     }
   }
   return ret;
+}
+
+void XSocket::EnqueueSend(const WSASendToData& send_async_data) {
+  {
+    std::lock_guard lock(send_mutex_);
+
+    // Nothing more goes on a socket that is stopping, already closed, or has
+    // been dropped underneath us - and the worker may already have retired,
+    // in which case a queued request would never be picked up at all.
+    if (send_thread_stopping_ || socket_closed_ ||
+        send_socket_dead_.load(std::memory_order_acquire)) {
+      // Fall through to the abort below, outside the lock.
+    } else {
+      if (!send_thread_started_) {
+        send_thread_started_ = true;
+        send_thread_ = std::thread(&XSocket::SendThreadMain, this);
+      }
+
+      send_queue_.push_back(send_async_data);
+      send_cv_.notify_one();
+      return;
+    }
+  }
+
+  // Retire the request rather than dropping it silently: the caller has
+  // already been told X_WSA_IO_PENDING, so something has to complete it.
+  WSASendToData aborted = send_async_data;
+  CompleteSendAborted(aborted);
+}
+
+void XSocket::SendThreadMain() {
+  xe::threading::set_name(
+      fmt::format("XSocket Send {:X}", uint32_t(native_handle_)));
+
+  while (true) {
+    WSASendToData data;
+    {
+      std::unique_lock lock(send_mutex_);
+      send_cv_.wait(lock, [this]() {
+        return send_thread_stopping_ || !send_queue_.empty();
+      });
+
+      if (send_queue_.empty()) {
+        // Stopping and drained.
+        return;
+      }
+
+      data = send_queue_.front();
+      send_queue_.pop_front();
+    }
+
+    // Blocking send, one at a time, in queue order.
+    PushWSASendTo(true, data);
+
+    // The socket went away underneath that send. Retire rather than keep
+    // draining onto a dead handle: every remaining request would fail the
+    // same way, and each failure costs a full poll timeout.
+    if (send_socket_dead_.load(std::memory_order_acquire)) {
+      {
+        std::lock_guard lock(send_mutex_);
+        send_thread_stopping_ = true;
+      }
+      XELOGW("XSocket send worker retiring - socket dropped");
+      AbortQueuedSends();
+      return;
+    }
+  }
+}
+
+void XSocket::AbortQueuedSends() {
+  std::deque<WSASendToData> abandoned;
+  {
+    std::lock_guard lock(send_mutex_);
+    abandoned.swap(send_queue_);
+  }
+
+  // Completed outside the lock: retiring a request signals a guest event and
+  // can enqueue an APC, and neither should run with the send lock held.
+  for (auto& data : abandoned) {
+    CompleteSendAborted(data);
+  }
+}
+
+void XSocket::CompleteSendAborted(WSASendToData& send_async_data) {
+  if (send_async_data.heap_allocated) {
+    delete[] send_async_data.buffers;
+    delete send_async_data.to;
+  }
+
+  if (!send_async_data.overlapped) {
+    return;
+  }
+
+  send_async_data.overlapped->internal = 0;
+  send_async_data.overlapped->internal_high =
+      (uint32_t)X_WSAError::X_WSA_OPERATION_ABORTED;
+
+  // Same publish order as the normal completion path: every field write must
+  // be visible before the complete flag is (paired with the acquire fence in
+  // WSAGetOverlappedResult).
+  std::atomic_thread_fence(std::memory_order_release);
+  send_async_data.overlapped->offset_high |= WSAInfo::complete;
+
+  if (send_async_data.overlapped->event_handle) {
+    auto ev = kernel_state()->object_table()->LookupObject<XEvent>(
+        send_async_data.overlapped->event_handle);
+    if (ev) {
+      xboxkrnl::xeNtSetEvent(send_async_data.overlapped->event_handle, nullptr);
+    }
+  }
+
+  if (send_async_data.completion_routine && send_async_data.calling_thread) {
+    send_async_data.calling_thread->EnqueueApc(
+        send_async_data.completion_routine,
+        send_async_data.overlapped->internal_high, 0,
+        send_async_data.overlapped_guest_ptr);
+  }
+
+  send_cv_.notify_all();
+}
+
+void XSocket::StopSendThread() {
+  {
+    std::lock_guard lock(send_mutex_);
+    if (!send_thread_started_) {
+      return;
+    }
+    send_thread_stopping_ = true;
+  }
+  send_cv_.notify_all();
+
+  if (send_thread_.joinable()) {
+    send_thread_.join();
+  }
 }
 
 int XSocket::PushWSASendTo(bool wait, WSASendToData send_async_data) {
@@ -829,6 +927,7 @@ int XSocket::PushWSASendTo(bool wait, WSASendToData send_async_data) {
     if (send_async_data.overlapped->offset_high & WSAInfo::closed) {
       send_async_data.overlapped->internal_high =
           (uint32_t)X_WSAError::X_WSA_OPERATION_ABORTED;
+      send_socket_dead_.store(true, std::memory_order_release);
       ret = -1;
       goto threadexit;
     }
@@ -842,6 +941,7 @@ int XSocket::PushWSASendTo(bool wait, WSASendToData send_async_data) {
       // Socket closed while we were polling — abort cleanly.
       send_async_data.overlapped->internal_high =
           (uint32_t)X_WSAError::X_WSA_OPERATION_ABORTED;
+      send_socket_dead_.store(true, std::memory_order_release);
     } else {
       XELOGE("XSocket send thread failed polling with error {}", poll_err);
       send_async_data.overlapped->internal_high =
@@ -940,6 +1040,7 @@ int XSocket::PushWSASendTo(bool wait, WSASendToData send_async_data) {
       case X_WSAError::X_WSAEINVAL:
         send_async_data.overlapped->internal_high =
             (uint32_t)X_WSAError::X_WSA_OPERATION_ABORTED;
+        send_socket_dead_.store(true, std::memory_order_release);
         delete[] buffers;
         buffers = nullptr;
         goto threadexit;

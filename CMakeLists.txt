@@ -175,10 +175,19 @@ if(MSVC)
   # Replace /Ob2 with /Ob3 in CMake's default Release flags
   string(REPLACE "/Ob2" "/Ob3" CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE}")
   string(REPLACE "/Ob2" "/Ob3" CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE}")
-  # Link-time optimization (whole program optimization)
-  add_compile_options($<$<CONFIG:Release>:/GL>)
-  add_link_options($<$<CONFIG:Release>:/LTCG>)
-  set(CMAKE_STATIC_LINKER_FLAGS_RELEASE "${CMAKE_STATIC_LINKER_FLAGS_RELEASE} /LTCG")
+  # Link-time optimization (whole program optimization). Switchable so it can
+  # be ruled in or out when a Release-only bug does not reproduce under clang -
+  # LTCG propagates assumptions across translation units that a per-TU build
+  # never makes, so undefined behaviour can show up here and nowhere else.
+  #   xb build --config release --cmake-define XE_ENABLE_LTCG=OFF
+  option(XE_ENABLE_LTCG "Enable MSVC whole-program optimization (/GL /LTCG)" ON)
+  if(XE_ENABLE_LTCG)
+    add_compile_options($<$<CONFIG:Release>:/GL>)
+    add_link_options($<$<CONFIG:Release>:/LTCG>)
+    set(CMAKE_STATIC_LINKER_FLAGS_RELEASE "${CMAKE_STATIC_LINKER_FLAGS_RELEASE} /LTCG")
+  else()
+    message(STATUS "XE_ENABLE_LTCG=OFF - building Release without /GL /LTCG")
+  endif()
 
 else()
   # GCC/Clang (Linux)

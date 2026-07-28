@@ -277,6 +277,14 @@ class Emulator {
     uint64_t currently_installed_size_ = 0;
     XContentType content_type_{};
     uint32_t title_id_ = 0;
+    uint64_t xuid_ = 0;
+
+    // Title update library id this package installs into. DLC is per-update -
+    // the runtime resolves it under the active update - so an install has to
+    // name its target explicitly instead of silently landing in the global
+    // tree where nothing would ever find it. Empty means the global tree,
+    // which is correct only for installers.
+    std::string target_update_id_{};
 
     InstallState installation_state_{};
     X_STATUS installation_result_{};

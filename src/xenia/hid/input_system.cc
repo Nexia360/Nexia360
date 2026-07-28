@@ -133,10 +133,18 @@ X_RESULT InputSystem::GetState(uint32_t user_index, uint32_t flags,
       UpdateUsedSlot(driver, user_index, true);
       AdjustDeadzoneLevels(user_index, &out_state->gamepad);
 
-      // Fold in mouse-look AFTER the deadzone pass (which would otherwise
-      // swallow small deflections) and regardless of which driver answered -
-      // with a real controller plugged in the WinKey driver is never reached,
-      // since the loop stops at the first driver that succeeds.
+      // Fold in the mouse driver AFTER the deadzone pass (which would
+      // otherwise swallow small deflections) and regardless of which driver
+      // answered - with a real controller plugged in the WinKey driver is
+      // never reached, since the loop stops at the first driver that succeeds.
+      //
+      // Always additive:
+      //   thumb_rx = controller_rx + mouse_rx
+      //   thumb_ry = controller_ry + mouse_ry
+      // An idle mouse contributes 0, so the sum is whichever actually moved.
+      // Nobody drives both at once, and this way neither source can mask the
+      // other. Key bindings stay gated - those WOULD collide with the WinKey
+      // driver's own bindings.
       if (apply_mousehook) {
         mousehook.ApplyToGamepad(&out_state->gamepad);
       }

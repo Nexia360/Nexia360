@@ -41,6 +41,7 @@
 #include "xenia/kernel/xam/profile_manager.h"
 #include "xenia/kernel/xam/xam_module.h"
 #include "xenia/kernel/xam/xam_state.h"
+#include "xenia/kernel/util/title_update_manager.h"
 #include "xenia/kernel/xconfig.h"
 #include "xenia/ui/file_picker.h"
 #include "xenia/ui/graphics_provider.h"
@@ -665,6 +666,131 @@ void EmulatorWindow::DisplayConfigDialog::OnDraw(ImGuiIO& io) {
     // `this` might have been destroyed by ToggleDisplayConfigDialog.
     return;
   }
+}
+
+void EmulatorWindow::DlcTargetDialog::OnDraw(ImGuiIO& io) {
+  if (done_) {
+    return;
+  }
+
+  if (!initialized_) {
+    initialized_ = true;
+
+    auto* tu_manager = emulator_window_.emulator()->title_update_manager();
+
+    for (size_t i = 0; i < installation_entries_->size(); ++i) {
+      const auto& entry = installation_entries_->at(i);
+      if (entry.content_type_ != XContentType::kMarketplaceContent &&
+          entry.content_type_ != XContentType::kPublisher) {
+        continue;
+      }
+
+      std::vector<std::string> ids;
+      std::vector<std::string> labels;
+
+      // "None" is a real overlay, not an absence of one, so it is always a
+      // valid destination.
+      ids.push_back(kernel::util::kNoTitleUpdateId);
+      labels.push_back("None (no title update)");
+
+      std::string active;
+      if (tu_manager) {
+        active = tu_manager->GetActive(entry.title_id_);
+        for (const auto& update : tu_manager->List(entry.title_id_)) {
+          ids.push_back(update.id);
+          labels.push_back(update.name.empty() ? update.id : update.name);
+        }
+      }
+
+      // Default to whatever is active, since that is what the user is
+      // playing and almost always what the DLC is meant for.
+      int selected = 0;
+      for (size_t opt = 0; opt < ids.size(); ++opt) {
+        if (!active.empty() && ids[opt] == active) {
+          selected = static_cast<int>(opt);
+          break;
+        }
+      }
+
+      dlc_indices_.push_back(i);
+      entry_option_ids_.push_back(std::move(ids));
+      entry_option_labels_.push_back(std::move(labels));
+      selection_.push_back(selected);
+    }
+
+    // Nothing to ask about - let the install proceed untouched.
+    if (dlc_indices_.empty()) {
+      done_ = true;
+      if (on_confirmed_) {
+        on_confirmed_();
+      }
+      Close();
+      return;
+    }
+  }
+
+  ImGui::SetNextWindowPos(ImVec2(40, 40), ImGuiCond_FirstUseEver);
+
+  bool dialog_open = true;
+  if (!ImGui::Begin(fmt::format("Install DLC###{}", window_id_).c_str(),
+                    &dialog_open,
+                    ImGuiWindowFlags_NoCollapse |
+                        ImGuiWindowFlags_AlwaysAutoResize)) {
+    ImGui::End();
+    return;
+  }
+
+  ImGui::TextWrapped(
+      "Downloadable content is stored per title update. Choose which update "
+      "each package belongs to - it will only be visible while that update is "
+      "active.");
+  ImGui::Separator();
+
+  for (size_t row = 0; row < dlc_indices_.size(); ++row) {
+    const auto& entry = installation_entries_->at(dlc_indices_[row]);
+
+    ImGui::PushID(static_cast<int>(row));
+    ImGui::Text("%s", entry.name_.c_str());
+    ImGui::SameLine();
+    ImGui::TextDisabled("(%08X)", entry.title_id_);
+
+    std::vector<const char*> labels;
+    labels.reserve(entry_option_labels_[row].size());
+    for (const auto& label : entry_option_labels_[row]) {
+      labels.push_back(label.c_str());
+    }
+
+    ImGui::SetNextItemWidth(320.0f);
+    ImGui::Combo("##target", &selection_[row], labels.data(),
+                 static_cast<int>(labels.size()));
+    ImGui::PopID();
+  }
+
+  ImGui::Separator();
+
+  if (ImGui::Button("Install")) {
+    for (size_t row = 0; row < dlc_indices_.size(); ++row) {
+      installation_entries_->at(dlc_indices_[row]).target_update_id_ =
+          entry_option_ids_[row][selection_[row]];
+    }
+    done_ = true;
+    if (on_confirmed_) {
+      on_confirmed_();
+    }
+    ImGui::End();
+    Close();
+    return;
+  }
+
+  ImGui::SameLine();
+  if (ImGui::Button("Cancel") || !dialog_open) {
+    done_ = true;
+    ImGui::End();
+    Close();
+    return;
+  }
+
+  ImGui::End();
 }
 
 void EmulatorWindow::ContentInstallDialog::OnDraw(ImGuiIO& io) {
@@ -1423,15 +1549,36 @@ void EmulatorWindow::InstallContent() {
     emulator_->ProcessContentPackageHeader(entry.path_, entry);
   }
 
-  auto installationThread = std::thread([this, content_installation_status] {
+  // Saves and DLC belong to a specific title update, so the target has to be
+  // settled before anything is written. Default everything to the active
+  // update; the DLC dialog overrides its own rows if the user picks another.
+  if (auto* tu_manager = emulator_->title_update_manager()) {
     for (auto& entry : *content_installation_status) {
-      emulator_->InstallContentPackage(entry.path_, entry);
+      if (entry.content_type_ == XContentType::kInstaller) {
+        continue;
+      }
+      std::string active = tu_manager->GetActive(entry.title_id_);
+      entry.target_update_id_ =
+          active.empty() ? kernel::util::kNoTitleUpdateId : active;
     }
-  });
-  installationThread.detach();
+  }
 
-  new ContentInstallDialog(imgui_drawer_.get(), *this,
-                           content_installation_status);
+  auto start_install = [this, content_installation_status]() {
+    auto installationThread = std::thread([this, content_installation_status] {
+      for (auto& entry : *content_installation_status) {
+        emulator_->InstallContentPackage(entry.path_, entry);
+      }
+    });
+    installationThread.detach();
+
+    new ContentInstallDialog(imgui_drawer_.get(), *this,
+                             content_installation_status);
+  };
+
+  // The DLC dialog closes itself immediately (and calls straight through) when
+  // the batch contains no add-on content, so this stays a single popup level.
+  new DlcTargetDialog(imgui_drawer_.get(), *this, content_installation_status,
+                      start_install);
 }
 
 void EmulatorWindow::ExtractZarchive() {

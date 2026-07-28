@@ -17,10 +17,14 @@
 // clang-format on
 
 #include <random>
+#include <thread>
 
 #include "xenia/base/cvar.h"
+#include "xenia/base/firewall.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/string_util.h"
+#include "xenia/base/threading.h"
+#include "xenia/kernel/xam/xam_ui.h"
 #include "xenia/emulator.h"
 #include "xenia/kernel/XLiveAPI.h"
 #include "xenia/kernel/user_module.h"
@@ -360,6 +364,69 @@ std::string XLiveAPI::BuildEndpoint(std::string endpoint) {
   return fmt::format("{}{}", GetApiAddress(), endpoint);
 }
 
+// Explains the change before Windows throws an unexplained UAC prompt at the
+// user. A consent dialog naming what will be changed is the difference
+// between a prompt someone can reason about and one they just click away.
+void XLiveAPI::RequestFirewallSetup() {
+  auto* emulator = kernel_state()->emulator();
+  auto* display_window = emulator ? emulator->display_window() : nullptr;
+  auto* imgui_drawer = emulator ? emulator->imgui_drawer() : nullptr;
+
+  if (!display_window || !imgui_drawer) {
+    // Headless - never elevate without asking.
+    XELOGW("Skipping firewall setup - no window to ask in");
+    return;
+  }
+
+  // Nothing here may block. Init() runs on the UI thread (RunTitle ->
+  // LaunchPath -> CompleteLaunch), so waiting on the dialog would stall the
+  // very thread that draws it and the prompt would never appear.
+  auto show_dialog = [imgui_drawer]() {
+    std::string title = "Allow Nexia through Windows Firewall?";
+    std::string body =
+        "Netplay needs to accept incoming connections from other players.\n"
+        "Windows Firewall blocks those by default, which shows up as players\n"
+        "being unable to join you.\n\n"
+        "Choosing Allow adds two inbound rules - TCP and UDP - for this\n"
+        "program only. No ports are opened for anything else, and nothing is\n"
+        "changed for other applications.\n\n"
+        "Windows will ask for administrator permission, because only an\n"
+        "administrator can change firewall rules. You can decline and add the\n"
+        "rules yourself later; netplay will still run, but incoming\n"
+        "connections may be blocked.";
+
+    // 1 = "Not now", so dismissing the dialog declines rather than elevates.
+    auto* dialog = new xam::MessageBoxDialog(imgui_drawer, title, body,
+                                             {"Allow", "Not now"}, 1);
+
+    dialog->set_close_callback([dialog]() {
+      // Still alive here - the dialog deletes itself immediately after this
+      // returns, so read the answer now and keep nothing.
+      if (dialog->chosen_button() != 0) {
+        XELOGI("User declined automatic firewall setup");
+        return;
+      }
+
+      // Elevation blocks until the helper exits, and this callback runs on
+      // the UI thread - hand it to a worker so the window keeps painting
+      // while the UAC prompt is up.
+      std::thread([]() {
+        std::string firewall_error;
+        if (!xe::firewall::RequestInboundRules(&firewall_error)) {
+          XELOGW("Firewall rules not created: {}", firewall_error);
+        }
+      }).detach();
+    });
+  };
+
+  auto& app_context = display_window->app_context();
+  if (app_context.IsInUIThread()) {
+    show_dialog();
+  } else {
+    app_context.CallInUIThread(show_dialog);
+  }
+}
+
 void XLiveAPI::Init() {
   if (GetInitState() != InitState::Pending) {
     return;
@@ -370,6 +437,21 @@ void XLiveAPI::Init() {
   if (!IsConnectedToServer()) {
     return;
   }
+
+  // Netplay peers connect inbound to us, which the host firewall blocks by
+  // default until something allows it. Checked here rather than at launch so
+  // offline play never triggers an elevation prompt. Adding the rules needs
+  // elevation; declining is fine and simply means the user handles it (or
+  // relies on UPnP), so nothing below depends on the outcome.
+  // Off the UI thread: enumerating firewall rules goes through COM and can
+  // take a noticeable while on a machine with a large rule set. Init() runs
+  // on the UI thread, and stalling it here delays the window coming up.
+  std::thread([this]() {
+    if (xe::firewall::QueryInboundRules() == xe::firewall::RuleState::kMissing) {
+      XELOGI("No inbound firewall rules found - asking before elevating");
+      RequestFirewallSetup();
+    }
+  }).detach();
 
   // Download ports mappings before initializing UPnP.
   DownloadPortMappings();

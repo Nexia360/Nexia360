@@ -903,6 +903,7 @@ X_STATUS Emulator::ProcessContentPackageHeader(
   installation_info.title_id_ =
       header->content_metadata.execution_info.title_id.get();
   installation_info.content_size_ = header->content_metadata.content_size;
+  installation_info.xuid_ = xuid;
   installation_info.installation_state_ = InstallState::pending;
 
   installation_info.icon_ = imgui_drawer_->LoadImGuiIcon(
@@ -941,11 +942,40 @@ X_STATUS Emulator::InstallContentPackage(
     return X_STATUS_ACCESS_DENIED;
   }
 
-  const std::filesystem::path installation_path =
+  // DLC and saves live inside a title update's own Content folder, not in the
+  // global tree - that is where ContentManager resolves them from. Without
+  // this redirect an installed add-on lands somewhere the guest never looks.
+  std::filesystem::path installation_path =
       content_root() / installation_info.data_installation_path_;
 
-  const std::filesystem::path header_path =
+  std::filesystem::path header_path =
       content_root() / installation_info.header_installation_path_;
+
+  if (!installation_info.target_update_id_.empty() &&
+      installation_info.content_type_ != XContentType::kInstaller &&
+      title_update_manager_) {
+    // Marketplace content is shared across profiles, so it is keyed under
+    // xuid 0 - match ContentManager::ResolvePackagePath exactly or the
+    // install and the lookup disagree.
+    const uint64_t used_xuid =
+        (installation_info.content_type_ == XContentType::kMarketplaceContent)
+            ? 0
+            : installation_info.xuid_;
+
+    const auto tu_content = title_update_manager_->GetContentRoot(
+        installation_info.title_id_, installation_info.target_update_id_,
+        used_xuid);
+
+    if (!tu_content.empty()) {
+      const auto type_str = fmt::format(
+          "{:08X}", static_cast<uint32_t>(installation_info.content_type_));
+      const auto file_name = installation_info.path_.filename();
+
+      // ExtractContentHeader appends ".header" itself, so pass the bare name.
+      installation_path = tu_content / type_str / file_name;
+      header_path = tu_content / "Headers" / type_str / file_name;
+    }
+  }
 
   if (!std::filesystem::exists(content_root())) {
     const std::error_code ec = xe::filesystem::CreateFolder(content_root());

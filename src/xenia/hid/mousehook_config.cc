@@ -215,7 +215,8 @@ void MousehookConfig::SeedDefaultKeybinds() {
   bindings_generation_.fetch_add(1, std::memory_order_release);
 }
 
-void MousehookConfig::ApplyToGamepad(X_INPUT_GAMEPAD* gamepad) {
+void MousehookConfig::ApplyToGamepad(X_INPUT_GAMEPAD* gamepad,
+                                     bool consume_motion) {
   // Rebuild the parsed binding list when the table changes.
   const uint32_t generation = bindings_generation();
   if (generation != parsed_generation_) {
@@ -274,8 +275,9 @@ void MousehookConfig::ApplyToGamepad(X_INPUT_GAMEPAD* gamepad) {
     }
   }
 
-  const int32_t dx = mouse_dx_.exchange(0, std::memory_order_relaxed);
-  const int32_t dy = mouse_dy_.exchange(0, std::memory_order_relaxed);
+  int32_t dx = 0;
+  int32_t dy = 0;
+  ReadMouseMotion(&dx, &dy, consume_motion);
 
   const double px = pixels_per_full_deflection();
   const double scale = sensitivity() * (32767.0 / (px > 0.0 ? px : 25.0));

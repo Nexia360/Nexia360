@@ -100,6 +100,10 @@ class XLiveAPI {
 
   void Init();
 
+  // Asks for consent, then (if given) adds the inbound firewall rules behind
+  // a UAC prompt. No-op when there is no window to ask in.
+  void RequestFirewallSetup();
+
   NETWORK_MODE RefreshNetworkMode(bool lan_limit);
 
   InitState GetInitState() const;

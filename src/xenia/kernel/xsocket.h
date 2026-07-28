@@ -13,9 +13,11 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstring>
+#include <deque>
 #include <future>
 #include <mutex>
 #include <queue>
+#include <thread>
 #include <vector>
 
 #include "xenia/base/byte_order.h"
@@ -148,6 +150,23 @@ struct XWSAOVERLAPPED {
   xe::be<uint32_t> event_handle;
 };
 static_assert_size(XWSAOVERLAPPED, 0x14);
+
+class XThread;
+
+// One queued asynchronous send. Defined here rather than in the .cc because
+// each socket holds a deque of these, which needs the complete type.
+struct WSASendToData {
+  XWSABUF* buffers;
+  uint32_t num_buffers;
+  uint32_t flags;
+  XSOCKADDR_IN* to;
+  uint32_t to_len;
+  XWSAOVERLAPPED* overlapped;
+  bool heap_allocated;  // true when buffers/to were heap-copied for async
+  uint32_t completion_routine;    // guest function pointer for APC callback
+  uint32_t overlapped_guest_ptr;  // guest address of overlapped struct
+  object_ref<XThread> calling_thread;  // thread to enqueue APC to
+};
 
 class XSocket : public XObject {
  public:
@@ -295,17 +314,42 @@ class XSocket : public XObject {
   std::mutex receive_socket_mutex_;
   XWSAOVERLAPPED* active_overlapped_ = nullptr;
 
-  // Async send state (mirrors the receive side above).
-  std::vector<std::future<int>> send_tasks_;
+  // Async send state. Each socket owns ONE queue and ONE worker thread that
+  // drains it, rather than spawning a task per send: that made ordering
+  // undefined between peers sharing a socket and left the thread count
+  // unbounded. Sends leave in the order the guest issued them.
+  std::deque<WSASendToData> send_queue_;
   std::mutex send_mutex_;
   std::condition_variable send_cv_;
   std::mutex send_socket_mutex_;
+  std::thread send_thread_;
+  bool send_thread_started_ = false;
+  bool send_thread_stopping_ = false;
+
+  // Raised by the send path when the handle underneath it has gone away -
+  // closed out from under us, or otherwise invalid. The worker retires itself
+  // on this rather than looping on a dead socket, and nothing new is queued
+  // afterwards. Atomic because the send path may raise it while another
+  // thread is inspecting it in EnqueueSend.
+  std::atomic<bool> send_socket_dead_{false};
+
+  // Starts the worker on first use; queues one send. Takes ownership of any
+  // heap-allocated buffers in the request.
+  void EnqueueSend(const WSASendToData& send_async_data);
+  void SendThreadMain();
+  void StopSendThread();
+
+  // Completes every still-queued send with X_WSA_OPERATION_ABORTED. A dropped
+  // socket must not leave the guest blocked on X_WSA_IO_PENDING forever, so
+  // the requests we will never transmit still have to be retired.
+  void AbortQueuedSends();
+  void CompleteSendAborted(WSASendToData& send_async_data);
 
   void CleanupCompletedTasks(std::vector<std::future<int>>& tasks);
 
   uint16_t GetImplicitlyBoundPort() const;
 
-  int PushWSASendTo(bool wait, struct WSASendToData send_async_data);
+  int PushWSASendTo(bool wait, WSASendToData send_async_data);
 
   int PollWSARecvFrom(bool wait, struct WSARecvFromData data);
 

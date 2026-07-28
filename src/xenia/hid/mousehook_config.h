@@ -166,6 +166,11 @@ class MousehookConfig {
   // guest thread. Held here rather than in the WinKey driver because the mouse
   // must augment whichever driver owns the slot - with a real controller
   // plugged in, InputSystem::GetState never reaches the WinKey driver at all.
+  // Motion accumulates into monotonic totals. Reading is NON-DESTRUCTIVE: a
+  // consumer takes the difference against its own cursor, so one reader can
+  // never swallow motion belonging to another. Previously this was an
+  // exchange(0), which meant whichever caller asked first consumed everything
+  // and the guest got nothing.
   void AccumulateMouseMotion(int32_t dx, int32_t dy) {
     mouse_dx_.fetch_add(dx, std::memory_order_relaxed);
     mouse_dy_.fetch_add(dy, std::memory_order_relaxed);
@@ -179,18 +184,36 @@ class MousehookConfig {
   void set_mouse_middle(bool down) {
     mouse_middle_.store(down, std::memory_order_relaxed);
   }
+  // Motion since the caller's cursor was last advanced. Pass consume=false
+  // to look without taking - a UI poll must never remove motion that the
+  // guest has not seen yet.
+  void ReadMouseMotion(int32_t* out_dx, int32_t* out_dy, bool consume) {
+    const int32_t total_x = mouse_dx_.load(std::memory_order_relaxed);
+    const int32_t total_y = mouse_dy_.load(std::memory_order_relaxed);
+
+    *out_dx = total_x - mouse_cursor_x_;
+    *out_dy = total_y - mouse_cursor_y_;
+
+    if (consume) {
+      mouse_cursor_x_ = total_x;
+      mouse_cursor_y_ = total_y;
+    }
+  }
+
   void ResetMouseState() {
     mouse_dx_.store(0, std::memory_order_relaxed);
     mouse_dy_.store(0, std::memory_order_relaxed);
+    mouse_cursor_x_ = 0;
+    mouse_cursor_y_ = 0;
     mouse_left_.store(false, std::memory_order_relaxed);
     mouse_right_.store(false, std::memory_order_relaxed);
     mouse_middle_.store(false, std::memory_order_relaxed);
   }
 
   // Folds the accumulated motion/buttons AND the keyboard bindings into an
-  // already-populated gamepad state. Drains the motion accumulator, so call
-  // once per poll.
-  void ApplyToGamepad(X_INPUT_GAMEPAD* gamepad);
+  // already-populated gamepad state. consume_motion=false leaves the motion
+  // for the guest - use it for any poll that is not the guest's own.
+  void ApplyToGamepad(X_INPUT_GAMEPAD* gamepad, bool consume_motion = true);
 
   // Seeds the binding table with mousehook's defaults (WASD etc). Called when
   // mousehook.json has no keybinds yet.
@@ -215,8 +238,12 @@ class MousehookConfig {
   std::atomic<MouseButtonAction> middle_button_{
       MouseButtonAction::kRightThumbPress};
 
+  // Monotonic totals, never reset by a read.
   std::atomic<int32_t> mouse_dx_{0};
   std::atomic<int32_t> mouse_dy_{0};
+  // How much of the total the guest has already been given.
+  int32_t mouse_cursor_x_ = 0;
+  int32_t mouse_cursor_y_ = 0;
   std::atomic<bool> mouse_left_{false};
   std::atomic<bool> mouse_right_{false};
   std::atomic<bool> mouse_middle_{false};
