@@ -47,7 +47,6 @@ namespace {
 constexpr bool kEnableVdpIdentityTag = false;
 constexpr bool kEnableHubPortRemap = false;
 
-
 // Nexia in-packet identity trailer for VDP game traffic:
 //   [8 x 0x00][be64 sender XUID][be16 sender port]
 // Appended after the VDP voice data on send (to peers confirmed capable), and
@@ -633,7 +632,6 @@ int XSocket::RecvFrom(uint8_t* buf, uint32_t buf_len, uint32_t flags,
 
   return ret;
 }
-
 
 int XSocket::WSASendTo(XWSABUF* buffers, uint32_t num_buffers,
                        xe::be<uint32_t>* num_bytes_sent_ptr, uint32_t flags,

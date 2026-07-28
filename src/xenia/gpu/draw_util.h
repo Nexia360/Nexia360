@@ -531,7 +531,7 @@ union ResolveCoordinateInfo {
     // May be zero if the original rectangle was somehow specified in a
     // totally broken way - in this case, the resolve must be dropped.
     uint32_t width_div_8 : xenos::kResolveSizeBits -
-                           xenos::kResolveAlignmentPixelsLog2;
+        xenos::kResolveAlignmentPixelsLog2;
 
     // 1 to 7.
     uint32_t draw_resolution_scale_x : 3;
@@ -554,9 +554,9 @@ union ResolveCopyDestCoordinateInfo {
   struct {
     // 0...16384/32.
     uint32_t pitch_aligned_div_32 : xenos::kTexture2DCubeMaxWidthHeightLog2 +
-                                    2 - xenos::kTextureTileWidthHeightLog2;
+        2 - xenos::kTextureTileWidthHeightLog2;
     uint32_t height_aligned_div_32 : xenos::kTexture2DCubeMaxWidthHeightLog2 +
-                                     2 - xenos::kTextureTileWidthHeightLog2;
+        2 - xenos::kTextureTileWidthHeightLog2;
 
     // Up to the maximum period of the texture tiled address function (128x128
     // for 2D 1bpb).

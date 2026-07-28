@@ -140,8 +140,8 @@ class xop_byte2_t {
  public:
   union {
     struct {
-      unsigned char
-          implied_66f2f3_ext : 2;  // 0 = no implied, 1 = 66, 2 = F3, 3 = F2
+      unsigned char implied_66f2f3_ext
+          : 2;  // 0 = no implied, 1 = 66, 2 = F3, 3 = F2
       unsigned char vector_length : 1;
       unsigned char source_or_dest_reg_specifier_inverted_1s_compl : 4;
       unsigned char scalar_reg_size_override_special : 1;

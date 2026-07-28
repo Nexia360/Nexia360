@@ -26,9 +26,7 @@ bool RequestInboundRules(std::string* error_message) {
   return false;
 }
 
-bool EnsureInboundRules(std::string* error_message) {
-  return false;
-}
+bool EnsureInboundRules(std::string* error_message) { return false; }
 
 }  // namespace firewall
 }  // namespace xe

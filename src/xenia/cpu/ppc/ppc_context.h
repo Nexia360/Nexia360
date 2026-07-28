@@ -358,18 +358,18 @@ typedef struct alignas(64) PPCContext_s {
       uint32_t vxisi : 1;   // FP invalid op exception: infinity - infinity
                             // -- sticky
       uint32_t vxsnan : 1;  // FP invalid op exception: SNaN -- sticky
-      uint32_t
-          xx : 1;  // FP inexact exception                             -- sticky
-      uint32_t
-          zx : 1;  // FP zero divide exception                         -- sticky
-      uint32_t
-          ux : 1;  // FP underflow exception                           -- sticky
-      uint32_t
-          ox : 1;  // FP overflow exception                            -- sticky
+      uint32_t xx
+          : 1;  // FP inexact exception                             -- sticky
+      uint32_t zx
+          : 1;  // FP zero divide exception                         -- sticky
+      uint32_t ux
+          : 1;  // FP underflow exception                           -- sticky
+      uint32_t ox
+          : 1;  // FP overflow exception                            -- sticky
       uint32_t vx : 1;   // FP invalid operation exception summary
       uint32_t fex : 1;  // FP enabled exception summary
-      uint32_t
-          fx : 1;  // FP exception summary                             -- sticky
+      uint32_t fx
+          : 1;  // FP exception summary                             -- sticky
     } bits;
   } fpscr;  // Floating-point status and control register
 

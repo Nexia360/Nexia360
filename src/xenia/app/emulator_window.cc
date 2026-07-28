@@ -38,10 +38,10 @@
 #include "xenia/hid/input_system.h"
 #include "xenia/hid/mousehook_config.h"
 #include "xenia/kernel/XLiveAPI.h"
+#include "xenia/kernel/util/title_update_manager.h"
 #include "xenia/kernel/xam/profile_manager.h"
 #include "xenia/kernel/xam/xam_module.h"
 #include "xenia/kernel/xam/xam_state.h"
-#include "xenia/kernel/util/title_update_manager.h"
 #include "xenia/kernel/xconfig.h"
 #include "xenia/ui/file_picker.h"
 #include "xenia/ui/graphics_provider.h"
@@ -732,10 +732,9 @@ void EmulatorWindow::DlcTargetDialog::OnDraw(ImGuiIO& io) {
   ImGui::SetNextWindowPos(ImVec2(40, 40), ImGuiCond_FirstUseEver);
 
   bool dialog_open = true;
-  if (!ImGui::Begin(fmt::format("Install DLC###{}", window_id_).c_str(),
-                    &dialog_open,
-                    ImGuiWindowFlags_NoCollapse |
-                        ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (!ImGui::Begin(
+          fmt::format("Install DLC###{}", window_id_).c_str(), &dialog_open,
+          ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize)) {
     ImGui::End();
     return;
   }

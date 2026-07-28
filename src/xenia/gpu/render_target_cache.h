@@ -391,11 +391,11 @@ class RenderTargetCache {
     struct {
       // - 1 because the maximum is 0x1FFF / 8, not 0x2000 / 8.
       uint32_t x_pixels_div_8 : xenos::kResolveSizeBits - 1 -
-                                xenos::kResolveAlignmentPixelsLog2;
+          xenos::kResolveAlignmentPixelsLog2;
       uint32_t y_pixels_div_8 : xenos::kResolveSizeBits - 1 -
-                                xenos::kResolveAlignmentPixelsLog2;
+          xenos::kResolveAlignmentPixelsLog2;
       uint32_t width_pixels_div_8_minus_1 : xenos::kResolveSizeBits - 1 -
-                                            xenos::kResolveAlignmentPixelsLog2;
+          xenos::kResolveAlignmentPixelsLog2;
     };
     HostDepthStoreRectangleConstant() : constant(0) {
       static_assert_size(*this, sizeof(constant));

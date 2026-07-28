@@ -73,8 +73,8 @@ RuleState QueryInboundRules() {
   }
 
   INetFwPolicy2* policy = nullptr;
-  HRESULT hr = CoCreateInstance(__uuidof(NetFwPolicy2), nullptr, CLSCTX_INPROC_SERVER,
-                                __uuidof(INetFwPolicy2),
+  HRESULT hr = CoCreateInstance(__uuidof(NetFwPolicy2), nullptr,
+                                CLSCTX_INPROC_SERVER, __uuidof(INetFwPolicy2),
                                 reinterpret_cast<void**>(&policy));
   if (FAILED(hr) || !policy) {
     // No Windows Firewall service, or a third-party product in its place.
@@ -132,8 +132,8 @@ RuleState QueryInboundRules() {
         // Only an enabled inbound ALLOW for this exact executable counts.
         // A disabled or blocking rule is worse than none: it would make us
         // report "present" while the traffic is still dropped.
-        if (direction == NET_FW_RULE_DIR_IN &&
-            action == NET_FW_ACTION_ALLOW && enabled != VARIANT_FALSE &&
+        if (direction == NET_FW_RULE_DIR_IN && action == NET_FW_ACTION_ALLOW &&
+            enabled != VARIANT_FALSE &&
             NormalizePath(std::wstring(app, SysStringLen(app))) == wanted) {
           if (protocol == NET_FW_IP_PROTOCOL_TCP) {
             has_tcp = true;
