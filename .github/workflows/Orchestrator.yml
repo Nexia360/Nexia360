@@ -30,7 +30,7 @@ jobs:
     uses: ./.github/workflows/Lint.yml
     with:
       runs-on: ubuntu-24.04
-      llvm_version: 20
+      llvm_version: 22
 
   # Parses the pushed commit message for release tags. Both word orders are
   # accepted so a tag is never missed:

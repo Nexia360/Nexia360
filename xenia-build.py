@@ -647,8 +647,8 @@ def get_clang_format_binary():
     # Build list of all potential clang-format binaries
     all_binaries = []
 
-    # Check versioned binaries from 21 down to min, preferring newer
-    for version in range(21, clang_format_version_min - 1, -1):
+    # Check versioned binaries from 22 down to min, preferring newer
+    for version in range(22, clang_format_version_min - 1, -1):
         binary = f"clang-format-{version}"
         if has_bin(binary):
             all_binaries.append(binary)
