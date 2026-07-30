@@ -10,6 +10,7 @@
 #include "src/xenia/kernel/xsocket.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <vector>
 
@@ -18,6 +19,7 @@
 #include "xenia/base/threading.h"
 #include "xenia/kernel/XLiveAPI.h"
 #include "xenia/kernel/kernel_state.h"
+#include "xenia/kernel/util/nexia_transport.h"
 #include "xenia/kernel/xam/xam_module.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_threading.h"
 
@@ -27,6 +29,7 @@ DEFINE_int32(network_priority, 3,
              "Normal, 2 - Above Normal, 3 - High",
              "Live");
 
+DECLARE_bool(nexiahub_transport);
 DECLARE_bool(bind_interface);
 
 using namespace std::chrono_literals;
@@ -226,7 +229,68 @@ void XSocket::CleanupCompletedTasks(std::vector<std::future<int>>& tasks) {
               tasks.end());
 }
 
+uint64_t XSocket::ResolveTransportDestination(uint32_t handle) const {
+  if (const uint64_t xuid = XLiveAPI::XuidForHandle(handle)) {
+    return xuid;
+  }
+
+  // Unresolved handle: fall back to the session host. In a hosted game every
+  // peer is reached through the host, and a joining client addresses the host
+  // before it has learned anyone else.
+  return XLiveAPI::session_host_xuid;
+}
+
+bool XSocket::IsTransportEligible() const {
+  if (!cvars::nexiahub_transport) {
+    return false;
+  }
+
+  // Datagram protocols only - a frame carries one datagram, so a byte stream
+  // pushed through it would be reframed.
+  if (proto_ != X_IPPROTO_UDP && proto_ != X_IPPROTO_VDP) {
+    return false;
+  }
+
+  if (type_ == X_SOCK_STREAM) {
+    return false;
+  }
+
+  auto* transport = kernel_state()->GetXboxLiveAPI()->transport();
+  return transport && transport->is_ready();
+}
+
+void XSocket::ClaimTransportPort() {
+  if (!bound_port_ || claimed_transport_port_) {
+    return;
+  }
+
+  auto* transport = kernel_state()->GetXboxLiveAPI()->transport();
+  if (!transport) {
+    return;
+  }
+
+  claimed_transport_port_ = htons(bound_port_.get());
+  transport->ClaimPort(claimed_transport_port_);
+}
+
+void XSocket::ReleaseTransportPort() {
+  if (!claimed_transport_port_) {
+    return;
+  }
+
+  auto* transport = kernel_state()->GetXboxLiveAPI()->transport();
+  if (transport) {
+    transport->ReleasePort(claimed_transport_port_);
+  }
+
+  claimed_transport_port_ = 0;
+}
+
 X_STATUS XSocket::Close() {
+  // Hand the port back before anything else, so nothing queues for a socket
+  // that is on its way out.
+  ReleaseTransportPort();
+
   // Drain and stop this socket's send worker before the handle goes away -
   // otherwise it would keep sending on a closed socket.
   StopSendThread();
@@ -393,6 +457,25 @@ X_STATUS XSocket::IOControl(uint32_t cmd, uint32_t* arg_ptr) {
 X_STATUS XSocket::Connect(const XSOCKADDR_IN* name, int name_len) {
   XSOCKADDR_IN sa_in = *name;
 
+  // A relayed socket has no host connection to make - the peer is reached by
+  // XUID. Record it, since Send() has no destination argument and getpeername()
+  // on a never-connected socket fails.
+  if (IsTransportEligible()) {
+    connected_peer_ip_ = name->address_ip.s_addr;
+    connected_peer_port_ = htons(name->address_port);
+
+    // Implicit bind, but to OUR port - not the peer's. The old assignment below
+    // stamps the destination port as our source, which would tell peers to
+    // answer on a port we are not listening on.
+    if (!bound_port_) {
+      bound_port_ = GetImplicitlyBoundPort();
+      bound_ = true;
+      ClaimTransportPort();
+    }
+
+    return X_STATUS_SUCCESS;
+  }
+
   const auto upnp = kernel_state()->emulator()->GetUPnP();
 
   if (upnp) {
@@ -416,6 +499,25 @@ X_STATUS XSocket::Connect(const XSOCKADDR_IN* name, int name_len) {
 
 X_STATUS XSocket::Bind(const XSOCKADDR_IN* name, int name_len) {
   XSOCKADDR_IN sa_in = *name;
+
+  // Relayed sockets do not bind locally: every packet enters and leaves through
+  // the transport's own socket, so there is nothing to reserve, and binding
+  // anyway makes a second instance on this machine fail with WSAEADDRINUSE.
+  // The guest's requested port is kept as bound_port_ - that is the port peers
+  // know from the XNADDR.
+  if (IsTransportEligible()) {
+    bound_port_ = name->address_port;
+    bound_ = true;
+    ClaimTransportPort();
+
+    auto* api = kernel_state()->GetXboxLiveAPI();
+    if (vdp_ && bound_port_ && api &&
+        api->GetLocalPlayerPort() != bound_port_) {
+      api->SetPlayerPort(bound_port_.get());
+    }
+
+    return X_STATUS_SUCCESS;
+  }
 
   const auto upnp = kernel_state()->emulator()->GetUPnP();
 
@@ -525,6 +627,13 @@ X_STATUS XSocket::Bind(const XSOCKADDR_IN* name, int name_len) {
 }
 
 uint16_t XSocket::GetImplicitlyBoundPort() const {
+  // Relayed sockets are never bound on the host, so getsockname would fail or
+  // return an unrelated ephemeral port. Use the port we advertise.
+  if (IsTransportEligible()) {
+    auto* api = kernel_state()->GetXboxLiveAPI();
+    return api ? api->GetLocalPlayerPort() : 0;
+  }
+
   sockaddr_in sock_name = {};
   int sock_name_len = sizeof(sockaddr);
 
@@ -587,6 +696,23 @@ object_ref<XSocket> XSocket::Accept(XSOCKADDR_IN* name, int* name_len) {
 int XSocket::Shutdown(int how) { return shutdown(native_handle_, how); }
 
 int XSocket::Recv(uint8_t* buf, uint32_t buf_len, uint32_t flags) {
+  // Counterpart to the relayed Send: while relaying, this socket receives
+  // nothing - everything arrives on the transport's socket instead.
+  if (IsTransportEligible() && buf && buf_len) {
+    auto* transport = kernel_state()->GetXboxLiveAPI()->transport();
+
+    NexiaTransport::Datagram relayed;
+    if (!transport->PopDatagram(TransportPort(), &relayed)) {
+      SetLastWSAError(X_WSAError::X_WSAEWOULDBLOCK);
+      return -1;
+    }
+
+    const size_t copied =
+        std::min(static_cast<size_t>(buf_len), relayed.data.size());
+    std::memcpy(buf, relayed.data.data(), copied);
+    return static_cast<int>(copied);
+  }
+
   return recv(native_handle_, reinterpret_cast<char*>(buf), buf_len, flags);
 }
 
@@ -596,6 +722,35 @@ int XSocket::RecvFrom(uint8_t* buf, uint32_t buf_len, uint32_t flags,
 
   if (from) {
     sa = from->to_host();
+  }
+
+  // Mirror of the send side: relayed traffic arrives on the transport's own
+  // socket, so this one carries nothing while relaying.
+  if (IsTransportEligible() && buf && buf_len) {
+    auto* transport = kernel_state()->GetXboxLiveAPI()->transport();
+
+    NexiaTransport::Datagram relayed;
+    if (!transport->PopDatagram(TransportPort(), &relayed)) {
+      SetLastWSAError(X_WSAError::X_WSAEWOULDBLOCK);
+      return -1;
+    }
+
+    const size_t copied =
+        std::min(static_cast<size_t>(buf_len), relayed.data.size());
+    std::memcpy(buf, relayed.data.data(), copied);
+
+    if (from) {
+      // The wire carries no address, only the sender's XUID - so hand the guest
+      // the same synthetic address that peer advertises. Both sides derive it
+      // from the XUID, so it matches what the title already has cached.
+      auto* sin = reinterpret_cast<sockaddr_in*>(&sa);
+      sin->sin_family = AF_INET;
+      sin->sin_addr.s_addr = XLiveAPI::SyntheticOnlineIP(relayed.xuid);
+      sin->sin_port = relayed.port_be;
+      from->to_guest(&sa);
+    }
+
+    return static_cast<int>(copied);
   }
 
   int ret = recvfrom(native_handle_, reinterpret_cast<char*>(buf), buf_len,
@@ -915,7 +1070,16 @@ int XSocket::PushWSASendTo(bool wait, WSASendToData send_async_data) {
                       XLiveAPI::PeerSupportsTag(
                           uint32_t(send_async_data.to->address_ip.s_addr));
   uint8_t tag[kVdpTagSize];
+
+  // Relay-only by design: with the transport enabled every peer is reached
+  // through the allocation, so there is no direct path to race and no
+  // fallback timer. The relay owns its own socket, so the datagram is
+  // assembled here and handed over whole rather than sent from this one.
+  auto* turn = kernel_state()->GetXboxLiveAPI()->transport();
+  const bool relay = IsTransportEligible() && send_async_data.to;
+
   const uint32_t send_count = send_async_data.num_buffers + (do_tag ? 1 : 0);
+  const uint32_t payload_base = 0;
   do {
 #if XE_PLATFORM_WIN32
     ret = WSAPoll(&fds, 1, wait ? 1000 : 0);
@@ -957,7 +1121,7 @@ int XSocket::PushWSASendTo(bool wait, WSASendToData send_async_data) {
   // VDP peers confirmed capable (do_tag decided above the poll loop).
   buffers = new XeSendSeg[send_count];
   for (uint32_t i = 0; i < send_async_data.num_buffers; i++) {
-    SetSendSeg(buffers[i],
+    SetSendSeg(buffers[payload_base + i],
                kernel_state()->memory()->TranslateVirtual(
                    send_async_data.buffers[i].buf_ptr),
                send_async_data.buffers[i].len);
@@ -965,8 +1129,48 @@ int XSocket::PushWSASendTo(bool wait, WSASendToData send_async_data) {
   if (do_tag) {
     BuildVdpTag(XLiveAPI::local_online_xuid,
                 kernel_state()->GetXboxLiveAPI()->GetPlayerPort(), tag);
-    SetSendSeg(buffers[send_async_data.num_buffers], tag, kVdpTagSize);
+    SetSendSeg(buffers[payload_base + send_async_data.num_buffers], tag,
+               kVdpTagSize);
   }
+
+  // Relayed: flatten the scatter segments and hand the datagram to the relay,
+  // which frames it as ChannelData and sends from its own socket.
+  if (relay) {
+    std::vector<uint8_t> payload;
+    for (uint32_t i = 0; i < send_async_data.num_buffers; i++) {
+      const auto* segment = reinterpret_cast<const uint8_t*>(
+          kernel_state()->memory()->TranslateVirtual(
+              send_async_data.buffers[i].buf_ptr));
+      payload.insert(payload.end(), segment,
+                     segment + send_async_data.buffers[i].len);
+    }
+    if (do_tag) {
+      payload.insert(payload.end(), tag, tag + kVdpTagSize);
+    }
+
+    // Source port is this socket's own, so several sockets multiplex over one
+    // transport connection. Routing is on the destination XUID.
+    const uint32_t dest_ip = send_async_data.to->address_ip.s_addr;
+    const uint16_t dest_port = htons(send_async_data.to->address_port);
+    const bool sent = turn->SendTo(ResolveTransportDestination(dest_ip),
+                                   htons(bound_port_.get()), dest_port,
+                                   payload.data(), payload.size());
+
+    delete[] buffers;
+    buffers = nullptr;
+
+    if (!sent) {
+      XELOGE("Transport: relayed WSASendTo failed");
+      send_async_data.overlapped->internal_high =
+          (uint32_t)X_WSAError::X_WSAENETDOWN;
+      ret = -1;
+    } else {
+      bytes_sent = static_cast<uint32_t>(payload.size());
+      ret = 0;
+    }
+    goto relayed_done;
+  }
+
   for (int send_retry = 0; send_retry < 5; send_retry++) {
 #if XE_PLATFORM_WIN32
     DWORD win_bytes_sent = 0;
@@ -1067,6 +1271,7 @@ int XSocket::PushWSASendTo(bool wait, WSASendToData send_async_data) {
     }
     break;  // Non-retryable — exit loop.
   }
+relayed_done:
   if (ret >= 0) {
     send_async_data.overlapped->internal_high = 0;
     send_async_data.overlapped->internal =
@@ -1133,12 +1338,27 @@ int XSocket::PollWSARecvFrom(bool wait, WSARecvFromData receive_async_data) {
   auto buffers = new XeSendSeg[receive_async_data.num_buffers];
 
   int ret;
+
+  // Relayed sockets are polled on the queue, not the host socket - that socket
+  // never receives in relay mode, so polling it would always report no data.
+  const bool poll_relay = IsTransportEligible();
+
   do {
+    if (poll_relay) {
+      auto* transport = kernel_state()->GetXboxLiveAPI()->transport();
+      ret = transport->HasDatagram(TransportPort()) ? 1 : 0;
+
+      if (!ret && wait) {
+        // Match the poll timeout being replaced rather than spinning.
+        xe::threading::Sleep(std::chrono::milliseconds(1));
+      }
+    } else {
 #ifdef XE_PLATFORM_WIN32
-    ret = WSAPoll(fds, 1, wait ? 1000 : 0);
+      ret = WSAPoll(fds, 1, wait ? 1000 : 0);
 #else
-    ret = poll(fds, 1, wait ? 1000 : 0);
+      ret = poll(fds, 1, wait ? 1000 : 0);
 #endif
+    }
 
     if (receive_async_data.overlapped->offset_high & WSAInfo::closed) {
       receive_async_data.overlapped->internal_high =
@@ -1172,17 +1392,63 @@ int XSocket::PollWSARecvFrom(bool wait, WSARecvFromData receive_async_data) {
     std::unique_lock socket_lock(receive_socket_mutex_);
 
     sockaddr* sa = nullptr;
+    sockaddr addr = {};
     if (receive_async_data.from) {
-      sockaddr addr = receive_async_data.from->to_host();
-      sa = const_cast<sockaddr*>(&addr);
+      addr = receive_async_data.from->to_host();
+      sa = &addr;
     }
 
     // WSARecvFrom wants LPDWORD (unsigned long*), not uint32_t*.
     DWORD win_bytes_received = 0;
     DWORD win_flags = flags;
-    ret = ::WSARecvFrom(native_handle_, buffers, receive_async_data.num_buffers,
+
+    auto* turn = kernel_state()->GetXboxLiveAPI()->transport();
+    const bool relay = IsTransportEligible();
+
+    // Deliberately NOT gated on `sa`: the from-address is optional to
+    // WSARecvFrom, and requiring it meant a title that does not ask for the
+    // sender never popped anything - the queue grew forever while every recv
+    // returned WOULDBLOCK.
+    NexiaTransport::Datagram relayed;
+    if (relay && receive_async_data.num_buffers &&
+        turn->PopDatagram(TransportPort(), &relayed)) {
+      // Relayed traffic never touches this socket - the relay client owns its
+      // own. Copy the payload into the guest's buffers and report the peer as
+      // the sender so the title cannot tell the difference.
+      size_t copied = 0;
+      for (uint32_t i = 0;
+           i < receive_async_data.num_buffers && copied < relayed.data.size();
+           i++) {
+        const size_t take = std::min(static_cast<size_t>(buffers[i].len),
+                                     relayed.data.size() - copied);
+        std::memcpy(buffers[i].buf, relayed.data.data() + copied, take);
+        copied += take;
+      }
+
+      win_bytes_received = static_cast<DWORD>(copied);
+      ret = 0;
+
+      // No address on the wire - the sender's handle is derived from the XUID
+      // it identified itself with, which is the same handle the title already
+      // has.
+      if (sa) {
+        auto* rewritten = reinterpret_cast<sockaddr_in*>(sa);
+        rewritten->sin_family = AF_INET;
+        rewritten->sin_addr.s_addr = XLiveAPI::SyntheticOnlineIP(relayed.xuid);
+        rewritten->sin_port = relayed.port_be;
+      }
+    } else if (relay) {
+      // Relaying with nothing queued: report "would block" rather than
+      // reading this socket, which carries no game traffic in relay mode.
+      ret = -1;
+      SetLastWSAError(X_WSAError::X_WSAEWOULDBLOCK);
+    } else {
+      ret =
+          ::WSARecvFrom(native_handle_, buffers, receive_async_data.num_buffers,
                         &win_bytes_received, &win_flags, sa,
                         (LPINT)receive_async_data.from_len, nullptr, nullptr);
+    }
+
     bytes_received = win_bytes_received;
     flags = win_flags;
     if (ret < 0) {
@@ -1190,7 +1456,9 @@ int XSocket::PollWSARecvFrom(bool wait, WSARecvFromData receive_async_data) {
     } else {
       receive_async_data.overlapped->internal = bytes_received;
     }
-    receive_async_data.from->to_guest(sa);
+    if (receive_async_data.from && sa) {
+      receive_async_data.from->to_guest(sa);
+    }
     socket_lock.unlock();
   }
 
@@ -1412,6 +1680,38 @@ bool XSocket::WSAGetOverlappedResult(XWSAOVERLAPPED* overlapped_ptr,
 }
 
 int XSocket::Send(const uint8_t* buf, uint32_t buf_len, uint32_t flags) {
+  // A connected socket carries no destination in the call, so take it from the
+  // connection itself. Without this a title that connect()s and then send()s
+  // bypasses the relay entirely.
+  if (IsTransportEligible() && buf && buf_len) {
+    auto* transport = kernel_state()->GetXboxLiveAPI()->transport();
+
+    // The peer comes from the recorded Connect(), not getpeername(): the host
+    // socket is never connected under the relay, so getpeername() fails and
+    // every connected-socket send would fall through unrelayed.
+    if (!connected_peer_ip_) {
+      XELOGE("Transport: send on a socket that never connected - not relayed");
+      SetLastWSAError(X_WSAError::X_WSAENOTCONN);
+      return -1;
+    }
+
+    if (!bound_port_) {
+      bound_port_ = GetImplicitlyBoundPort();
+      bound_ = true;
+      ClaimTransportPort();
+    }
+
+    if (transport->SendTo(ResolveTransportDestination(connected_peer_ip_),
+                          htons(bound_port_.get()), connected_peer_port_, buf,
+                          buf_len)) {
+      return static_cast<int>(buf_len);
+    }
+
+    XELOGE("Transport: relayed send failed");
+    SetLastWSAError(X_WSAError::X_WSAENETDOWN);
+    return -1;
+  }
+
   return send(native_handle_, reinterpret_cast<const char*>(buf), buf_len,
               flags);
 }
@@ -1422,6 +1722,36 @@ int XSocket::SendTo(uint8_t* buf, uint32_t buf_len, uint32_t flags,
 
   if (upnp) {
     to->address_port = upnp->GetMappedBindPort(to->address_port);
+  }
+
+  // Relay the synchronous path too. Titles that use plain sendto never touch
+  // WSASendTo, so wiring only that one left the transport carrying heartbeats
+  // and no game traffic at all.
+  if (IsTransportEligible() && to && buf && buf_len) {
+    auto* xlive_api = kernel_state()->GetXboxLiveAPI();
+    auto* transport = xlive_api->transport();
+
+    // A socket that has only ever sent has no bound port yet (see the implicit
+    // bind below), so resolve it now - the source port must not be zero or the
+    // peer cannot answer, and claim it so the answer has somewhere to land.
+    if (!bound_port_) {
+      bound_port_ = GetImplicitlyBoundPort();
+      bound_ = true;
+      ClaimTransportPort();
+    }
+
+    const uint32_t dest_ip = to->address_ip.s_addr;
+    const uint16_t dest_port = htons(to->address_port);
+
+    if (transport->SendTo(ResolveTransportDestination(dest_ip),
+                          htons(bound_port_.get()), dest_port, buf, buf_len)) {
+      // The guest must see its own byte count.
+      return static_cast<int>(buf_len);
+    }
+
+    XELOGE("Transport: relayed sendto failed");
+    SetLastWSAError(X_WSAError::X_WSAENETDOWN);
+    return -1;
   }
 
   sockaddr addr = to->to_host();

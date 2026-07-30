@@ -64,6 +64,11 @@ DEFINE_bool(
 
 DEFINE_bool(xhttp, false, "Toggles XHTTP.", "Live");
 
+DEFINE_bool(nexiahub_transport, false,
+            "Relay netplay traffic through the Nexia Hub transport when a "
+            "direct peer connection is not possible.",
+            "Live");
+
 DEFINE_int32(discord_presence_user_index, 0,
              "User profile index used for Discord rich presence [0, 3].",
              "Live");
@@ -91,6 +96,11 @@ XLiveAPI::XLiveAPI() {
 }
 
 XLiveAPI::~XLiveAPI() {
+  // Both hold a raw `this` and use libcurl / sockets - stop them before
+  // either goes away.
+  StopQoSWorker();
+  transport_.Stop();
+
   // TODO(Adrian): Cleanup libcurl multiplexing handles.
 }
 
@@ -128,6 +138,9 @@ void XLiveAPI::IpGetConsoleXnAddr(XNADDR* XnAddr_ptr) {
   const auto xbl_api = kernel_state()->GetXboxLiveAPI();
   const auto user_tracker = kernel_state()->xam_state()->user_tracker();
 
+  // No relay special-casing: the transport carries the game's own addressing
+  // inside the envelope, so we advertise our ordinary address and the relay
+  // routes on what is in the packet.
   if (user_tracker->LoggedInToLive()) {
     XnAddr_ptr->ina = xbl_api->OnlineIP().sin_addr;
     XnAddr_ptr->inaOnline = xbl_api->OnlineIP().sin_addr;
@@ -151,6 +164,17 @@ void XLiveAPI::GetXnAddrFromSessionObject(SessionObjectJSON session,
 
   XnAddr_ptr->inaOnline = ip_to_in_addr(session.HostAddress());
   XnAddr_ptr->ina = ip_to_in_addr(session.HostAddress());
+
+  // On the transport the guest gets a handle minted from the host's XUID rather
+  // than an address, so no address has to be resolved back to a player.
+  if (cvars::nexiahub_transport && session.XUID_UInt()) {
+    SetSessionHostXuid(session.XUID_UInt());
+
+    in_addr handle = {};
+    handle.s_addr = XuidToHandle(session.XUID_UInt());
+    XnAddr_ptr->inaOnline = handle;
+    XnAddr_ptr->ina = handle;
+  }
 
   const MacAddress mac_address = MacAddress(session.MacAddress());
   memcpy(XnAddr_ptr->abEnet, mac_address.raw(), MacAddress::MacAddressSize);
@@ -341,6 +365,10 @@ void XLiveAPI::SetBindInterface(bool state) const {
   OVERRIDE_bool(bind_interface, state);
 }
 
+void XLiveAPI::SetNexiaHubTransport(bool state) const {
+  OVERRIDE_bool(nexiahub_transport, state);
+}
+
 std::string XLiveAPI::GetApiAddress() {
   std::vector<std::string> api_addresses =
       ParseDelimitedList(cvars::api_address, 1);
@@ -453,6 +481,11 @@ void XLiveAPI::Init() {
     }
   }).detach();
 
+  // Brought up before RegisterPlayer so the relay already knows our binding
+  // by the time a peer can look us up. The advertised address is unchanged
+  // either way - the envelope carries the routing, not the socket.
+  StartTransport();
+
   // Download ports mappings before initializing UPnP.
   DownloadPortMappings();
 
@@ -515,6 +548,18 @@ NETWORK_MODE XLiveAPI::RefreshNetworkMode(bool lan_limit) {
     online_ip_ = whoami_result_.get();
   }
 
+  // On the transport the real public IP is not used for anything: the relay
+  // routes on XUID and the addresses in an envelope are only there so the far
+  // end can hand the guest the sender it expects. The real IP actively HURTS -
+  // two instances behind one public address end up identical, which collapses
+  // the mac cache, ip_to_xuid and the XnAddr resolver onto one peer (the
+  // symptom was a peer resolving to 127.0.0.1 because it looked like us).
+  //
+  // So advertise a synthetic address derived from our own XUID instead. It is
+  // unique per player, stable for the session, and never routed on. The
+  // substitution lives in OnlineIP() so every caller agrees even before the
+  // XUID is known.
+
   bool connected = false;
 
   // We don't need the online IP in LAN mode, instead just use heartbeat.
@@ -558,6 +603,15 @@ NETWORK_MODE XLiveAPI::RefreshNetworkMode(bool lan_limit) {
 
 XLiveAPI::InitState XLiveAPI::GetInitState() const { return initialized_; }
 
+uint32_t XLiveAPI::EffectiveOnlineAddr(uint32_t real_ip_be) {
+  // Off the transport, or before we know who we are, the real address is all
+  // there is. Once both hold, the synthetic one takes over everywhere at once.
+  if (!cvars::nexiahub_transport || !real_ip_be || !local_online_xuid) {
+    return real_ip_be;
+  }
+  return SyntheticOnlineIP(local_online_xuid);
+}
+
 // If online NAT open, otherwise strict.
 uint32_t XLiveAPI::GetNatType() const {
   return kernel_state()->xam_state()->user_tracker()->LoggedInToLive()
@@ -600,6 +654,49 @@ void XLiveAPI::ProbeServerCapabilities() {
       body.find("deleteMySessions") != std::string::npos;
   server_supports_host_xuid_delete =
       body.find("hostXuidDelete") != std::string::npos;
+}
+
+bool XLiveAPI::StartTransport() {
+  if (!cvars::nexiahub_transport) {
+    return false;
+  }
+
+  const auto profile = kernel_state()->xam_state()->GetUserProfile(uint32_t(0));
+  if (!profile) {
+    return false;
+  }
+
+  // Identity is the XUID carried in every envelope - there is no separate
+  // sign-in step.
+  const uint64_t xuid = profile->GetOnlineXUID();
+
+  // No address is registered: every envelope carries its own flow, so the
+  // transport can come up before the title has bound anything, and a title
+  // that binds several ports multiplexes over this one socket.
+  //
+  // Same host as the hub API, on the transport's own UDP port.
+  std::string host = GetApiAddress();
+  const size_t scheme = host.find("://");
+  if (scheme != std::string::npos) {
+    host = host.substr(scheme + 3);
+  }
+  const size_t slash = host.find('/');
+  if (slash != std::string::npos) {
+    host = host.substr(0, slash);
+  }
+  const size_t colon = host.rfind(':');
+  if (colon != std::string::npos) {
+    host = host.substr(0, colon);
+  }
+
+  transport_.Configure(host, kNexiaTransportPort, xuid);
+
+  if (!transport_.Start()) {
+    XELOGE("Transport: relay unavailable; relayed peers will not be reachable");
+    return false;
+  }
+
+  return true;
 }
 
 bool XLiveAPI::ReservePort(const std::string& host_address, uint16_t port,
@@ -1127,6 +1224,12 @@ std::unique_ptr<HTTPResponseObjectJSON> XLiveAPI::RegisterPlayer(
 
   MacAddress mac_address = GetConsoleMacAddress();
 
+  // Must happen BEFORE HostAddress below: on the transport the advertised
+  // address is derived from this XUID, and setting it afterwards published the
+  // real public IP - which two instances on one connection share, collapsing
+  // every IP-keyed peer cache onto a single player.
+  local_online_xuid = registered_xuid;
+
   player.XUID(registered_xuid);
   player.Gamertag(user_profile->name());
   player.MachineID(GetLocalMachineId(mac_address));
@@ -1152,10 +1255,6 @@ std::unique_ptr<HTTPResponseObjectJSON> XLiveAPI::RegisterPlayer(
   }
 
   XELOGI("POST Success");
-
-  // Cache our own online XUID so the socket send path can stamp outgoing VDP
-  // packets without a profile lookup.
-  local_online_xuid = registered_xuid;
 
   // Advertise our net-protocol version if the hub supports the in-packet tag.
   // Capabilities are probed when a mode reaches Success (RefreshNetworkMode).
@@ -1294,6 +1393,75 @@ void XLiveAPI::QoSPost(uint64_t sessionId, uint8_t* qosData, size_t qosLength) {
   }
 
   XELOGI("Sent QoS data.");
+}
+
+void XLiveAPI::QoSPostAsync(uint64_t sessionId, std::vector<uint8_t> qosData) {
+  std::lock_guard lock(qos_mutex_);
+
+  if (qos_thread_stopping_) {
+    return;
+  }
+
+  // Started on first use, so a session that never advertises QoS costs
+  // nothing.
+  if (!qos_thread_started_) {
+    qos_thread_started_ = true;
+    qos_thread_ = std::thread(&XLiveAPI::QoSWorkerMain, this);
+  }
+
+  // Replaces any unsent payload for this session rather than queueing behind
+  // it - this is the coalescing that turns a burst of re-arms into one upload.
+  qos_pending_[sessionId] = std::move(qosData);
+  qos_cv_.notify_one();
+}
+
+void XLiveAPI::QoSWorkerMain() {
+  xe::threading::set_name("XLive QoS Upload");
+
+  while (true) {
+    uint64_t session_id = 0;
+    std::vector<uint8_t> payload;
+
+    {
+      std::unique_lock lock(qos_mutex_);
+      qos_cv_.wait(lock, [this]() {
+        return qos_thread_stopping_ || !qos_pending_.empty();
+      });
+
+      if (qos_pending_.empty()) {
+        // Stopping and drained.
+        return;
+      }
+
+      auto it = qos_pending_.begin();
+      session_id = it->first;
+      payload = std::move(it->second);
+      qos_pending_.erase(it);
+    }
+
+    // Outside the lock: this is a blocking HTTP round trip, and holding the
+    // lock across it would stall the title's XNetQosListen calls.
+    QoSPost(session_id, payload.data(), payload.size());
+  }
+}
+
+void XLiveAPI::StopQoSWorker() {
+  {
+    std::lock_guard lock(qos_mutex_);
+    if (!qos_thread_started_) {
+      return;
+    }
+    qos_thread_stopping_ = true;
+    // Anything still queued is abandoned - a QoS blob for a session being torn
+    // down has no value, and posting it would delay shutdown by a round trip
+    // each.
+    qos_pending_.clear();
+  }
+  qos_cv_.notify_all();
+
+  if (qos_thread_.joinable()) {
+    qos_thread_.join();
+  }
 }
 
 // Get QoS binary data from the server

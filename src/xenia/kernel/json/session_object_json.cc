@@ -10,6 +10,7 @@
 #include <string>
 
 #include "xenia/kernel/json/session_object_json.h"
+#include "xenia/kernel/util/xuid_handles.h"
 
 namespace xe {
 namespace kernel {
@@ -74,6 +75,10 @@ bool SessionObjectJSON::Deserialize(const rapidjson::Value& obj) {
     HostAddress(obj["hostAddress"].GetString());
   }
 
+  if (obj.HasMember("transport") && obj["transport"].IsBool()) {
+    Transport(obj["transport"].GetBool());
+  }
+
   if (obj.HasMember("macAddress")) {
     MacAddress(obj["macAddress"].GetString());
   }
@@ -107,6 +112,11 @@ bool SessionObjectJSON::Deserialize(const rapidjson::Value& obj) {
     for (uint8_t i = 0; i < playersArray.Size(); i++) {
       PlayerObjectJSON player = PlayerObjectJSON();
       player.Deserialize(playersArray[i].GetObj());
+
+      // Makes every member addressable on the transport: handles cannot be
+      // inverted, and a joiner learns the others' XnAddrs in-band from the
+      // host.
+      RegisterXuidHandle(player.XUID().get());
 
       players.push_back(player);
     }

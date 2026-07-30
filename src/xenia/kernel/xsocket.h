@@ -349,6 +349,36 @@ class XSocket : public XObject {
 
   uint16_t GetImplicitlyBoundPort() const;
 
+  // XUID to route a relayed send to, from the handle the guest addressed.
+  // Falls back to the session host when the handle is unknown.
+  uint64_t ResolveTransportDestination(uint32_t handle) const;
+
+  // The relay carries datagrams only. A TCP stream has no envelope to sit in
+  // and must always go straight out to the OS socket.
+  bool IsTransportEligible() const;
+
+  // Tell the relay this socket answers on bound_port_, so frames addressed to
+  // it are queued for THIS socket instead of whichever one reads first.
+  void ClaimTransportPort();
+  void ReleaseTransportPort();
+
+  // The port this socket receives on, network order. Prefers the port actually
+  // claimed, so a claim and the pops that follow it always agree even if
+  // bound_port_ moves afterwards.
+  uint16_t TransportPort() const {
+    return claimed_transport_port_ ? claimed_transport_port_
+                                   : htons(bound_port_.get());
+  }
+
+  // Peer recorded by a relayed Connect(), since the host socket is never
+  // connected and Send() carries no destination. Network order.
+  uint32_t connected_peer_ip_ = 0;
+  uint16_t connected_peer_port_ = 0;
+
+  // Port handed to the relay, remembered so the release matches the claim even
+  // if bound_port_ changes afterwards.
+  uint16_t claimed_transport_port_ = 0;
+
   int PushWSASendTo(bool wait, WSASendToData send_async_data);
 
   int PollWSARecvFrom(bool wait, struct WSARecvFromData data);

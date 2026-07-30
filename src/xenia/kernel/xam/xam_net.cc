@@ -55,6 +55,8 @@ DECLARE_int32(network_mode);
 
 DECLARE_bool(bind_interface);
 
+DECLARE_bool(nexiahub_transport);
+
 enum XNET_QOS {
   LISTEN_ENABLE = 0x01,
   LISTEN_DISABLE = 0x02,
@@ -978,6 +980,22 @@ dword_result_t NetDll_XNetXnAddrToInAddr_entry(dword_t caller,
                                                pointer_t<in_addr> in_addr) {
   in_addr.Zero();
 
+  // The handle is the answer - it was minted from the peer's XUID when this
+  // XnAddr was built. "Is this us?" compares XUIDs, not MACs: the MAC comes
+  // from the config, so two instances sharing one present the same MAC.
+  if (cvars::nexiahub_transport && xn_addr->inaOnline.s_addr) {
+    const uint64_t peer_xuid =
+        XLiveAPI::XuidForHandle(xn_addr->inaOnline.s_addr);
+
+    if (peer_xuid && peer_xuid == XLiveAPI::local_online_xuid) {
+      in_addr->s_addr = xe::byte_swap(LOOPBACK);
+      return X_ERROR_SUCCESS;
+    }
+
+    in_addr->s_addr = xn_addr->inaOnline.s_addr;
+    return X_ERROR_SUCCESS;
+  }
+
   // 494707E4, 4E4D07D1
   if (GetConsoleMacAddress() == MacAddress(xn_addr->abEnet)) {
     XELOGI("Resolving XNetXnAddrToInAddr to LOOPBACK!");
@@ -1003,6 +1021,9 @@ dword_result_t NetDll_XNetXnAddrToInAddr_entry(dword_t caller,
     in_addr->s_addr = xn_addr->inaOnline.s_addr;
   }
 
+  // Nothing to register with the relay: it routes on the addresses carried in
+  // each envelope, so a peer needs no permission and no channel - only that
+  // it is also on the transport.
   return X_ERROR_SUCCESS;
 }
 DECLARE_XAM_EXPORT1(NetDll_XNetXnAddrToInAddr, kNetworking, kSketchy);
@@ -1073,8 +1094,18 @@ dword_result_t NetDll_XNetInAddrToXnAddr_entry(dword_t caller, dword_t in_addr,
   // Find cached online IP?
   if (XLiveAPI::macAddressCache.find(xn_addr->inaOnline.s_addr) ==
       XLiveAPI::macAddressCache.end()) {
-    const auto player = kernel_state()->GetXboxLiveAPI()->FindPlayer(
-        ip_to_string(xn_addr->inaOnline));
+    // On the transport the address is a handle, not something the hub knows -
+    // so look the player up by the XUID it stands for.
+    const uint64_t handle_xuid =
+        cvars::nexiahub_transport
+            ? XLiveAPI::XuidForHandle(xn_addr->inaOnline.s_addr)
+            : 0;
+
+    const auto player =
+        handle_xuid
+            ? kernel_state()->GetXboxLiveAPI()->FindPlayerByXuid(handle_xuid)
+            : kernel_state()->GetXboxLiveAPI()->FindPlayer(
+                  ip_to_string(xn_addr->inaOnline));
 
     // Record peer identity + in-packet-tag capability, keyed on the UNIQUE XUID
     // (never the shared-able IP), from the version the peer advertised to the
@@ -1084,6 +1115,11 @@ dword_result_t NetDll_XNetInAddrToXnAddr_entry(dword_t caller, dword_t in_addr,
       XLiveAPI::ip_to_xuid[xn_addr->inaOnline.s_addr] = peer_xuid;
       XLiveAPI::peer_supports_tag[peer_xuid] =
           player->ClientVersion() >= XLiveAPI::kNexiaNetProtocolVersion;
+
+      // The handle the guest will address this peer by is minted from that
+      // XUID, so a relayed send resolves the player without consulting any
+      // address at all.
+      XLiveAPI::RegisterXuidHandle(peer_xuid);
     }
 
     // FIXME
@@ -1427,13 +1463,8 @@ dword_result_t NetDll_XNetQosListen_entry(
                                                          qos_buffer)) {
       XELOGI("XNetQosListen LISTEN_SET_DATA");
 
-      auto run = [](uint64_t sessionId, std::vector<uint8_t> qosData) {
-        kernel_state()->GetXboxLiveAPI()->QoSPost(sessionId, qosData.data(),
-                                                  qosData.size());
-      };
-
-      std::thread qos_thread(run, session_id, qos_buffer);
-      qos_thread.detach();
+      kernel_state()->GetXboxLiveAPI()->QoSPostAsync(session_id,
+                                                     std::move(qos_buffer));
     }
   }
 

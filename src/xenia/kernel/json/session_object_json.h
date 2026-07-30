@@ -119,6 +119,12 @@ class SessionObjectJSON : public BaseObjectJSON {
     filledPrivateSlotsCount_ = slots_count;
   }
 
+  // Whether the host is reachable through NexiaHub Transport. Reported by the
+  // hub per request from the relay's live connection table, so it reflects
+  // right now rather than what was true when the session was created.
+  bool Transport() const { return transport_; }
+  void Transport(bool transport) { transport_ = transport; }
+
   const std::vector<PlayerObjectJSON>& Players() const { return players_; }
   void Players(const std::vector<PlayerObjectJSON>& players) {
     players_ = players;
@@ -136,6 +142,7 @@ class SessionObjectJSON : public BaseObjectJSON {
   uint32_t userIndex_;
   std::string hostAddress_;
   std::string macAddress_;
+  bool transport_ = false;
   xe::be<uint16_t> port_;
 
   // GetDetails

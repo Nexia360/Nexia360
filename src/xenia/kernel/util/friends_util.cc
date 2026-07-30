@@ -13,8 +13,10 @@
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
 #include "xenia/kernel/XLiveAPI.h"
+#include "xenia/kernel/util/friends_db.h"
 #include "xenia/kernel/util/friends_util.h"
 #include "xenia/kernel/util/shim_utils.h"
+#include "xenia/kernel/xam/xam_state.h"
 #include "xenia/kernel/xnet.h"
 
 DEFINE_string(friends_xuids, "", "Comma delimited list of XUIDs. (Max 100)",
@@ -107,6 +109,83 @@ std::set<uint64_t> ParseFriendsXUIDs() {
   }
 
   return xuids_parsed;
+}
+
+std::set<uint64_t> LoadProfileFriends(uint64_t owner_xuid, FriendsDB* db) {
+  if (!db || !db->is_open()) {
+    // No database (failed to open, or a headless/portable run) - behave
+    // exactly as before rather than showing an empty friends list.
+    return ParseFriendsXUIDs();
+  }
+
+  const uint32_t imported = db->ImportXUIDs(owner_xuid, ParseFriendsXUIDs());
+  if (imported) {
+    XELOGI("{}: imported {} friend(s) from config for {:016X}", __func__,
+           imported, owner_xuid);
+  }
+
+  return db->GetFriendXUIDs(owner_xuid);
+}
+
+std::vector<uint8_t> GetFriendGamerpic(uint64_t owner_xuid,
+                                       uint64_t friend_xuid, bool small_tile) {
+  auto* xam_state = kernel_state()->xam_state();
+  auto* db = xam_state ? xam_state->friends_db() : nullptr;
+
+  std::vector<uint8_t> cached;
+
+  if (db && db->is_open()) {
+    const auto record = db->GetFriend(owner_xuid, friend_xuid);
+    if (record.has_value()) {
+      cached = small_tile ? record->gamerpic_small : record->gamerpic;
+    }
+  }
+
+  // Us being offline means there is nothing to ask. Returning empty is fine -
+  // callers fall back to the default tile.
+  if (!kernel_state()->GetXboxLiveAPI()->IsConnectedToServer()) {
+    return cached;
+  }
+
+  // A friend who is not online cannot have changed their picture in a way we
+  // would see, so the cache stands. Only refetch when there is nothing cached
+  // at all.
+  bool friend_online = false;
+  if (auto* friends_manager =
+          xam_state ? xam_state->friends_manager() : nullptr) {
+    const auto peer = friends_manager->GetFriend(owner_xuid, friend_xuid);
+    if (peer.has_value()) {
+      friend_online =
+          (peer->state.get() & X_ONLINE_FRIENDSTATE_FLAG_ONLINE) != 0;
+    }
+  }
+
+  if (!friend_online && !cached.empty()) {
+    return cached;
+  }
+
+  const auto downloaded = kernel_state()->GetXboxLiveAPI()->GetUserGamerpicTile(
+      friend_xuid, small_tile);
+
+  // A failed download must not overwrite what we had, and must not write an
+  // empty blob that would later be mistaken for a cached picture.
+  if (downloaded.empty()) {
+    return cached;
+  }
+
+  // Only touch the database when the picture actually changed - an unchanged
+  // tile would otherwise rewrite the row on every card that is opened.
+  if (downloaded != cached && db && db->is_open()) {
+    const auto record = db->GetFriend(owner_xuid, friend_xuid);
+    if (record.has_value()) {
+      // Keeps the other size as it was; this only replaces the one fetched.
+      db->SetGamerpic(owner_xuid, friend_xuid, record->gamerpic_key,
+                      small_tile ? record->gamerpic : downloaded,
+                      small_tile ? downloaded : record->gamerpic_small);
+    }
+  }
+
+  return downloaded;
 }
 
 void AddFriendToConfig(uint64_t xuid) {

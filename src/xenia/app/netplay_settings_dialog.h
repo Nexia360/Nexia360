@@ -79,6 +79,7 @@ class NetplaySettingsDialog final : public ui::ImGuiDialog {
   bool logging_ = false;
   bool xhttp_ = false;
   bool discord_ = false;
+  bool nexiahub_transport_ = false;
 
   EmulatorWindow* emulator_window_ = nullptr;
   kernel::NetworkAdapterManager* network_adapter_manager_ = nullptr;

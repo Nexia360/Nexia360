@@ -12,6 +12,7 @@
 #include "xenia/app/emulator_window.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/system.h"
+#include "xenia/kernel/xnet.h"
 
 DECLARE_string(api_address);
 
@@ -24,6 +25,8 @@ DECLARE_bool(upnp);
 DECLARE_bool(logging);
 
 DECLARE_bool(discord);
+
+DECLARE_bool(nexiahub_transport);
 
 DECLARE_int32(discord_presence_user_index);
 
@@ -245,6 +248,32 @@ void NetplaySettingsDialog::OnDraw(ImGuiIO& io) {
       ActivateDiscordState(discord_);
     }
 
+    // The relay only exists on the Nexia Hub, so the option is meaningless in
+    // any other network mode. Switching away from Nexia Hub also clears it,
+    // rather than leaving a setting enabled that nothing will honour.
+    const bool nexiahub_mode =
+        cvars::network_mode ==
+        static_cast<int32_t>(kernel::NETWORK_MODE::NEXIAHUB);
+
+    if (!nexiahub_mode && nexiahub_transport_) {
+      nexiahub_transport_ = false;
+      xlive_api->SetNexiaHubTransport(false);
+    }
+
+    ImGui::BeginDisabled(!nexiahub_mode);
+    if (ImGui::Checkbox("Nexiahub Transport", &nexiahub_transport_)) {
+      xlive_api->SetNexiaHubTransport(nexiahub_transport_);
+    }
+    ImGui::EndDisabled();
+
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+      ImGui::SetTooltip(
+          nexiahub_mode
+              ? "Route all netplay traffic through the Nexia Hub relay "
+                "instead of connecting to peers directly."
+              : "Requires the Nexia Hub network mode.");
+    }
+
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSizeConstraints(ImVec2(225, 90), ImVec2(225, 90));
     if (ImGui::BeginPopupModal("Remove API Address", nullptr,
@@ -435,6 +464,7 @@ void xe::app::NetplaySettingsDialog::InitializeCheckboxSettings() {
   logging_ = cvars::logging;
   discord_ = cvars::discord;
   bind_interface_ = cvars::bind_interface;
+  nexiahub_transport_ = cvars::nexiahub_transport;
 }
 
 void NetplaySettingsDialog::ActivateDiscordState(bool state) {

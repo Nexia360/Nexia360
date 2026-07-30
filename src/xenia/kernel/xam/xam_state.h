@@ -12,6 +12,7 @@
 
 #include <memory>
 
+#include "xenia/kernel/util/friends_db.h"
 #include "xenia/kernel/xam/achievement_manager.h"
 #include "xenia/kernel/xam/app_manager.h"
 #include "xenia/kernel/xam/content_manager.h"
@@ -47,6 +48,8 @@ class XamState {
   }
   ProfileManager* profile_manager() const { return profile_manager_.get(); }
   FriendsManager* friends_manager() const { return friends_manager_.get(); }
+
+  FriendsDB* friends_db() const { return friends_db_.get(); }
   PresenceManager* presence_manager() const { return presence_manager_.get(); }
 
   UserTracker* user_tracker() const { return user_tracker_.get(); }
@@ -89,7 +92,16 @@ class XamState {
   std::atomic<int32_t> xam_dialogs_shown_ = {0};
   std::atomic<int32_t> xam_nui_dialogs_shown_ = {0};
 
+  // True while the user has the emulator's own profile modal open. Opening it
+  // is an explicit request to change accounts, so the player picker is still
+  // shown there - it is only suppressed for titles that ask for sign-in when
+  // somebody is already signed in.
+  bool profile_dialog_open() const { return profile_dialog_open_; }
+  void set_profile_dialog_open(bool value) { profile_dialog_open_ = value; }
+
  private:
+  std::atomic<bool> profile_dialog_open_ = {false};
+
   void LoadOnlineSchema();
   void LoadLanguageLocaleFallback();
   void LoadIptvServiceName();
@@ -103,6 +115,7 @@ class XamState {
   std::unique_ptr<AchievementManager> achievement_manager_;
   std::unique_ptr<ProfileManager> profile_manager_;
   std::unique_ptr<FriendsManager> friends_manager_;
+  std::unique_ptr<FriendsDB> friends_db_;
   std::unique_ptr<PresenceManager> presence_manager_;
 
   std::unique_ptr<SpaInfo> spa_info_;

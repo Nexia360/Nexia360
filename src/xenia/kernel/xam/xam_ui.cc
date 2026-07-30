@@ -1592,6 +1592,18 @@ bool xeDrawSessionContent(xe::ui::ImGuiDrawer* imgui_drawer,
                           session->OpenPublicSlotsCount().get())
                   .c_str());
 
+  // Green/red rather than plain text: whether the host is on the relay decides
+  // whether it is reachable at all from behind NAT, so it wants to be readable
+  // at a glance.
+  const bool host_on_transport = session->Transport();
+  ImGui::Text("NexiaHub-Transport:");
+  ImGui::SameLine();
+  ImGui::PushStyleColor(ImGuiCol_Text, host_on_transport
+                                           ? IM_COL32(80, 220, 100, 255)
+                                           : IM_COL32(240, 50, 50, 255));
+  ImGui::Text(host_on_transport ? "Yes" : "No");
+  ImGui::PopStyleColor();
+
   ImGui::Spacing();
   ImGui::Spacing();
 
@@ -2101,6 +2113,38 @@ X_RESULT xeXamShowSigninUI(uint32_t user_index, uint32_t users_needed,
 
       kernel_state()->xam_state()->profile_manager()->LoginMultiple(xuids);
     });
+  }
+
+  // A title asking for sign-in when somebody is already signed in gets the
+  // profiles that are already there - putting the player picker in front of
+  // the user again is just an extra dismissal on every boot. Opening the
+  // emulator's profile modal is an explicit request to change accounts, so
+  // the picker is still shown while that is up.
+  if (!kernel_state()->xam_state()->profile_dialog_open()) {
+    std::map<uint8_t, uint64_t> signed_in;
+
+    for (uint32_t i = 0; i < XUserMaxUserCount; i++) {
+      // A request for one specific slot is only satisfied by that slot.
+      if (user_index != XUserIndexAny && user_index != i) {
+        continue;
+      }
+      UserProfile* profile = kernel_state()->xam_state()->GetUserProfile(i);
+      if (profile) {
+        signed_in[static_cast<uint8_t>(i)] = profile->xuid();
+      }
+    }
+
+    if (signed_in.size() >= users_needed) {
+      // Titles sit and loop until the sign-in notification arrives, so raise
+      // it exactly as LoginMultiple would have once the picker closed.
+      int slots_mask = 0;
+      for (const auto& [slot, xuid] : signed_in) {
+        slots_mask |= (1 << slot);
+      }
+      kernel_state()->BroadcastNotification(kXNotificationSystemSignInChanged,
+                                            slots_mask);
+      return X_ERROR_SUCCESS;
+    }
   }
 
   auto close = [](ui::SigninUI* dialog) -> void {};

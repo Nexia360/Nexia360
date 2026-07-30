@@ -13,15 +13,18 @@
 #include "xenia/kernel/util/friends_util.h"
 #include "xenia/kernel/xam/profile_manager.h"
 #include "xenia/kernel/xam/user_profile.h"
+#include "xenia/kernel/xam/xam_state.h"
 
 namespace xe {
 namespace kernel {
 namespace xam {
 
 FriendsManager::FriendsManager(KernelState* kernel_state,
-                               ProfileManager* profile_manager)
+                               ProfileManager* profile_manager,
+                               FriendsDB* friends_db)
     : kernel_state_(kernel_state),
       profile_manager_(profile_manager),
+      friends_db_(friends_db),
       mute_list_manager_(kernel_state_, profile_manager_) {}
 
 void FriendsManager::AddFriends(const uint64_t xuid,
@@ -77,9 +80,17 @@ bool FriendsManager::AddFriend(const uint64_t xuid, const uint64_t friend_xuid,
 
   // Check if we're adding or loading existing friend.
   // Skip saving dummy friends.
-  if (!ParseFriendsXUIDs().contains(friend_xuid) &&
-      !user->dummy_friend_xuids_.contains(friend_xuid)) {
-    AddFriendToConfig(friend_xuid);
+  if (!user->dummy_friend_xuids_.contains(friend_xuid)) {
+    // The database owns the friends list once it exists. The config stays as
+    // it was so an older build still sees the friends it knew about, but it
+    // is no longer written - it is an import source, not a second copy to
+    // keep in sync.
+    auto* db = friends_db_;
+    if (db && db->is_open()) {
+      db->AddFriend(user->xuid(), friend_xuid);
+    } else if (!ParseFriendsXUIDs().contains(friend_xuid)) {
+      AddFriendToConfig(friend_xuid);
+    }
   }
 
   if (notify) {
@@ -138,7 +149,13 @@ bool FriendsManager::RemoveFriend(const uint64_t xuid,
   // Skip erasing from user->dummy_friend_xuids_ so dummy friend cannot be added
   // to config.
 
-  RemoveFriendFromConfig(friend_xuid);
+  // Same rule as adding: with a database present the config is left alone.
+  auto* db = friends_db_;
+  if (db && db->is_open()) {
+    db->RemoveFriend(user->xuid(), friend_xuid);
+  } else {
+    RemoveFriendFromConfig(friend_xuid);
+  }
 
   if (notify) {
     kernel_state_->BroadcastNotification(

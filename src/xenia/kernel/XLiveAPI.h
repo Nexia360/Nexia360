@@ -10,13 +10,20 @@
 #ifndef XENIA_KERNEL_XLIVEAPI_H_
 #define XENIA_KERNEL_XLIVEAPI_H_
 
+#include <condition_variable>
 #include <future>
+#include <map>
+#include <mutex>
 #include <span>
+#include <thread>
 #include <unordered_set>
 
 #include "xenia/base/byte_order.h"
+#include "xenia/base/logging.h"
 #include "xenia/kernel/upnp.h"
 #include "xenia/kernel/util/net_utils.h"
+#include "xenia/kernel/util/nexia_transport.h"
+#include "xenia/kernel/util/xuid_handles.h"
 #include "xenia/kernel/xam/user_settings.h"
 #include "xenia/kernel/xsession.h"
 #include "xenia/ui/imgui_drawer.h"
@@ -94,6 +101,14 @@ class XLiveAPI {
 
   void SetBindInterface(bool state) const;
 
+  void SetNexiaHubTransport(bool state) const;
+
+  // Brings up the Nexia Hub Transport relay. No-op unless
+  // nexiahub_transport is enabled.
+  bool StartTransport();
+
+  NexiaTransport* transport() { return &transport_; }
+
   static std::string GetApiAddress();
 
   static std::string BuildEndpoint(std::string endpoint);
@@ -156,6 +171,14 @@ class XLiveAPI {
                       const std::vector<uint8_t> qos_payloade);
 
   void QoSPost(uint64_t sessionId, uint8_t* qosData, size_t qosLength);
+
+  // Queues a QoS payload for upload on the single QoS worker instead of
+  // spawning a thread per call. Titles re-arm their QoS blob constantly, and
+  // each upload is a blocking HTTP round trip - one detached thread per
+  // change piles up dozens of concurrent posts and stalls the game for every
+  // player already connected. Only the newest payload per session is kept;
+  // anything it supersedes was already stale.
+  void QoSPostAsync(uint64_t sessionId, std::vector<uint8_t> qosData);
 
   response_data QoSGet(uint64_t sessionId);
 
@@ -270,9 +293,18 @@ class XLiveAPI {
 
   std::unique_ptr<HTTPResponseObjectJSON> PraseResponse(response_data response);
 
-  sockaddr_in OnlineIP() const { return online_ip_; };
+  // Always goes through the transport substitution, because the XUID may not be
+  // known yet when Init() runs - and every caller must agree on one address or
+  // peers cache one value and receive another.
+  sockaddr_in OnlineIP() const {
+    sockaddr_in ip = online_ip_;
+    ip.sin_addr.s_addr = EffectiveOnlineAddr(ip.sin_addr.s_addr);
+    return ip;
+  };
 
-  std::string OnlineIP_str() const { return ip_to_string(online_ip_); };
+  std::string OnlineIP_str() const {
+    return ip_to_string(OnlineIP().sin_addr);
+  };
 
   std::string GetDefaultLocalServer() const { return default_local_server_; };
 
@@ -350,6 +382,36 @@ class XLiveAPI {
   // Hub ports this instance has reserved, released on shutdown.
   inline static std::unordered_set<uint16_t> reserved_ports_ = {};
 
+  // Handle <-> XUID lives in util/xuid_handles.h; see there for why every XUID
+  // we learn has to be registered.
+  static uint32_t SyntheticOnlineIP(uint64_t xuid) {
+    return XuidToHandle(xuid);
+  }
+
+  static uint32_t RegisterXuidHandle(uint64_t xuid) {
+    xe::kernel::RegisterXuidHandle(xuid);
+    return XuidToHandle(xuid);
+  }
+
+  static uint64_t XuidForHandle(uint32_t handle) {
+    return xe::kernel::XuidForHandle(handle);
+  }
+
+  // Host of the session we are in, 0 when we are the host or not in one. Used
+  // as the routing fallback for a relayed send whose handle does not resolve.
+  inline static uint64_t session_host_xuid = 0;
+
+  static void SetSessionHostXuid(uint64_t xuid) {
+    if (!xuid || xuid == local_online_xuid) {
+      return;
+    }
+    RegisterXuidHandle(xuid);
+    session_host_xuid = xuid;
+  }
+
+  // The address this instance should present, given a real one.
+  static uint32_t EffectiveOnlineAddr(uint32_t real_ip_be);
+
   // Record identity + reachable port carried by a received VDP tag. A peer that
   // tags us is, by definition, capable, so mark it so.
   static void CachePacketXuid(uint32_t ip_be, uint16_t advertised_port,
@@ -357,6 +419,7 @@ class XLiveAPI {
     ip_to_xuid[ip_be] = xuid;
     peer_supports_tag[xuid] = true;
     packet_port_cache[ip_be] = advertised_port;
+    RegisterXuidHandle(xuid);
   }
 
   // True only when we've positively confirmed the peer at this destination IP
@@ -403,6 +466,22 @@ class XLiveAPI {
   uint32_t dummy_friends_count_ = 0;
 
   std::map<uint64_t, std::vector<uint8_t>> qos_payload_cache_ = {};
+
+  // Relay client; see nexia_transport.h.
+  NexiaTransport transport_;
+
+  // Single QoS upload worker. Pending posts are keyed by session so a newer
+  // payload replaces an unsent older one rather than queueing behind it -
+  // uploading a superseded blob costs a round trip and tells the hub nothing.
+  std::map<uint64_t, std::vector<uint8_t>> qos_pending_ = {};
+  std::mutex qos_mutex_;
+  std::condition_variable qos_cv_;
+  std::thread qos_thread_;
+  bool qos_thread_started_ = false;
+  bool qos_thread_stopping_ = false;
+
+  void QoSWorkerMain();
+  void StopQoSWorker();
 
   std::future<sockaddr_in> whoami_result_;
 

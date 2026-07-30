@@ -14,6 +14,7 @@
 #include <set>
 
 #include "xenia/kernel/json/friend_presence_object_json.h"
+#include "xenia/kernel/util/friends_db.h"
 #include "xenia/kernel/xam/mute_list_manager.h"
 #include "xenia/kernel/xnet.h"
 
@@ -37,7 +38,11 @@ namespace xam {
 
 class FriendsManager {
  public:
-  FriendsManager(KernelState* kernel_state, ProfileManager* profile_manager);
+  // friends_db is handed in rather than fetched from KernelState: this runs
+  // inside XamState's constructor, where kernel_state->xam_state() is still
+  // null.
+  FriendsManager(KernelState* kernel_state, ProfileManager* profile_manager,
+                 FriendsDB* friends_db);
 
   ~FriendsManager() = default;
 
@@ -93,6 +98,7 @@ class FriendsManager {
 
   KernelState* kernel_state_;
   ProfileManager* profile_manager_;
+  FriendsDB* friends_db_;
   MuteListManager mute_list_manager_;
 };
 

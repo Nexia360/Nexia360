@@ -31,8 +31,18 @@ XamState::XamState(Emulator* emulator, KernelState* kernel_state)
   user_tracker_ = std::make_unique<UserTracker>();
   profile_manager_ =
       std::make_unique<ProfileManager>(kernel_state, user_tracker_.get());
-  friends_manager_ =
-      std::make_unique<FriendsManager>(kernel_state, profile_manager_.get());
+  // Opened before FriendsManager, which takes a pointer to it. Lives in the
+  // Library folder alongside the per-title update folders, not in the content
+  // tree - it is host state spanning every profile and title. Open() creates
+  // the folder if it is not there yet.
+  friends_db_ = std::make_unique<FriendsDB>();
+  if (!content_root.empty()) {
+    friends_db_->Open(content_root.parent_path() / "Library" /
+                      "friends.sqlite");
+  }
+
+  friends_manager_ = std::make_unique<FriendsManager>(
+      kernel_state, profile_manager_.get(), friends_db_.get());
   achievement_manager_ = std::make_unique<AchievementManager>();
   presence_manager_ = std::make_unique<PresenceManager>(
       kernel_state, profile_manager_.get(), friends_manager_.get());
@@ -111,7 +121,9 @@ void XamState::LoadOnlineFriends() {
     const auto profile = GetUserProfile(user_index);
 
     if (profile) {
-      friends_manager_->AddFriends(profile->xuid(), ParseFriendsXUIDs());
+      friends_manager_->AddFriends(
+          profile->xuid(),
+          LoadProfileFriends(profile->xuid(), friends_db_.get()));
     }
   }
 }

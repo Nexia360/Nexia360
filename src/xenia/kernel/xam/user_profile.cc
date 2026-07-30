@@ -46,7 +46,8 @@ void UserProfile::LoadFriends() {
 
   friends_.clear();
 
-  xam_state->friends_manager()->AddFriends(xuid_, ParseFriendsXUIDs());
+  xam_state->friends_manager()->AddFriends(
+      xuid_, LoadProfileFriends(xuid_, xam_state->friends_db()));
 
   xam_state->friends_manager()->AddDummyFriends(
       xuid_, kernel_state()->GetXboxLiveAPI()->GetDummyFriendsCount());

@@ -34,6 +34,12 @@ class GamercardFromXUIDUI : public XamDialog {
   const uint64_t xuid_;
   std::shared_future<std::shared_ptr<xe::ui::ImmediateTexture>>
       immediate_gamerpic_;
+  // Owns the gamerpic for the lifetime of the dialog. ImGui::Image only
+  // records the raw texture pointer into the draw list, which is rendered
+  // after OnDraw returns - holding it in a local shared_ptr freed the texture
+  // before it was drawn, and left later frames with no picture at all because
+  // future::get() had already consumed the result.
+  std::shared_ptr<xe::ui::ImmediateTexture> gamerpic_texture_;
   UserProfile* profile_;
   FriendPresenceObjectJSON presence_;
   X_ONLINE_FRIEND friend_presence_ = {};

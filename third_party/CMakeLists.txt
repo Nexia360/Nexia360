@@ -225,6 +225,29 @@ add_library(snappy STATIC
 target_include_directories(snappy PUBLIC snappy)
 
 # ==============================================================================
+# sqlite
+# ==============================================================================
+add_library(sqlite STATIC
+  sqlite/sqlite3.c
+)
+target_include_directories(sqlite PUBLIC sqlite)
+# Only the single-connection, no-extension subset is used, so drop the parts
+# that cost compile time and attack surface for nothing here.
+target_compile_definitions(sqlite PRIVATE
+  SQLITE_OMIT_LOAD_EXTENSION=1
+  SQLITE_OMIT_DEPRECATED=1
+  SQLITE_DQS=0
+  SQLITE_DEFAULT_MEMSTATUS=0
+  SQLITE_THREADSAFE=1
+)
+if(MSVC)
+  # Third-party C, not ours to keep warning-clean.
+  target_compile_options(sqlite PRIVATE /w)
+else()
+  target_compile_options(sqlite PRIVATE -w)
+endif()
+
+# ==============================================================================
 # xxhash
 # ==============================================================================
 add_library(xxhash STATIC

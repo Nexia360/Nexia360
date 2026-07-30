@@ -1873,6 +1873,7 @@ void EmulatorWindow::ToggleProfilesConfigDialog() {
     profile_config_dialog_ =
         std::make_unique<ProfileConfigDialog>(imgui_drawer_.get(), this);
     emulator_->kernel_state()->xam_state()->xam_dialogs_shown_++;
+    emulator_->kernel_state()->xam_state()->set_profile_dialog_open(true);
   } else {
     disable_hotkeys_ = false;
     emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 0);
@@ -1882,6 +1883,7 @@ void EmulatorWindow::ToggleProfilesConfigDialog() {
       profile_config_dialog_.reset();
     }
     emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
+    emulator_->kernel_state()->xam_state()->set_profile_dialog_open(false);
   }
 }
 
@@ -2660,6 +2662,7 @@ xe::X_STATUS EmulatorWindow::RunTitle(
   if (profile_config_dialog_) {
     profile_config_dialog_.reset();
     emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
+    emulator_->kernel_state()->xam_state()->set_profile_dialog_open(false);
   }
 
   if (gamerpic_browser_dialog_) {
@@ -2893,6 +2896,7 @@ void EmulatorWindow::AddRecentlyLaunchedTitle(
 void EmulatorWindow::ClearDialogs() {
   if (profile_config_dialog_) {
     profile_config_dialog_.reset();
+    emulator_->kernel_state()->xam_state()->set_profile_dialog_open(false);
   }
 
   if (display_config_dialog_) {

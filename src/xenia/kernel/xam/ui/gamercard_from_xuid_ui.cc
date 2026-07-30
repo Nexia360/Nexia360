@@ -9,6 +9,7 @@
 
 #include "xenia/kernel/xam/ui/gamercard_from_xuid_ui.h"
 #include "xenia/kernel/XLiveAPI.h"
+#include "xenia/kernel/util/friends_util.h"
 
 namespace xe {
 namespace kernel {
@@ -54,20 +55,26 @@ GamercardFromXUIDUI::GamercardFromXUIDUI(xe::ui::ImGuiDrawer* imgui_drawer,
         kernel_state()->presence_manager()->GetFriendsPresence(profile_->xuid(),
                                                                {xuid_});
 
-    immediate_gamerpic_ = std::async(std::launch::async, [xuid,
-                                                          imgui_drawer]() {
-      const auto gamerpic =
-          kernel_state()->GetXboxLiveAPI()->GetUserGamerpicTile(xuid, false);
+    const uint64_t owner_xuid = profile_->xuid();
 
-      std::shared_ptr<xe::ui::ImmediateTexture> shared_gamerpic =
-          std::move(imgui_drawer->LoadImGuiIcon({gamerpic}));
+    immediate_gamerpic_ =
+        std::async(std::launch::async, [owner_xuid, xuid, imgui_drawer]() {
+          // Served from friends.sqlite when it is there, downloaded and
+          // cached when it is not, and whatever is cached when offline.
+          const auto gamerpic = GetFriendGamerpic(owner_xuid, xuid, false);
 
-      return shared_gamerpic;
-    });
+          std::shared_ptr<xe::ui::ImmediateTexture> shared_gamerpic =
+              std::move(imgui_drawer->LoadImGuiIcon({gamerpic}));
+
+          return shared_gamerpic;
+        });
 
     presence_.XUID(xuid_);
 
-    if (!presences->PlayersPresence().empty()) {
+    // GetFriendsPresence hands back a null object when the profile lookup
+    // fails or the response cannot be deserialized - a hub hiccup while the
+    // card is opening must not take the title down with it.
+    if (presences && !presences->PlayersPresence().empty()) {
       presence_ = presences->PlayersPresence().front();
 
       if (is_self) {
@@ -77,17 +84,23 @@ GamercardFromXUIDUI::GamercardFromXUIDUI(xe::ui::ImGuiDrawer* imgui_drawer,
   }
 
   if (is_self) {
-    const auto gamerpic = kernel_state()
-                              ->xam_state()
-                              ->GetUserProfile(profile_->xuid())
-                              ->GetProfileIcon(XTileType::kGamerTile);
-    immediate_gamerpic_ =
-        std::async(std::launch::async, [gamerpic, imgui_drawer]() {
-          std::shared_ptr<xe::ui::ImmediateTexture> shared_gamerpic =
-              std::move(imgui_drawer->LoadImGuiIcon({gamerpic}));
+    // profile_ is the profile that would have been looked up here - the call
+    // site already guarantees it is non-null, so re-fetching it by xuid only
+    // added an unguarded dereference.
+    const auto gamerpic = profile_->GetProfileIcon(XTileType::kGamerTile);
 
-          return shared_gamerpic;
-        });
+    // No icon stored for this profile: leave the texture unset so
+    // xeDrawFriendContent falls back to the default tile rather than
+    // uploading an empty image.
+    if (!gamerpic.empty()) {
+      immediate_gamerpic_ =
+          std::async(std::launch::async, [gamerpic, imgui_drawer]() {
+            std::shared_ptr<xe::ui::ImmediateTexture> shared_gamerpic =
+                std::move(imgui_drawer->LoadImGuiIcon({gamerpic}));
+
+            return shared_gamerpic;
+          });
+    }
   }
 }
 
@@ -100,11 +113,9 @@ void GamercardFromXUIDUI::OnDraw(ImGuiIO& io) {
   ImGuiViewport* viewport = ImGui::GetMainViewport();
   ImVec2 center = viewport->GetCenter();
 
-  std::shared_ptr<xe::ui::ImmediateTexture> gamerpic_texture = {};
-
-  if (immediate_gamerpic_.valid()) {
+  if (!gamerpic_texture_ && immediate_gamerpic_.valid()) {
     if (immediate_gamerpic_.wait_for(0s) == std::future_status::ready) {
-      gamerpic_texture = immediate_gamerpic_.get();
+      gamerpic_texture_ = immediate_gamerpic_.get();
     }
   }
 
@@ -117,7 +128,7 @@ void GamercardFromXUIDUI::OnDraw(ImGuiIO& io) {
 
     friend_presence_ = presence_.GetFriendPresence();
 
-    xeDrawFriendContent(imgui_drawer(), profile_, gamerpic_texture,
+    xeDrawFriendContent(imgui_drawer(), profile_, gamerpic_texture_,
                         friend_presence_, nullptr, nullptr);
 
     ImGui::EndPopup();
