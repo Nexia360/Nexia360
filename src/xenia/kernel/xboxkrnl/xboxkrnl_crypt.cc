@@ -1186,6 +1186,15 @@ dword_result_t XeKeysConsolePrivateKeySign_entry(
 }
 DECLARE_XBOXKRNL_EXPORT1(XeKeysConsolePrivateKeySign, kNone, kSketchy);
 
+dword_result_t XeKeysConsoleSignatureVerification_entry(
+    lpvoid_t pbHash, lpvoid_t sig, lpdword_t localCertCompareResult) {
+  if (localCertCompareResult) {
+    *localCertCompareResult = 1;  // cert compare succeeded
+  }
+  return 1;  // signature verified
+}
+DECLARE_XBOXKRNL_EXPORT1(XeKeysConsoleSignatureVerification, kNone, kSketchy);
+
 }  // namespace xboxkrnl
 }  // namespace kernel
 }  // namespace xe
