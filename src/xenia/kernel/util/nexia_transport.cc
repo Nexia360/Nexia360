@@ -128,6 +128,16 @@ bool NexiaTransport::OpenSocket() {
   setsockopt(fd, IPPROTO_TCP, TCP_NODELAY,
              reinterpret_cast<const char*>(&nodelay), sizeof(nodelay));
 
+  // Enlarge the outbound (SO_SNDBUF) and inbound (SO_RCVBUF) buffers so a burst
+  // of relayed frames does not stall the writer or overflow the reader. Set
+  // before connect so the sizes apply to the connection's window. Best-effort:
+  // the OS may clamp to its max, which is fine.
+  const int bufsize = kSocketBufferBytes;
+  setsockopt(fd, SOL_SOCKET, SO_SNDBUF, reinterpret_cast<const char*>(&bufsize),
+             sizeof(bufsize));
+  setsockopt(fd, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&bufsize),
+             sizeof(bufsize));
+
   if (connect(fd, reinterpret_cast<const sockaddr*>(&server_addr_),
               sizeof(server_addr_)) < 0) {
     XELOGE("NexiaTransport: could not connect to {}:{}", host_, port_);
@@ -365,7 +375,7 @@ void NexiaTransport::PumpMain() {
   xe::threading::set_name("Nexia Transport");
 
   const native_socket fd = static_cast<native_socket>(socket_);
-  uint8_t buffer[4096];
+  uint8_t buffer[kRecvChunkBytes];
 
   while (running_.load()) {
     timeval tv = {};

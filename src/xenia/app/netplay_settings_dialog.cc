@@ -248,19 +248,33 @@ void NetplaySettingsDialog::OnDraw(ImGuiIO& io) {
       ActivateDiscordState(discord_);
     }
 
-    // The relay only exists on the Nexia Hub, so the option is meaningless in
-    // any other network mode. Switching away from Nexia Hub also clears it,
-    // rather than leaving a setting enabled that nothing will honour.
+    // Transport policy by network mode:
+    //   Nexia Hub  - forced ON, and the user cannot turn it off (the hub relay
+    //                is the whole point of the mode).
+    //   Xbox Live  - optional; the user may enable OR disable it.
+    //   otherwise  - unavailable (no relay to reach).
     const bool nexiahub_mode =
         cvars::network_mode ==
         static_cast<int32_t>(kernel::NETWORK_MODE::NEXIAHUB);
+    const bool xboxlive_mode =
+        cvars::network_mode ==
+        static_cast<int32_t>(kernel::NETWORK_MODE::XBOXLIVE);
 
-    if (!nexiahub_mode && nexiahub_transport_) {
+    if (nexiahub_mode) {
+      // Force on; the checkbox below is locked, so this is the source of truth.
+      if (!nexiahub_transport_) {
+        nexiahub_transport_ = true;
+        xlive_api->SetNexiaHubTransport(true);
+      }
+    } else if (!xboxlive_mode && nexiahub_transport_) {
+      // Neither Nexia Hub nor Xbox Live - nothing honours it, so clear it.
       nexiahub_transport_ = false;
       xlive_api->SetNexiaHubTransport(false);
     }
 
-    ImGui::BeginDisabled(!nexiahub_mode);
+    // Toggleable only on Xbox Live. On Nexia Hub it is shown checked but
+    // locked; in every other mode it is unavailable.
+    ImGui::BeginDisabled(!xboxlive_mode);
     if (ImGui::Checkbox("Nexiahub Transport", &nexiahub_transport_)) {
       xlive_api->SetNexiaHubTransport(nexiahub_transport_);
     }
@@ -269,9 +283,12 @@ void NetplaySettingsDialog::OnDraw(ImGuiIO& io) {
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
       ImGui::SetTooltip(
           nexiahub_mode
-              ? "Route all netplay traffic through the Nexia Hub relay "
-                "instead of connecting to peers directly."
-              : "Requires the Nexia Hub network mode.");
+              ? "Always on in Nexia Hub mode - all netplay traffic is routed "
+                "through the Nexia Hub relay."
+          : xboxlive_mode
+              ? "Route netplay traffic through the Nexia Hub relay instead of "
+                "connecting to peers directly."
+              : "Requires the Nexia Hub or Xbox Live network mode.");
     }
 
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));

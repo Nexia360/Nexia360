@@ -73,6 +73,15 @@ class NexiaTransport {
   // Idle time before a keepalive frame goes out.
   static constexpr uint32_t kKeepaliveIdleMs = 60'000;
 
+  // OS socket buffer sizes for the relay stream. The kernel default (~64 KB) is
+  // small for a burst of game frames; a larger window lets the writer keep
+  // filling without blocking on a full send buffer, and the reader absorb a
+  // burst before recv would need to drop.
+  static constexpr int kSocketBufferBytes = 256 * 1024;
+
+  // Per-recv chunk. Sized to drain a full receive buffer in few syscalls.
+  static constexpr size_t kRecvChunkBytes = 16 * 1024;
+
   struct Datagram {
     // Who sent it. The guest is handed an address derived from this, because
     // the XUID is the only identity the wire carries.
@@ -174,14 +183,14 @@ class NexiaTransport {
   // Per port, not global: one chatty flow must not starve another, and a title
   // that stops draining its QoS socket should not cost the game socket its
   // buffer.
-  static constexpr size_t kMaxQueueDepth = 512;
+  static constexpr size_t kMaxQueueDepth = 5120;
 
   std::map<uint16_t, PortQueue> port_queues_;
   std::mutex recv_mutex_;
 
   // Frames waiting for the writer. Bounded, because an unbounded queue in front
   // of a stalled socket just moves the failure somewhere less visible.
-  static constexpr size_t kMaxSendQueue = 1024;
+  static constexpr size_t kMaxSendQueue = 10240;
 
   std::deque<std::vector<uint8_t>> send_queue_;
   std::mutex send_mutex_;
