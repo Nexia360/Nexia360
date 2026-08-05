@@ -7,6 +7,7 @@
  ******************************************************************************
  */
 
+#include <chrono>
 #include <ranges>
 
 #include "xenia/base/logging.h"
@@ -990,6 +991,23 @@ dword_result_t XamUserCreateTitlesPlayedEnumerator_entry(
       }
       e->AppendItem(title);
     }
+  }
+
+  // The dashboard's "Get User Info" pass scans the enumerated titles for a
+  // specific system title (0x5848085B) and stays on the loading screen until it
+  // is present. Synthesize a minimal played-title entry for it (non-zero
+  // achievements/gamerscore so it survives the same filter above) so the dash
+  // considers user info ready and advances to the home hub.
+  {
+    TitleInfo system_title{};
+    system_title.title_name = u"Xbox";
+    system_title.id = 0x5848085B;
+    system_title.unlocked_achievements_count = 1;
+    system_title.achievements_count = 1;
+    system_title.title_earned_gamerscore = 1;
+    system_title.gamerscore_amount = 1;
+    system_title.last_played = std::chrono::system_clock::now();
+    e->AppendItem(system_title);
   }
 
   *handle_ptr = e->handle();

@@ -7,11 +7,18 @@
  ******************************************************************************
  */
 
+#include <cstddef>
+#include <cstring>
+#include <unordered_map>
+#include <unordered_set>
+
 #include "xenia/base/clock.h"
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
+#include "xenia/base/string.h"
 #include "xenia/base/string_util.h"
 #include "xenia/config.h"
+#include "xenia/kernel/XLiveAPI.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/title_id_utils.h"
 #include "xenia/kernel/user_module.h"
@@ -64,9 +71,90 @@ dword_result_t XamGetStagingMode_entry() { return cvars::staging_mode; }
 DECLARE_XAM_EXPORT1(XamGetStagingMode, kNone, kStub);
 
 dword_result_t XamGetOnlineSchema_entry() {
+  // Swap in the build-matched schema from the hub the first time the guest asks
+  // for it (by now the title is loaded, so its build is known, and the network
+  // is up). Falls back to the embedded schema on any failure.
+  kernel_state()->xam_state()->EnsureOnlineSchema();
   return kernel_state()->xam_state()->GetOnlineSchemaAddress();
 }
 DECLARE_XAM_EXPORT1(XamGetOnlineSchema, kNone, kImplemented);
+
+// Central table for the "query" Live hive (XamQueryLiveHive{A,W}). Both the
+// ANSI and wide entry points resolve names through here so they stay in sync.
+// Returns true when the key is known (its value may be intentionally empty),
+// false when unknown. Nexia serves all Xbox Manifest (XMan) / Epix Live content
+// from Nexia360Hub, so those URIs point at the hub's /Dash route -- the dash
+// itself has no socket code, so our HLE xam is what ultimately fetches them.
+static bool QueryLiveHiveValue(const std::string& name, std::string& value) {
+  // Host of the configured hub (api_address), trailing slash trimmed so xam can
+  // append the service path. Deriving from api_address (instead of hardcoding
+  // nexia360hub.com) means pointing the build at a LOCAL hub reroutes every
+  // Live/Dash URL with no rebuild -- required for testing against a local NWS
+  // while production transport stays up.
+  std::string host = XLiveAPI::GetApiAddress();
+  if (!host.empty() && host.back() == '/') {
+    host.pop_back();
+  }
+
+  // Xbox LIVE service host keys: xam builds each service URL as
+  // {LiveHive:<Key>}/<path>; returning the hub host here is the native "use OUR
+  // endpoint" (no DNS redirect). The hub implements the REST paths (see
+  // dash-live-services).
+  static const std::unordered_set<std::string> kHostKeys = {
+      "LiveServiceUrl.progress",   "LiveServiceUrl.profile",
+      "LiveServiceUrl.presence",   "LiveServiceUrl.modernPresence",
+      "LiveServiceUrl.savedgames", "LiveServiceUrl.roamingprofile",
+      "LiveServiceUrl.commerce",   "LiveServiceUrl.fitness",
+      "LiveServiceUrl.settings",   "SearchDataURL",
+      "XboxXPassportUriRoot",      "XboxMediaFeedbackUriRoot",
+      "XboxMediaRatingsUriRoot",   "AvatarAssetUriRoot",
+      "AvatarPictureUriRoot",      "StoragePictureUriRoot"};
+  if (kHostKeys.count(name)) {
+    value = host;
+    return true;
+  }
+  // Xbox Manifest (XMan) / Epix Live content -- host + our /Dash routes.
+  if (name == "EpixXManUriRoot") {
+    value = host + "/Dash";
+    return true;
+  }
+  if (name == "EpixXManPreviewUriRoot") {
+    value = host + "/Dash/xman/preview";
+    return true;
+  }
+  if (name == "GameImageAssetUriRoot") {
+    value = host + "/Dash/images";
+    return true;
+  }
+
+  static const std::unordered_map<std::string, std::string> kHive = {
+      {"SearchKillSwitch", ""},
+      {"SearchOnlineRecUnavailableLocales", ""},
+      {"SearchUnavailableLocales", ""},
+      {"SearchSpeechURL", "https://ssl.bing.com/speechreco/xbox/query"},
+      {"DisplayCurrencyBalanceOnDash", "1"},
+      {"TFAEnabled", "1"},
+      {"CatalogUriRoot", "http://catalog.xboxlive.com"},
+      {"CatalogCDNUriRoot", "http://catalog-cdn.xboxlive.com"},
+      {"CatalogCDNUriPort", "80"},
+      {"NielsenSoundEnabled", "1"},
+      {"OobeComplete", "1"},
+      {"EpixXManManifestUriPath", "/xman/manifest"},
+      // Epix channel behaviour flags. FailSafe/Shallow ON make the dash render
+      // the embedded offline home content instead of blocking on a loading
+      // screen while it waits for the full online channel to load (which needs
+      // the not-yet-wired Live content services). This unblocks the home hub
+      // for a Live profile; the online path is a later enhancement.
+      {"EpixFailSafeEnabled", "1"},
+      {"EpixShallowEnabled", "1"},
+      {"EpixPollFrequencyInMinutes", "60"},
+      {"EpixBusyWatchDogInSeconds", "30"},
+      {"EpixReportingEnabled", "0"},
+  };
+  auto it = kHive.find(name);
+  value = (it == kHive.end()) ? std::string() : it->second;
+  return it != kHive.end();
+}
 
 dword_result_t XamQueryLiveHiveA_entry(
     lpstring_t feature_name, lpstring_t value_ptr, dword_t value_buffer_size,
@@ -81,31 +169,9 @@ dword_result_t XamQueryLiveHiveA_entry(
 
     std::memset(value_ptr, 0, value_buffer_size);
 
-    std::string value = "";
-
-    if (feature_name.value() == "SearchKillSwitch") {
-      value = "";
-    } else if (feature_name.value() == "SearchOnlineRecUnavailableLocales") {
-      // value = "fr-ch,de-ch";
-    } else if (feature_name.value() == "SearchUnavailableLocales") {
-      value = "";
-    } else if (feature_name.value() == "SearchSpeechURL") {
-      value = "https://ssl.bing.com/speechreco/xbox/query";
-    } else if (feature_name.value() == "DisplayCurrencyBalanceOnDash") {
-      value = "1";
-    } else if (feature_name.value() == "TFAEnabled") {
-      value = "1";
-    } else if (feature_name.value() == "CatalogUriRoot") {
-      value = "http://catalog.xboxlive.com";
-    } else if (feature_name.value() == "CatalogCDNUriRoot") {
-      value = "http://catalog-cdn.xboxlive.com";
-    } else if (feature_name.value() == "CatalogCDNUriPort") {
-      value = "80";
-    } else if (feature_name.value() == "NielsenSoundEnabled") {
-      value = "1";
-    } else {
-      assert_always();
-      XELOGI("Unknown Feature: {}", feature_name.value());
+    std::string value;
+    if (!QueryLiveHiveValue(feature_name.value(), value)) {
+      XELOGI("Unknown Live hive feature: {}", feature_name.value());
     }
 
     xe::string_util::copy_truncating(value_ptr, value, value_buffer_size);
@@ -570,7 +636,12 @@ void XamLoaderLaunchTitle_entry(lpstring_t raw_name_ptr, dword_t flags) {
 }
 DECLARE_XAM_EXPORT1(XamLoaderLaunchTitle, kNone, kSketchy);
 
+void Mw3GametypeDumpTick();  // mw3_gametype_dump.cc
+
 void XamLoaderTerminateTitle_entry() {
+  // Last-moment capture: dump MW3's gametype registry (if populated) right
+  // before the title tears down / self-relaunches.
+  Mw3GametypeDumpTick();
   // This function does not return.
   kernel_state()->TerminateTitle();
 }
@@ -635,10 +706,118 @@ dword_result_t XamFree_entry(lpdword_t ptr) {
 }
 DECLARE_XAM_EXPORT1(XamFree, kMemory, kImplemented);
 
-dword_result_t XamQueryLiveHiveW_entry(lpu16string_t name, lpvoid_t out_buf,
-                                       dword_t out_size,
-                                       dword_t type /* guess */) {
-  return X_STATUS_INVALID_PARAMETER_1;
+// --- Xbox LIVE token / demand shim -----------------------------------------
+// The NXE dashboard's Live-gated content (e.g. the Epix / XMan channel) brings
+// up a Live "demand" and requests an auth token before it will XHTTP-fetch the
+// content. On hardware these are serviced by the Live logon subsystem; Nexia
+// runs Live through the hub, so we synthesise a local token here -- enough to
+// satisfy the dashboard's token checks and let the fetch proceed. A hub-issued
+// token can replace the synth later without changing any callers.
+
+// XamGetCurrentDemand(unk, unk): returns whether a Live service "demand" is
+// active. The dashboard's Epix content-state code (dash 0x9231C7F0) does
+// `if (XamGetCurrentDemand() != 0) skip;` around the block that sets the
+// 0x8B010006 "content refresh came back empty" status; reporting an ACTIVE
+// demand (non-zero) makes it skip that block, suppressing the popup. Every
+// caller checks the result as a boolean, so the exact value is not inspected.
+dword_result_t XamGetCurrentDemand_entry(dword_t unk1, dword_t unk2) {
+  return 1;
+}
+DECLARE_XAM_EXPORT1(XamGetCurrentDemand, kNone, kImplemented);
+
+// XamDemand(demand_id, ...): assert a Live service demand. Succeed.
+dword_result_t XamDemand_entry(dword_t demand_id, dword_t unk1, dword_t unk2) {
+  return X_ERROR_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamDemand, kNone, kImplemented);
+
+// The synthesised token object. The dashboard only checks token+0x04 and
+// token+0x08 are non-zero and later releases it via XamFreeToken; it does not
+// inspect the contents further (the hub does not validate the token yet).
+struct X_XAM_TOKEN {
+  xe::be<uint32_t> size;         // +0x00 total object size
+  xe::be<uint32_t> data_length;  // +0x04 token length (must be non-zero)
+  xe::be<uint32_t> data_ptr;     // +0x08 -> token bytes (must be non-zero)
+  xe::be<uint32_t> reserved;     // +0x0C
+  char data[0x20];               // +0x10 token bytes
+};
+
+dword_result_t XamRequestToken_entry(dword_t signin_state,
+                                     dword_t xuid_or_index, lpvoid_t service_id,
+                                     dword_t flags, lpdword_t token_out,
+                                     dword_t overlapped) {
+  if (!token_out) {
+    return X_E_INVALIDARG;
+  }
+
+  const uint32_t size = sizeof(X_XAM_TOKEN);
+  const uint32_t token_ptr = kernel_state()->memory()->SystemHeapAlloc(size);
+  if (!token_ptr) {
+    *token_out = 0;
+    return 0x8007000E;  // E_OUTOFMEMORY
+  }
+
+  auto token =
+      kernel_state()->memory()->TranslateVirtual<X_XAM_TOKEN*>(token_ptr);
+  std::memset(token, 0, size);
+  static const char kToken[] = "NEXIA-LIVE-TOKEN";
+  std::memcpy(token->data, kToken, sizeof(kToken));
+  token->size = size;
+  token->data_length = static_cast<uint32_t>(sizeof(kToken));
+  token->data_ptr = token_ptr + offsetof(X_XAM_TOKEN, data);
+
+  *token_out = token_ptr;
+  return X_ERROR_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamRequestToken, kNone, kImplemented);
+
+dword_result_t XamFreeToken_entry(dword_t token_ptr) {
+  if (token_ptr) {
+    kernel_state()->memory()->SystemHeapFree(token_ptr);
+  }
+  return X_ERROR_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamFreeToken, kNone, kImplemented);
+
+dword_result_t XamQueryLiveHiveW_entry(
+    lpu16string_t name, lpvoid_t out_buf, dword_t out_size,
+    pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
+  if (!name || !out_buf || !out_size) {
+    return X_E_INVALIDARG;
+  }
+
+  auto run = [=](uint32_t& extended_error, uint32_t& length) {
+    extended_error = X_ERROR_SUCCESS;
+    length = 0;
+
+    char16_t* dst =
+        kernel_memory()->TranslateVirtual<char16_t*>(out_buf.guest_address());
+    // out_size is a byte capacity; the buffer holds UTF-16 code units.
+    const size_t capacity = out_size / sizeof(char16_t);
+    std::memset(dst, 0, out_size);
+
+    std::string value;
+    const std::string key = xe::to_utf8(name.value());
+    if (!QueryLiveHiveValue(key, value)) {
+      XELOGI("Unknown Live hive feature (W): {}", key);
+    }
+
+    if (capacity) {
+      xe::string_util::copy_and_swap_truncating(dst, xe::to_utf16(value),
+                                                capacity);
+    }
+
+    return X_ERROR_SUCCESS;
+  };
+
+  if (!overlapped_ptr) {
+    uint32_t extended_error, length;
+    X_RESULT result = run(extended_error, length);
+    return result == X_ERROR_SUCCESS ? result : extended_error;
+  }
+
+  kernel_state()->CompleteOverlappedDeferredEx(run, overlapped_ptr);
+  return X_ERROR_IO_PENDING;
 }
 DECLARE_XAM_EXPORT1(XamQueryLiveHiveW, kNone, kStub);
 

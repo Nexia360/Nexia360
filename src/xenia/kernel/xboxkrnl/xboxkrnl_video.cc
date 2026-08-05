@@ -500,8 +500,8 @@ void VdSwap_entry(
   assert_true(frontbuffer_physical_address != UINT32_MAX);
   if (frontbuffer_physical_address == UINT32_MAX) {
     // Xenia-specific safety check.
-    XELOGE("VdSwap: Invalid front buffer virtual address 0x{:08X}",
-           frontbuffer_virtual_address);
+    /*XELOGE("VdSwap: Invalid front buffer virtual address 0x{:08X}",
+           frontbuffer_virtual_address);*/
     return;
   }
   gpu_fetch.base_address = frontbuffer_physical_address >> 12;

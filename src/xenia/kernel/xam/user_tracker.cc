@@ -1632,6 +1632,57 @@ void UserTracker::PeriodicMaintenance(uint64_t xuid, size_t iteration_count) {
   //  Check every 3nd iteration to reduce backend requests.
   if (!(iteration_count % 3)) {
     presence_manager->SyncPresence(xuid);
+
+    // Pick up game invites addressed to us. The hub clears each invite as it
+    // hands it over, so this is the only chance to act on one - stash it as the
+    // profile's pending invite and let the guest accept it through the normal
+    // XInviteGetAcceptedInfo path.
+    if (user->IsLiveEnabled()) {
+      const auto invites = xbox_live_api->InviteDrain(user->GetOnlineXUID());
+
+      for (const auto& invite : invites) {
+        // An invite into a different game cannot be accepted from here; the
+        // guest would have to launch that title first.
+        if (invite.title_id && invite.title_id != kernel_state()->title_id()) {
+          continue;
+        }
+
+        X_INVITE_INFO invite_info = {};
+        invite_info.xuid_invitee = user->GetOnlineXUID();
+        invite_info.xuid_inviter = invite.inviter_xuid;
+        invite_info.title_id = invite.title_id;
+        invite_info.from_game_invite = true;
+
+        user->SetSelfInvite(invite_info);
+
+        const uint32_t invited_user_index =
+            kernel_state()->xam_state()->GetUserIndexAssignedToProfileFromXUID(
+                user->xuid());
+
+        // An invite can arrive from someone who is not on our friends list, so
+        // fall back to the raw xuid rather than showing an empty name.
+        const auto inviter_friend =
+            kernel_state()->friends_manager()->GetFriend(user->xuid(),
+                                                         invite.inviter_xuid);
+
+        const std::string inviter_name =
+            inviter_friend.has_value()
+                ? std::string(inviter_friend.value().Gamertag)
+                : fmt::format("{:016X}", invite.inviter_xuid);
+
+        new xe::ui::HostNotificationWindow(
+            kernel_state()->emulator()->imgui_drawer(), "Game Invite",
+            fmt::format("{} invited you to a game", inviter_name),
+            invited_user_index);
+
+        kernel_state()->BroadcastNotification(kXNotificationLiveInviteAccepted,
+                                              invited_user_index);
+
+        // Only one pending invite fits in the profile; drop the rest rather
+        // than overwrite the one the guest is about to read.
+        break;
+      }
+    }
   }
 
   if (updated_presence_string) {

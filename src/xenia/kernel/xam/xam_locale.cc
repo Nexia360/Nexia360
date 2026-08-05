@@ -633,12 +633,30 @@ dword_result_t XamGetLanguageTypeface_entry(dword_t language,
                                             dword_t buffer) {
   std::u16string path{};
 
-  if (language == static_cast<uint32_t>(XLanguage::kSChinese)) {
-    path = u"file://media:/XenonSCLatin.xtt";
-  } else if (language == static_cast<uint32_t>(XLanguage::kTChinese)) {
-    path = u"file://media:/XenonCLatin.xtt";
-  } else {
-    path = u"file://media:/XenonJKLatin.xtt";
+  switch (static_cast<XLanguage>(language.value())) {
+    case XLanguage::kJapanese:
+    case XLanguage::kKorean:
+      // Japanese/Korean Latin face.
+      path = u"file://media:/xenonjklatin.xtt";
+      break;
+    case XLanguage::kSChinese:
+    case XLanguage::kTChinese:
+      // Both Chinese variants use the Convection Chinese-Latin face. The
+      // dashboard also registers this as the CJK/symbol fallback for Latin
+      // languages (via XamGetLanguageTypeface(kSChinese)), and it carries the
+      // symbol glyphs the 24 KB Segoe face lacks -- e.g. the gamerscore "G".
+      // Pointing kSChinese at the non-shipped XenonSCLatin.xtt broke that
+      // fallback and rendered the G as tofu.
+      path = u"file://media:/xenonclatin.xtt";
+      break;
+    default:
+      // Latin scripts (English and the Western/European languages). The old
+      // code fell all non-Chinese languages through to the Japanese/Korean
+      // face, which made the dashboard render Western text in the wrong font.
+      // The dashboard's real Latin body font is Segoe Xbox Light (XUI names it
+      // "Segoe Light").
+      path = u"file://media:/SegoeXbox-Light.xtt";
+      break;
   }
   xe::string_util::copy_and_swap_truncating(
       kernel_state()->memory()->TranslateVirtual<char16_t*>(buffer), path,

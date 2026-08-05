@@ -8,7 +8,9 @@
  */
 
 #include "xenia/base/logging.h"
+#include "xenia/emulator.h"
 #include "xenia/kernel/kernel_state.h"
+#include "xenia/kernel/upnp.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xam/xam_private.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_error.h"
@@ -16,12 +18,50 @@
 #include "xenia/kernel/xthread.h"
 #include "xenia/xbox.h"
 
+// Defined in XLiveAPI.cpp. Gates the DemonWare NAT-type override below: we only
+// force Open when netplay is actually being relayed through the Nexia Hub
+// transport (where every peer is reachable via the XUID relay regardless of
+// real NAT). Off the transport, direct connections depend on the real NAT, so
+// we must NOT fake it.
+DECLARE_bool(nexiahub_transport);
+
 namespace xe {
 namespace kernel {
 namespace xam {
 
 dword_result_t XMsgInProcessCall_entry(dword_t app, dword_t message,
                                        dword_t arg1, dword_t arg2) {
+  // DemonWare NAT-type read. IW/Treyarch titles' statically-linked
+  // bdSocketManager reports the NAT type through XMsgInProcessCall on app 252
+  // (0xFC), fn 0x00058006 (call site 0x82510E8C: lis r4,0x5; ori r4,0x8006),
+  // writing the enum into *arg1:
+  //   0 = Unknown, 1 = Open, 2 = Moderate, 3 = Strict.
+  // The type is produced by a UDP:3074 DemonWare probe to stun.*.demonware.net,
+  // which are dead -- with no responder it times out and the title reads
+  // Strict(3), which gates matchmaking (e.g. MW3 sub_82350F88 blocks on ==3).
+  // We have no socket manager to run that probe, so it can never succeed and
+  // the title always reads a timeout. Answer it ourselves from what we DO know
+  // about reachability:
+  //   UPnP mapped our ports  -> Open(1). Inbound reaches us, which is exactly
+  //                             what the probe was trying to establish.
+  //   relayed via Nexia Hub  -> Open(1). Every peer is reachable through the
+  //                             XUID relay, so real NAT is irrelevant.
+  //   neither                -> Moderate(2). Honest: peers may still connect,
+  //                             but nothing here has proven inbound works, and
+  //                             claiming Open would produce joins that hang.
+  if (app == 252 && message == 0x00058006 && arg1) {
+    auto* out =
+        kernel_state()->memory()->TranslateVirtual<xe::be<uint32_t>*>(arg1);
+    if (out) {
+      const auto upnp = kernel_state()->emulator()->GetUPnP();
+      const bool reachable =
+          (upnp && upnp->IsActive()) || cvars::nexiahub_transport;
+
+      *out = reachable ? 1 : 2;
+    }
+    return X_ERROR_SUCCESS;
+  }
+
   auto result = kernel_state()->app_manager()->DispatchMessageSync(app, message,
                                                                    arg1, arg2);
   if (result == X_ERROR_NOT_FOUND) {

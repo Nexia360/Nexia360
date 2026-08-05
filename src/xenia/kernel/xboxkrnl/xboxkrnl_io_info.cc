@@ -15,6 +15,8 @@
 #include "xenia/kernel/xboxkrnl/xboxkrnl_private.h"
 #include "xenia/kernel/xfile.h"
 #include "xenia/vfs/device.h"
+#include "xenia/vfs/devices/disc_image_device.h"
+#include "xenia/vfs/devices/disc_zarchive_device.h"
 #include "xenia/xbox.h"
 
 namespace xe {
@@ -384,10 +386,26 @@ dword_result_t NtQueryVolumeInformationFile_entry(
     case XFileFsDeviceInformation: {
       auto info = info_ptr.as<X_FILE_FS_DEVICE_INFORMATION*>();
       auto file_device = file->device();
-      XELOGW("Stub XFileFsDeviceInformation!");
-      info->device_type =
-          FILE_DEVICE_UNKNOWN;  // 415608D8 checks for FILE_DEVICE_EHSTOR;
-      info->characteristics = 0;
+      // Report a real device type/characteristics. Titles (e.g. MW3 415608CB's
+      // fastfile loader) query this to classify the volume; an UNKNOWN type
+      // with no characteristics reads as an unmounted/bad volume and drives
+      // them into the dirty-disc path. Optical images -> removable read-only
+      // CD-ROM; every other mount -> a mounted fixed disk (read-only flag from
+      // the device).
+      bool is_optical =
+          dynamic_cast<vfs::DiscImageDevice*>(file_device) != nullptr ||
+          dynamic_cast<vfs::DiscZarchiveDevice*>(file_device) != nullptr;
+      uint32_t characteristics = FILE_DEVICE_IS_MOUNTED;
+      if (is_optical) {
+        info->device_type = FILE_DEVICE_CD_ROM;
+        characteristics |= FILE_REMOVABLE_MEDIA | FILE_READ_ONLY_DEVICE;
+      } else {
+        info->device_type = FILE_DEVICE_DISK;
+        if (file_device->is_read_only()) {
+          characteristics |= FILE_READ_ONLY_DEVICE;
+        }
+      }
+      info->characteristics = characteristics;
       out_length = sizeof(X_FILE_FS_DEVICE_INFORMATION);
       break;
     }

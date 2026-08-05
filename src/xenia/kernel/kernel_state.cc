@@ -1114,6 +1114,18 @@ void KernelState::RegisterNotifyListener(XNotifyListener* listener) {
     has_notified_live_startup_ = true;
 
     listener->EnqueueNotification(kXNotificationLiveVoicechatAway, 0);
+
+    // Tell the title the Live connection state. Sent here, to the listener that
+    // just registered, because that is the only moment delivery is guaranteed:
+    // broadcasting earlier finds no listener and is dropped, and broadcasting
+    // repeatedly re-enters the title's handler mid-session (which crashes MW3).
+    //
+    // MW3 queries XOnlineGetNatType ONLY from this notification's handler
+    // (0x02000001 -> 8235E6C8 -> XLiveBase msg 0x58006 -> global 0x825AFA5C),
+    // so without it the console reports NAT Strict and refuses to host.
+    listener->EnqueueNotification(
+        kXNotificationLiveConnectionChanged,
+        static_cast<uint32_t>(xam_state()->user_tracker()->GetLogonState()));
   }
 
   // 4E4D07ED, 58410869. Fixes creating Xbox Live sessions.

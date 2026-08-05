@@ -232,6 +232,22 @@ class XLiveAPI {
 
   void SessionPreJoin(uint64_t sessionId, const std::set<uint64_t>& xuids);
 
+  // A game invite in transit. The hub stores one of these per invitee until
+  // that player's client picks it up.
+  struct InviteRecord {
+    uint64_t inviter_xuid = 0;
+    uint64_t session_id = 0;
+    uint32_t title_id = 0;
+  };
+
+  // Queue an invite on the hub for each invitee (online xuids).
+  bool InviteSend(uint64_t inviter_xuid, const std::set<uint64_t>& invitees,
+                  uint64_t session_id);
+
+  // DESTRUCTIVE READ: the hub clears whatever it returns, so an invite is
+  // delivered exactly once and nothing stays persisted after it arrives.
+  std::vector<InviteRecord> InviteDrain(uint64_t invitee_xuid);
+
   std::unique_ptr<FriendsPresenceObjectJSON> GetFriendsPresence(
       const std::set<uint64_t>& xuids);
 

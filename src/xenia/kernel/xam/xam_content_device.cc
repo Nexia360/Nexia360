@@ -45,9 +45,23 @@ static constexpr DummyDeviceInfo dummy_odd_device_info_ = {
     0ull * ONE_GB,  // read-only FS, so no free space
     u"Dummy ODD",
 };
+static constexpr DummyDeviceInfo dummy_mu_device_info_ = {
+    DummyDeviceId::MU, DeviceType::MU,
+    2ull * ONE_GB,  // 2GB memory unit
+    1ull * ONE_GB,  // 1GB free
+    u"Dummy MU",
+};
+static constexpr DummyDeviceInfo dummy_usb_device_info_ = {
+    DummyDeviceId::USB, DeviceType::USBMASS,
+    8ull * ONE_GB,  // 8GB USB mass storage
+    4ull * ONE_GB,  // 4GB free
+    u"Dummy USB",
+};
 static const DummyDeviceInfo* dummy_device_infos_[] = {
     &dummy_hdd_device_info_,
     &dummy_odd_device_info_,
+    &dummy_mu_device_info_,
+    &dummy_usb_device_info_,
 };
 #undef ONE_GB
 

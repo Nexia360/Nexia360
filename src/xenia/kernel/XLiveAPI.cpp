@@ -167,7 +167,13 @@ void XLiveAPI::GetXnAddrFromSessionObject(SessionObjectJSON session,
 
   // On the transport the guest gets a handle minted from the host's XUID rather
   // than an address, so no address has to be resolved back to a player.
-  if (cvars::nexiahub_transport && session.XUID_UInt()) {
+  //
+  // Per session: the hub reports whether THIS host is actually on the relay
+  // (session.Transport(), from the "transport" field). Our client may have NHT
+  // enabled globally, but if the host we are joining is not on the transport we
+  // must NOT route to a XUID handle it cannot receive -- disable NHT for this
+  // session only and fall through to the host's real address below.
+  if (cvars::nexiahub_transport && session.XUID_UInt() && session.Transport()) {
     SetSessionHostXuid(session.XUID_UInt());
 
     in_addr handle = {};
@@ -612,12 +618,12 @@ uint32_t XLiveAPI::EffectiveOnlineAddr(uint32_t real_ip_be) {
   return SyntheticOnlineIP(local_online_xuid);
 }
 
-// If online NAT open, otherwise strict.
-uint32_t XLiveAPI::GetNatType() const {
-  return kernel_state()->xam_state()->user_tracker()->LoggedInToLive()
-             ? X_NAT_TYPE::NAT_OPEN
-             : X_NAT_TYPE::NAT_STRICT;
-}
+// Always OPEN. Titles gate hosting on this: MW3 refuses to become host with
+// anything but OPEN and sits on "Waiting for better host..", so a STRICT result
+// makes a lobby that can never start. There is no real NAT to describe here --
+// peer traffic is relayed, not directly bound -- so reporting anything stricter
+// only disables features that do work.
+uint32_t XLiveAPI::GetNatType() const { return X_NAT_TYPE::NAT_OPEN; }
 
 bool XLiveAPI::IsConnectedToServer() const {
   return initialized_ == InitState::Success;
@@ -2293,6 +2299,125 @@ void XLiveAPI::SessionPreJoin(uint64_t sessionId,
     XELOGE("SessionPreJoin error message: {}", response->Message());
     assert_always();
   }
+}
+
+bool XLiveAPI::InviteSend(uint64_t inviter_xuid,
+                          const std::set<uint64_t>& invitees,
+                          uint64_t session_id) {
+  if (invitees.empty() || !session_id) {
+    return false;
+  }
+
+  const std::string endpoint = BuildEndpoint(
+      fmt::format("players/{:016X}/invites", inviter_xuid));
+
+  Document doc;
+  doc.SetObject();
+
+  Value invitees_array(kArrayType);
+
+  for (const auto& xuid : invitees) {
+    const std::string xuid_str = xe::string_util::to_hex_string(xuid);
+
+    Value xuid_value = Value(xuid_str.c_str(), 16, doc.GetAllocator());
+    invitees_array.PushBack(xuid_value.Move(), doc.GetAllocator());
+  }
+
+  doc.AddMember("invitees", invitees_array, doc.GetAllocator());
+
+  const std::string title_id_str =
+      fmt::format("{:08X}", kernel_state()->title_id());
+  Value title_id_value(title_id_str.c_str(),
+                       static_cast<rapidjson::SizeType>(title_id_str.size()),
+                       doc.GetAllocator());
+  doc.AddMember("titleId", title_id_value, doc.GetAllocator());
+
+  const std::string session_id_str = fmt::format("{:016X}", session_id);
+  Value session_id_value(
+      session_id_str.c_str(),
+      static_cast<rapidjson::SizeType>(session_id_str.size()),
+      doc.GetAllocator());
+  doc.AddMember("sessionId", session_id_value, doc.GetAllocator());
+
+  rapidjson::StringBuffer buffer;
+  Writer<rapidjson::StringBuffer> writer(buffer);
+  doc.Accept(writer);
+
+  std::unique_ptr<HTTPResponseObjectJSON> response =
+      Post(endpoint, reinterpret_cast<const uint8_t*>(buffer.GetString()));
+
+  // The hub answers 201 on create; some proxies normalise an empty body to
+  // 200, so accept both rather than failing an invite that was really stored.
+  if (response->StatusCode() != HTTP_STATUS_CODE::HTTP_CREATED &&
+      response->StatusCode() != HTTP_STATUS_CODE::HTTP_OK) {
+    XELOGE("InviteSend error message: {}", response->Message());
+    return false;
+  }
+
+  return true;
+}
+
+std::vector<XLiveAPI::InviteRecord> XLiveAPI::InviteDrain(
+    uint64_t invitee_xuid) {
+  std::vector<InviteRecord> invites;
+
+  if (!invitee_xuid) {
+    return invites;
+  }
+
+  const std::string endpoint =
+      BuildEndpoint(fmt::format("players/{:016X}/invites", invitee_xuid));
+
+  std::unique_ptr<HTTPResponseObjectJSON> response = Get(endpoint);
+
+  if (response->StatusCode() != HTTP_STATUS_CODE::HTTP_OK) {
+    // No invites is the common case and must stay silent - this runs on the
+    // presence poll.
+    return invites;
+  }
+
+  // An empty mailbox is the normal case and can come back as a zero-length
+  // body; parsing that would just be a parse error every poll.
+  if (!response->RawResponse().response || !response->RawResponse().size) {
+    return invites;
+  }
+
+  Document doc;
+  doc.Parse(response->RawResponse().response);
+
+  if (doc.HasParseError() || !doc.IsArray()) {
+    return invites;
+  }
+
+  for (const auto& entry : doc.GetArray()) {
+    if (!entry.IsObject()) {
+      continue;
+    }
+
+    InviteRecord invite = {};
+
+    if (entry.HasMember("inviter") && entry["inviter"].IsString()) {
+      invite.inviter_xuid =
+          xe::string_util::from_string<uint64_t>(entry["inviter"].GetString(),
+                                                 true);
+    }
+
+    if (entry.HasMember("sessionId") && entry["sessionId"].IsString()) {
+      invite.session_id = xe::string_util::from_string<uint64_t>(
+          entry["sessionId"].GetString(), true);
+    }
+
+    if (entry.HasMember("titleId") && entry["titleId"].IsString()) {
+      invite.title_id = xe::string_util::from_string<uint32_t>(
+          entry["titleId"].GetString(), true);
+    }
+
+    if (invite.inviter_xuid && invite.session_id) {
+      invites.push_back(invite);
+    }
+  }
+
+  return invites;
 }
 
 std::unique_ptr<FriendsPresenceObjectJSON> XLiveAPI::GetFriendsPresence(

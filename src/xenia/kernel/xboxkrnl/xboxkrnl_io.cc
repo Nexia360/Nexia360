@@ -760,6 +760,18 @@ void IoDeleteDevice_entry(dword_t device_ptr, const ppc_context_t& ctx) {
 
 DECLARE_XBOXKRNL_EXPORT1(IoDeleteDevice, kFileSystem, kStub);
 
+// IoDismountVolumeByFileHandle (ord 0x3C). On a real 360 this tears down the
+// mounted volume backing a file handle so the DVD can be re-read. MW3's
+// map-load path calls it (after XFileFsDeviceInformation) to remount+re-read
+// content; unimplemented, it was an "undefined extern" and the game's IO
+// handler (0x824D721C) then fired XamShowDirtyDiscErrorUI. Our disc is a host
+// folder that is always present, so there is nothing to dismount -- succeed so
+// the subsequent re-open reads the map fastfile normally.
+dword_result_t IoDismountVolumeByFileHandle_entry(dword_t file_handle) {
+  return X_STATUS_SUCCESS;
+}
+DECLARE_XBOXKRNL_EXPORT1(IoDismountVolumeByFileHandle, kFileSystem, kStub);
+
 }  // namespace xboxkrnl
 }  // namespace kernel
 }  // namespace xe

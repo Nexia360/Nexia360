@@ -78,6 +78,11 @@ class XamState {
 
   uint32_t GetOnlineSchemaAddress() const { return online_schema_data_address; }
 
+  // Lazily replaces the embedded fallback schema with the one matching the
+  // running dashboard build, fetched from the hub. Call before handing the
+  // schema address to the guest (XamGetOnlineSchema). Runs at most once.
+  void EnsureOnlineSchema();
+
   uint32_t GetLanguageFallbackAddress(uint32_t index) const {
     return language_fallback_address_[index];
   }
@@ -103,6 +108,8 @@ class XamState {
   std::atomic<bool> profile_dialog_open_ = {false};
 
   void LoadOnlineSchema();
+  void WriteOnlineSchemaBlob(const uint8_t* blob, uint32_t size);
+  bool BuildOnlineSchemaFromJson(const std::string& json);
   void LoadLanguageLocaleFallback();
   void LoadIptvServiceName();
   void LoadOnlineFriends();
@@ -122,6 +129,7 @@ class XamState {
 
   // Custom XAM stuff
   uint32_t online_schema_data_address;
+  bool online_schema_fetched_ = false;
   std::array<uint32_t, 0x12> language_fallback_address_{};
   uint32_t iptv_name_address_{};
 };

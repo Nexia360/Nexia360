@@ -274,6 +274,13 @@ X_HRESULT XLiveBaseApp::ExecuteDispatchMessage(uint32_t message,
       XELOGD("XPresenceUnsubscribe({:08X}, {:08X})", buffer_ptr, buffer_length);
       return XPresenceUnsubscribe(buffer_ptr, buffer_length);
     }
+    // 0x5004F is the schema-index form of XFriendsCreateEnumerator. Titles that
+    // load the online schema (the NXE dashboard) have their ordinal remapped to
+    // the schema index (0x4F | kAsyncSchemaIndexMask), while titles that don't
+    // arrive on the raw message 0x58020. Both must reach the same handler --
+    // without this the dashboard's friends enumeration fails and it retries
+    // forever, never finishing sign-in init.
+    case 0x0005004F:
     case 0x00058020: {
       XELOGD("XFriendsCreateEnumerator({:08X}, {:08X})", buffer_ptr,
              buffer_length);
@@ -921,11 +928,53 @@ X_HRESULT XLiveBaseApp::XInviteSend(uint32_t buffer_ptr) {
     return deserialize_result;
   }
 
-  new xe::ui::HostNotificationWindow(
-      kernel_state_->emulator()->imgui_drawer(), "Invites aren't supported!",
-      xe::to_utf8(unmarshaller.DisplayString()), 0);
+  const uint32_t user_index = unmarshaller.UserIndex();
 
-  return X_E_SUCCESS;
+  if (!kernel_state_->xam_state()->IsUserSignedIn(user_index)) {
+    return X_E_NO_SUCH_USER;
+  }
+
+  const auto profile = kernel_state_->xam_state()->GetUserProfile(user_index);
+
+  // Invites travel by session id: the invitee joins the session we are hosting.
+  // FindValidInviteSession already encodes which of our sessions is actually
+  // joinable (host, created, Live, invites enabled, join-in-progress rules).
+  const auto invite_session = profile->FindValidInviteSession();
+
+  const uint64_t session_id =
+      invite_session.has_value() ? invite_session.value()->GetSessionID() : 0;
+
+  if (!session_id) {
+    new xe::ui::HostNotificationWindow(
+        kernel_state_->emulator()->imgui_drawer(), "Invite",
+        "You must be in a session to send an invite", user_index);
+
+    return X_ONLINE_E_SESSION_NOT_FOUND;
+  }
+
+  std::set<uint64_t> invitees;
+
+  for (const auto& invitee : unmarshaller.Invitees()) {
+    if (invitee) {
+      invitees.insert(invitee);
+    }
+  }
+
+  if (invitees.empty()) {
+    return X_E_INVALIDARG;
+  }
+
+  const bool sent = kernel_state_->GetXboxLiveAPI()->InviteSend(
+      profile->GetOnlineXUID(), invitees, session_id);
+
+  new xe::ui::HostNotificationWindow(
+      kernel_state_->emulator()->imgui_drawer(),
+      sent ? "Invite Sent" : "Invite Failed",
+      sent ? fmt::format("Invited {} player(s)", invitees.size())
+           : "Could not reach the server",
+      user_index);
+
+  return sent ? X_E_SUCCESS : X_ONLINE_E_LOGON_SERVICE_NOT_REQUESTED;
 }
 
 X_HRESULT XLiveBaseApp::XInviteGetAcceptedInfo(uint32_t buffer_ptr,

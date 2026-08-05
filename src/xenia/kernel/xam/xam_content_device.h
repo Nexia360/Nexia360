@@ -32,6 +32,8 @@ enum class DeviceType : uint32_t {
 enum class DummyDeviceId : uint32_t {
   HDD = 1,
   ODD = 2,
+  MU = 3,
+  USB = 4,
 };
 
 struct DummyDeviceInfo {

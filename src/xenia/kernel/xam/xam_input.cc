@@ -98,8 +98,14 @@ dword_result_t XamInputGetCapabilities_entry(
 DECLARE_XAM_EXPORT1(XamInputGetCapabilities, kInput, kSketchy);
 
 // https://msdn.microsoft.com/en-us/library/windows/desktop/microsoft.directx_sdk.reference.xinputgetstate(v=vs.85).aspx
+// One-shot MW3 gametype-registry dump (mw3_gametype_dump.cc). Driven from here
+// because the title polls input every frame, so the dump lands the first frame
+// after the registry is populated.
+void Mw3GametypeDumpTick();
+
 dword_result_t XamInputGetState_entry(dword_t user_index, dword_t flags,
                                       pointer_t<X_INPUT_STATE> input_state) {
+  Mw3GametypeDumpTick();
   if (input_state) {
     memset((void*)input_state.host_address(), 0, sizeof(X_INPUT_STATE));
   }

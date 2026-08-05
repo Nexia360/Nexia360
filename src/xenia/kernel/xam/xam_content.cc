@@ -739,13 +739,21 @@ dword_result_t XamLoaderGetDvdTrayState_entry() {
 }
 DECLARE_XAM_EXPORT1(XamLoaderGetDvdTrayState, kNone, kImplemented);
 
-void XamLoaderGetMediaInfoEx_entry(lpdword_t media_type, lpdword_t unk2,
+void XamLoaderGetMediaInfoEx_entry(lpdword_t media_type, lpdword_t media_id,
                                    lpdword_t unk3) {
+  // Only report a disc when the running title actually booted from optical
+  // media. The dashboard's PollDisc (and titles) treat media_id as the disc
+  // identity: a non-zero, stable id means a disc is present, 0 means an empty
+  // tray. Keeping the two consistent avoids the "game disc present but id 0 =
+  // no disc" contradiction the old stub produced.
+  const bool has_disc =
+      kernel_state()->deployment_type_ == XDeploymentType::kOpticalDisc;
   if (media_type) {
-    *media_type = X_DVD_DISC_STATE::XBOX_360_GAME_DISC;
+    *media_type = has_disc ? X_DVD_DISC_STATE::XBOX_360_GAME_DISC
+                           : X_DVD_DISC_STATE::NO_DISC;
   }
-  if (unk2) {
-    *unk2 = 0;
+  if (media_id) {
+    *media_id = has_disc ? kernel_state()->title_id() : 0;
   }
   if (unk3) {
     *unk3 = 0;
@@ -873,9 +881,22 @@ dword_result_t XamContentGetDeviceVolumePath_entry(dword_t device_id,
                                                    lpvoid_t path_ptr,
                                                    dword_t path_size,
                                                    dword_t append_backslash) {
-  std::string volume_path = "hdd0\\";
-  if (device_id != static_cast<uint32_t>(DummyDeviceId::HDD)) {
-    return X_ERROR_FUNCTION_FAILED;
+  std::string volume_path;
+  switch (static_cast<DummyDeviceId>(static_cast<uint32_t>(device_id))) {
+    case DummyDeviceId::HDD:
+      volume_path = "hdd0\\";
+      break;
+    case DummyDeviceId::ODD:
+      volume_path = "dvd0\\";
+      break;
+    case DummyDeviceId::MU:
+      volume_path = "mu0\\";
+      break;
+    case DummyDeviceId::USB:
+      volume_path = "usb0\\";
+      break;
+    default:
+      return X_ERROR_FUNCTION_FAILED;
   }
 
   char* path =

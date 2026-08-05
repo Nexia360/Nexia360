@@ -2369,6 +2369,103 @@ dword_result_t XamShowFriendsUI_entry(dword_t user_index) {
 }
 DECLARE_XAM_EXPORT1(XamShowFriendsUI, kUserProfiles, kImplemented);
 
+// XamShowGameInviteUI(user_index, recipients, recipient_count, text, flags).
+// On hardware this raises the Guide's invite blade; the recipients are already
+// chosen by the title, so there is nothing to pick and we send straight away.
+// The invite is queued on the hub and delivered to each recipient's client.
+dword_result_t XamShowGameInviteUI_entry(dword_t user_index,
+                                         lpqword_t recipients_ptr,
+                                         dword_t recipient_count,
+                                         lpu16string_t text_ptr,
+                                         dword_t flags) {
+  if (user_index >= XUserMaxUserCount) {
+    return X_ERROR_INVALID_PARAMETER;
+  }
+
+  const auto user = kernel_state()->xam_state()->GetUserProfile(user_index);
+
+  if (!user || !user->IsLiveEnabled()) {
+    return X_ERROR_NOT_LOGGED_ON;
+  }
+
+  const auto invite_session = user->FindValidInviteSession();
+
+  if (!invite_session.has_value()) {
+    new xe::ui::HostNotificationWindow(
+        kernel_state()->emulator()->imgui_drawer(), "Invite",
+        "You must be in a session to send an invite", user_index);
+
+    return X_ERROR_FUNCTION_FAILED;
+  }
+
+  std::set<uint64_t> invitees;
+
+  // A null recipient list means "invite the whole friends list" on hardware.
+  if (!recipients_ptr || !recipient_count) {
+    invitees = kernel_state()->friends_manager()->GetFriendsXUIDs(user->xuid());
+  } else {
+    // The list is an array of guest (big-endian) xuids; walk it directly
+    // rather than through the single-value pointer shim.
+    auto* recipients =
+        kernel_state()->memory()->TranslateVirtual<xe::be<uint64_t>*>(
+            recipients_ptr.guest_address());
+
+    for (uint32_t i = 0; recipients && i < recipient_count; i++) {
+      const uint64_t xuid = recipients[i];
+
+      if (xuid) {
+        invitees.insert(xuid);
+      }
+    }
+  }
+
+  if (invitees.empty()) {
+    return X_ERROR_FUNCTION_FAILED;
+  }
+
+  const bool sent = kernel_state()->GetXboxLiveAPI()->InviteSend(
+      user->GetOnlineXUID(), invitees, invite_session.value()->GetSessionID());
+
+  new xe::ui::HostNotificationWindow(
+      kernel_state()->emulator()->imgui_drawer(),
+      sent ? "Invite Sent" : "Invite Failed",
+      sent ? fmt::format("Invited {} player(s)", invitees.size())
+           : "Could not reach the server",
+      user_index);
+
+  return sent ? X_ERROR_SUCCESS : X_ERROR_FUNCTION_FAILED;
+}
+DECLARE_XAM_EXPORT1(XamShowGameInviteUI, kUserProfiles, kImplemented);
+
+// Messaging is not implemented. These exist so a title that calls them gets a
+// clean "nothing happened" instead of an undefined-extern crash -- the message
+// blade simply never opens.
+dword_result_t XamShowMessageComposeUI_entry(dword_t user_index,
+                                             lpqword_t recipients_ptr,
+                                             dword_t recipient_count,
+                                             lpu16string_t text_ptr,
+                                             dword_t flags) {
+  return X_ERROR_FUNCTION_FAILED;
+}
+DECLARE_XAM_EXPORT1(XamShowMessageComposeUI, kUserProfiles, kStub);
+
+dword_result_t XamShowMessagesUI_entry(dword_t user_index) {
+  return X_ERROR_FUNCTION_FAILED;
+}
+DECLARE_XAM_EXPORT1(XamShowMessagesUI, kUserProfiles, kStub);
+
+dword_result_t XamShowMessagesUIEx_entry(dword_t user_index, dword_t flags,
+                                         dword_t unk) {
+  return X_ERROR_FUNCTION_FAILED;
+}
+DECLARE_XAM_EXPORT1(XamShowMessagesUIEx, kUserProfiles, kStub);
+
+dword_result_t XamShowFriendRequestUI_entry(dword_t user_index,
+                                            qword_t recipient_xuid) {
+  return X_ERROR_FUNCTION_FAILED;
+}
+DECLARE_XAM_EXPORT1(XamShowFriendRequestUI, kUserProfiles, kStub);
+
 dword_result_t XamShowCommunitySessionsUI_entry(dword_t user_index,
                                                 dword_t social_sessions_flags) {
   if (user_index >= XUserMaxUserCount && user_index != XUserIndexAny) {

@@ -21,9 +21,9 @@ namespace xe {
 namespace apu {
 namespace sdl {
 
-constexpr int kSampleRate = 16000;  // XHV_PCM_SAMPLE_RATE
+constexpr int kSampleRate = 16000;
 constexpr int kSdlBufferSamples = 512;
-constexpr size_t kMaxRingSamples = kSampleRate;  // ~1 s ceiling per ring
+constexpr size_t kMaxRingSamples = kSampleRate;
 
 static bool EnsureAudioInit() {
   if (!xe::helper::sdl::SDLHelper::Prepare()) {
@@ -311,9 +311,6 @@ void VoiceChat::OnCapture(const int16_t* samples, size_t count) {
     std::lock_guard<std::mutex> lock(state_mutex_);
     max_gain = mic_gain_;
   }
-  // AGC + gain applied HERE, before the ring write (and so before the file
-  // capture the read derives from). Track the envelope and scale speech to a
-  // target, ceiling at Mic Gain, leaving near-silence alone.
   int block_peak = 0;
   for (size_t i = 0; i < count; ++i) {
     int a = samples[i] < 0 ? -samples[i] : samples[i];
@@ -326,17 +323,16 @@ void VoiceChat::OnCapture(const int16_t* samples, size_t count) {
   } else {
     agc_env_ = agc_env_ * 0.98f + block_peak * 0.02f;
   }
-  constexpr float kTarget = 0.5f * 32767.0f;  // aim ~ -6 dBFS on peaks
-  constexpr float kNoiseFloor = 250.0f;       // below this = treat as silence
+  constexpr float kTarget = 0.25f * 32767.0f;
+  constexpr float kNoiseFloor = 250.0f;
   float gain = 1.0f;
   if (agc_env_ > kNoiseFloor) {
     gain = std::clamp(kTarget / agc_env_, 1.0f, static_cast<float>(max_gain));
   }
-  // Fill the 2-page ring circularly; capture_total_ is the absolute write head.
   std::lock_guard<std::mutex> lock(queue_mutex_);
   for (size_t i = 0; i < count; ++i) {
     int v = static_cast<int>(samples[i] * gain);
-    capture_ring_[capture_total_ % 320] =
+    capture_ring_[capture_total_ % kCaptureRing] =
         static_cast<int16_t>(std::clamp(v, -32768, 32767));
     ++capture_total_;
   }
@@ -344,15 +340,11 @@ void VoiceChat::OnCapture(const int16_t* samples, size_t count) {
 
 size_t VoiceChat::ReadCapturePcm(int16_t* out, size_t max_samples) {
   std::lock_guard<std::mutex> lock(queue_mutex_);
-  constexpr size_t kPage = 160;  // 320 bytes
+  constexpr size_t kPage = kCaptureFrame;
   const auto now = std::chrono::steady_clock::now();
   const bool first = (last_request_ == std::chrono::steady_clock::time_point{});
-  // Advance the read offset by the REAL time elapsed since the last request, so
-  // the read tracks wall-clock (correct speed). Gaps between requests are
-  // skipped
-  // -- the lossy "crunch" is by design, not queued in order.
   if (first) {
-    capture_read_ = capture_total_;  // first request: start at the write head
+    capture_read_ = capture_total_;
   } else {
     const auto us = std::chrono::duration_cast<std::chrono::microseconds>(
                         now - last_request_)
@@ -360,9 +352,8 @@ size_t VoiceChat::ReadCapturePcm(int16_t* out, size_t max_samples) {
     capture_read_ += static_cast<uint64_t>(us) * kSampleRate / 1000000;
   }
   last_request_ = now;
-  // Clamp the read into the audio still resident in the 2-page ring:
-  // [capture_total_ - 320, capture_total_ - 160].
-  const uint64_t lo = capture_total_ > 320 ? capture_total_ - 320 : 0;
+  const uint64_t lo =
+      capture_total_ > kCaptureRing ? capture_total_ - kCaptureRing : 0;
   const uint64_t hi = capture_total_ > kPage ? capture_total_ - kPage : 0;
   if (capture_read_ < lo) {
     capture_read_ = lo;
@@ -372,7 +363,7 @@ size_t VoiceChat::ReadCapturePcm(int16_t* out, size_t max_samples) {
   }
   const size_t n = std::min(max_samples, kPage);
   for (size_t i = 0; i < n; ++i) {
-    out[i] = capture_ring_[(capture_read_ + i) % 320];
+    out[i] = capture_ring_[(capture_read_ + i) % kCaptureRing];
   }
   return n;
 }
@@ -380,9 +371,7 @@ size_t VoiceChat::ReadCapturePcm(int16_t* out, size_t max_samples) {
 void VoiceChat::PlayPcm(const int16_t* samples, size_t count) {
   std::lock_guard<std::mutex> lock(queue_mutex_);
   playback_pcm_.insert(playback_pcm_.end(), samples, samples + count);
-  // Inbound jitter buffer: cap depth, dropping the OLDEST on overflow so a late
-  // burst can't wipe the whole buffer (a full clear = an audible gap/break-up).
-  constexpr size_t kMaxPlaybackSamples = kSampleRate / 10;  // ~100 ms
+  constexpr size_t kMaxPlaybackSamples = kSampleRate / 10;
   if (playback_pcm_.size() > kMaxPlaybackSamples) {
     playback_pcm_.erase(
         playback_pcm_.begin(),
@@ -392,9 +381,7 @@ void VoiceChat::PlayPcm(const int16_t* samples, size_t count) {
 
 void VoiceChat::FillPlayback(int16_t* out, size_t count) {
   std::lock_guard<std::mutex> lock(queue_mutex_);
-  // Jitter buffer: hold playback until a small cushion has built up so arrival
-  // jitter doesn't constantly underrun, and re-arm after we drain dry.
-  constexpr size_t kPrimeSamples = kSampleRate / 20;  // ~50 ms cushion
+  constexpr size_t kPrimeSamples = kSampleRate / 20;
   if (!playback_primed_) {
     if (playback_pcm_.size() < kPrimeSamples) {
       std::memset(out, 0, count * sizeof(int16_t));
@@ -411,7 +398,7 @@ void VoiceChat::FillPlayback(int16_t* out, size_t count) {
     out[i] = 0;
   }
   if (playback_pcm_.empty()) {
-    playback_primed_ = false;  // re-prime on underrun
+    playback_primed_ = false;
   }
 }
 
