@@ -180,6 +180,19 @@ SharedMemory::WatchHandle SharedMemory::WatchMemoryRange(
 
   // Allocate the range.
   WatchRange* range = watch_range_first_free_;
+  // Pool membership is checked first: a corrupt head may not be dereferenceable
+  // at all, and reading its state would fault instead of reporting.
+  if (range != nullptr && (!IsWatchRangeFromPool(range) ||
+                           range->alloc_state != kWatchAllocFree)) {
+    XELOGE(
+        "SharedMemory: watch range free list corrupt at {} (state {:08X}, from "
+        "pool: {}); dropping the list and allocating fresh",
+        static_cast<const void*>(range),
+        IsWatchRangeFromPool(range) ? range->alloc_state : 0u,
+        IsWatchRangeFromPool(range));
+    watch_range_first_free_ = nullptr;
+    range = nullptr;
+  }
   if (range != nullptr) {
     watch_range_first_free_ = range->next_free;
   } else {
@@ -190,6 +203,7 @@ SharedMemory::WatchHandle SharedMemory::WatchMemoryRange(
     }
     range = &(watch_range_pools_.back()[watch_range_current_pool_allocated_++]);
   }
+  range->alloc_state = kWatchAllocLive;
   range->callback = callback;
   range->callback_context = callback_context;
   range->callback_data = callback_data;
@@ -201,6 +215,17 @@ SharedMemory::WatchHandle SharedMemory::WatchMemoryRange(
   WatchNode* node_previous = nullptr;
   for (uint32_t i = bucket_first; i <= bucket_last; ++i) {
     WatchNode* node = watch_node_first_free_;
+    if (node != nullptr &&
+        (!IsWatchNodeFromPool(node) || node->alloc_state != kWatchAllocFree)) {
+      XELOGE(
+          "SharedMemory: watch node free list corrupt at {} (state {:08X}, "
+          "from pool: {}); dropping the list and allocating fresh",
+          static_cast<const void*>(node),
+          IsWatchNodeFromPool(node) ? node->alloc_state : 0u,
+          IsWatchNodeFromPool(node));
+      watch_node_first_free_ = nullptr;
+      node = nullptr;
+    }
     if (node != nullptr) {
       watch_node_first_free_ = node->next_free;
     } else {
@@ -211,6 +236,7 @@ SharedMemory::WatchHandle SharedMemory::WatchMemoryRange(
       }
       node = &(watch_node_pools_.back()[watch_node_current_pool_allocated_++]);
     }
+    node->alloc_state = kWatchAllocLive;
     node->range = range;
     node->range_node_next = nullptr;
     if (node_previous != nullptr) {
@@ -349,10 +375,32 @@ void SharedMemory::MakeRangeValid(uint32_t start, uint32_t length,
 }
 
 void SharedMemory::UnlinkWatchRange(WatchRange* range) {
+  // Freeing something already on the free list would splice the list into
+  // itself, so this is where a double free has to be caught - by the time a
+  // later allocation trips over it the caller responsible is long gone.
+  if (!IsWatchRangeFromPool(range) || range->alloc_state != kWatchAllocLive) {
+    XELOGE(
+        "SharedMemory: bad free of watch range {} (state {:08X}, from pool: "
+        "{}); ignoring",
+        static_cast<const void*>(range),
+        IsWatchRangeFromPool(range) ? range->alloc_state : 0u,
+        IsWatchRangeFromPool(range));
+    return;
+  }
+
   uint32_t bucket =
       range->page_first << page_size_log2_ >> kWatchBucketSizeLog2;
   WatchNode* node = range->node_first;
   while (node != nullptr) {
+    if (!IsWatchNodeFromPool(node) || node->alloc_state != kWatchAllocLive) {
+      XELOGE(
+          "SharedMemory: bad free of watch node {} (state {:08X}, from "
+          "pool: {}); abandoning the rest of the range",
+          static_cast<const void*>(node),
+          IsWatchNodeFromPool(node) ? node->alloc_state : 0u,
+          IsWatchNodeFromPool(node));
+      break;
+    }
     WatchNode* node_next = node->range_node_next;
     if (node->bucket_node_previous != nullptr) {
       node->bucket_node_previous->bucket_node_next = node->bucket_node_next;
@@ -362,13 +410,33 @@ void SharedMemory::UnlinkWatchRange(WatchRange* range) {
     if (node->bucket_node_next != nullptr) {
       node->bucket_node_next->bucket_node_previous = node->bucket_node_previous;
     }
+    node->alloc_state = kWatchAllocFree;
     node->next_free = watch_node_first_free_;
     watch_node_first_free_ = node;
     node = node_next;
     ++bucket;
   }
+  range->alloc_state = kWatchAllocFree;
   range->next_free = watch_range_first_free_;
   watch_range_first_free_ = range;
+}
+
+bool SharedMemory::IsWatchNodeFromPool(const WatchNode* node) const {
+  for (const WatchNode* pool : watch_node_pools_) {
+    if (node >= pool && node < pool + kWatchNodePoolSize) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool SharedMemory::IsWatchRangeFromPool(const WatchRange* range) const {
+  for (const WatchRange* pool : watch_range_pools_) {
+    if (range >= pool && range < pool + kWatchRangePoolSize) {
+      return true;
+    }
+  }
+  return false;
 }
 // todo: optimize, an enormous amount of cpu time (1.34%) is spent here.
 bool SharedMemory::RequestRange(uint32_t start, uint32_t length) {

@@ -10,12 +10,30 @@
 #include "xenia/apu/sdl/voice_chat.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <fstream>
+#include <thread>
+#include <vector>
 
 #include "xenia/base/logging.h"
+#include "xenia/base/platform.h"
+#if XE_PLATFORM_WIN32
+#include "xenia/base/platform_win.h"
+#endif
 #include "xenia/helper/sdl/sdl_helper.h"
+
+#if XE_PLATFORM_WIN32
+#include <audioclient.h>
+#include <mmreg.h>
+#include <ks.h>
+#include <ksmedia.h>
+#include <functiondiscoverykeys_devpkey.h>
+#include <mmdeviceapi.h>
+#include <objbase.h>
+#pragma comment(lib, "ole32.lib")
+#endif
 
 namespace xe {
 namespace apu {
@@ -25,6 +43,7 @@ constexpr int kSampleRate = 16000;
 constexpr int kSdlBufferSamples = 512;
 constexpr size_t kMaxRingSamples = kSampleRate;
 
+#if !XE_PLATFORM_WIN32
 static bool EnsureAudioInit() {
   if (!xe::helper::sdl::SDLHelper::Prepare()) {
     return false;
@@ -49,6 +68,430 @@ static std::vector<std::string> Enumerate(int iscapture) {
   }
   return names;
 }
+#endif
+
+#if XE_PLATFORM_WIN32
+
+struct VoiceWasapiStream {
+  IAudioClient* client = nullptr;
+  IAudioCaptureClient* capture = nullptr;
+  IAudioRenderClient* render = nullptr;
+  HANDLE event = nullptr;
+  std::thread thread;
+  std::atomic<bool> run{false};
+  VoiceChat* owner = nullptr;
+  UINT32 buffer_frames = 0;
+  UINT32 dev_rate = 48000;
+  UINT32 dev_channels = 2;
+  bool dev_float = true;
+  UINT32 dev_bits = 32;
+  std::vector<int16_t> src;
+  double pos = 0.0;
+  std::vector<int16_t> mono;
+  double cpos = 0.0;
+};
+
+static bool WasapiComInit() {
+  const HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+  return SUCCEEDED(hr) || hr == RPC_E_CHANGED_MODE;
+}
+
+static IMMDeviceEnumerator* WasapiEnumerator() {
+  IMMDeviceEnumerator* e = nullptr;
+  if (FAILED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL,
+                              __uuidof(IMMDeviceEnumerator),
+                              reinterpret_cast<void**>(&e)))) {
+    return nullptr;
+  }
+  return e;
+}
+
+static std::string WasapiFriendlyName(IMMDevice* device) {
+  IPropertyStore* props = nullptr;
+  if (FAILED(device->OpenPropertyStore(STGM_READ, &props)) || !props) {
+    return std::string();
+  }
+  PROPVARIANT v;
+  PropVariantInit(&v);
+  std::string out;
+  if (SUCCEEDED(props->GetValue(PKEY_Device_FriendlyName, &v)) &&
+      v.vt == VT_LPWSTR && v.pwszVal) {
+    const int n = WideCharToMultiByte(CP_UTF8, 0, v.pwszVal, -1, nullptr, 0,
+                                      nullptr, nullptr);
+    if (n > 1) {
+      out.resize(static_cast<size_t>(n) - 1);
+      WideCharToMultiByte(CP_UTF8, 0, v.pwszVal, -1, &out[0], n, nullptr,
+                          nullptr);
+    }
+  }
+  PropVariantClear(&v);
+  props->Release();
+  return out;
+}
+
+static std::vector<std::string> WasapiEnumerate(bool capture) {
+  std::vector<std::string> names;
+  if (!WasapiComInit()) {
+    return names;
+  }
+  IMMDeviceEnumerator* e = WasapiEnumerator();
+  if (!e) {
+    return names;
+  }
+  IMMDeviceCollection* col = nullptr;
+  if (SUCCEEDED(e->EnumAudioEndpoints(capture ? eCapture : eRender,
+                                      DEVICE_STATE_ACTIVE, &col)) &&
+      col) {
+    UINT count = 0;
+    col->GetCount(&count);
+    for (UINT i = 0; i < count; ++i) {
+      IMMDevice* dev = nullptr;
+      if (SUCCEEDED(col->Item(i, &dev)) && dev) {
+        std::string n = WasapiFriendlyName(dev);
+        if (!n.empty()) {
+          names.push_back(n);
+        }
+        dev->Release();
+      }
+    }
+    col->Release();
+  }
+  e->Release();
+  return names;
+}
+
+static IMMDevice* WasapiFindDevice(IMMDeviceEnumerator* e, bool capture,
+                                   const std::string& name) {
+  const EDataFlow flow = capture ? eCapture : eRender;
+  if (!name.empty()) {
+    IMMDeviceCollection* col = nullptr;
+    if (SUCCEEDED(e->EnumAudioEndpoints(flow, DEVICE_STATE_ACTIVE, &col)) &&
+        col) {
+      UINT count = 0;
+      col->GetCount(&count);
+      for (UINT i = 0; i < count; ++i) {
+        IMMDevice* dev = nullptr;
+        if (SUCCEEDED(col->Item(i, &dev)) && dev) {
+          if (WasapiFriendlyName(dev) == name) {
+            col->Release();
+            return dev;
+          }
+          dev->Release();
+        }
+      }
+      col->Release();
+    }
+    XELOGE("VoiceChat: {} '{}' not present, using system default",
+           capture ? "mic" : "output", name);
+    for (const auto& n : WasapiEnumerate(capture)) {
+      XELOGE("VoiceChat: available {}: '{}'", capture ? "mic" : "output", n);
+    }
+  }
+  IMMDevice* dev = nullptr;
+  if (FAILED(e->GetDefaultAudioEndpoint(flow, eCommunications, &dev))) {
+    if (FAILED(e->GetDefaultAudioEndpoint(flow, eConsole, &dev))) {
+      return nullptr;
+    }
+  }
+  return dev;
+}
+
+static void WasapiDescribeFormat(VoiceWasapiStream* s, const WAVEFORMATEX* f) {
+  s->dev_rate = f->nSamplesPerSec;
+  s->dev_channels = f->nChannels;
+  s->dev_bits = f->wBitsPerSample;
+  s->dev_float = false;
+  if (f->wFormatTag == WAVE_FORMAT_IEEE_FLOAT) {
+    s->dev_float = true;
+  } else if (f->wFormatTag == WAVE_FORMAT_EXTENSIBLE) {
+    const auto* ext = reinterpret_cast<const WAVEFORMATEXTENSIBLE*>(f);
+    s->dev_float =
+        IsEqualGUID(ext->SubFormat, KSDATAFORMAT_SUBTYPE_IEEE_FLOAT) != 0;
+  }
+}
+
+static void WasapiWriteFrame(VoiceWasapiStream* s, BYTE* dst, int16_t v) {
+  if (s->dev_float) {
+    float f = static_cast<float>(v) / 32768.0f;
+    auto* o = reinterpret_cast<float*>(dst);
+    for (UINT32 c = 0; c < s->dev_channels; ++c) {
+      o[c] = f;
+    }
+  } else if (s->dev_bits == 16) {
+    auto* o = reinterpret_cast<int16_t*>(dst);
+    for (UINT32 c = 0; c < s->dev_channels; ++c) {
+      o[c] = v;
+    }
+  } else if (s->dev_bits == 32) {
+    auto* o = reinterpret_cast<int32_t*>(dst);
+    for (UINT32 c = 0; c < s->dev_channels; ++c) {
+      o[c] = static_cast<int32_t>(v) << 16;
+    }
+  }
+}
+
+static int16_t WasapiReadFrame(VoiceWasapiStream* s, const BYTE* src) {
+  double acc = 0.0;
+  if (s->dev_float) {
+    const auto* i = reinterpret_cast<const float*>(src);
+    for (UINT32 c = 0; c < s->dev_channels; ++c) {
+      acc += i[c];
+    }
+    acc = acc * 32768.0 / s->dev_channels;
+  } else if (s->dev_bits == 16) {
+    const auto* i = reinterpret_cast<const int16_t*>(src);
+    for (UINT32 c = 0; c < s->dev_channels; ++c) {
+      acc += i[c];
+    }
+    acc /= s->dev_channels;
+  } else if (s->dev_bits == 32) {
+    const auto* i = reinterpret_cast<const int32_t*>(src);
+    for (UINT32 c = 0; c < s->dev_channels; ++c) {
+      acc += static_cast<double>(i[c]) / 65536.0;
+    }
+    acc /= s->dev_channels;
+  }
+  if (acc > 32767.0) {
+    acc = 32767.0;
+  } else if (acc < -32768.0) {
+    acc = -32768.0;
+  }
+  return static_cast<int16_t>(acc);
+}
+
+static void WasapiCaptureThread(VoiceWasapiStream* s) {
+  WasapiComInit();
+  const double step = static_cast<double>(s->dev_rate) / kSampleRate;
+  std::vector<int16_t> out;
+  while (s->run.load(std::memory_order_relaxed)) {
+    if (WaitForSingleObject(s->event, 200) != WAIT_OBJECT_0) {
+      continue;
+    }
+    UINT32 packet = 0;
+    while (SUCCEEDED(s->capture->GetNextPacketSize(&packet)) && packet) {
+      BYTE* data = nullptr;
+      UINT32 frames = 0;
+      DWORD flags = 0;
+      if (FAILED(
+              s->capture->GetBuffer(&data, &frames, &flags, nullptr, nullptr))) {
+        break;
+      }
+      if (frames) {
+        const size_t base = s->mono.size();
+        s->mono.resize(base + frames);
+        const UINT32 stride = s->dev_channels * (s->dev_bits / 8);
+        for (UINT32 i = 0; i < frames; ++i) {
+          s->mono[base + i] = (flags & AUDCLNT_BUFFERFLAGS_SILENT)
+                                  ? 0
+                                  : WasapiReadFrame(s, data + i * stride);
+        }
+      }
+      s->capture->ReleaseBuffer(frames);
+      packet = 0;
+    }
+    out.clear();
+    while (s->cpos + 1.0 < static_cast<double>(s->mono.size())) {
+      const size_t idx = static_cast<size_t>(s->cpos);
+      const double f = s->cpos - static_cast<double>(idx);
+      const double a = s->mono[idx];
+      const double b = s->mono[idx + 1];
+      out.push_back(static_cast<int16_t>(a + (b - a) * f));
+      s->cpos += step;
+    }
+    if (!out.empty()) {
+      s->owner->OnCapture(out.data(), out.size());
+    }
+    const size_t consumed = static_cast<size_t>(s->cpos);
+    if (consumed) {
+      s->mono.erase(s->mono.begin(), s->mono.begin() + consumed);
+      s->cpos -= static_cast<double>(consumed);
+    }
+    if (s->mono.size() > static_cast<size_t>(s->dev_rate)) {
+      s->mono.clear();
+      s->cpos = 0.0;
+    }
+  }
+  CoUninitialize();
+}
+
+static void WasapiRenderThread(VoiceWasapiStream* s) {
+  WasapiComInit();
+  const double step = static_cast<double>(kSampleRate) / s->dev_rate;
+  while (s->run.load(std::memory_order_relaxed)) {
+    if (WaitForSingleObject(s->event, 200) != WAIT_OBJECT_0) {
+      continue;
+    }
+    UINT32 padding = 0;
+    if (FAILED(s->client->GetCurrentPadding(&padding))) {
+      continue;
+    }
+    const UINT32 frames =
+        s->buffer_frames > padding ? (s->buffer_frames - padding) : 0;
+    if (!frames) {
+      continue;
+    }
+    const size_t need =
+        static_cast<size_t>(s->pos + frames * step) + 2;
+    if (s->src.size() < need) {
+      const size_t base = s->src.size();
+      s->src.resize(need);
+      s->owner->FillPlayback(s->src.data() + base, need - base);
+    }
+    BYTE* data = nullptr;
+    if (FAILED(s->render->GetBuffer(frames, &data))) {
+      continue;
+    }
+    const UINT32 stride = s->dev_channels * (s->dev_bits / 8);
+    for (UINT32 i = 0; i < frames; ++i) {
+      const size_t idx = static_cast<size_t>(s->pos);
+      const double f = s->pos - static_cast<double>(idx);
+      const double a = idx < s->src.size() ? s->src[idx] : 0;
+      const double b = (idx + 1) < s->src.size() ? s->src[idx + 1] : a;
+      WasapiWriteFrame(s, data + i * stride,
+                       static_cast<int16_t>(a + (b - a) * f));
+      s->pos += step;
+    }
+    s->render->ReleaseBuffer(frames, 0);
+    const size_t consumed = static_cast<size_t>(s->pos);
+    if (consumed && consumed <= s->src.size()) {
+      s->src.erase(s->src.begin(), s->src.begin() + consumed);
+      s->pos -= static_cast<double>(consumed);
+    }
+  }
+  CoUninitialize();
+}
+
+static void WasapiClose(VoiceWasapiStream** slot) {
+  VoiceWasapiStream* s = *slot;
+  if (!s) {
+    return;
+  }
+  s->run.store(false);
+  if (s->event) {
+    SetEvent(s->event);
+  }
+  if (s->thread.joinable()) {
+    s->thread.join();
+  }
+  if (s->client) {
+    s->client->Stop();
+  }
+  if (s->capture) {
+    s->capture->Release();
+  }
+  if (s->render) {
+    s->render->Release();
+  }
+  if (s->client) {
+    s->client->Release();
+  }
+  if (s->event) {
+    CloseHandle(s->event);
+  }
+  delete s;
+  *slot = nullptr;
+}
+
+static bool WasapiOpen(VoiceWasapiStream** slot, bool capture,
+                       const std::string& name, VoiceChat* owner) {
+  WasapiClose(slot);
+  if (!WasapiComInit()) {
+    XELOGE("VoiceChat: COM init failed");
+    return false;
+  }
+  IMMDeviceEnumerator* e = WasapiEnumerator();
+  if (!e) {
+    XELOGE("VoiceChat: no device enumerator");
+    return false;
+  }
+  IMMDevice* device = WasapiFindDevice(e, capture, name);
+  e->Release();
+  if (!device) {
+    XELOGE("VoiceChat: no {} endpoint", capture ? "mic" : "output");
+    return false;
+  }
+
+  auto* s = new VoiceWasapiStream();
+  s->owner = owner;
+
+  HRESULT hr = device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr,
+                                reinterpret_cast<void**>(&s->client));
+  device->Release();
+  if (FAILED(hr) || !s->client) {
+    XELOGE("VoiceChat: {} activate failed: {:08X}", capture ? "mic" : "output",
+           static_cast<uint32_t>(hr));
+    delete s;
+    return false;
+  }
+
+  WAVEFORMATEX* mix = nullptr;
+  hr = s->client->GetMixFormat(&mix);
+  if (FAILED(hr) || !mix) {
+    XELOGE("VoiceChat: {} GetMixFormat failed: {:08X}",
+           capture ? "mic" : "output", static_cast<uint32_t>(hr));
+    s->client->Release();
+    delete s;
+    return false;
+  }
+  WasapiDescribeFormat(s, mix);
+
+  const REFERENCE_TIME duration = 300000;
+  hr = s->client->Initialize(AUDCLNT_SHAREMODE_SHARED,
+                             AUDCLNT_STREAMFLAGS_EVENTCALLBACK, duration, 0,
+                             mix, nullptr);
+  CoTaskMemFree(mix);
+  if (FAILED(hr)) {
+    XELOGE("VoiceChat: {} initialize failed: {:08X}",
+           capture ? "mic" : "output", static_cast<uint32_t>(hr));
+    s->client->Release();
+    delete s;
+    return false;
+  }
+
+  XELOGD("VoiceChat: {} endpoint {} Hz {} ch {} bit {}",
+         capture ? "mic" : "output", s->dev_rate, s->dev_channels, s->dev_bits,
+         s->dev_float ? "float" : "int");
+
+  s->client->GetBufferSize(&s->buffer_frames);
+  s->event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+  if (!s->event || FAILED(s->client->SetEventHandle(s->event))) {
+    XELOGE("VoiceChat: {} event setup failed", capture ? "mic" : "output");
+    if (s->event) {
+      CloseHandle(s->event);
+    }
+    s->client->Release();
+    delete s;
+    return false;
+  }
+
+  if (capture) {
+    hr = s->client->GetService(__uuidof(IAudioCaptureClient),
+                               reinterpret_cast<void**>(&s->capture));
+  } else {
+    hr = s->client->GetService(__uuidof(IAudioRenderClient),
+                               reinterpret_cast<void**>(&s->render));
+  }
+  if (FAILED(hr)) {
+    XELOGE("VoiceChat: {} GetService failed: {:08X}",
+           capture ? "mic" : "output", static_cast<uint32_t>(hr));
+    CloseHandle(s->event);
+    s->client->Release();
+    delete s;
+    return false;
+  }
+
+  if (FAILED(s->client->Start())) {
+    XELOGE("VoiceChat: {} start failed", capture ? "mic" : "output");
+    WasapiClose(&s);
+    return false;
+  }
+
+  s->run.store(true);
+  s->thread = std::thread(capture ? WasapiCaptureThread : WasapiRenderThread, s);
+  *slot = s;
+  return true;
+}
+#endif
 
 VoiceChat& VoiceChat::Get() {
   static VoiceChat instance;
@@ -57,8 +500,20 @@ VoiceChat& VoiceChat::Get() {
 
 VoiceChat::~VoiceChat() { Stop(); }
 
-std::vector<std::string> VoiceChat::EnumerateMics() { return Enumerate(1); }
-std::vector<std::string> VoiceChat::EnumerateOutputs() { return Enumerate(0); }
+std::vector<std::string> VoiceChat::EnumerateMics() {
+#if XE_PLATFORM_WIN32
+  return WasapiEnumerate(true);
+#else
+  return Enumerate(1);
+#endif
+}
+std::vector<std::string> VoiceChat::EnumerateOutputs() {
+#if XE_PLATFORM_WIN32
+  return WasapiEnumerate(false);
+#else
+  return Enumerate(0);
+#endif
+}
 
 void VoiceChat::SetMic(const std::string& name) {
   std::lock_guard<std::mutex> lock(state_mutex_);
@@ -221,6 +676,10 @@ void VoiceChat::UpdateRunningLocked() {
 }
 
 void VoiceChat::OpenCaptureLocked() {
+#if XE_PLATFORM_WIN32
+  WasapiOpen(&wasapi_capture_, true, mic_name_, this);
+  return;
+#else
   if (capture_device_) {
     SDL_CloseAudioDevice(capture_device_);
     capture_device_ = 0;
@@ -235,14 +694,26 @@ void VoiceChat::OpenCaptureLocked() {
   SDL_AudioSpec have = {};
   const char* dev = mic_name_.empty() ? nullptr : mic_name_.c_str();
   capture_device_ = SDL_OpenAudioDevice(dev, 1, &want, &have, 0);
+  if (!capture_device_ && dev) {
+    XELOGE("VoiceChat: mic '{}' open failed ({}), using system default",
+           mic_name_, SDL_GetError());
+    for (const auto& n : Enumerate(1)) {
+      XELOGE("VoiceChat: available mic: '{}'", n);
+    }
+    capture_device_ = SDL_OpenAudioDevice(nullptr, 1, &want, &have, 0);
+  }
   if (!capture_device_) {
-    XELOGW("VoiceChat: open mic failed (no mic?): {}", SDL_GetError());
+    XELOGE("VoiceChat: open mic failed: {}", SDL_GetError());
     return;
   }
   SDL_PauseAudioDevice(capture_device_, 0);
+#endif
 }
-
 void VoiceChat::OpenPlaybackLocked() {
+#if XE_PLATFORM_WIN32
+  WasapiOpen(&wasapi_playback_, false, output_name_, this);
+  return;
+#else
   if (playback_device_) {
     SDL_CloseAudioDevice(playback_device_);
     playback_device_ = 0;
@@ -257,26 +728,41 @@ void VoiceChat::OpenPlaybackLocked() {
   SDL_AudioSpec have = {};
   const char* dev = output_name_.empty() ? nullptr : output_name_.c_str();
   playback_device_ = SDL_OpenAudioDevice(dev, 0, &want, &have, 0);
+  if (!playback_device_ && dev) {
+    XELOGE("VoiceChat: output '{}' open failed ({}), using system default",
+           output_name_, SDL_GetError());
+    for (const auto& n : Enumerate(0)) {
+      XELOGE("VoiceChat: available output: '{}'", n);
+    }
+    playback_device_ = SDL_OpenAudioDevice(nullptr, 0, &want, &have, 0);
+  }
   if (!playback_device_) {
     XELOGE("VoiceChat: open output failed: {}", SDL_GetError());
     return;
   }
   SDL_PauseAudioDevice(playback_device_, 0);
+#endif
 }
-
 bool VoiceChat::Start() {
   if (running_) {
     return true;
   }
+#if !XE_PLATFORM_WIN32
   if (!EnsureAudioInit()) {
     XELOGE("VoiceChat: audio init failed");
     return false;
   }
+#endif
   OpenPlaybackLocked();
   OpenCaptureLocked();
   running_ = true;
+#if XE_PLATFORM_WIN32
+  XELOGD("VoiceChat: started (mic={}, output={})", wasapi_capture_ != nullptr,
+         wasapi_playback_ != nullptr);
+#else
   XELOGD("VoiceChat: started (mic={}, output={})", capture_device_ != 0,
          playback_device_ != 0);
+#endif
   return true;
 }
 
@@ -284,6 +770,10 @@ void VoiceChat::Stop() {
   if (!running_) {
     return;
   }
+#if XE_PLATFORM_WIN32
+  WasapiClose(&wasapi_capture_);
+  WasapiClose(&wasapi_playback_);
+#else
   if (capture_device_) {
     SDL_CloseAudioDevice(capture_device_);
     capture_device_ = 0;
@@ -292,6 +782,7 @@ void VoiceChat::Stop() {
     SDL_CloseAudioDevice(playback_device_);
     playback_device_ = 0;
   }
+#endif
   {
     std::lock_guard<std::mutex> lock(queue_mutex_);
     capture_total_ = 0;

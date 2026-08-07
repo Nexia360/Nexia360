@@ -63,11 +63,14 @@ class PPCHIRBuilder : public hir::HIRBuilder {
   void CopyFPSCRToCR1();
   Value* LoadXER();
   void StoreXER(Value* value);
-  // void UpdateXERWithOverflow();
-  // void UpdateXERWithOverflowAndCarry();
-  // void StoreOV(Value* value);
   Value* LoadCA();
   void StoreCA(Value* value);
+  Value* LoadOV();
+  void StoreOV(Value* value);
+  Value* LoadSO();
+  void StoreSO(Value* value);
+  // Stores XER[OV] and folds it into the sticky XER[SO].
+  void StoreOVSO(Value* value);
   Value* LoadSAT();
   void StoreSAT(Value* value);
 
@@ -101,13 +104,14 @@ class PPCHIRBuilder : public hir::HIRBuilder {
   Instr** instr_offset_list_;
   Label** label_list_;
 
-  // Reset each instruction.
+  // Reset each instruction. The OE forms reach four dests on their own (RT, CA,
+  // OV, SO), so this is sized above that.
   struct {
     uint32_t dest_count;
     struct {
       uint8_t reg;
       Value* value;
-    } dests[4];
+    } dests[8];
   } trace_info_;
 };
 

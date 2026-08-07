@@ -226,6 +226,12 @@ class SharedMemory {
   };
   std::vector<GlobalWatch*> global_watches_;
   struct WatchNode;
+  // next_free aliases the first pointer of the live layout, so anything that
+  // writes to a freed node or range corrupts the free list itself and the
+  // failure surfaces later, in an unrelated allocation. alloc_state sits
+  // outside the union so a double free can be caught where it happens.
+  static constexpr uint32_t kWatchAllocLive = 0x4C495645u;
+  static constexpr uint32_t kWatchAllocFree = 0x46524545u;
   // Watched range placed by other GPU subsystems.
   struct WatchRange {
     union {
@@ -240,6 +246,7 @@ class SharedMemory {
       };
       WatchRange* next_free;
     };
+    uint32_t alloc_state;
   };
   // Node for faster checking of watches when pages have been written to - all
   // 512 MB are split into smaller equally sized buckets, and then ranges are
@@ -256,6 +263,7 @@ class SharedMemory {
       };
       WatchNode* next_free;
     };
+    uint32_t alloc_state;
   };
   static constexpr uint32_t kWatchBucketSizeLog2 = 22;
   static constexpr uint32_t kWatchBucketCount =
@@ -284,6 +292,9 @@ class SharedMemory {
   // Unlinks and frees the range and its nodes. Call this in the global critical
   // region.
   void UnlinkWatchRange(WatchRange* range);
+  // Cold paths, only reached once corruption has already been detected.
+  bool IsWatchNodeFromPool(const WatchNode* node) const;
+  bool IsWatchRangeFromPool(const WatchRange* range) const;
 };
 
 }  // namespace gpu

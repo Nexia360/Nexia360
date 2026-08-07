@@ -414,8 +414,8 @@ void PPCHIRBuilder::UpdateCR(uint32_t n, Value* lhs, Value* rhs,
   Value* eq = CompareEQ(lhs, rhs);
   StoreContext(offsetof(PPCContext, cr0) + (4 * n) + 2, eq);
 
-  // Value* so = AllocValue(UINT8_TYPE);
-  // StoreContext(offsetof(PPCContext, cr) + (4 * n) + 3, so);
+  // CR[n][SO] is a copy of XER[SO] as of this instruction.
+  StoreContext(offsetof(PPCContext, cr0) + (4 * n) + 3, LoadSO());
 
   // TOOD(benvanik): trace CR.
 }
@@ -502,13 +502,15 @@ void PPCHIRBuilder::CopyFPSCRToCR1() {
 }
 
 Value* PPCHIRBuilder::LoadXER() {
-  Value* v = Shl(ZeroExtend(LoadCA(), INT64_TYPE), 29);
-  // TODO(benvanik): construct with other flags; overflow, etc?
-  return v;
+  // SO is bit 31, OV bit 30, CA bit 29 (big-endian bits 32/33/34).
+  return Or(Or(Shl(ZeroExtend(LoadSO(), INT64_TYPE), 31),
+               Shl(ZeroExtend(LoadOV(), INT64_TYPE), 30)),
+            Shl(ZeroExtend(LoadCA(), INT64_TYPE), 29));
 }
 
 void PPCHIRBuilder::StoreXER(Value* value) {
-  // TODO(benvanik): use other fields? For now, just pull out CA.
+  StoreSO(Truncate(And(Shr(value, 31), LoadConstantInt64(1)), INT8_TYPE));
+  StoreOV(Truncate(And(Shr(value, 30), LoadConstantInt64(1)), INT8_TYPE));
   StoreCA(Truncate(And(Shr(value, 29), LoadConstantInt64(1)), INT8_TYPE));
 }
 
@@ -523,6 +525,38 @@ void PPCHIRBuilder::StoreCA(Value* value) {
   auto& trace_reg = trace_info_.dests[trace_info_.dest_count++];
   trace_reg.reg = 66;
   trace_reg.value = value;
+}
+
+Value* PPCHIRBuilder::LoadOV() {
+  return LoadContext(offsetof(PPCContext, xer_ov), INT8_TYPE);
+}
+
+void PPCHIRBuilder::StoreOV(Value* value) {
+  value = Truncate(value, INT8_TYPE);
+  StoreContext(offsetof(PPCContext, xer_ov), value);
+
+  auto& trace_reg = trace_info_.dests[trace_info_.dest_count++];
+  trace_reg.reg = 68;
+  trace_reg.value = value;
+}
+
+Value* PPCHIRBuilder::LoadSO() {
+  return LoadContext(offsetof(PPCContext, xer_so), INT8_TYPE);
+}
+
+void PPCHIRBuilder::StoreSO(Value* value) {
+  value = Truncate(value, INT8_TYPE);
+  StoreContext(offsetof(PPCContext, xer_so), value);
+
+  auto& trace_reg = trace_info_.dests[trace_info_.dest_count++];
+  trace_reg.reg = 69;
+  trace_reg.value = value;
+}
+
+void PPCHIRBuilder::StoreOVSO(Value* value) {
+  value = Truncate(value, INT8_TYPE);
+  StoreOV(value);
+  StoreSO(Or(LoadSO(), value));
 }
 
 Value* PPCHIRBuilder::LoadSAT() {

@@ -62,7 +62,7 @@ struct HostExceptionReport {
   const NTSTATUS last_ntstatus;
 
   const int errno_value;
-  char Report_Scratchbuffer[2048];
+  char Report_Scratchbuffer[16384];
 
   unsigned int address_format_ring_index;
 
@@ -121,6 +121,12 @@ char* HostExceptionReport::ChompNewlines(char* s) {
 }
 void HostExceptionReport::AddString(const char* s) {
   size_t ln = strlen(s);
+
+  const size_t remaining =
+      (sizeof(Report_Scratchbuffer) - 1) - Report_Scratchpos;
+  if (ln > remaining) {
+    ln = remaining;
+  }
 
   for (size_t i = 0; i < ln; ++i) {
     Report_Scratchbuffer[i + Report_Scratchpos] = s[i];
@@ -286,10 +292,75 @@ static bool thread_name_handle(HostExceptionReport* report) {
   report->AddString(result_buffer);
   return true;
 }
+static bool stack_trace_handle(HostExceptionReport* report) {
+  CONTEXT unwind_context = *report->ExceptionInfo->ContextRecord;
+
+  report->AddString("Stack trace (most recent call first):\n");
+
+  char frame_buffer[256];
+  DWORD64 previous_stack_pointer = 0;
+
+  for (unsigned frame_index = 0; frame_index < 32; ++frame_index) {
+#if XE_ARCH_AMD64
+    const DWORD64 program_counter = unwind_context.Rip;
+    const DWORD64 stack_pointer = unwind_context.Rsp;
+#elif XE_ARCH_ARM64
+    const DWORD64 program_counter = unwind_context.Pc;
+    const DWORD64 stack_pointer = unwind_context.Sp;
+#endif
+    if (!program_counter) {
+      break;
+    }
+
+    sprintf_s(frame_buffer, "  [%02u] %s\n", frame_index,
+              report->GetFormattedAddress(
+                  static_cast<uintptr_t>(program_counter)));
+    report->AddString(frame_buffer);
+
+    // A frame that does not advance the stack means the unwind is not making
+    // progress; stop rather than emit the same frame forever.
+    if (frame_index && stack_pointer <= previous_stack_pointer) {
+      report->AddString("  <unwind stalled>\n");
+      break;
+    }
+    previous_stack_pointer = stack_pointer;
+
+    DWORD64 image_base = 0;
+    PRUNTIME_FUNCTION function_entry =
+        RtlLookupFunctionEntry(program_counter, &image_base, nullptr);
+
+    if (!function_entry) {
+      // Leaf function: no unwind data, so the return address is where the call
+      // left it.
+#if XE_ARCH_AMD64
+      if (!stack_pointer) {
+        break;
+      }
+      unwind_context.Rip = *reinterpret_cast<DWORD64*>(stack_pointer);
+      unwind_context.Rsp = stack_pointer + 8;
+#elif XE_ARCH_ARM64
+      if (!unwind_context.Lr) {
+        break;
+      }
+      unwind_context.Pc = unwind_context.Lr;
+#endif
+      continue;
+    }
+
+    PVOID handler_data = nullptr;
+    DWORD64 establisher_frame = 0;
+    RtlVirtualUnwind(UNW_FLAG_NHANDLER, image_base, program_counter,
+                     function_entry, &unwind_context, &handler_data,
+                     &establisher_frame, nullptr);
+  }
+
+  return true;
+}
+
 static ExceptionInfoCategoryHandler host_exception_category_handlers[] = {
-    exception_pointers_handler, exception_win32_error_handle,
+    exception_pointers_handler,      exception_win32_error_handle,
     exception_ntstatus_error_handle, exception_cerror_handle,
-    thread_name_handle};
+    thread_name_handle,              stack_trace_handle};
 
 LONG _UnhandledExceptionFilter(_EXCEPTION_POINTERS* ExceptionInfo) {
   HostExceptionReport report{ExceptionInfo};

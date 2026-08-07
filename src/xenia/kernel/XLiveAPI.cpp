@@ -2123,18 +2123,45 @@ std::vector<X_TITLE_SERVER> XLiveAPI::GetServers() {
   Document doc;
   doc.Parse(response->RawResponse().response);
 
+  // Every accessor below is type checked. rapidjson's GetString/GetInt are
+  // guarded only by RAPIDJSON_ASSERT, which is compiled out in release, so a
+  // field of the wrong type hands back a garbage pointer instead of failing.
+  if (doc.HasParseError() || !doc.IsArray()) {
+    XELOGE("GetServers: malformed server list for title {:08X}",
+           kernel_state()->title_id());
+    return xlsp_servers_;
+  }
+
   for (const auto& server_data : doc.GetArray()) {
+    if (!server_data.IsObject()) {
+      XELOGE("GetServers: skipping non-object server entry");
+      continue;
+    }
+
     X_TITLE_SERVER server{};
 
-    server.server_address = ip_to_in_addr(server_data["address"].GetString());
+    // A server without a usable address cannot be reached, so it is dropped
+    // rather than published to the title as an entry pointing at 0.0.0.0.
+    const auto address = server_data.FindMember("address");
+    if (address == server_data.MemberEnd() || !address->value.IsString()) {
+      XELOGE("GetServers: skipping server entry with no usable address");
+      continue;
+    }
 
-    server.flags = server_data["flags"].GetInt();
+    server.server_address = ip_to_in_addr(address->value.GetString());
 
-    std::string description = server_data["description"].GetString();
+    const auto flags = server_data.FindMember("flags");
+    if (flags != server_data.MemberEnd() && flags->value.IsInt()) {
+      server.flags = flags->value.GetInt();
+    }
 
-    xe::string_util::copy_truncating(server.server_description,
-                                     description.c_str(),
-                                     sizeof(server.server_description));
+    const auto description = server_data.FindMember("description");
+    if (description != server_data.MemberEnd() &&
+        description->value.IsString()) {
+      xe::string_util::copy_truncating(server.server_description,
+                                       description->value.GetString(),
+                                       sizeof(server.server_description));
+    }
 
     xlsp_servers_.push_back(server);
   }

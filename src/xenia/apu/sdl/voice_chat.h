@@ -22,6 +22,8 @@ namespace xe {
 namespace apu {
 namespace sdl {
 
+struct VoiceWasapiStream;
+
 class VoiceChat {
  public:
   static VoiceChat& Get();
@@ -50,6 +52,9 @@ class VoiceChat {
 
   void SetSettingsPath(const std::filesystem::path& path);
 
+  void OnCapture(const int16_t* samples, size_t count);
+  void FillPlayback(int16_t* out, size_t count);
+
  private:
   VoiceChat() = default;
   ~VoiceChat();
@@ -62,8 +67,6 @@ class VoiceChat {
   void SaveSettingsLocked();
   void LoadSettingsLocked();
 
-  void OnCapture(const int16_t* samples, size_t count);
-  void FillPlayback(int16_t* out, size_t count);
   static void CaptureThunk(void* userdata, uint8_t* stream, int len);
   static void PlaybackThunk(void* userdata, uint8_t* stream, int len);
 
@@ -71,6 +74,8 @@ class VoiceChat {
   int ref_count_ = 0;
   bool enabled_ = false;
   bool running_ = false;
+  VoiceWasapiStream* wasapi_capture_ = nullptr;
+  VoiceWasapiStream* wasapi_playback_ = nullptr;
   uint32_t capture_device_ = 0;
   uint32_t playback_device_ = 0;
   std::string mic_name_;     // "" = system default

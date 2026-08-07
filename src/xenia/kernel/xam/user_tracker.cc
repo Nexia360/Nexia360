@@ -25,6 +25,7 @@
 #include "xenia/kernel/xam/user_property.h"
 #include "xenia/kernel/xam/user_settings.h"
 #include "xenia/kernel/xam/user_tracker.h"
+#include "xenia/apu/sdl/voice_chat.h"
 #include "xenia/kernel/xam/xdbf/gpd_info.h"
 #include "xenia/ui/imgui_host_notification.h"
 
@@ -960,6 +961,13 @@ std::optional<UserSetting> UserTracker::GetGpdSetting(
 std::optional<UserSetting> UserTracker::GetSetting(UserProfile* user,
                                                    uint32_t title_id,
                                                    uint32_t setting_id) const {
+  if (setting_id == static_cast<uint32_t>(
+                        UserSettingId::XPROFILE_OPTION_VOICE_VOLUME)) {
+    return UserSetting(
+        UserSettingId::XPROFILE_OPTION_VOICE_VOLUME,
+        int32_t(apu::sdl::VoiceChat::Get().voice_volume()));
+  }
+
   auto gpd_setting = GetGpdSetting(user, title_id, setting_id);
   if (gpd_setting) {
     return gpd_setting.value();
@@ -1888,6 +1896,7 @@ void UserTracker::SetupDefaultProfileSettings(uint64_t xuid) {
   settings.push_back(Gamercard_Cred);
   settings.push_back(Vision_Enabled);
   settings.push_back(Voice_Muted);
+  settings.push_back(Voice_Through_Speakers);
   settings.push_back(Voice_Volume);
   settings.push_back(Control_Sensitivity);
   settings.push_back(Primary_Preferred_Color);

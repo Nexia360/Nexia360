@@ -16,6 +16,7 @@
 #include "xenia/kernel/xboxkrnl/xboxkrnl_private.h"
 #include "xenia/kernel/xsemaphore.h"
 #include "xenia/kernel/xtimer.h"
+#include "xenia/memory.h"
 #include "xenia/xbox.h"
 
 namespace xe {
@@ -1379,6 +1380,45 @@ dword_result_t NtQueueApcThread_entry(dword_t thread_handle,
                             arg1, arg2, context);
 }
 
+// The APC queue lives in guest memory, so its links are only as trustworthy as
+// whatever last wrote them. Unlinking through a bad link writes to an arbitrary
+// address, so the pointers are checked against the heap first - LookupHeap and
+// QueryProtect answer without dereferencing anything.
+static bool IsGuestWritableDword(uint32_t address, PPCContext* ctx) {
+  if (!address || (address & 3)) {
+    return false;
+  }
+  auto* heap = ctx->kernel_state->memory()->LookupHeap(address);
+  if (!heap) {
+    return false;
+  }
+  uint32_t protect = 0;
+  if (!heap->QueryProtect(address, &protect)) {
+    return false;
+  }
+  return (protect & kMemoryProtectWrite) != 0;
+}
+
+// An entry is two dwords and may straddle a page boundary, so both halves have
+// to be checked.
+static bool IsGuestWritableListEntry(uint32_t address, PPCContext* ctx) {
+  return IsGuestWritableDword(address, ctx) &&
+         IsGuestWritableDword(address + 4, ctx);
+}
+
+// A list entry is only safe to unlink when both neighbours point back at it.
+static bool IsListEntryUnlinkable(X_LIST_ENTRY* entry, PPCContext* ctx) {
+  const uint32_t self = ctx->HostToGuestVirtual(entry);
+  const uint32_t front = entry->flink_ptr;
+  const uint32_t back = entry->blink_ptr;
+  if (!IsGuestWritableListEntry(front, ctx) ||
+      !IsGuestWritableListEntry(back, ctx)) {
+    return false;
+  }
+  return util::XeHostList(front, ctx)->blink_ptr == self &&
+         util::XeHostList(back, ctx)->flink_ptr == self;
+}
+
 X_STATUS xeProcessUserApcs(PPCContext* ctx) {
   if (!ctx) {
     ctx = cpu::ThreadState::Get()->context();
@@ -1402,8 +1442,25 @@ X_STATUS xeProcessUserApcs(PPCContext* ctx) {
   while (!user_apc_queue.empty(ctx)) {
     uint32_t apc_ptr = user_apc_queue.flink_ptr;
 
+    if (!IsGuestWritableListEntry(apc_ptr, ctx)) {
+      XELOGE(
+          "xeProcessUserApcs: APC queue head {:08X} is not usable guest "
+          "memory; abandoning the queue",
+          apc_ptr);
+      break;
+    }
+
     XAPC* apc = user_apc_queue.ListEntryObject(
         ctx->TranslateVirtual<X_LIST_ENTRY*>(apc_ptr));
+
+    if (!IsListEntryUnlinkable(&apc->list_entry, ctx)) {
+      XELOGE(
+          "xeProcessUserApcs: APC {:08X} has inconsistent list links "
+          "(flink {:08X}, blink {:08X}); abandoning the queue",
+          apc_ptr, apc->list_entry.flink_ptr.get(),
+          apc->list_entry.blink_ptr.get());
+      break;
+    }
 
     uint8_t* scratch_ptr = ctx->TranslateVirtual(scratch_address);
     xe::store_and_swap<uint32_t>(scratch_ptr + 0, apc->normal_routine);
