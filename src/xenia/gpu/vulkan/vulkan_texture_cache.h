@@ -45,7 +45,7 @@ class VulkanTextureCache final : public TextureCache {
       uint32_t mip_min_level : 4;           // 21
       uint32_t mip_base_map : 1;            // 22
       // Maximum mip level is in the texture resource itself, but mip_base_map
-      // can be used to limit fetching to mip_min_level.
+      // limits fetching to mip_min_level (level 0 when the base is available).
     };
 
     SamplerParameters() : value(0) { static_assert_size(*this, sizeof(value)); }
