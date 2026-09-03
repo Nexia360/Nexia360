@@ -37,12 +37,6 @@ namespace gpu {
 
 enum class GPUSetting { ClearMemoryPageState, ReadbackMemexport };
 
-enum class ReadbackResolveMode {
-  kDisabled,  // No readback (none)
-  kFast,      // Delayed sync, 1 frame behind (fast)
-  kFull       // Immediate sync with GPU stall (full)
-};
-
 // Occlusion queries - ZPD report mode.
 enum class ZPDMode {
   kFake,     // Fake sample counts, no real GPU queries (fake)
@@ -53,8 +47,6 @@ enum class ZPDMode {
 
 void SaveGPUSetting(GPUSetting setting, uint64_t value);
 bool GetGPUSetting(GPUSetting setting);
-ReadbackResolveMode GetReadbackResolveMode();
-void SetReadbackResolveMode(const std::string& mode);
 ZPDMode GetZPDMode();
 void SetZPDMode(const std::string& mode);
 
@@ -130,6 +122,8 @@ class CommandProcessor {
 
   Shader* active_vertex_shader() const { return active_vertex_shader_; }
   Shader* active_pixel_shader() const { return active_pixel_shader_; }
+
+  kernel::KernelState* kernel_state() const { return kernel_state_; }
 
   virtual bool Initialize();
   virtual void Shutdown();
@@ -288,6 +282,12 @@ class CommandProcessor {
   virtual void MakeCoherent();
   virtual void PrepareForWait();
   virtual void ReturnFromWait();
+
+  // Called while the worker has no commands to execute. Work that another
+  // thread may be blocked waiting on must be serviced here as well as during
+  // submission - a guest thread stalled on a GPU result stops writing commands,
+  // so waiting for the next submission to come along can deadlock.
+  virtual void OnWorkerIdle() {}
 
   virtual void PollCompletedSubmission() {}
 

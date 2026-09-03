@@ -69,6 +69,13 @@ DEFINE_bool(nexiahub_transport, false,
             "direct peer connection is not possible.",
             "Live");
 
+DEFINE_bool(nexiahub_transport_tcp_fallback, true,
+            "Fall back to a TCP link with the Nexia Hub relay when UDP cannot "
+            "be established. Turn this off to use UDP only, which makes a "
+            "blocked or failing UDP path obvious instead of silently costing "
+            "the latency a stream adds.",
+            "Live");
+
 DEFINE_int32(discord_presence_user_index, 0,
              "User profile index used for Discord rich presence [0, 3].",
              "Live");
@@ -373,6 +380,10 @@ void XLiveAPI::SetBindInterface(bool state) const {
 
 void XLiveAPI::SetNexiaHubTransport(bool state) const {
   OVERRIDE_bool(nexiahub_transport, state);
+}
+
+void XLiveAPI::SetNexiaHubTransportTcpFallback(bool state) const {
+  OVERRIDE_bool(nexiahub_transport_tcp_fallback, state);
 }
 
 std::string XLiveAPI::GetApiAddress() {
@@ -1101,11 +1112,19 @@ sockaddr_in XLiveAPI::Getwhoami() {
 
   XELOGI("Requesting Public IP");
 
-  const char* address_str = doc["address"].GetString();
-
-  if (address_str) {
-    addr = ip_to_sockaddr(address_str);
+  if (doc.HasParseError() || !doc.IsObject()) {
+    XELOGD("Getwhoami: malformed response");
+    return addr;
   }
+
+  const auto address = doc.FindMember("address");
+
+  if (address == doc.MemberEnd() || !address->value.IsString()) {
+    XELOGD("Getwhoami: no usable address in response");
+    return addr;
+  }
+
+  addr = ip_to_sockaddr(address->value.GetString());
 
   return addr;
 }

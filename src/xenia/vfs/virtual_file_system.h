@@ -39,6 +39,18 @@ class VirtualFileSystem {
   bool IsSymbolicLinkRegistered(const std::string_view path);
   bool FindSymbolicLink(const std::string_view path, std::string& target);
 
+  // Layers a device over an existing mount: a path under shadowed_mount is
+  // looked up in the overlay first and only falls through to the real device
+  // when the overlay does not have that file. This is how a title update's
+  // non-executable payload (fastfiles, packs, res\, sound) replaces the disc
+  // copy for titles that open those files by their normal game: path instead
+  // of through update:.
+  bool RegisterOverlayDevice(const std::string_view shadowed_mount,
+                             std::unique_ptr<Device> device);
+  void UnregisterOverlayDevices();
+  // Returns the overlay entry shadowing this path, or null.
+  Entry* ResolveOverlayPath(const std::string_view path);
+
   Entry* ResolvePath(const std::string_view path);
 
   Entry* CreatePath(const std::string_view path, uint32_t attributes);
@@ -64,6 +76,12 @@ class VirtualFileSystem {
   xe::global_critical_region global_critical_region_;
   std::vector<std::unique_ptr<Device>> devices_;
   std::unordered_map<std::string, std::string> symlinks_;
+
+  struct OverlayDevice {
+    std::string shadowed_mount;
+    std::unique_ptr<Device> device;
+  };
+  std::vector<OverlayDevice> overlay_devices_;
 
   bool ResolveSymbolicLink(const std::string_view path, std::string& result);
 };

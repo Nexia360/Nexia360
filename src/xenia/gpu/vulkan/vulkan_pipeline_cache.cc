@@ -861,8 +861,39 @@ bool VulkanPipelineCache::TranslateAnalyzedShader(
     return false;
   }
 
-  // TODO(Triang3l): Log that the shader has been successfully translated in
-  // common code.
+  // Same message and format as the Direct3D 12 pipeline cache emits, so guest
+  // shader disassembly can be pulled from a Vulkan run too.
+  const char* host_shader_type;
+  if (shader.type() == xenos::ShaderType::kVertex) {
+    switch (SpirvShaderTranslator::Modification(translation.modification())
+                .vertex.host_vertex_shader_type) {
+      case Shader::HostVertexShaderType::kLineDomainCPIndexed:
+        host_shader_type = "control-point-indexed line domain";
+        break;
+      case Shader::HostVertexShaderType::kLineDomainPatchIndexed:
+        host_shader_type = "patch-indexed line domain";
+        break;
+      case Shader::HostVertexShaderType::kTriangleDomainCPIndexed:
+        host_shader_type = "control-point-indexed triangle domain";
+        break;
+      case Shader::HostVertexShaderType::kTriangleDomainPatchIndexed:
+        host_shader_type = "patch-indexed triangle domain";
+        break;
+      case Shader::HostVertexShaderType::kQuadDomainCPIndexed:
+        host_shader_type = "control-point-indexed quad domain";
+        break;
+      case Shader::HostVertexShaderType::kQuadDomainPatchIndexed:
+        host_shader_type = "patch-indexed quad domain";
+        break;
+      default:
+        host_shader_type = "vertex";
+    }
+  } else {
+    host_shader_type = "pixel";
+  }
+  XELOGGPU("Generated {} shader ({}b) - hash {:016X}:\n{}\n", host_shader_type,
+           shader.ucode_dword_count() * sizeof(uint32_t),
+           shader.ucode_data_hash(), shader.ucode_disassembly().c_str());
 
   // Set up the texture binding layout.
   if (shader.EnterBindingLayoutUserUIDSetup()) {

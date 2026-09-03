@@ -9,6 +9,7 @@
 
 #include "xenia/gpu/vulkan/vulkan_render_target_cache.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -67,22 +68,31 @@ namespace shaders {
 #include "xenia/gpu/shaders/bytecode/vulkan_spirv/resolve_clear_64bpp_scaled_cs.h"
 #include "xenia/gpu/shaders/bytecode/vulkan_spirv/resolve_fast_32bpp_1x2xmsaa_cs.h"
 #include "xenia/gpu/shaders/bytecode/vulkan_spirv/resolve_fast_32bpp_1x2xmsaa_scaled_cs.h"
+#include "xenia/gpu/shaders/bytecode/vulkan_spirv/resolve_fast_32bpp_1x2xmsaa_downsampled_cs.h"
 #include "xenia/gpu/shaders/bytecode/vulkan_spirv/resolve_fast_32bpp_4xmsaa_cs.h"
 #include "xenia/gpu/shaders/bytecode/vulkan_spirv/resolve_fast_32bpp_4xmsaa_scaled_cs.h"
+#include "xenia/gpu/shaders/bytecode/vulkan_spirv/resolve_fast_32bpp_4xmsaa_downsampled_cs.h"
 #include "xenia/gpu/shaders/bytecode/vulkan_spirv/resolve_fast_64bpp_1x2xmsaa_cs.h"
 #include "xenia/gpu/shaders/bytecode/vulkan_spirv/resolve_fast_64bpp_1x2xmsaa_scaled_cs.h"
+#include "xenia/gpu/shaders/bytecode/vulkan_spirv/resolve_fast_64bpp_1x2xmsaa_downsampled_cs.h"
 #include "xenia/gpu/shaders/bytecode/vulkan_spirv/resolve_fast_64bpp_4xmsaa_cs.h"
 #include "xenia/gpu/shaders/bytecode/vulkan_spirv/resolve_fast_64bpp_4xmsaa_scaled_cs.h"
+#include "xenia/gpu/shaders/bytecode/vulkan_spirv/resolve_fast_64bpp_4xmsaa_downsampled_cs.h"
 #include "xenia/gpu/shaders/bytecode/vulkan_spirv/resolve_full_128bpp_cs.h"
 #include "xenia/gpu/shaders/bytecode/vulkan_spirv/resolve_full_128bpp_scaled_cs.h"
+#include "xenia/gpu/shaders/bytecode/vulkan_spirv/resolve_full_128bpp_downsampled_cs.h"
 #include "xenia/gpu/shaders/bytecode/vulkan_spirv/resolve_full_16bpp_cs.h"
 #include "xenia/gpu/shaders/bytecode/vulkan_spirv/resolve_full_16bpp_scaled_cs.h"
+#include "xenia/gpu/shaders/bytecode/vulkan_spirv/resolve_full_16bpp_downsampled_cs.h"
 #include "xenia/gpu/shaders/bytecode/vulkan_spirv/resolve_full_32bpp_cs.h"
 #include "xenia/gpu/shaders/bytecode/vulkan_spirv/resolve_full_32bpp_scaled_cs.h"
+#include "xenia/gpu/shaders/bytecode/vulkan_spirv/resolve_full_32bpp_downsampled_cs.h"
 #include "xenia/gpu/shaders/bytecode/vulkan_spirv/resolve_full_64bpp_cs.h"
 #include "xenia/gpu/shaders/bytecode/vulkan_spirv/resolve_full_64bpp_scaled_cs.h"
+#include "xenia/gpu/shaders/bytecode/vulkan_spirv/resolve_full_64bpp_downsampled_cs.h"
 #include "xenia/gpu/shaders/bytecode/vulkan_spirv/resolve_full_8bpp_cs.h"
 #include "xenia/gpu/shaders/bytecode/vulkan_spirv/resolve_full_8bpp_scaled_cs.h"
+#include "xenia/gpu/shaders/bytecode/vulkan_spirv/resolve_full_8bpp_downsampled_cs.h"
 }  // namespace shaders
 
 const VulkanRenderTargetCache::ResolveCopyShaderCode
@@ -91,35 +101,53 @@ const VulkanRenderTargetCache::ResolveCopyShaderCode
         {shaders::resolve_fast_32bpp_1x2xmsaa_cs,
          sizeof(shaders::resolve_fast_32bpp_1x2xmsaa_cs),
          shaders::resolve_fast_32bpp_1x2xmsaa_scaled_cs,
-         sizeof(shaders::resolve_fast_32bpp_1x2xmsaa_scaled_cs)},
+         sizeof(shaders::resolve_fast_32bpp_1x2xmsaa_scaled_cs),
+         shaders::resolve_fast_32bpp_1x2xmsaa_downsampled_cs,
+         sizeof(shaders::resolve_fast_32bpp_1x2xmsaa_downsampled_cs)},
         {shaders::resolve_fast_32bpp_4xmsaa_cs,
          sizeof(shaders::resolve_fast_32bpp_4xmsaa_cs),
          shaders::resolve_fast_32bpp_4xmsaa_scaled_cs,
-         sizeof(shaders::resolve_fast_32bpp_4xmsaa_scaled_cs)},
+         sizeof(shaders::resolve_fast_32bpp_4xmsaa_scaled_cs),
+         shaders::resolve_fast_32bpp_4xmsaa_downsampled_cs,
+         sizeof(shaders::resolve_fast_32bpp_4xmsaa_downsampled_cs)},
         {shaders::resolve_fast_64bpp_1x2xmsaa_cs,
          sizeof(shaders::resolve_fast_64bpp_1x2xmsaa_cs),
          shaders::resolve_fast_64bpp_1x2xmsaa_scaled_cs,
-         sizeof(shaders::resolve_fast_64bpp_1x2xmsaa_scaled_cs)},
+         sizeof(shaders::resolve_fast_64bpp_1x2xmsaa_scaled_cs),
+         shaders::resolve_fast_64bpp_1x2xmsaa_downsampled_cs,
+         sizeof(shaders::resolve_fast_64bpp_1x2xmsaa_downsampled_cs)},
         {shaders::resolve_fast_64bpp_4xmsaa_cs,
          sizeof(shaders::resolve_fast_64bpp_4xmsaa_cs),
          shaders::resolve_fast_64bpp_4xmsaa_scaled_cs,
-         sizeof(shaders::resolve_fast_64bpp_4xmsaa_scaled_cs)},
+         sizeof(shaders::resolve_fast_64bpp_4xmsaa_scaled_cs),
+         shaders::resolve_fast_64bpp_4xmsaa_downsampled_cs,
+         sizeof(shaders::resolve_fast_64bpp_4xmsaa_downsampled_cs)},
         {shaders::resolve_full_8bpp_cs, sizeof(shaders::resolve_full_8bpp_cs),
          shaders::resolve_full_8bpp_scaled_cs,
-         sizeof(shaders::resolve_full_8bpp_scaled_cs)},
+         sizeof(shaders::resolve_full_8bpp_scaled_cs),
+         shaders::resolve_full_8bpp_downsampled_cs,
+         sizeof(shaders::resolve_full_8bpp_downsampled_cs)},
         {shaders::resolve_full_16bpp_cs, sizeof(shaders::resolve_full_16bpp_cs),
          shaders::resolve_full_16bpp_scaled_cs,
-         sizeof(shaders::resolve_full_16bpp_scaled_cs)},
+         sizeof(shaders::resolve_full_16bpp_scaled_cs),
+         shaders::resolve_full_16bpp_downsampled_cs,
+         sizeof(shaders::resolve_full_16bpp_downsampled_cs)},
         {shaders::resolve_full_32bpp_cs, sizeof(shaders::resolve_full_32bpp_cs),
          shaders::resolve_full_32bpp_scaled_cs,
-         sizeof(shaders::resolve_full_32bpp_scaled_cs)},
+         sizeof(shaders::resolve_full_32bpp_scaled_cs),
+         shaders::resolve_full_32bpp_downsampled_cs,
+         sizeof(shaders::resolve_full_32bpp_downsampled_cs)},
         {shaders::resolve_full_64bpp_cs, sizeof(shaders::resolve_full_64bpp_cs),
          shaders::resolve_full_64bpp_scaled_cs,
-         sizeof(shaders::resolve_full_64bpp_scaled_cs)},
+         sizeof(shaders::resolve_full_64bpp_scaled_cs),
+         shaders::resolve_full_64bpp_downsampled_cs,
+         sizeof(shaders::resolve_full_64bpp_downsampled_cs)},
         {shaders::resolve_full_128bpp_cs,
          sizeof(shaders::resolve_full_128bpp_cs),
          shaders::resolve_full_128bpp_scaled_cs,
-         sizeof(shaders::resolve_full_128bpp_scaled_cs)},
+         sizeof(shaders::resolve_full_128bpp_scaled_cs),
+         shaders::resolve_full_128bpp_downsampled_cs,
+         sizeof(shaders::resolve_full_128bpp_downsampled_cs)},
 };
 
 const VulkanRenderTargetCache::TransferPipelineLayoutInfo
@@ -194,11 +222,13 @@ const VulkanRenderTargetCache::TransferModeInfo
 VulkanRenderTargetCache::VulkanRenderTargetCache(
     const RegisterFile& register_file, const Memory& memory,
     TraceWriter& trace_writer, uint32_t draw_resolution_scale_x,
-    uint32_t draw_resolution_scale_y, VulkanCommandProcessor& command_processor)
+    uint32_t draw_resolution_scale_y, bool resolve_downsampling,
+    VulkanCommandProcessor& command_processor)
     : RenderTargetCache(register_file, memory, &trace_writer,
                         draw_resolution_scale_x, draw_resolution_scale_y),
       command_processor_(command_processor),
-      trace_writer_(trace_writer) {}
+      trace_writer_(trace_writer),
+      resolve_downsampling_(resolve_downsampling) {}
 
 VulkanRenderTargetCache::~VulkanRenderTargetCache() { Shutdown(true); }
 
@@ -442,6 +472,9 @@ bool VulkanRenderTargetCache::Initialize(uint32_t shared_memory_binding_count) {
                              0, nullptr);
 
   bool draw_resolution_scaled = IsDrawResolutionScaled();
+  // Clears stay in EDRAM and always follow the scale. Only the copy, which is
+  // what the guest gets to see, is downsampled back to guest size.
+  bool resolve_dest_scaled = draw_resolution_scaled && !resolve_downsampling_;
 
   // Resolve copy pipeline layout.
   VkDescriptorSetLayout
@@ -458,7 +491,7 @@ bool VulkanRenderTargetCache::Initialize(uint32_t shared_memory_binding_count) {
   // Potentially binding all of the shared memory at 1x resolution, but only
   // portions with scaled resolution.
   resolve_copy_push_constant_range.size =
-      draw_resolution_scaled
+      resolve_dest_scaled
           ? sizeof(draw_util::ResolveCopyShaderConstants::DestRelative)
           : sizeof(draw_util::ResolveCopyShaderConstants);
   VkPipelineLayoutCreateInfo resolve_copy_pipeline_layout_create_info;
@@ -494,13 +527,27 @@ bool VulkanRenderTargetCache::Initialize(uint32_t shared_memory_binding_count) {
     assert_true(resolve_copy_shader_code.unscaled &&
                 resolve_copy_shader_code.unscaled_size_bytes &&
                 resolve_copy_shader_code.scaled &&
-                resolve_copy_shader_code.scaled_size_bytes);
+                resolve_copy_shader_code.scaled_size_bytes &&
+                resolve_copy_shader_code.downsampled &&
+                resolve_copy_shader_code.downsampled_size_bytes);
+    const uint32_t* resolve_copy_shader_bytecode;
+    size_t resolve_copy_shader_size_bytes;
+    if (resolve_downsampling_) {
+      resolve_copy_shader_bytecode = resolve_copy_shader_code.downsampled;
+      resolve_copy_shader_size_bytes =
+          resolve_copy_shader_code.downsampled_size_bytes;
+    } else if (draw_resolution_scaled) {
+      resolve_copy_shader_bytecode = resolve_copy_shader_code.scaled;
+      resolve_copy_shader_size_bytes =
+          resolve_copy_shader_code.scaled_size_bytes;
+    } else {
+      resolve_copy_shader_bytecode = resolve_copy_shader_code.unscaled;
+      resolve_copy_shader_size_bytes =
+          resolve_copy_shader_code.unscaled_size_bytes;
+    }
     VkPipeline resolve_copy_pipeline = ui::vulkan::util::CreateComputePipeline(
         vulkan_device, resolve_copy_pipeline_layout_,
-        draw_resolution_scaled ? resolve_copy_shader_code.scaled
-                               : resolve_copy_shader_code.unscaled,
-        draw_resolution_scaled ? resolve_copy_shader_code.scaled_size_bytes
-                               : resolve_copy_shader_code.unscaled_size_bytes);
+        resolve_copy_shader_bytecode, resolve_copy_shader_size_bytes);
     if (resolve_copy_pipeline == VK_NULL_HANDLE) {
       XELOGE(
           "VulkanRenderTargetCache: Failed to create the resolve copy "
@@ -1033,7 +1080,10 @@ bool VulkanRenderTargetCache::Resolve(const Memory& memory,
   written_address_out = 0;
   written_length_out = 0;
 
-  bool draw_resolution_scaled = IsDrawResolutionScaled();
+  // With downsampling the destination is guest sized and lives in shared
+  // memory, so every scaled destination path here is bypassed.
+  bool draw_resolution_scaled =
+      IsDrawResolutionScaled() && !resolve_downsampling_;
 
   draw_util::ResolveInfo resolve_info;
   if (!draw_util::GetResolveInfo(
@@ -1071,12 +1121,12 @@ bool VulkanRenderTargetCache::Resolve(const Memory& memory,
                                         dump_rows, dump_pitch);
       DumpRenderTargets(dump_base, dump_row_length_used, dump_rows, dump_pitch);
     }
-
     draw_util::ResolveCopyShaderConstants copy_shader_constants;
     uint32_t copy_group_count_x, copy_group_count_y;
     draw_util::ResolveCopyShaderIndex copy_shader = resolve_info.GetCopyShader(
         draw_resolution_scale_x(), draw_resolution_scale_y(),
-        copy_shader_constants, copy_group_count_x, copy_group_count_y);
+        resolve_downsampling_, copy_shader_constants, copy_group_count_x,
+        copy_group_count_y);
     assert_true(copy_group_count_x && copy_group_count_y);
     if (copy_shader != draw_util::ResolveCopyShaderIndex::kUnknown) {
       const draw_util::ResolveCopyShaderInfo& copy_shader_info =
@@ -1843,6 +1893,26 @@ RenderTargetCache::RenderTarget* VulkanRenderTargetCache::CreateRenderTarget(
       image_create_info.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
     }
     image_create_info.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+  }
+  // Direct3D 12 creates the resource as TYPELESS and hangs the drawing and the
+  // ownership transfer formats off it as views, so the driver knows both are
+  // coming. Vulkan has no typeless, and a mutable format image without a format
+  // list leaves the driver to assume every compatible format - which is where
+  // framebuffer compression metadata and an aliased view of a different format
+  // can disagree.
+  VkFormat image_view_formats[2];
+  VkImageFormatListCreateInfo image_format_list_create_info;
+  if ((image_create_info.flags & VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT) &&
+      vulkan_device->extensions().ext_1_2_KHR_image_format_list) {
+    image_view_formats[0] = image_create_info.format;
+    image_view_formats[1] = transfer_format;
+    image_format_list_create_info.sType =
+        VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO;
+    image_format_list_create_info.pNext = image_create_info.pNext;
+    image_format_list_create_info.viewFormatCount =
+        uint32_t(xe::countof(image_view_formats));
+    image_format_list_create_info.pViewFormats = image_view_formats;
+    image_create_info.pNext = &image_format_list_create_info;
   }
   if (image_create_info.format == VK_FORMAT_UNDEFINED) {
     XELOGE("VulkanRenderTargetCache: Unknown {} render target format {}",

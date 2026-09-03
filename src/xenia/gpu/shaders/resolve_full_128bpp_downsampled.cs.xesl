@@ -1,0 +1,2 @@
+#define XE_RESOLVE_DOWNSAMPLE
+#include "resolve_full_128bpp.xesli"

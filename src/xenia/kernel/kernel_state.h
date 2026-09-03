@@ -12,6 +12,7 @@
 
 #include <bitset>
 #include <condition_variable>
+#include <filesystem>
 #include <functional>
 #include <list>
 #include <vector>
@@ -358,6 +359,10 @@ class KernelState {
 
   X_RESULT ApplyTitleUpdate(const object_ref<UserModule> title_module,
                             const object_ref<UserModule> patch_module);
+
+  // Library path currently mounted as UPDATE:, so loading a later module does
+  // not tear down a mount the running title is still reading from.
+  std::filesystem::path mounted_title_update_path_;
 
   Emulator* emulator_;
   Memory* memory_;

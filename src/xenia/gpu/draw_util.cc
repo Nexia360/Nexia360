@@ -1362,8 +1362,12 @@ static constexpr bool ColorResolveNumberFormatMatches(
 
 ResolveCopyShaderIndex ResolveInfo::GetCopyShader(
     uint32_t draw_resolution_scale_x, uint32_t draw_resolution_scale_y,
-    ResolveCopyShaderConstants& constants_out, uint32_t& group_count_x_out,
-    uint32_t& group_count_y_out) const {
+    bool downsample, ResolveCopyShaderConstants& constants_out,
+    uint32_t& group_count_x_out, uint32_t& group_count_y_out) const {
+  if (downsample) {
+    draw_resolution_scale_x = 1;
+    draw_resolution_scale_y = 1;
+  }
   ResolveCopyShaderIndex shader = ResolveCopyShaderIndex::kUnknown;
   bool is_depth = IsCopyingDepth();
   ResolveEdramInfo edram_info = is_depth ? depth_edram_info : color_edram_info;

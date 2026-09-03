@@ -1341,7 +1341,7 @@ bool D3D12RenderTargetCache::Resolve(const Memory& memory,
     draw_util::ResolveCopyShaderConstants copy_shader_constants;
     uint32_t copy_group_count_x, copy_group_count_y;
     draw_util::ResolveCopyShaderIndex copy_shader = resolve_info.GetCopyShader(
-        draw_resolution_scale_x(), draw_resolution_scale_y(),
+        draw_resolution_scale_x(), draw_resolution_scale_y(), false,
         copy_shader_constants, copy_group_count_x, copy_group_count_y);
     assert_true(copy_group_count_x && copy_group_count_y);
     if (copy_shader != draw_util::ResolveCopyShaderIndex::kUnknown) {

@@ -1103,7 +1103,6 @@ spv::Id SpirvShaderTranslator::ProcessScalarAluOperation(
     case ucode::AluScalarOpcode::kFloors:
     case ucode::AluScalarOpcode::kExp:
     case ucode::AluScalarOpcode::kLog:
-    case ucode::AluScalarOpcode::kRsq:
     case ucode::AluScalarOpcode::kSqrt:
     case ucode::AluScalarOpcode::kSin:
     case ucode::AluScalarOpcode::kCos:
@@ -1124,10 +1123,17 @@ spv::Id SpirvShaderTranslator::ProcessScalarAluOperation(
           builder_->makeFloatConstant(-FLT_MAX), result);
     }
     case ucode::AluScalarOpcode::kRcpc: {
-      spv::Id result = builder_->createNoContractionBinOp(
-          spv::OpFDiv, type_float_, const_float_1_,
-          GetOperandComponents(operand_storage[0], instr.scalar_operands[0],
-                               0b0001));
+      spv::Id operand = GetOperandComponents(
+          operand_storage[0], instr.scalar_operands[0], 0b0001);
+      // Defined +Infinity for 0, otherwise the substitutions below can't
+      // recognize the case they exist to handle.
+      spv::Id result = builder_->createTriOp(
+          spv::OpSelect, type_float_,
+          builder_->createBinOp(spv::OpFOrdEqual, type_bool_, operand,
+                                const_float_0_),
+          builder_->makeFloatConstant(INFINITY),
+          builder_->createNoContractionBinOp(spv::OpFDiv, type_float_,
+                                             const_float_1_, operand));
       result = builder_->createTriOp(
           spv::OpSelect, type_float_,
           builder_->createBinOp(spv::OpFOrdEqual, type_bool_, result,
@@ -1140,10 +1146,17 @@ spv::Id SpirvShaderTranslator::ProcessScalarAluOperation(
           builder_->makeFloatConstant(FLT_MAX), result);
     }
     case ucode::AluScalarOpcode::kRcpf: {
-      spv::Id result = builder_->createNoContractionBinOp(
-          spv::OpFDiv, type_float_, const_float_1_,
-          GetOperandComponents(operand_storage[0], instr.scalar_operands[0],
-                               0b0001));
+      spv::Id operand = GetOperandComponents(
+          operand_storage[0], instr.scalar_operands[0], 0b0001);
+      // Defined +Infinity for 0, otherwise the substitutions below can't
+      // recognize the case they exist to handle.
+      spv::Id result = builder_->createTriOp(
+          spv::OpSelect, type_float_,
+          builder_->createBinOp(spv::OpFOrdEqual, type_bool_, operand,
+                                const_float_0_),
+          builder_->makeFloatConstant(INFINITY),
+          builder_->createNoContractionBinOp(spv::OpFDiv, type_float_,
+                                             const_float_1_, operand));
       result = builder_->createTriOp(
           spv::OpSelect, type_float_,
           builder_->createBinOp(spv::OpFOrdEqual, type_bool_, result,
@@ -1159,17 +1172,48 @@ spv::Id SpirvShaderTranslator::ProcessScalarAluOperation(
           builder_->createUnaryOp(spv::OpBitcast, type_uint_, result));
       return builder_->createUnaryOp(spv::OpBitcast, type_float_, result);
     }
+    // GLSL InverseSqrt is undefined for an operand of 0, and so is a division
+    // by 0, while the Direct3D rsq and rcp these emulate both define it as
+    // +Infinity. A shader normalizing a zero length vector - dp3 then rsq then
+    // mul, which this hardware's shaders do constantly - depends on that: the
+    // infinity times the zero components becomes a NaN, which the render
+    // target conversion flushes away. Left undefined, a driver may return a
+    // huge finite value instead, which survives every NaN check and saturates
+    // the render target channel it lands in.
+    case ucode::AluScalarOpcode::kRsq: {
+      spv::Id operand = GetOperandComponents(
+          operand_storage[0], instr.scalar_operands[0], 0b0001);
+      return builder_->createTriOp(
+          spv::OpSelect, type_float_,
+          builder_->createBinOp(spv::OpFOrdEqual, type_bool_, operand,
+                                const_float_0_),
+          builder_->makeFloatConstant(INFINITY),
+          builder_->createUnaryBuiltinCall(type_float_, ext_inst_glsl_std_450_,
+                                           GLSLstd450InverseSqrt, operand));
+    }
     case ucode::AluScalarOpcode::kRcp: {
-      return builder_->createNoContractionBinOp(
-          spv::OpFDiv, type_float_, const_float_1_,
-          GetOperandComponents(operand_storage[0], instr.scalar_operands[0],
-                               0b0001));
+      spv::Id operand = GetOperandComponents(
+          operand_storage[0], instr.scalar_operands[0], 0b0001);
+      return builder_->createTriOp(
+          spv::OpSelect, type_float_,
+          builder_->createBinOp(spv::OpFOrdEqual, type_bool_, operand,
+                                const_float_0_),
+          builder_->makeFloatConstant(INFINITY),
+          builder_->createNoContractionBinOp(spv::OpFDiv, type_float_,
+                                             const_float_1_, operand));
     }
     case ucode::AluScalarOpcode::kRsqc: {
-      spv::Id result = builder_->createUnaryBuiltinCall(
-          type_float_, ext_inst_glsl_std_450_, GLSLstd450InverseSqrt,
-          GetOperandComponents(operand_storage[0], instr.scalar_operands[0],
-                               0b0001));
+      spv::Id operand = GetOperandComponents(
+          operand_storage[0], instr.scalar_operands[0], 0b0001);
+      // Defined +Infinity for 0, otherwise the substitutions below can't
+      // recognize the case they exist to handle.
+      spv::Id result = builder_->createTriOp(
+          spv::OpSelect, type_float_,
+          builder_->createBinOp(spv::OpFOrdEqual, type_bool_, operand,
+                                const_float_0_),
+          builder_->makeFloatConstant(INFINITY),
+          builder_->createUnaryBuiltinCall(type_float_, ext_inst_glsl_std_450_,
+                                           GLSLstd450InverseSqrt, operand));
       result = builder_->createTriOp(
           spv::OpSelect, type_float_,
           builder_->createBinOp(spv::OpFOrdEqual, type_bool_, result,
@@ -1182,10 +1226,17 @@ spv::Id SpirvShaderTranslator::ProcessScalarAluOperation(
           builder_->makeFloatConstant(FLT_MAX), result);
     }
     case ucode::AluScalarOpcode::kRsqf: {
-      spv::Id result = builder_->createUnaryBuiltinCall(
-          type_float_, ext_inst_glsl_std_450_, GLSLstd450InverseSqrt,
-          GetOperandComponents(operand_storage[0], instr.scalar_operands[0],
-                               0b0001));
+      spv::Id operand = GetOperandComponents(
+          operand_storage[0], instr.scalar_operands[0], 0b0001);
+      // Defined +Infinity for 0, otherwise the substitutions below can't
+      // recognize the case they exist to handle.
+      spv::Id result = builder_->createTriOp(
+          spv::OpSelect, type_float_,
+          builder_->createBinOp(spv::OpFOrdEqual, type_bool_, operand,
+                                const_float_0_),
+          builder_->makeFloatConstant(INFINITY),
+          builder_->createUnaryBuiltinCall(type_float_, ext_inst_glsl_std_450_,
+                                           GLSLstd450InverseSqrt, operand));
       result = builder_->createTriOp(
           spv::OpSelect, type_float_,
           builder_->createBinOp(spv::OpFOrdEqual, type_bool_, result,

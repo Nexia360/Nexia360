@@ -27,6 +27,7 @@ DECLARE_bool(logging);
 DECLARE_bool(discord);
 
 DECLARE_bool(nexiahub_transport);
+DECLARE_bool(nexiahub_transport_tcp_fallback);
 
 DECLARE_int32(discord_presence_user_index);
 
@@ -77,6 +78,7 @@ void NetplaySettingsDialog::OnDraw(ImGuiIO& io) {
         if (ImGui::Selectable(api_address.c_str(), is_selected)) {
           selected_api_address_item_ = api_address.c_str();
           xlive_api->SetAPIAddress(selected_api_address_item_);
+          xlive_api->StartWhoamiAsync();
         }
 
         if (is_selected) {
@@ -291,6 +293,23 @@ void NetplaySettingsDialog::OnDraw(ImGuiIO& io) {
               : "Requires the Nexia Hub or Xbox Live network mode.");
     }
 
+    // Only meaningful while the transport is in use at all.
+    ImGui::BeginDisabled(!nexiahub_transport_);
+    if (ImGui::Checkbox("Allow TCP Fallback", &transport_tcp_fallback_)) {
+      xlive_api->SetNexiaHubTransportTcpFallback(transport_tcp_fallback_);
+    }
+    ImGui::EndDisabled();
+
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+      ImGui::SetTooltip(
+          !nexiahub_transport_
+              ? "Requires Nexiahub Transport."
+              : "The relay is reached over UDP, falling back to TCP when UDP "
+                "cannot be established. Turn this off to use UDP only, so a "
+                "blocked UDP path shows up plainly instead of quietly costing "
+                "the latency a stream adds.");
+    }
+
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSizeConstraints(ImVec2(225, 90), ImVec2(225, 90));
     if (ImGui::BeginPopupModal("Remove API Address", nullptr,
@@ -482,6 +501,7 @@ void xe::app::NetplaySettingsDialog::InitializeCheckboxSettings() {
   discord_ = cvars::discord;
   bind_interface_ = cvars::bind_interface;
   nexiahub_transport_ = cvars::nexiahub_transport;
+  transport_tcp_fallback_ = cvars::nexiahub_transport_tcp_fallback;
 }
 
 void NetplaySettingsDialog::ActivateDiscordState(bool state) {

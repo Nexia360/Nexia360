@@ -1615,7 +1615,6 @@ bool PipelineCache::GetCurrentStateDescription(
     // TODO(Triang3l): 4x MSAA fallback when 2x isn't supported.
   }
   description_out.host_msaa_samples = host_msaa_samples;
-
   return true;
 }
 

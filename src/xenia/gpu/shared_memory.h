@@ -10,6 +10,8 @@
 #ifndef XENIA_GPU_SHARED_MEMORY_H_
 #define XENIA_GPU_SHARED_MEMORY_H_
 
+#include <functional>
+
 #include "xenia/memory.h"
 
 namespace xe {
@@ -76,6 +78,14 @@ class SharedMemory {
   // memory copy. Hold the global critical region if relying on this for state
   // transitions such as watch installation.
   bool IsRangeValid(uint32_t start, uint32_t length) const;
+  // Invokes the callback for each maximal sub-range of the range whose pages
+  // hold data the GPU actually wrote. Pages the guest never wrote and the GPU
+  // never produced are skipped entirely rather than reported as empty data.
+  // Acquires the global critical region for the duration of the walk.
+  void ForEachGpuWrittenRange(
+      uint32_t start, uint32_t length,
+      const std::function<void(uint32_t sub_start, uint32_t sub_length)>&
+          callback) const;
 
   void TryFindUploadRange(const uint32_t& block_first,
                           const uint32_t& block_last,

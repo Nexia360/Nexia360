@@ -63,6 +63,9 @@ constexpr fourcc_t kEmulatorSaveSignature = make_fourcc("XSAV");
 static constexpr std::string_view kDefaultGameSymbolicLink = "GAME:";
 static constexpr std::string_view kDefaultPartitionSymbolicLink = "D:";
 static constexpr std::string_view kDefaultUpdateSymbolicLink = "UPDATE:";
+// Mount the active title update lives on. Deliberately not under the emulator
+// device tree - the update is served straight out of the library.
+static constexpr const char* kTitleUpdateMountPath = "\\TitleUpdate\\";
 
 // The main type that runs the whole emulator.
 // This is responsible for initializing and managing all the various subsystems.

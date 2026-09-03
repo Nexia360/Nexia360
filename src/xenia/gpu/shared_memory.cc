@@ -512,6 +512,64 @@ bool SharedMemory::IsRangeValid(uint32_t start, uint32_t length) const {
   return true;
 }
 
+void SharedMemory::ForEachGpuWrittenRange(
+    uint32_t start, uint32_t length,
+    const std::function<void(uint32_t sub_start, uint32_t sub_length)>&
+        callback) const {
+  if (!length || start > kBufferSize || (kBufferSize - start) < length) {
+    return;
+  }
+
+  auto global_lock = global_critical_region_.Acquire();
+
+  const uint32_t page_first = start >> page_size_log2_;
+  const uint32_t page_last = (start + length - 1) >> page_size_log2_;
+  const uint32_t block_first = page_first >> 6;
+  const uint32_t block_last = page_last >> 6;
+
+  const uint32_t end = start + length;
+  uint32_t run_page_first = 0;
+  bool in_run = false;
+
+  for (uint32_t i = block_first; i <= block_last; ++i) {
+    uint64_t block_mask = UINT64_MAX;
+    if (i == block_first) {
+      block_mask &= ~((uint64_t(1) << (page_first & 63)) - 1);
+    }
+    if (i == block_last && (page_last & 63) != 63) {
+      block_mask &= (uint64_t(1) << ((page_last & 63) + 1)) - 1;
+    }
+
+    const uint64_t written = system_page_flags_valid_and_gpu_written_[i] &
+                             system_page_flags_valid_[i] & block_mask;
+
+    for (uint32_t bit = (i == block_first) ? (page_first & 63) : 0; bit < 64;
+         ++bit) {
+      const uint32_t page = (i << 6) + bit;
+      if (page > page_last) {
+        break;
+      }
+      if (written & (uint64_t(1) << bit)) {
+        if (!in_run) {
+          run_page_first = page;
+          in_run = true;
+        }
+      } else if (in_run) {
+        const uint32_t run_start =
+            std::max(start, run_page_first << page_size_log2_);
+        callback(run_start, (page << page_size_log2_) - run_start);
+        in_run = false;
+      }
+    }
+  }
+
+  if (in_run) {
+    const uint32_t run_start =
+        std::max(start, run_page_first << page_size_log2_);
+    callback(run_start, end - run_start);
+  }
+}
+
 template <typename T>
 XE_FORCEINLINE XE_NOALIAS static T mod_shift_left(T value, uint32_t by) {
 #if XE_ARCH_AMD64 == 1

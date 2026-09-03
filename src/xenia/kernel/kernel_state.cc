@@ -718,30 +718,71 @@ X_RESULT KernelState::ApplyTitleUpdate(
         title_module->path().starts_with(mount_path)) {
       const std::string relative =
           title_module->path().substr(mount_path.size() + 1) + 'p';
-      // Mount the library folder directly into the VFS as UPDATE: (no copy or
-      // link into the content tree) and load the patch from it. The mount is
-      // left registered so the title can also reach updated resources.
-      const std::string device_path = "\\Device\\TitleUpdate\\";
-      file_system()->UnregisterSymbolicLink("UPDATE:");
-      file_system()->UnregisterDevice(device_path);
-      auto device =
-          std::make_unique<vfs::HostPathDevice>(device_path, lib_path, true);
-      if (device->Initialize() &&
-          file_system()->RegisterDevice(std::move(device))) {
-        file_system()->RegisterSymbolicLink("UPDATE:", device_path);
-        xe::vfs::Entry* patch_entry =
-            file_system()->ResolvePath(device_path + relative);
-        if (patch_entry) {
-          auto candidate = object_ref<UserModule>(new UserModule(this));
-          if (candidate->LoadFromFile(patch_entry->absolute_path()) ==
-              X_STATUS_SUCCESS) {
-            patch_module = candidate;
+
+      // The library owns the update. Mount the selected folder straight into
+      // the VFS as UPDATE: - no copy, no link, and nothing routed through the
+      // content tree.
+      //
+      // Every user module the title loads comes through here and only the
+      // executables have a matching .xexp, so mount once per active update:
+      // remounting per module would tear the device out from under a title
+      // reading its updated resources, and dropping it on "no patch for this
+      // module" would unmount it for good.
+      const std::string device_path = kTitleUpdateMountPath;
+      const bool already_mounted = mounted_title_update_path_ == lib_path;
+      bool mounted_here = false;
+
+      if (!already_mounted) {
+        file_system()->UnregisterSymbolicLink(kDefaultUpdateSymbolicLink);
+        file_system()->UnregisterDevice(device_path);
+        file_system()->UnregisterOverlayDevices();
+        mounted_title_update_path_.clear();
+
+        auto device =
+            std::make_unique<vfs::HostPathDevice>(device_path, lib_path, false);
+        if (device->Initialize() &&
+            file_system()->RegisterDevice(std::move(device))) {
+          file_system()->RegisterSymbolicLink(kDefaultUpdateSymbolicLink,
+                                              device_path);
+          mounted_title_update_path_ = lib_path;
+          mounted_here = true;
+
+          // A title update is not just the executable patch. Its fastfiles,
+          // packs and loose resources have to replace the disc copies for
+          // titles that open them by their normal game: path and never touch
+          // update: - so layer the same folder over the game mount. Lookups
+          // miss straight through to the disc for anything the update does
+          // not carry.
+          auto overlay = std::make_unique<vfs::HostPathDevice>(
+              mount_path, lib_path, true);
+          if (overlay->Initialize()) {
+            file_system()->RegisterOverlayDevice(mount_path,
+                                                 std::move(overlay));
           }
         }
-        if (!patch_module) {
-          // Clean up so the legacy fallback can mount UPDATE: itself.
-          file_system()->UnregisterSymbolicLink("UPDATE:");
+      }
+
+      if (already_mounted || mounted_here) {
+        std::string update_target;
+        if (file_system()->FindSymbolicLink(kDefaultUpdateSymbolicLink,
+                                            update_target)) {
+          xe::vfs::Entry* patch_entry =
+              file_system()->ResolvePath(update_target + relative);
+          if (patch_entry) {
+            auto candidate = object_ref<UserModule>(new UserModule(this));
+            if (candidate->LoadFromFile(patch_entry->absolute_path()) ==
+                X_STATUS_SUCCESS) {
+              patch_module = candidate;
+            }
+          }
+        }
+        if (!patch_module && mounted_here) {
+          // Nothing loaded off a mount nothing else is using yet - drop it so
+          // the legacy fallback can mount UPDATE: itself.
+          file_system()->UnregisterSymbolicLink(kDefaultUpdateSymbolicLink);
           file_system()->UnregisterDevice(device_path);
+          file_system()->UnregisterOverlayDevices();
+          mounted_title_update_path_.clear();
         }
       }
     }
@@ -935,6 +976,8 @@ void KernelState::InitXmpVolumePatch() {
 void KernelState::TerminateTitle() {
   XELOGD("KernelState::TerminateTitle");
   xmp_volume_patch_.reset();
+  // Emulator::TerminateTitle drops the UPDATE: mount right after this.
+  mounted_title_update_path_.clear();
   auto global_lock = global_critical_region_.Acquire();
 
   // Call terminate routines.
@@ -1123,6 +1166,8 @@ void KernelState::RegisterNotifyListener(XNotifyListener* listener) {
     // MW3 queries XOnlineGetNatType ONLY from this notification's handler
     // (0x02000001 -> 8235E6C8 -> XLiveBase msg 0x58006 -> global 0x825AFA5C),
     // so without it the console reports NAT Strict and refuses to host.
+    // 415707D1 fails to join sessions and 4E4D07D3 gets stuck in online menus
+    // without it as well.
     listener->EnqueueNotification(
         kXNotificationLiveConnectionChanged,
         static_cast<uint32_t>(xam_state()->user_tracker()->GetLogonState()));

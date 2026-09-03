@@ -64,7 +64,6 @@ DECLARE_bool(guide_button);
 
 DECLARE_bool(clear_memory_page_state);
 
-DECLARE_string(readback_resolve);
 
 DECLARE_bool(readback_memexport);
 
@@ -2161,10 +2160,6 @@ void EmulatorWindow::SetInitializingShaderStorage(bool initializing) {
 // problem since both these buttons are reserved.
 const std::map<int, EmulatorWindow::ControllerHotKey> controller_hotkey_map = {
     // Must use the Guide Button for all pass through hotkeys
-    {X_INPUT_GAMEPAD_A | X_INPUT_GAMEPAD_GUIDE,
-     EmulatorWindow::ControllerHotKey(
-         EmulatorWindow::ButtonFunctions::ReadbackResolve,
-         "A + Guide = Toggle Readback Resolve", true)},
     {X_INPUT_GAMEPAD_B | X_INPUT_GAMEPAD_GUIDE,
      EmulatorWindow::ControllerHotKey(
          EmulatorWindow::ButtonFunctions::ToggleLogging,
@@ -2300,15 +2295,6 @@ EmulatorWindow::ControllerHotKey EmulatorWindow::ProcessControllerHotkey(
       notificationTitle = "Toggle Clear Memory Page State";
       notificationDesc =
           cvars::clear_memory_page_state ? "Enabled" : "Disabled";
-
-      // Extra Sleep
-      xe::threading::Sleep(delay);
-      break;
-    case ButtonFunctions::ReadbackResolve:
-      CycleReadbackResolve();
-
-      notificationTitle = "Readback Resolve Mode";
-      notificationDesc = cvars::readback_resolve;
 
       // Extra Sleep
       xe::threading::Sleep(delay);
@@ -2531,17 +2517,6 @@ void EmulatorWindow::ToggleGPUSetting(gpu::GPUSetting setting) {
   }
 }
 
-void EmulatorWindow::CycleReadbackResolve() {
-  const std::string& current = cvars::readback_resolve;
-  if (current == "fast") {
-    gpu::SetReadbackResolveMode("full");
-  } else if (current == "full") {
-    gpu::SetReadbackResolveMode("none");
-  } else {
-    gpu::SetReadbackResolveMode("fast");
-  }
-}
-
 void EmulatorWindow::DisplayHotKeysConfig() {
   std::string msg = "";
   std::string msg_passthru = "";
@@ -2578,9 +2553,6 @@ void EmulatorWindow::DisplayHotKeysConfig() {
   // Prepend non-passthru hotkeys
   msg_passthru += "\n";
   msg.insert(0, msg_passthru);
-  msg += "\n";
-
-  msg += "Readback Resolve: " + cvars::readback_resolve;
   msg += "\n";
 
   msg += "Clear Memory Page State: " +

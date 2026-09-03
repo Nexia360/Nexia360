@@ -14,6 +14,7 @@
 #include <atomic>
 #include <deque>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -319,8 +320,6 @@ class D3D12CommandProcessor final : public CommandProcessor {
                  bool major_mode_explicit) override;
 
   bool IssueCopy() override;
-  XE_NOINLINE
-  bool IssueCopy_ReadbackResolvePath();
   void InitializeTrace() override;
 
  private:
@@ -741,15 +740,77 @@ class D3D12CommandProcessor final : public CommandProcessor {
   D3D12_RESOURCE_STATES scratch_buffer_state_;
   bool scratch_buffer_used_ = false;
 
-  // Per-resolve double-buffered readback for delayed sync
-  struct ReadbackBuffer {
-    ID3D12Resource* buffers[2] = {nullptr, nullptr};
-    uint32_t sizes[2] = {0, 0};
-    uint32_t current_index = 0;
+  // Resolve contracts. The resolved bytes stay in a GPU-resident buffer in the
+  // guest's own layout; consumers acquire them instead of going through guest
+  // memory. A GPU consumer never waits and never copies. Guest memory is only
+  // written if something actually needs it there.
+  struct ResolveContract {
+    ID3D12Resource* buffer = nullptr;
+    uint32_t buffer_size = 0;
+    D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COPY_DEST;
+    // Staging for the guest-memory copy, filled on the GPU timeline but only
+    // read if the guest actually touches the range.
+    ID3D12Resource* readback_buffer = nullptr;
+    uint32_t readback_size = 0;
+    bool materialized = false;
+    uint32_t guest_base = 0;
+    uint32_t length = 0;
+    // Submission the contents become valid after.
+    uint64_t submission = 0;
     uint64_t last_used_frame = 0;
+    // Offsets into the buffer the GPU actually wrote. The resolve extent is a
+    // bounding range in tiled address space, so the bytes between the resolved
+    // tiles are not ours - serving them would hand out zeros where the guest
+    // has its own data.
+    std::vector<std::pair<uint32_t, uint32_t>> valid_runs;
   };
-  // Map: (written_address << 32 | written_length) -> ReadbackBuffer
-  std::unordered_map<uint64_t, ReadbackBuffer> readback_buffers_;
+  static constexpr uint64_t kResolveContractsMaxBytes = 128ull * 1024 * 1024;
+  // Guest threads materialize contracts from their fault handlers, so the table
+  // is not GPU-thread-only. Non-recursive - public entry points lock, private
+  // helpers assume it's held.
+  std::mutex resolve_contracts_mutex_;
+  std::unordered_map<uint64_t, ResolveContract> resolve_contracts_;
+  uint64_t resolve_contracts_bytes_ = 0;
+  // Guest writes arrive on guest threads, so they only queue the range here -
+  // the map and the resources belong to the GPU thread.
+  std::mutex resolve_contract_invalidations_mutex_;
+  std::vector<std::pair<uint32_t, uint32_t>> resolve_contract_invalidations_;
+  void* resolve_contract_invalidation_callback_ = nullptr;
+  // Buffers can't be released while the GPU may still be reading them.
+  std::vector<std::pair<ID3D12Resource*, uint64_t>>
+      resolve_contracts_pending_release_;
+
+  static std::pair<uint32_t, uint32_t> ResolveContractInvalidationCallbackThunk(
+      void* context_ptr, uint32_t physical_address_start, uint32_t length,
+      bool exact_range);
+  void DrainResolveContractInvalidations();
+  void DrainResolveContractInvalidationsLocked();
+  void InvalidateResolveContractsLocked(uint32_t guest_base, uint32_t length);
+  void ReleaseResolveContractBuffer(ID3D12Resource* buffer);
+  // Called from a guest thread's access violation handler, without the global
+  // critical region held. Writes the contract covering the address into guest
+  // memory, waiting for the GPU copy that fills it.
+  static bool ResolveContractFaultCallbackThunk(void* context_ptr,
+                                                uint32_t physical_address);
+  bool MaterializeResolveContractForGuest(uint32_t physical_address);
+  void AwaitSubmissionFromAnyThread(uint64_t submission);
+  // Frees least-recently-used contracts until incoming_bytes fit under the cap.
+  // The contract being registered is passed as keep_key so it's never evicted.
+  void EvictResolveContracts(uint64_t incoming_bytes, uint64_t keep_key);
+
+ public:
+  // Records the resolve output as a contract over the guest range. Copies out
+  // of shared memory on the GPU timeline - no readback, no stall.
+  void RegisterResolveContract(uint32_t guest_base, uint32_t length);
+  // Returns the GPU buffer holding a resolve covering the range, or nullptr.
+  // Transitions it for shader reading. Never waits.
+  ID3D12Resource* AcquireResolveForGpu(uint32_t guest_base, uint32_t length,
+                                       uint32_t* out_offset);
+  // Drops contracts overlapping the range - a guest write, a later resolve or a
+  // memexport over it makes the held bytes stale.
+  void InvalidateResolveContracts(uint32_t guest_base, uint32_t length);
+
+ private:
 
   // Simple single buffer for memexport (always syncs, no double-buffering)
   ID3D12Resource* memexport_readback_buffer_ = nullptr;

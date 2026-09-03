@@ -1,0 +1,87 @@
+diff --git a/src/xenia/gpu/d3d12/pipeline_cache.cc b/src/xenia/gpu/d3d12/pipeline_cache.cc
+index 6122979d1..0bda59747 100644
+--- a/src/xenia/gpu/d3d12/pipeline_cache.cc
++++ b/src/xenia/gpu/d3d12/pipeline_cache.cc
+@@ -1615,6 +1615,12 @@ bool PipelineCache::GetCurrentStateDescription(
+     // TODO(Triang3l): 4x MSAA fallback when 2x isn't supported.
+   }
+   description_out.host_msaa_samples = host_msaa_samples;
++  description_out.alpha_to_mask_one_sample =
++      (!edram_rov_used &&
++       host_msaa_samples == xenos::MsaaSamples::k1X &&
++       regs.Get<reg::RB_COLORCONTROL>().alpha_to_mask_enable)
++          ? 1
++          : 0;
+ 
+   return true;
+ }
+@@ -3184,6 +3190,21 @@ ID3D12PipelineState* PipelineCache::CreateD3D12Pipeline(
+         }
+         blend_desc.BlendOpAlpha = kBlendOpMap[uint32_t(rt.blend_op_alpha)];
+       }
++      if (description.alpha_to_mask_one_sample && !blend_desc.BlendEnable) {
++        // The pixel shader keeps the sample covered rather than applying the
++        // guest's dithered coverage, which has no samples to spread across at
++        // one sample per pixel. Blend on alpha here so the coverage the guest
++        // asked for still modulates the pixel - without this the kept pixels
++        // come out fully opaque. Render targets the guest is already blending
++        // into are left alone.
++        blend_desc.BlendEnable = true;
++        blend_desc.BlendOp = D3D12_BLEND_OP_ADD;
++        blend_desc.SrcBlend = D3D12_BLEND_SRC_ALPHA;
++        blend_desc.DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
++        blend_desc.BlendOpAlpha = D3D12_BLEND_OP_ADD;
++        blend_desc.SrcBlendAlpha = D3D12_BLEND_ONE;
++        blend_desc.DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
++      }
+       blend_desc.RenderTargetWriteMask = rt.write_mask;
+     }
+   }
+diff --git a/src/xenia/gpu/d3d12/pipeline_cache.h b/src/xenia/gpu/d3d12/pipeline_cache.h
+index 172a1ee29..1dd6b41ff 100644
+--- a/src/xenia/gpu/d3d12/pipeline_cache.h
++++ b/src/xenia/gpu/d3d12/pipeline_cache.h
+@@ -231,10 +231,15 @@ class PipelineCache {
+     xenos::StencilOp stencil_back_pass_op : 3;         // 29
+     xenos::CompareFunction stencil_back_func : 3;      // 32
+ 
++    // Alpha to mask with one sample: the guest's dithered coverage has no
++    // samples to spread across, so blending is forced on to let alpha modulate
++    // the pixel instead of dropping every other one.
++    uint32_t alpha_to_mask_one_sample : 1;  // 1
++
+     PipelineRenderTarget render_targets[xenos::kMaxColorRenderTargets];
+ 
+     inline bool operator==(const PipelineDescription& other) const;
+-    static constexpr uint32_t kVersion = 0x20210425;
++    static constexpr uint32_t kVersion = 0x20260807;
+   });
+ 
+   XEPACKEDSTRUCT(PipelineStoredDescription, {
+diff --git a/src/xenia/gpu/dxbc_shader_translator_om.cc b/src/xenia/gpu/dxbc_shader_translator_om.cc
+index e46a7ed06..f5aaea8f1 100644
+--- a/src/xenia/gpu/dxbc_shader_translator_om.cc
++++ b/src/xenia/gpu/dxbc_shader_translator_om.cc
+@@ -2087,9 +2087,19 @@ void DxbcShaderTranslator::CompletePixelShader_AlphaToMask() {
+   }
+   // MSAA is disabled.
+   a_.OpElse();
+-  CompletePixelShader_AlphaToMaskSample(true, 0, 1.0f, temp_x_src, 1.0f / 4.0f,
+-                                        coverage_temp, coverage_temp_component,
+-                                        temp, 1);
++  if (edram_rov_used_) {
++    CompletePixelShader_AlphaToMaskSample(true, 0, 1.0f, temp_x_src,
++                                          1.0f / 4.0f, coverage_temp,
++                                          coverage_temp_component, temp, 1);
++  } else {
++    // One sample, so coverage is all-or-nothing and the guest's 2x2 dither
++    // becomes a visible grid of dropped pixels - there are no samples for it to
++    // average across, and no EDRAM storage to give it any. Keep the sample
++    // covered and let alpha reach the blender instead, which is what the
++    // dithered coverage approximates on hardware.
++    a_.OpMov(dxbc::Dest::R(coverage_temp, 1 << coverage_temp_component),
++             dxbc::Src::LU(1));
++  }
+   // Close the 2x/4x check.
+   a_.OpEndIf();
+ 

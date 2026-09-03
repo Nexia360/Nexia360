@@ -1,0 +1,78 @@
+diff --git a/src/xenia/gpu/d3d12/d3d12_command_processor.cc b/src/xenia/gpu/d3d12/d3d12_command_processor.cc
+index e8e3e0235..35a1262d9 100644
+--- a/src/xenia/gpu/d3d12/d3d12_command_processor.cc
++++ b/src/xenia/gpu/d3d12/d3d12_command_processor.cc
+@@ -3175,9 +3175,35 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath() {
+         if (SUCCEEDED(
+                 read_source->Map(0, &readback_range, &readback_mapping))) {
+           // Memory accessibility already checked at the start of this function
++          //
++          // The extent is a bounding range in tiled address space, so the bytes
++          // between the resolved tiles belong to pixels outside the resolve
++          // rect. Copying the whole extent back pushes whatever the host buffer
++          // holds there - zeros for pages the guest never wrote - over the
++          // guest's own data, which is why a game resolving less than the full
++          // surface (a screenshot of itself while not fullscreen) got a black
++          // corner. Write back only what the GPU actually produced.
+           // chrispy: this memcpy needs to be optimized as much as possible
+-          auto physaddr = memory_->TranslatePhysical(written_address);
+-          memory::vastcpy(physaddr, (uint8_t*)readback_mapping, written_length);
++          const uint8_t* readback_bytes =
++              reinterpret_cast<const uint8_t*>(readback_mapping);
++          shared_memory_->ForEachGpuWrittenRange(
++              written_address, written_length,
++              [this, written_address, readback_bytes](uint32_t sub_start,
++                                                      uint32_t sub_length) {
++                uint8_t* dest = memory_->TranslatePhysical(sub_start);
++                uint8_t* source = const_cast<uint8_t*>(
++                    readback_bytes + (sub_start - written_address));
++                // vastcpy works in whole cache lines and drops a trailing
++                // partial one, so anything not lined up goes through memcpy.
++                const size_t line_mask = XE_HOST_CACHE_LINE_SIZE - 1;
++                if ((sub_length & line_mask) ||
++                    (reinterpret_cast<uintptr_t>(dest) & line_mask) ||
++                    (reinterpret_cast<uintptr_t>(source) & line_mask)) {
++                  std::memcpy(dest, source, sub_length);
++                } else {
++                  memory::vastcpy(dest, source, sub_length);
++                }
++              });
+           D3D12_RANGE readback_write_range = {};
+           read_source->Unmap(0, &readback_write_range);
+         }
+@@ -3696,6 +3722,20 @@ XE_NOINLINE void D3D12CommandProcessor::UpdateSystemConstantValues_Impl(
+   auto rb_stencilrefmask_bf =
+       regs.Get<reg::RB_STENCILREFMASK>(XE_GPU_REG_RB_STENCILREFMASK_BF);
+   auto rb_surface_info = regs.Get<reg::RB_SURFACE_INFO>();
++  // Alpha-to-mask with one sample has nowhere to put the coverage, so the
++  // guest's 2x2 dither shows as a grid. Logged on change to tell apart "the
++  // guest really asked for 1 sample" from "the guest asked for 2x/4x and we
++  // collapsed it".
++  {
++    const uint32_t a2m_state =
++        (uint32_t(rb_surface_info.msaa_samples) << 1) |
++        (regs.Get<reg::RB_COLORCONTROL>().alpha_to_mask_enable ? 1u : 0u);
++    if (a2m_state != last_logged_a2m_state_) {
++      last_logged_a2m_state_ = a2m_state;
++      XELOGE("alpha_to_mask={} guest msaa_samples={} (0=1x, 1=2x, 2=4x)",
++             (a2m_state & 1) != 0, uint32_t(rb_surface_info.msaa_samples));
++    }
++  }
+   auto sq_context_misc = regs.Get<reg::SQ_CONTEXT_MISC>();
+   auto sq_program_cntl = regs.Get<reg::SQ_PROGRAM_CNTL>();
+   auto vgt_draw_initiator = regs.Get<reg::VGT_DRAW_INITIATOR>();
+diff --git a/src/xenia/gpu/d3d12/d3d12_command_processor.h b/src/xenia/gpu/d3d12/d3d12_command_processor.h
+index 95687cd98..cc1e5fbbb 100644
+--- a/src/xenia/gpu/d3d12/d3d12_command_processor.h
++++ b/src/xenia/gpu/d3d12/d3d12_command_processor.h
+@@ -859,6 +859,10 @@ class D3D12CommandProcessor final : public CommandProcessor {
+ 
+   // Temporary storage for memexport stream constants used in the draw.
+   std::vector<draw_util::MemExportRange> memexport_ranges_;
++
++  // Last logged alpha-to-mask + guest sample count, so the combination is
++  // reported when it changes rather than every draw. UINT32_MAX = not logged.
++  uint32_t last_logged_a2m_state_ = UINT32_MAX;
+ };
+ 
+ }  // namespace d3d12

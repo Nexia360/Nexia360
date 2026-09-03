@@ -234,7 +234,7 @@ class PipelineCache {
     PipelineRenderTarget render_targets[xenos::kMaxColorRenderTargets];
 
     inline bool operator==(const PipelineDescription& other) const;
-    static constexpr uint32_t kVersion = 0x20210425;
+    static constexpr uint32_t kVersion = 0x20260809;
   });
 
   XEPACKEDSTRUCT(PipelineStoredDescription, {

@@ -15,6 +15,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -298,6 +299,16 @@ class PhysicalHeap : public BaseHeap {
 
   uint32_t GetPhysicalAddress(uint32_t address) const;
 
+  // Protects the single system page containing physical_address as no-access
+  // and returns its guest virtual address, or 0 if the page can't be armed.
+  // The global critical region must be held.
+  uint32_t ArmReadWatch(uint32_t physical_address);
+  // Restores the protection of the system page containing virtual_address.
+  // out_invalidation_watched receives whether the page was left read-only to
+  // keep an existing invalidation watch working. The global critical region
+  // must be held.
+  bool DisarmReadWatch(uint32_t virtual_address, bool* out_invalidation_watched);
+
   uint32_t SystemPagenumToGuestPagenum(uint32_t num) const {
     return ((num << system_page_shift_) - host_address_offset()) >>
            page_size_shift_;
@@ -517,6 +528,17 @@ class Memory {
       uint32_t length, bool is_write, bool unwatch_exact_range,
       bool unprotect = true);
 
+  // Arms one-shot no-access watches over a resolve destination. The first guest
+  // access to any of it makes the resolve contract materialize into guest
+  // memory - until then the bytes only exist on the GPU.
+  void ArmResolveReadWatch(uint32_t physical_address, uint32_t length);
+  // Set by the GPU command processor. Called on a guest access to an armed
+  // page, with the global critical region released.
+  typedef bool (*ResolveContractFaultCallback)(void* context_ptr,
+                                               uint32_t physical_address);
+  void SetResolveContractFaultCallback(ResolveContractFaultCallback callback,
+                                       void* callback_context);
+
   // Allocates virtual memory from the 'system' heap.
   // System memory is kept separate from game memory but is still accessible
   // using normal guest virtual addresses. Kernel structures and other internal
@@ -613,6 +635,10 @@ class Memory {
   xe::global_critical_region global_critical_region_;
   std::vector<std::pair<PhysicalMemoryInvalidationCallback, void*>*>
       physical_memory_invalidation_callbacks_;
+
+  ResolveContractFaultCallback resolve_contract_fault_callback_ = nullptr;
+  void* resolve_contract_fault_context_ = nullptr;
+  std::unordered_set<uint32_t> resolve_read_watch_pages_;
 };
 
 }  // namespace xe

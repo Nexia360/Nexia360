@@ -98,8 +98,13 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
                           const Memory& memory, TraceWriter& trace_writer,
                           uint32_t draw_resolution_scale_x,
                           uint32_t draw_resolution_scale_y,
+                          bool resolve_downsampling,
                           VulkanCommandProcessor& command_processor);
   ~VulkanRenderTargetCache();
+
+  // Whether the draw resolution scale is internal supersampling that the guest
+  // must not see, so resolves average it away and write guest sized output.
+  bool IsResolveDownsampling() const { return resolve_downsampling_; }
 
   // Transient descriptor set layouts must be initialized in the command
   // processor.
@@ -251,6 +256,9 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
     size_t unscaled_size_bytes;
     const uint32_t* scaled;
     size_t scaled_size_bytes;
+    // Resolution scaled source, guest sized destination.
+    const uint32_t* downsampled;
+    size_t downsampled_size_bytes;
   };
 
   static void GetEdramBufferUsageMasks(EdramBufferUsage usage,
@@ -266,6 +274,7 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
 
   VulkanCommandProcessor& command_processor_;
   TraceWriter& trace_writer_;
+  bool resolve_downsampling_;
 
   Path path_ = Path::kHostRenderTargets;
 

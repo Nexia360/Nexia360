@@ -685,10 +685,12 @@ struct ResolveInfo {
     pitch_out = edram_info.pitch_tiles;
   }
 
+  // With downsampling, one invocation covers a guest pixel rather than a host
+  // one, so the group counts are the unscaled ones.
   ResolveCopyShaderIndex GetCopyShader(
       uint32_t draw_resolution_scale_x, uint32_t draw_resolution_scale_y,
-      ResolveCopyShaderConstants& constants_out, uint32_t& group_count_x_out,
-      uint32_t& group_count_y_out) const;
+      bool downsample, ResolveCopyShaderConstants& constants_out,
+      uint32_t& group_count_x_out, uint32_t& group_count_y_out) const;
 
   bool IsClearingDepth() const {
     return rb_copy_control.depth_clear_enable != 0;

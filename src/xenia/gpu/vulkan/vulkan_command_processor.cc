@@ -28,6 +28,7 @@
 #include "xenia/gpu/vulkan/vulkan_pipeline_cache.h"
 #include "xenia/gpu/vulkan/vulkan_render_target_cache.h"
 #include "xenia/gpu/vulkan/vulkan_shader.h"
+#include "xenia/gpu/vulkan/vulkan_emu_msaa4x.h"
 #include "xenia/gpu/vulkan/vulkan_shared_memory.h"
 #include "xenia/gpu/xenos.h"
 #include "xenia/gpu/xenos_zpd_report.h"
@@ -37,6 +38,7 @@
 #include "xenia/ui/vulkan/vulkan_util.h"
 
 DECLARE_bool(clear_memory_page_state);
+DECLARE_string(render_target_path_vulkan);
 
 namespace xe {
 namespace gpu {
@@ -135,11 +137,22 @@ std::string VulkanCommandProcessor::GetWindowTitleText() const {
         break;
     }
     uint32_t draw_resolution_scale_x =
-        texture_cache_ ? texture_cache_->draw_resolution_scale_x() : 1;
+        render_target_cache_ ? render_target_cache_->draw_resolution_scale_x()
+                             : 1;
     uint32_t draw_resolution_scale_y =
-        texture_cache_ ? texture_cache_->draw_resolution_scale_y() : 1;
+        render_target_cache_ ? render_target_cache_->draw_resolution_scale_y()
+                             : 1;
+    // Report the scale the user configured. The extra doubling this path adds
+    // for the alpha to mask dither isn't a resolution they asked for.
+    if (draw_resolution_supersampled_) {
+      draw_resolution_scale_x /= 2;
+      draw_resolution_scale_y /= 2;
+    }
     if (draw_resolution_scale_x > 1 || draw_resolution_scale_y > 1) {
       title << ' ' << draw_resolution_scale_x << 'x' << draw_resolution_scale_y;
+    }
+    if (draw_resolution_supersampled_) {
+      title << " EMU-MSAA4X";
     }
   }
   auto* audio_system = kernel_state_->emulator()->audio_system();
@@ -154,6 +167,12 @@ bool VulkanCommandProcessor::SetupContext() {
     XELOGE("Failed to initialize base command processor context");
     return false;
   }
+
+  resolve_contract_invalidation_callback_ =
+      memory_->RegisterPhysicalMemoryInvalidationCallback(
+          ResolveContractInvalidationCallbackThunk, this);
+  memory_->SetResolveContractFaultCallback(ResolveContractFaultCallbackThunk,
+                                           this);
 
   const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
@@ -311,6 +330,32 @@ bool VulkanCommandProcessor::SetupContext() {
   bool draw_resolution_scale_not_clamped =
       TextureCache::GetConfigDrawResolutionScale(draw_resolution_scale_x,
                                                  draw_resolution_scale_y);
+  // One host pixel per guest pixel leaves the guest's 2x2 alpha to mask dither
+  // nowhere to average, so it stays visible as a grid. Doubling gives each
+  // guest pixel a full dither cell of host pixels. Done here rather than at the
+  // 126 places the scale is consumed - EDRAM tile math, texture sizes, scissors
+  // and shader constants all have to agree, and a missed site misaligns render
+  // targets rather than just looking wrong.
+  // Mirrors VulkanRenderTargetCache's path selection - asking for "fsi" still
+  // falls back to host render targets when the device can't do interlock, and
+  // the scale has to be decided before the render target cache exists.
+  // A device with no multisampled attachments at all gets its guest samples
+  // from VulkanEmuMsaa4x instead - doubling here as well would stack to 16x.
+  bool device_emulates_msaa = VulkanEmuMsaa4x::IsRequired(*vulkan_device);
+  bool will_use_pixel_shader_interlock =
+      cvars::render_target_path_vulkan == "fsi" &&
+      (device_properties.fragmentShaderSampleInterlock ||
+       device_properties.fragmentShaderPixelInterlock) &&
+      device_properties.fragmentStoresAndAtomics &&
+      device_properties.sampleRateShading &&
+      device_properties.standardSampleLocations &&
+      shared_memory_binding_count <
+          device_properties.maxPerStageDescriptorStorageBuffers;
+  if (!will_use_pixel_shader_interlock && !device_emulates_msaa) {
+    draw_resolution_scale_x *= 2;
+    draw_resolution_scale_y *= 2;
+    draw_resolution_supersampled_ = true;
+  }
   // Check if sparse binding is supported for resolution scaling
   bool has_sparse_binding = device_properties.sparseBinding &&
                             device_properties.sparseResidencyBuffer;
@@ -326,9 +371,24 @@ bool VulkanCommandProcessor::SetupContext() {
         draw_resolution_scale_x, draw_resolution_scale_y);
   }
 
+  // The supersampling is internal - the guest asked for its own resolution, so
+  // resolves average the extra host pixels away and hand the guest unscaled
+  // output, leaving the texture cache with nothing scaled to manage. Only the
+  // exact 2x2 the resolve shaders implement, so a configured scale on top of
+  // the doubling keeps the old scaled resolve path.
+  uint32_t texture_draw_resolution_scale_x = draw_resolution_scale_x;
+  uint32_t texture_draw_resolution_scale_y = draw_resolution_scale_y;
+  bool resolve_downsampling = false;
+  if (draw_resolution_supersampled_ && draw_resolution_scale_x == 2 &&
+      draw_resolution_scale_y == 2) {
+    texture_draw_resolution_scale_x = 1;
+    texture_draw_resolution_scale_y = 1;
+    resolve_downsampling = true;
+  }
+
   render_target_cache_ = std::make_unique<VulkanRenderTargetCache>(
       *register_file_, *memory_, trace_writer_, draw_resolution_scale_x,
-      draw_resolution_scale_y, *this);
+      draw_resolution_scale_y, resolve_downsampling, *this);
   if (!render_target_cache_->Initialize(shared_memory_binding_count)) {
     XELOGE("Failed to initialize the render target cache");
     return false;
@@ -402,10 +462,9 @@ bool VulkanCommandProcessor::SetupContext() {
   }
 
   // Requires the transient descriptor set layouts.
-  // Use the same draw resolution scale as render target cache
   texture_cache_ = VulkanTextureCache::Create(
-      *register_file_, *shared_memory_, draw_resolution_scale_x,
-      draw_resolution_scale_y, *this, guest_shader_pipeline_stages_);
+      *register_file_, *shared_memory_, texture_draw_resolution_scale_x,
+      texture_draw_resolution_scale_y, *this, guest_shader_pipeline_stages_);
   if (!texture_cache_) {
     XELOGE("Failed to initialize the texture cache");
     return false;
@@ -1188,18 +1247,36 @@ void VulkanCommandProcessor::ShutdownContext() {
   ui::vulkan::util::DestroyAndNullHandle(dfn.vkFreeMemory, device,
                                          gamma_ramp_buffer_memory_);
 
-  // Clean up all readback buffers.
-  for (auto& pair : readback_buffers_) {
-    ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyBuffer, device,
-                                           pair.second.buffers[0]);
-    ui::vulkan::util::DestroyAndNullHandle(dfn.vkFreeMemory, device,
-                                           pair.second.memories[0]);
-    ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyBuffer, device,
-                                           pair.second.buffers[1]);
-    ui::vulkan::util::DestroyAndNullHandle(dfn.vkFreeMemory, device,
-                                           pair.second.memories[1]);
+  memory_->SetResolveContractFaultCallback(nullptr, nullptr);
+  if (resolve_contract_invalidation_callback_) {
+    memory_->UnregisterPhysicalMemoryInvalidationCallback(
+        resolve_contract_invalidation_callback_);
+    resolve_contract_invalidation_callback_ = nullptr;
   }
-  readback_buffers_.clear();
+  {
+    std::lock_guard<std::mutex> lock(resolve_contracts_mutex_);
+    for (auto& pair : resolve_contracts_) {
+      // Release anything still waiting on a contract that will never come.
+      pair.second.materialized = true;
+      ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyBuffer, device,
+                                             pair.second.buffer);
+      ui::vulkan::util::DestroyAndNullHandle(dfn.vkFreeMemory, device,
+                                             pair.second.memory);
+    }
+    resolve_contracts_.clear();
+    resolve_contracts_bytes_ = 0;
+    resolve_contract_materialize_requests_.clear();
+    for (auto& pending : resolve_contracts_pending_destroy_) {
+      if (pending.buffer != VK_NULL_HANDLE) {
+        dfn.vkDestroyBuffer(device, pending.buffer, nullptr);
+      }
+      if (pending.memory != VK_NULL_HANDLE) {
+        dfn.vkFreeMemory(device, pending.memory, nullptr);
+      }
+    }
+    resolve_contracts_pending_destroy_.clear();
+  }
+  resolve_contract_materialized_.notify_all();
 
   ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyBuffer, device,
                                          memexport_readback_buffer_);
@@ -2633,12 +2710,14 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   // life. Or even disregard the viewport bounds range in the fragment shader
   // interlocks case completely - apply the viewport and the scissor offset
   // directly to pixel address and to things like ps_param_gen.
-  uint32_t draw_resolution_scale_x = texture_cache_->draw_resolution_scale_x();
-  uint32_t draw_resolution_scale_y = texture_cache_->draw_resolution_scale_y();
+  uint32_t draw_resolution_scale_x =
+      render_target_cache_->draw_resolution_scale_x();
+  uint32_t draw_resolution_scale_y =
+      render_target_cache_->draw_resolution_scale_y();
   draw_util::GetViewportInfoArgs gviargs{};
   gviargs.Setup(draw_resolution_scale_x, draw_resolution_scale_y,
-                texture_cache_->draw_resolution_scale_x_divisor(),
-                texture_cache_->draw_resolution_scale_y_divisor(), false,
+                render_target_cache_->draw_resolution_scale_x_divisor(),
+                render_target_cache_->draw_resolution_scale_y_divisor(), false,
                 device_properties.maxViewportDimensions[0],
                 device_properties.maxViewportDimensions[1], true,
                 normalized_depth_control, false, host_render_targets_used,
@@ -2844,6 +2923,11 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   for (const draw_util::MemExportRange& memexport_range : memexport_ranges_) {
     shared_memory_->RangeWrittenByGpu(memexport_range.base_address_dwords << 2,
                                       memexport_range.size_bytes);
+    {
+      std::lock_guard<std::mutex> lock(resolve_contracts_mutex_);
+      InvalidateResolveContractsLocked(
+          memexport_range.base_address_dwords << 2, memexport_range.size_bytes);
+    }
   }
 
   // CPU readback for memexport data (if enabled).
@@ -2938,188 +3022,329 @@ bool VulkanCommandProcessor::IssueCopy() {
     return false;
   }
 
-  // CPU readback resolve path (if not disabled).
-  ReadbackResolveMode readback_mode = GetReadbackResolveMode();
-  if (readback_mode != ReadbackResolveMode::kDisabled &&
-      !texture_cache_->IsDrawResolutionScaled() && written_length > 0) {
-    // Early check: if destination memory is not accessible, skip all the
-    // expensive GPU readback work.
-    VirtualHeap* physical_heap = memory_->GetPhysicalHeap();
-    bool memory_accessible = false;
-    if (physical_heap) {
-      HeapAllocationInfo alloc_info;
-      if (physical_heap->QueryRegionInfo(written_address, &alloc_info) &&
-          (alloc_info.state & kMemoryAllocationCommit) &&
-          (alloc_info.protect & kMemoryProtectWrite)) {
-        uint32_t end_address = written_address + written_length;
-        uint32_t region_end = alloc_info.base_address + alloc_info.region_size;
-        if (end_address <= region_end) {
-          memory_accessible = true;
-        }
+  // The guest's copy is owed, not made - the contract's watches collect on it
+  // if anything ever touches the range.
+  RegisterResolveContract(written_address, written_length);
+
+  return true;
+}
+
+void VulkanCommandProcessor::DestroyResolveContractBuffer(
+    ResolveContract& contract) {
+  if (contract.buffer != VK_NULL_HANDLE || contract.memory != VK_NULL_HANDLE) {
+    // Queued copies may still be writing into it - destroying it now is a
+    // use-after-free the device notices.
+    resolve_contracts_pending_destroy_.push_back(
+        {contract.buffer, contract.memory, GetCurrentSubmission()});
+    contract.buffer = VK_NULL_HANDLE;
+    contract.memory = VK_NULL_HANDLE;
+  }
+  resolve_contracts_bytes_ -= contract.buffer_size;
+  contract.buffer_size = 0;
+}
+
+void VulkanCommandProcessor::DrainResolveContractDestroysLocked() {
+  if (resolve_contracts_pending_destroy_.empty()) {
+    return;
+  }
+  const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
+  const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+  const VkDevice device = vulkan_device->device();
+  uint64_t completed_submission = GetCompletedSubmission();
+  for (auto it = resolve_contracts_pending_destroy_.begin();
+       it != resolve_contracts_pending_destroy_.end();) {
+    if (it->submission <= completed_submission) {
+      if (it->buffer != VK_NULL_HANDLE) {
+        dfn.vkDestroyBuffer(device, it->buffer, nullptr);
       }
-    }
-
-    if (!memory_accessible) {
-      // Destination memory not accessible, skip readback entirely
-      return true;
-    }
-
-    // Create a key for this specific resolve operation
-    uint64_t resolve_key =
-        MakeReadbackResolveKey(written_address, written_length);
-    ReadbackBuffer& rb = readback_buffers_[resolve_key];
-    rb.last_used_frame = frame_current_;
-
-    const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
-    const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
-    const VkDevice device = vulkan_device->device();
-
-    uint32_t write_index = rb.current_index;
-    uint32_t size = AlignReadbackBufferSize(written_length);
-
-    // Allocate/resize write buffer if needed
-    if (size > rb.sizes[write_index]) {
-      // Create buffer with TRANSFER_DST usage for copying from GPU.
-      VkBufferCreateInfo buffer_info = {};
-      buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-      buffer_info.size = size;
-      buffer_info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-      buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-      VkBuffer new_buffer;
-      if (dfn.vkCreateBuffer(device, &buffer_info, nullptr, &new_buffer) !=
-          VK_SUCCESS) {
-        XELOGE(
-            "VulkanCommandProcessor: Failed to create readback buffer of {} MB",
-            size >> 20);
-        return true;
+      if (it->memory != VK_NULL_HANDLE) {
+        dfn.vkFreeMemory(device, it->memory, nullptr);
       }
-
-      // Get memory requirements.
-      VkMemoryRequirements memory_requirements;
-      dfn.vkGetBufferMemoryRequirements(device, new_buffer,
-                                        &memory_requirements);
-
-      // Allocate HOST_VISIBLE | HOST_CACHED | HOST_COHERENT memory for
-      // readback.
-      const uint32_t memory_type_index = ui::vulkan::util::ChooseMemoryType(
-          vulkan_device->memory_types(), memory_requirements.memoryTypeBits,
-          ui::vulkan::util::MemoryPurpose::kReadback);
-
-      if (memory_type_index == UINT32_MAX) {
-        XELOGE(
-            "VulkanCommandProcessor: Failed to find memory type for readback "
-            "buffer");
-        dfn.vkDestroyBuffer(device, new_buffer, nullptr);
-        return true;
-      }
-
-      VkMemoryAllocateInfo memory_info = {};
-      memory_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-      memory_info.allocationSize = memory_requirements.size;
-      memory_info.memoryTypeIndex = memory_type_index;
-
-      VkDeviceMemory new_memory;
-      if (dfn.vkAllocateMemory(device, &memory_info, nullptr, &new_memory) !=
-          VK_SUCCESS) {
-        XELOGE(
-            "VulkanCommandProcessor: Failed to allocate readback buffer "
-            "memory");
-        dfn.vkDestroyBuffer(device, new_buffer, nullptr);
-        return true;
-      }
-
-      // Bind memory to buffer.
-      if (dfn.vkBindBufferMemory(device, new_buffer, new_memory, 0) !=
-          VK_SUCCESS) {
-        XELOGE("VulkanCommandProcessor: Failed to bind readback buffer memory");
-        dfn.vkFreeMemory(device, new_memory, nullptr);
-        dfn.vkDestroyBuffer(device, new_buffer, nullptr);
-        return true;
-      }
-
-      // Clean up old buffer if exists
-      if (rb.buffers[write_index] != VK_NULL_HANDLE) {
-        dfn.vkDestroyBuffer(device, rb.buffers[write_index], nullptr);
-      }
-      if (rb.memories[write_index] != VK_NULL_HANDLE) {
-        dfn.vkFreeMemory(device, rb.memories[write_index], nullptr);
-      }
-
-      rb.buffers[write_index] = new_buffer;
-      rb.memories[write_index] = new_memory;
-      rb.sizes[write_index] = size;
-    }
-
-    VkBuffer shared_memory_buffer = shared_memory_->buffer();
-
-    // Ensure shared memory is ready for transfer.
-    shared_memory_->Use(VulkanSharedMemory::Usage::kRead);
-
-    // Copy GPU buffer → staging buffer.
-    VkBufferCopy copy_region = {};
-    copy_region.srcOffset = written_address;
-    copy_region.dstOffset = 0;
-    copy_region.size = written_length;
-
-    deferred_command_buffer_.CmdVkCopyBuffer(
-        shared_memory_buffer, rb.buffers[write_index], 1, &copy_region);
-
-    bool use_delayed_sync = (readback_mode == ReadbackResolveMode::kFast);
-    uint32_t read_index = write_index;
-
-    if (use_delayed_sync) {
-      // Use previous frame's data (avoid stall)
-      read_index = 1 - write_index;
+      it = resolve_contracts_pending_destroy_.erase(it);
     } else {
-      // Wait for GPU to finish (accurate but slow)
-      if (!AwaitAllQueueOperationsCompletion()) {
-        XELOGE(
-            "VulkanCommandProcessor: Failed to complete queue operations for "
-            "resolve readback");
-        return true;
+      ++it;
+    }
+  }
+}
+
+void VulkanCommandProcessor::EvictResolveContractsLocked(
+    uint64_t incoming_bytes, uint64_t keep_key) {
+  while (resolve_contracts_bytes_ + incoming_bytes >
+         kResolveContractsMaxBytes) {
+    auto oldest = resolve_contracts_.end();
+    for (auto it = resolve_contracts_.begin(); it != resolve_contracts_.end();
+         ++it) {
+      if (it->first == keep_key || it->second.buffer == VK_NULL_HANDLE) {
+        continue;
+      }
+      if (oldest == resolve_contracts_.end() ||
+          it->second.last_used_frame < oldest->second.last_used_frame) {
+        oldest = it;
       }
     }
-
-    // Read from the appropriate buffer
-    // If using delayed sync but previous buffer doesn't exist, use current
-    // buffer with sync as fallback
-    if (use_delayed_sync && (rb.buffers[read_index] == VK_NULL_HANDLE ||
-                             written_length > rb.sizes[read_index])) {
-      read_index = write_index;
-      if (!AwaitAllQueueOperationsCompletion()) {
-        XELOGE(
-            "VulkanCommandProcessor: Failed to complete queue operations for "
-            "resolve readback fallback");
-        return true;
-      }
+    if (oldest == resolve_contracts_.end()) {
+      break;
     }
+    DestroyResolveContractBuffer(oldest->second);
+    resolve_contracts_.erase(oldest);
+  }
+}
 
-    if (rb.buffers[read_index] != VK_NULL_HANDLE &&
-        written_length <= rb.sizes[read_index]) {
-      void* mapped_data;
-      if (dfn.vkMapMemory(device, rb.memories[read_index], 0, written_length, 0,
-                          &mapped_data) == VK_SUCCESS) {
-        if (mapped_data) {
-          // Memory accessibility already checked at the start of this function
-          uint8_t* dest_ptr = memory_->TranslatePhysical(written_address);
-          memory::vastcpy(dest_ptr, static_cast<uint8_t*>(mapped_data),
-                          written_length);
-        } else {
-          XELOGE(
-              "VulkanCommandProcessor: Failed to map readback buffer "
-              "(mapped_data is null)");
-        }
-        dfn.vkUnmapMemory(device, rb.memories[read_index]);
-      } else {
-        XELOGE(
-            "VulkanCommandProcessor: Failed to map readback buffer memory for "
-            "resolve");
-      }
+void VulkanCommandProcessor::InvalidateResolveContractsLocked(
+    uint32_t guest_base, uint32_t length) {
+  if (!length) {
+    return;
+  }
+  uint32_t end = guest_base + length;
+  for (auto it = resolve_contracts_.begin(); it != resolve_contracts_.end();) {
+    if (it->second.guest_base < end &&
+        guest_base < it->second.guest_base + it->second.length) {
+      DestroyResolveContractBuffer(it->second);
+      it = resolve_contracts_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
+void VulkanCommandProcessor::DrainResolveContractInvalidationsLocked() {
+  std::vector<std::pair<uint32_t, uint32_t>> invalidations;
+  {
+    std::lock_guard<std::mutex> lock(resolve_contract_invalidations_mutex_);
+    invalidations.swap(resolve_contract_invalidations_);
+  }
+  for (const auto& invalidation : invalidations) {
+    InvalidateResolveContractsLocked(invalidation.first, invalidation.second);
+  }
+}
+
+std::pair<uint32_t, uint32_t>
+VulkanCommandProcessor::ResolveContractInvalidationCallbackThunk(
+    void* context_ptr, uint32_t physical_address_start, uint32_t length,
+    bool exact_range) {
+  auto command_processor =
+      reinterpret_cast<VulkanCommandProcessor*>(context_ptr);
+  {
+    std::lock_guard<std::mutex> lock(
+        command_processor->resolve_contract_invalidations_mutex_);
+    command_processor->resolve_contract_invalidations_.emplace_back(
+        physical_address_start, length);
+  }
+  return std::make_pair(uint32_t(0), UINT32_MAX);
+}
+
+void VulkanCommandProcessor::RegisterResolveContract(uint32_t guest_base,
+                                                     uint32_t length) {
+  std::lock_guard<std::mutex> lock(resolve_contracts_mutex_);
+  DrainResolveContractInvalidationsLocked();
+  DrainResolveContractDestroysLocked();
+  if (!length || texture_cache_->IsDrawResolutionScaled()) {
+    return;
+  }
+
+  uint64_t key = MakeReadbackResolveKey(guest_base, length);
+  // Anything else covering this memory is stale now. The entry for this exact
+  // range is kept so its buffer can be reused instead of reallocated.
+  uint32_t end = guest_base + length;
+  for (auto it = resolve_contracts_.begin(); it != resolve_contracts_.end();) {
+    if (it->first != key && it->second.guest_base < end &&
+        guest_base < it->second.guest_base + it->second.length) {
+      DestroyResolveContractBuffer(it->second);
+      it = resolve_contracts_.erase(it);
+    } else {
+      ++it;
     }
   }
 
+  uint32_t size = AlignReadbackBufferSize(length);
+  {
+    auto existing = resolve_contracts_.find(key);
+    uint32_t reused =
+        existing != resolve_contracts_.end() ? existing->second.buffer_size : 0;
+    if (size > reused) {
+      EvictResolveContractsLocked(size - reused, key);
+    }
+  }
+
+  const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
+  const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+  const VkDevice device = vulkan_device->device();
+
+  ResolveContract& contract = resolve_contracts_[key];
+  if (size > contract.buffer_size) {
+    VkBufferCreateInfo buffer_info = {};
+    buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    buffer_info.size = size;
+    buffer_info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VkBuffer new_buffer;
+    if (dfn.vkCreateBuffer(device, &buffer_info, nullptr, &new_buffer) !=
+        VK_SUCCESS) {
+      XELOGE("Failed to create a {} MB resolve contract buffer", size >> 20);
+      DestroyResolveContractBuffer(contract);
+      resolve_contracts_.erase(key);
+      return;
+    }
+    VkMemoryRequirements memory_requirements;
+    dfn.vkGetBufferMemoryRequirements(device, new_buffer, &memory_requirements);
+    const uint32_t memory_type_index = ui::vulkan::util::ChooseMemoryType(
+        vulkan_device->memory_types(), memory_requirements.memoryTypeBits,
+        ui::vulkan::util::MemoryPurpose::kReadback);
+    if (memory_type_index == UINT32_MAX) {
+      dfn.vkDestroyBuffer(device, new_buffer, nullptr);
+      DestroyResolveContractBuffer(contract);
+      resolve_contracts_.erase(key);
+      return;
+    }
+    VkMemoryAllocateInfo memory_info = {};
+    memory_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    memory_info.allocationSize = memory_requirements.size;
+    memory_info.memoryTypeIndex = memory_type_index;
+    VkDeviceMemory new_memory;
+    if (dfn.vkAllocateMemory(device, &memory_info, nullptr, &new_memory) !=
+        VK_SUCCESS) {
+      dfn.vkDestroyBuffer(device, new_buffer, nullptr);
+      DestroyResolveContractBuffer(contract);
+      resolve_contracts_.erase(key);
+      return;
+    }
+    if (dfn.vkBindBufferMemory(device, new_buffer, new_memory, 0) !=
+        VK_SUCCESS) {
+      dfn.vkFreeMemory(device, new_memory, nullptr);
+      dfn.vkDestroyBuffer(device, new_buffer, nullptr);
+      DestroyResolveContractBuffer(contract);
+      resolve_contracts_.erase(key);
+      return;
+    }
+    DestroyResolveContractBuffer(contract);
+    contract.buffer = new_buffer;
+    contract.memory = new_memory;
+    contract.buffer_size = size;
+    resolve_contracts_bytes_ += size;
+  }
+
+  shared_memory_->Use(VulkanSharedMemory::Usage::kRead);
+  VkBuffer shared_memory_buffer = shared_memory_->buffer();
+  contract.valid_runs.clear();
+  shared_memory_->ForEachGpuWrittenRange(
+      guest_base, length,
+      [this, &contract, guest_base, shared_memory_buffer](uint32_t sub_start,
+                                                          uint32_t sub_length) {
+        uint32_t offset = sub_start - guest_base;
+        VkBufferCopy copy_region = {};
+        copy_region.srcOffset = sub_start;
+        copy_region.dstOffset = offset;
+        copy_region.size = sub_length;
+        deferred_command_buffer_.CmdVkCopyBuffer(
+            shared_memory_buffer, contract.buffer, 1, &copy_region);
+        contract.valid_runs.emplace_back(offset, sub_length);
+      });
+  if (contract.valid_runs.empty()) {
+    // Nothing of ours in there - don't hand out a buffer of zeros.
+    DestroyResolveContractBuffer(contract);
+    resolve_contracts_.erase(key);
+    return;
+  }
+
+  contract.guest_base = guest_base;
+  contract.length = length;
+  contract.submission = GetCurrentSubmission();
+  contract.last_used_frame = frame_current_;
+  contract.materialized = false;
+
+  for (const auto& run : contract.valid_runs) {
+    memory_->ArmResolveReadWatch(guest_base + run.first, run.second);
+  }
+}
+
+bool VulkanCommandProcessor::ResolveContractFaultCallbackThunk(
+    void* context_ptr, uint32_t physical_address) {
+  return reinterpret_cast<VulkanCommandProcessor*>(context_ptr)
+      ->MaterializeResolveContractForGuest(physical_address);
+}
+
+bool VulkanCommandProcessor::MaterializeResolveContractForGuest(
+    uint32_t physical_address) {
+  std::unique_lock<std::mutex> lock(resolve_contracts_mutex_);
+  uint64_t key = 0;
+  bool found = false;
+  for (auto& contract_pair : resolve_contracts_) {
+    ResolveContract& candidate = contract_pair.second;
+    if (candidate.materialized || candidate.buffer == VK_NULL_HANDLE ||
+        physical_address < candidate.guest_base ||
+        physical_address >= candidate.guest_base + candidate.length) {
+      continue;
+    }
+    key = contract_pair.first;
+    found = true;
+    break;
+  }
+  if (!found) {
+    return false;
+  }
+  // This backend's submission fences belong to the GPU thread, so the copy has
+  // to be done there. Queue it and wait to be told it's done.
+  resolve_contract_materialize_requests_.push_back(key);
+  resolve_contract_materialized_.wait(lock, [this, key]() {
+    auto it = resolve_contracts_.find(key);
+    return it == resolve_contracts_.end() || it->second.materialized;
+  });
   return true;
+}
+
+void VulkanCommandProcessor::ServiceResolveContractMaterializations() {
+  std::unique_lock<std::mutex> lock(resolve_contracts_mutex_);
+  DrainResolveContractDestroysLocked();
+  if (resolve_contract_materialize_requests_.empty()) {
+    return;
+  }
+  std::vector<uint64_t> requests;
+  requests.swap(resolve_contract_materialize_requests_);
+
+  const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
+  const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+  const VkDevice device = vulkan_device->device();
+
+  bool awaited = false;
+  for (uint64_t key : requests) {
+    auto it = resolve_contracts_.find(key);
+    if (it == resolve_contracts_.end() || it->second.materialized) {
+      continue;
+    }
+    ResolveContract& contract = it->second;
+    if (!awaited) {
+      // Unlock across the wait - a faulting guest thread must not be blocked
+      // behind us while the GPU drains.
+      lock.unlock();
+      awaited = AwaitAllQueueOperationsCompletion();
+      lock.lock();
+      if (!awaited) {
+        XELOGE(
+            "VulkanCommandProcessor: Failed to complete queue operations for "
+            "resolve contract materialization");
+        break;
+      }
+      it = resolve_contracts_.find(key);
+      if (it == resolve_contracts_.end() || it->second.materialized) {
+        continue;
+      }
+    }
+    ResolveContract& live = it->second;
+    void* mapped_data;
+    if (dfn.vkMapMemory(device, live.memory, 0, live.length, 0, &mapped_data) ==
+            VK_SUCCESS &&
+        mapped_data) {
+      const uint8_t* bytes = static_cast<const uint8_t*>(mapped_data);
+      for (const auto& run : live.valid_runs) {
+        std::memcpy(memory_->TranslatePhysical(live.guest_base + run.first),
+                    bytes + run.first, run.second);
+      }
+      dfn.vkUnmapMemory(device, live.memory);
+    }
+    live.materialized = true;
+  }
+  lock.unlock();
+  resolve_contract_materialized_.notify_all();
 }
 
 VkBuffer VulkanCommandProcessor::RequestReadbackBuffer(uint32_t size) {
@@ -3725,6 +3950,9 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
     return false;
   }
 
+  // Guest threads blocked on a resolve contract are waiting for this.
+  ServiceResolveContractMaterializations();
+
   bool is_opening_frame = is_guest_command && !frame_open_;
   if (submission_open_ && !is_opening_frame) {
     return true;
@@ -3794,41 +4022,6 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
 
   if (is_opening_frame) {
     frame_open_ = true;
-
-    // Swap all readback buffers for delayed sync (one frame behind)
-    for (auto& pair : readback_buffers_) {
-      pair.second.current_index = 1 - pair.second.current_index;
-    }
-
-    // Evict old readback buffers only when map gets too large to prevent
-    // unbounded memory growth. Don't do this every frame as it's expensive.
-    if (readback_buffers_.size() > kMaxReadbackBuffers) {
-      const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
-      const ui::vulkan::VulkanDevice::Functions& dfn =
-          vulkan_device->functions();
-      const VkDevice device = vulkan_device->device();
-
-      for (auto it = readback_buffers_.begin();
-           it != readback_buffers_.end();) {
-        // Evict if not used recently
-        if (frame_current_ > kReadbackBufferEvictionAgeFrames &&
-            it->second.last_used_frame <
-                frame_current_ - kReadbackBufferEvictionAgeFrames) {
-          // Release both buffers and memories
-          ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyBuffer, device,
-                                                 it->second.buffers[0]);
-          ui::vulkan::util::DestroyAndNullHandle(dfn.vkFreeMemory, device,
-                                                 it->second.memories[0]);
-          ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyBuffer, device,
-                                                 it->second.buffers[1]);
-          ui::vulkan::util::DestroyAndNullHandle(dfn.vkFreeMemory, device,
-                                                 it->second.memories[1]);
-          it = readback_buffers_.erase(it);
-        } else {
-          ++it;
-        }
-      }
-    }
 
     // Reset bindings that depend on transient data.
     std::memset(current_float_constant_map_vertex_, 0,
@@ -4455,8 +4648,10 @@ void VulkanCommandProcessor::UpdateSystemConstantValues(
   bool edram_fragment_shader_interlock =
       render_target_cache_->GetPath() ==
       RenderTargetCache::Path::kPixelShaderInterlock;
-  uint32_t draw_resolution_scale_x = texture_cache_->draw_resolution_scale_x();
-  uint32_t draw_resolution_scale_y = texture_cache_->draw_resolution_scale_y();
+  uint32_t draw_resolution_scale_x =
+      render_target_cache_->draw_resolution_scale_x();
+  uint32_t draw_resolution_scale_y =
+      render_target_cache_->draw_resolution_scale_y();
 
   // Get the color info register values for each render target. Also, for FSI,
   // exclude components that don't exist in the format from the write mask.

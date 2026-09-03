@@ -182,6 +182,12 @@ class RenderTargetCache {
   // to be discarded.
   uint32_t draw_resolution_scale_x() const { return draw_resolution_scale_x_; }
   uint32_t draw_resolution_scale_y() const { return draw_resolution_scale_y_; }
+  divisors::MagicDiv draw_resolution_scale_x_divisor() const {
+    return draw_resolution_scale_x_divisor_;
+  }
+  divisors::MagicDiv draw_resolution_scale_y_divisor() const {
+    return draw_resolution_scale_y_divisor_;
+  }
   bool IsDrawResolutionScaled() const {
     return draw_resolution_scale_x() > 1 || draw_resolution_scale_y() > 1;
   }
@@ -212,6 +218,8 @@ class RenderTargetCache {
       : register_file_(register_file),
         draw_resolution_scale_x_(draw_resolution_scale_x),
         draw_resolution_scale_y_(draw_resolution_scale_y),
+        draw_resolution_scale_x_divisor_(draw_resolution_scale_x),
+        draw_resolution_scale_y_divisor_(draw_resolution_scale_y),
         draw_extent_estimator_(register_file, memory, trace_writer) {
     assert_not_zero(draw_resolution_scale_x);
     assert_not_zero(draw_resolution_scale_y);
@@ -599,6 +607,8 @@ class RenderTargetCache {
   const RegisterFile& register_file_;
   uint32_t draw_resolution_scale_x_;
   uint32_t draw_resolution_scale_y_;
+  divisors::MagicDiv draw_resolution_scale_x_divisor_;
+  divisors::MagicDiv draw_resolution_scale_y_divisor_;
 
   DrawExtentEstimator draw_extent_estimator_;
 

@@ -509,19 +509,6 @@ bool EmulatorApp::OnInitialize() {
   }
   storage_root = std::filesystem::absolute(storage_root);
 
-  // If a Device folder already exists in the storage root, the guest device
-  // tree lives inside it and it becomes the effective storage root - every
-  // folder below (content, cache, scratch, Library, ...) resolves under it.
-  // Adopted only when it is already there; never created, so an install
-  // without one keeps the flat layout untouched.
-  {
-    std::error_code ec;
-    const auto device_root = storage_root / "Device";
-    if (std::filesystem::is_directory(device_root, ec)) {
-      storage_root = device_root;
-    }
-  }
-
   XELOGI("Storage root: {}", storage_root);
 
   config::SetupConfig(storage_root);

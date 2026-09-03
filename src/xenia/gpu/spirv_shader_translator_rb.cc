@@ -1480,6 +1480,18 @@ void SpirvShaderTranslator::CompleteFragmentShaderInMain() {
           }
         }
 
+        // Flush NaN to 0, the same as the fragment shader interlock path does
+        // before packing into EDRAM. Here the conversion to the render target
+        // format is done by the host instead, and Direct3D defines a NaN
+        // converted to a normalized fixed-point format as 0 while Vulkan
+        // leaves it undefined - so a NaN out of the guest's shader becomes a
+        // per-channel arbitrary bit pattern, which a copy exponent bias then
+        // multiplies into a saturated pixel.
+        color = builder_->createTriOp(
+            spv::OpSelect, type_float4_,
+            builder_->createUnaryOp(spv::OpIsNan, type_bool4_, color),
+            const_float4_0_, color);
+
         builder_->createStore(color, out_color);
       }
     }

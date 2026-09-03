@@ -1,0 +1,160 @@
+diff --git a/src/xenia/vfs/virtual_file_system.cc b/src/xenia/vfs/virtual_file_system.cc
+index 280f47a41..90a16eb34 100644
+--- a/src/xenia/vfs/virtual_file_system.cc
++++ b/src/xenia/vfs/virtual_file_system.cc
+@@ -31,6 +31,7 @@ VirtualFileSystem::~VirtualFileSystem() {
+ }
+ 
+ void VirtualFileSystem::Clear() {
++  overlay_devices_.clear();
+   devices_.clear();
+   symlinks_.clear();
+ }
+@@ -126,6 +127,52 @@ bool VirtualFileSystem::ResolveSymbolicLink(const std::string_view path,
+   return was_resolved;
+ }
+ 
++bool VirtualFileSystem::RegisterOverlayDevice(
++    const std::string_view shadowed_mount, std::unique_ptr<Device> device) {
++  auto global_lock = global_critical_region_.Acquire();
++  overlay_devices_.push_back(
++      {std::string(shadowed_mount), std::move(device)});
++  XELOGD("Registered overlay device over: {}", shadowed_mount);
++  return true;
++}
++
++void VirtualFileSystem::UnregisterOverlayDevices() {
++  auto global_lock = global_critical_region_.Acquire();
++  overlay_devices_.clear();
++}
++
++Entry* VirtualFileSystem::ResolveOverlayPath(const std::string_view path) {
++  auto global_lock = global_critical_region_.Acquire();
++  if (overlay_devices_.empty()) {
++    return nullptr;
++  }
++
++  auto normalized_path(xe::utf8::canonicalize_guest_path(path));
++  std::string resolved_path;
++  if (ResolveSymbolicLink(normalized_path, resolved_path)) {
++    normalized_path = resolved_path;
++  }
++
++  for (const auto& overlay : overlay_devices_) {
++    const auto& mount = overlay.shadowed_mount;
++    if (!xe::utf8::starts_with_case(normalized_path, mount)) {
++      continue;
++    }
++    auto relative_path = normalized_path.substr(mount.size());
++    while (!relative_path.empty() &&
++           (relative_path.front() == '\\' || relative_path.front() == '/')) {
++      relative_path.erase(0, 1);
++    }
++    if (relative_path.empty()) {
++      continue;
++    }
++    if (Entry* entry = overlay.device->ResolvePath(relative_path)) {
++      return entry;
++    }
++  }
++  return nullptr;
++}
++
+ Entry* VirtualFileSystem::ResolvePath(const std::string_view path) {
+   auto global_lock = global_critical_region_.Acquire();
+ 
+@@ -138,10 +185,33 @@ Entry* VirtualFileSystem::ResolvePath(const std::string_view path) {
+     normalized_path = resolved_path;
+   }
+ 
+-  // Find the device.
++  // An active title update shadows the disc, file by file.
++  if (Entry* overlay_entry = ResolveOverlayPath(normalized_path)) {
++    return overlay_entry;
++  }
++
++  // Find the device. Match must end on a path-component boundary so that a
++  // shorter device mount ("\Device\Flash") doesn't swallow a request for a
++  // longer one ("\Device\FlashFs\MobileB.dat") just because the names share
++  // a prefix. Either the prefix consumes the whole path (exact match) or the
++  // character following the prefix is a path separator.
+   auto it =
+       std::find_if(devices_.cbegin(), devices_.cend(), [&](const auto& d) {
+-        return xe::utf8::starts_with(normalized_path, d->mount_path());
++        const auto& mount = d->mount_path();
++        if (!xe::utf8::starts_with(normalized_path, mount)) {
++          return false;
++        }
++        if (normalized_path.size() == mount.size()) {
++          return true;  // exact device-root match
++        }
++        // A mount that already ends in a separator is itself a component
++        // boundary (content devices mount as "\Device\Content\N\").
++        const char mount_last = mount.back();
++        if (mount_last == '\\' || mount_last == '/') {
++          return true;
++        }
++        const char next = normalized_path[mount.size()];
++        return next == '\\' || next == '/';
+       });
+   if (it == devices_.cend()) {
+     // Supress logging the error for ShaderDumpxe:\CompareBackEnds as this is
+@@ -224,6 +294,22 @@ X_STATUS VirtualFileSystem::OpenFile(Entry* root_entry,
+   Entry* parent_entry = nullptr;
+   Entry* entry = nullptr;
+ 
++  // A title update shadows the disc for reads. Writes are never sent to the
++  // overlay - it is read-only, and a title writing a file that happens to
++  // share a name with update content must still write to the real device.
++  if (!root_entry && !(desired_access & FileAccess::kFileWriteData) &&
++      creation_disposition != FileDisposition::kCreate &&
++      creation_disposition != FileDisposition::kOverwrite &&
++      creation_disposition != FileDisposition::kSuperscede) {
++    if (Entry* overlay_entry = ResolveOverlayPath(path)) {
++      if (!(overlay_entry->attributes() & kFileAttributeDirectory) ||
++          !is_non_directory) {
++        *out_action = FileAction::kOpened;
++        return overlay_entry->Open(desired_access, out_file);
++      }
++    }
++  }
++
+   auto base_path = xe::utf8::find_base_guest_path(path);
+   if (!base_path.empty()) {
+     parent_entry = !root_entry ? ResolvePath(base_path)
+diff --git a/src/xenia/vfs/virtual_file_system.h b/src/xenia/vfs/virtual_file_system.h
+index e51b18566..425fdb422 100644
+--- a/src/xenia/vfs/virtual_file_system.h
++++ b/src/xenia/vfs/virtual_file_system.h
+@@ -39,6 +39,18 @@ class VirtualFileSystem {
+   bool IsSymbolicLinkRegistered(const std::string_view path);
+   bool FindSymbolicLink(const std::string_view path, std::string& target);
+ 
++  // Layers a device over an existing mount: a path under shadowed_mount is
++  // looked up in the overlay first and only falls through to the real device
++  // when the overlay does not have that file. This is how a title update's
++  // non-executable payload (fastfiles, packs, res\, sound) replaces the disc
++  // copy for titles that open those files by their normal game: path instead
++  // of through update:.
++  bool RegisterOverlayDevice(const std::string_view shadowed_mount,
++                             std::unique_ptr<Device> device);
++  void UnregisterOverlayDevices();
++  // Returns the overlay entry shadowing this path, or null.
++  Entry* ResolveOverlayPath(const std::string_view path);
++
+   Entry* ResolvePath(const std::string_view path);
+ 
+   Entry* CreatePath(const std::string_view path, uint32_t attributes);
+@@ -65,6 +77,12 @@ class VirtualFileSystem {
+   std::vector<std::unique_ptr<Device>> devices_;
+   std::unordered_map<std::string, std::string> symlinks_;
+ 
++  struct OverlayDevice {
++    std::string shadowed_mount;
++    std::unique_ptr<Device> device;
++  };
++  std::vector<OverlayDevice> overlay_devices_;
++
+   bool ResolveSymbolicLink(const std::string_view path, std::string& result);
+ };
+ 

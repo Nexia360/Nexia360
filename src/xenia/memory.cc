@@ -622,8 +622,69 @@ bool Memory::AccessViolationCallback(
   // Will be rounded to physical page boundaries internally, so just pass 1 as
   // the length - guranteed not to cross page boundaries also.
   auto physical_heap = static_cast<PhysicalHeap*>(heap);
+
+  if (!resolve_read_watch_pages_.empty()) {
+    uint32_t page_address =
+        virtual_address & ~uint32_t(xe::memory::page_size() - 1);
+    auto it = resolve_read_watch_pages_.find(page_address);
+    if (it != resolve_read_watch_pages_.end()) {
+      resolve_read_watch_pages_.erase(it);
+      // Fill guest memory from the contract before letting the access retry.
+      // The GPU thread needs the global critical region to make progress and
+      // this waits on the GPU, so it must not be held here.
+      if (resolve_contract_fault_callback_) {
+        uint32_t physical_address =
+            physical_heap->GetPhysicalAddress(virtual_address);
+        ResolveContractFaultCallback callback =
+            resolve_contract_fault_callback_;
+        void* callback_context = resolve_contract_fault_context_;
+        global_lock_locked_once.unlock();
+        callback(callback_context, physical_address);
+        global_lock_locked_once.lock();
+      }
+      bool invalidation_watched = false;
+      physical_heap->DisarmReadWatch(virtual_address, &invalidation_watched);
+      // The page is accessible again, so the faulting instruction can be
+      // retried. Only a write to a page that still carries an invalidation
+      // watch has to go through the regular path below.
+      if (!is_write || !invalidation_watched) {
+        return true;
+      }
+    }
+  }
+
   return physical_heap->TriggerCallbacks(std::move(global_lock_locked_once),
                                          virtual_address, 1, is_write, false);
+}
+
+void Memory::SetResolveContractFaultCallback(
+    ResolveContractFaultCallback callback, void* callback_context) {
+  auto global_lock = global_critical_region_.Acquire();
+  resolve_contract_fault_callback_ = callback;
+  resolve_contract_fault_context_ = callback_context;
+}
+
+void Memory::ArmResolveReadWatch(uint32_t physical_address, uint32_t length) {
+  if (!length) {
+    return;
+  }
+  PhysicalHeap* physical_heaps[3] = {&heaps_.vA0000000, &heaps_.vC0000000,
+                                     &heaps_.vE0000000};
+  uint32_t page_size = uint32_t(xe::memory::page_size());
+  uint32_t first = physical_address & ~(page_size - 1);
+  uint32_t last = (physical_address + length - 1) & ~(page_size - 1);
+  auto global_lock = global_critical_region_.Acquire();
+  for (uint32_t address = first;; address += page_size) {
+    for (PhysicalHeap* physical_heap : physical_heaps) {
+      uint32_t page_address = physical_heap->ArmReadWatch(address);
+      if (page_address) {
+        resolve_read_watch_pages_.insert(page_address);
+      }
+    }
+    if (address == last) {
+      break;
+    }
+  }
 }
 
 bool Memory::AccessViolationCallbackThunk(
@@ -2137,6 +2198,64 @@ XE_NOINLINE void PhysicalHeap::EnableAccessCallbacksInner(
         protect_access);
   }
 }
+uint32_t PhysicalHeap::ArmReadWatch(uint32_t physical_address) {
+  uint32_t physical_address_offset = GetPhysicalAddress(heap_base_);
+  if (physical_address < physical_address_offset) {
+    return 0;
+  }
+  uint32_t heap_relative_address = physical_address - physical_address_offset;
+  if (heap_relative_address >= heap_size_) {
+    return 0;
+  }
+  uint32_t system_page =
+      (heap_relative_address + host_address_offset()) >> system_page_shift_;
+  if (system_page >= system_page_count_) {
+    return 0;
+  }
+  uint32_t guest_page = SystemPagenumToGuestPagenum(system_page);
+  if (ToPageAccess(page_table_[guest_page].current_protect) ==
+      xe::memory::PageAccess::kNoAccess) {
+    // Inaccessible to the guest anyway - a fault here is a real one.
+    return 0;
+  }
+  uint32_t page_offset = system_page << system_page_shift_;
+  xe::memory::Protect(membase_ + heap_base_ + page_offset,
+                      size_t(1) << system_page_shift_,
+                      xe::memory::PageAccess::kNoAccess);
+  return heap_base_ + page_offset - host_address_offset();
+}
+
+bool PhysicalHeap::DisarmReadWatch(uint32_t virtual_address,
+                                   bool* out_invalidation_watched) {
+  *out_invalidation_watched = false;
+  if (virtual_address < heap_base_) {
+    return false;
+  }
+  uint32_t heap_relative_address = virtual_address - heap_base_;
+  if (heap_relative_address >= heap_size_) {
+    return false;
+  }
+  uint32_t system_page =
+      (heap_relative_address + host_address_offset()) >> system_page_shift_;
+  if (system_page >= system_page_count_) {
+    return false;
+  }
+  uint32_t guest_page = SystemPagenumToGuestPagenum(system_page);
+  xe::memory::PageAccess page_access =
+      ToPageAccess(page_table_[guest_page].current_protect);
+  if (page_access != xe::memory::PageAccess::kNoAccess &&
+      page_access != xe::memory::PageAccess::kReadOnly &&
+      (system_page_flags_[system_page >> 6].notify_on_invalidation &
+       (uint64_t(1) << (system_page & 63)))) {
+    // Don't drop the invalidation watch that was on the page before arming.
+    page_access = xe::memory::PageAccess::kReadOnly;
+    *out_invalidation_watched = true;
+  }
+  xe::memory::Protect(membase_ + heap_base_ + (system_page << system_page_shift_),
+                      size_t(1) << system_page_shift_, page_access);
+  return true;
+}
+
 bool PhysicalHeap::TriggerCallbacks(
     global_unique_lock_type global_lock_locked_once, uint32_t virtual_address,
     uint32_t length, bool is_write, bool unwatch_exact_range, bool unprotect) {

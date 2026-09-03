@@ -12,10 +12,12 @@
 
 #include <array>
 #include <climits>
+#include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -507,6 +509,9 @@ class VulkanCommandProcessor final : public CommandProcessor {
       VkWriteDescriptorSet* descriptor_set_writes_out);
 
   bool device_lost_ = false;
+  // Whether the draw resolution scale was doubled on top of the configured one
+  // to give the guest's 2x2 alpha to mask dither host pixels to average across.
+  bool draw_resolution_supersampled_ = false;
 
   bool cache_clear_requested_ = false;
 
@@ -820,16 +825,65 @@ class VulkanCommandProcessor final : public CommandProcessor {
   // Temporary storage for memexport stream constants used in the draw.
   std::vector<draw_util::MemExportRange> memexport_ranges_;
 
-  // Per-resolve double-buffered readback for delayed sync
-  struct ReadbackBuffer {
-    VkBuffer buffers[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    VkDeviceMemory memories[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
-    uint32_t sizes[2] = {0, 0};
-    uint32_t current_index = 0;
+  // Resolve contracts. The resolved bytes are staged on the GPU timeline and
+  // only written into guest memory if the guest actually touches the range.
+  // Unlike D3D12 there is no separate device-local buffer - the GPU consumer
+  // half isn't implemented on either backend, so it would sit unused.
+  struct ResolveContract {
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    uint32_t buffer_size = 0;
+    uint32_t guest_base = 0;
+    uint32_t length = 0;
+    uint64_t submission = 0;
     uint64_t last_used_frame = 0;
+    bool materialized = false;
+    // Offsets into the buffer the GPU actually wrote. The resolve extent is a
+    // bounding range in tiled address space and the gaps hold the guest's own
+    // data - copying them back would push zeros over it.
+    std::vector<std::pair<uint32_t, uint32_t>> valid_runs;
   };
-  // Map: (written_address << 32 | written_length) -> ReadbackBuffer
-  std::unordered_map<uint64_t, ReadbackBuffer> readback_buffers_;
+  static constexpr uint64_t kResolveContractsMaxBytes = 128ull * 1024 * 1024;
+  std::mutex resolve_contracts_mutex_;
+  std::unordered_map<uint64_t, ResolveContract> resolve_contracts_;
+  uint64_t resolve_contracts_bytes_ = 0;
+  // Guest writes arrive on guest threads and only queue the range here.
+  std::mutex resolve_contract_invalidations_mutex_;
+  std::vector<std::pair<uint32_t, uint32_t>> resolve_contract_invalidations_;
+  void* resolve_contract_invalidation_callback_ = nullptr;
+  // A guest thread can't wait on this backend's submission fences, so a fault
+  // queues the key here and blocks until the GPU thread services it.
+  std::vector<uint64_t> resolve_contract_materialize_requests_;
+  std::condition_variable resolve_contract_materialized_;
+  // Buffers can't be destroyed while queued copies may still write into them.
+  struct PendingResolveContractDestroy {
+    VkBuffer buffer;
+    VkDeviceMemory memory;
+    uint64_t submission;
+  };
+  std::vector<PendingResolveContractDestroy>
+      resolve_contracts_pending_destroy_;
+
+  static std::pair<uint32_t, uint32_t> ResolveContractInvalidationCallbackThunk(
+      void* context_ptr, uint32_t physical_address_start, uint32_t length,
+      bool exact_range);
+  static bool ResolveContractFaultCallbackThunk(void* context_ptr,
+                                                uint32_t physical_address);
+  bool MaterializeResolveContractForGuest(uint32_t physical_address);
+  // GPU thread. Services everything queued by faulting guest threads.
+  void ServiceResolveContractMaterializations();
+
+  // A guest thread faulting on a resolve contract's page waits for this thread
+  // to do the copy, and while it waits it writes no commands - so servicing
+  // only from BeginSubmission would never run again. Only awaits and copies,
+  // records nothing, so it is safe with no submission open.
+  void OnWorkerIdle() override { ServiceResolveContractMaterializations(); }
+  void RegisterResolveContract(uint32_t guest_base, uint32_t length);
+  void InvalidateResolveContractsLocked(uint32_t guest_base, uint32_t length);
+  void DrainResolveContractInvalidationsLocked();
+  void EvictResolveContractsLocked(uint64_t incoming_bytes, uint64_t keep_key);
+  void DestroyResolveContractBuffer(ResolveContract& contract);
+  void DrainResolveContractDestroysLocked();
 
   // Simple single buffer for memexport (always syncs, no double-buffering)
   VkBuffer memexport_readback_buffer_ = VK_NULL_HANDLE;

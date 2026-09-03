@@ -19,6 +19,7 @@
 // clang-format on
 
 #include "xenia/base/logging.h"
+#include "xenia/base/math.h"
 #include "xenia/kernel/XLiveAPI.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/net_utils.h"
@@ -2174,9 +2175,20 @@ dword_result_t NetDll_closesocket_entry(dword_t caller, dword_t socket_handle) {
     }
   }
 
-  socket->Close();
+  const int result = socket->Close();
+
+  if (result == X_SOCKET_ERROR) {
+    XThread::SetLastError(socket->GetLastWSAError());
+  }
+
+  // Release the handle either way. The guest called closesocket, so it will
+  // never reference this handle again no matter what we return, and the
+  // underlying descriptor is gone in every failure case that can reach here.
+  // Keeping the handle alive on failure only strands the XSocket object and
+  // its object-table entry until the title exits.
   socket->ReleaseHandle();
-  return 0;
+
+  return result;
 }
 DECLARE_XAM_EXPORT1(NetDll_closesocket, kNetworking, kImplemented);
 
@@ -2568,6 +2580,182 @@ int_result_t NetDll_select_entry(dword_t caller, dword_t nfds,
     host_exceptfds.Store(exceptfds);
   }
 
+  // TEMPORARY PROBE - remove before release.
+  //
+  // Black Ops 1 (T5, 0x41560855) fastfile-of-the-day load state. Two lockups
+  // and one crash landed in this path while the DW server logged a clean
+  // transfer every time, so read the globals the loader branches on rather
+  // than inferring the state from the wire.
+  //
+  // Addresses are from default_mp_tu11.xex:
+  //   0x84185EE0  downloaded size   -- sub_824F0360 only applies if > 0
+  //   0x84185FB0  download complete
+  //   0x84185EB8  zone load issued   0x84185EB9  ffotd_settings.cfg exec'd
+  //   0x82A086B0  DB ring base       0x82A086B4  bytes consumed
+  //   0x82A08698  blocks available   0x82A086A4  read offset
+  //   0x82A14720  stream pointer     0x82A14724  stream length
+  //   0x826E9D24  stream count
+  //
+  // `window` is what sub_8226FCA0 computes at 0x8226FD8C and passes to the
+  // Salsa20 transform AS A LENGTH: (ringBase - streamPtr) + 0x60000, selected
+  // with a SIGNED compare and then consumed UNSIGNED. The crash dump showed it
+  // arriving as 0xAE6FFE60 (~2.9 GB), which is how the cipher walked off the
+  // end of the buffer into .idata. Reproduced in the interpreter: it goes
+  // negative the moment streamPtr - ringBase reaches 0x60000. If `neg=1` shows
+  // up here, that is the same bug on hardware; if the window stays small and
+  // positive then the lockup is somewhere else and this rules the theory out.
+  //
+  // Scoped to the title so the addresses mean something, but it fires on EVERY
+  // select() with no counter, no rate limit and no one-shot -- a throttled
+  // probe cannot catch the moment the window goes bad.
+  if (kernel_state()->title_id() == 0x41560855) {
+    // TranslateVirtual does NOT validate - it just adds to the memory base, so
+    // it returns a non-null host pointer for an address that was never
+    // committed and dereferencing it faults. A `p ? *p : default` check is
+    // worthless here; the read has to be gated on the page actually existing,
+    // the way MmIsAddressValid does it. Reading these globals before the title
+    // has allocated them is normal, so this must not be a crash.
+    auto mapped = [](uint32_t va) -> bool {
+      auto* heap = kernel_memory()->LookupHeap(va);
+      return heap && heap->QueryRangeAccess(va, va) !=
+                         memory::PageAccess::kNoAccess;
+    };
+    auto t8 = [&mapped](uint32_t va) -> uint32_t {
+      if (!mapped(va)) return 0xFFu;
+      auto* p = kernel_memory()->TranslateVirtual<uint8_t*>(va);
+      return p ? *p : 0xFFu;
+    };
+    auto t32 = [&mapped](uint32_t va) -> uint32_t {
+      if (!mapped(va)) return 0xFFFFFFFFu;
+      auto* p = kernel_memory()->TranslateVirtual<xe::be<uint32_t>*>(va);
+      return p ? p->get() : 0xFFFFFFFFu;
+    };
+    const uint32_t dlsize = t32(0x84185EE0u);
+    const uint32_t dldone = t8(0x84185FB0u);
+    const uint32_t zoned = t8(0x84185EB8u);
+    const uint32_t execd = t8(0x84185EB9u);
+    const uint32_t ringbase = t32(0x82A086B0u);
+    const uint32_t consumed = t32(0x82A086B4u);
+    const uint32_t blocks = t32(0x82A08698u);
+    const uint32_t offset = t32(0x82A086A4u);
+    const uint32_t sptr = t32(0x82A14720u);
+    const uint32_t slen = t32(0x82A14724u);
+    const uint32_t nstream = t32(0x826E9D24u);
+    const int32_t window = (int32_t)(ringbase - sptr) + 0x60000;
+
+    // The two gates sub_824F0360 must pass before it will queue the ffotd
+    // zone at all. First run showed zoned=0/execd=0 for the whole session with
+    // dlsize already set, so the download is not the problem -- one of these is
+    // saying "not yet".
+    //   sub_82358FF8 = (wait(*(0x834C03DC), 0) == 0), i.e. is that object
+    //     SIGNALLED. Log the handle; 0 means it was never created.
+    //   sub_823EBB38 walks a loaded-zone list at 0x83A49F80 (count) /
+    //     0x83A49F88 (name pointer) looking for code_post_gfx_mp, common_mp,
+    //     dev_mp, patch_mp, InitGcm -- i.e. "are the base zones up".
+    const uint32_t waith = t32(0x834C03DCu);
+    const uint32_t zcnt = t32(0x83A49F80u);
+    const uint32_t zptr = t32(0x83A49F88u);
+    // zptr above is the FIRST entry of the loaded-zone list, not the zone
+    // being streamed -- reading it as "what the DB is working on" is wrong.
+    // The in-flight zone is the DB context's own name pointer, ctx+0x04
+    // (ctx base 0x82A08680, the same block ring/consumed/off are read from).
+    const uint32_t inflight = t32(0x82A08684u);
+    // The DB queue state. Milestones proved the worker is asleep at
+    // 0x82283A04 with hDbIdle clear, which is only possible if it woke,
+    // found nothing queued and returned at 0x822838C4 WITHOUT signalling
+    // idle. These three say it outright:
+    //   pend == 0 while idleflg == 0  ->  exactly that stranding
+    //   outst != 0                    ->  zones queued that never finished
+    // NOTE the signed displacements. PowerPC lwz/stw take a SIGNED 16-bit D,
+    // so `lis r11,0x82C2 / lwz r10,0xD074(r11)` is 0x82C20000 - 0x2F8C, not
+    // 0x82C20000 + 0xD074. Reading them unsigned pointed at unrelated memory
+    // and printed ASCII (outst came back 0x20202020, four spaces).
+    const uint32_t pend = t32(0x82C1D074u);    // pendingCount  (0x822838BC)
+    const uint32_t outst = t32(0x82A08614u);   // outstanding   (0x8228394C)
+    const uint32_t idleflg = t32(0x834C0430u); // the idle flag DB_SetIdle* sets
+    const uint32_t svfh = t32(0x834C044Cu);    // hSvFrame
+    char zname[32] = {};
+    if (zptr && mapped(zptr)) {
+      for (uint32_t i = 0; i < sizeof(zname) - 1; i++) {
+        if (!mapped(zptr + i)) break;
+        char c = (char)t8(zptr + i);
+        if (!c) break;
+        zname[i] = c;
+      }
+    }
+    char iname[32] = {};
+    if (inflight && mapped(inflight)) {
+      for (uint32_t i = 0; i < sizeof(iname) - 1; i++) {
+        if (!mapped(inflight + i)) break;
+        char c = (char)t8(inflight + i);
+        if (!c) break;
+        iname[i] = c;
+      }
+    }
+    // Milestones. The JIT stores the guest address into PPCContext::milestone
+    // at each watched branch (PPCHIRBuilder::MaybeMilestone), so this reports
+    // WHICH PATH each thread took rather than what some global happened to hold
+    // when this shim ran. Enumerating every thread is the point: the thread
+    // that wedges is never the one calling select(), and its context keeps its
+    // last milestone forever.
+    // Names for the mask bits, in the same order as kMilestones in
+    // ppc_hir_builder.cc. A bare hex mask is unreadable at 26 bits and the
+    // whole point of this probe is that one specific bit is missing.
+    static const char* kMilestoneNames[] = {
+        "apply",      "gate12ok",  "GATE3OK",   "gate4call", "gate4ok",
+        "already",    "memopen",
+        "svinit",     "svcreate",  "SVTHREAD",  "svloop",    "SVFRAME",
+        "svloopback",
+        "setidlesyn", "svwait",    "SETIDLE",   "setidle4",  "clearidle",
+        "signalwork", "waitidle",
+        "dbthread",   "dbwait",    "dblevel",   "dbpendtest", "dbloadone",
+        "dbbatchend",
+    };
+
+    std::string miles;
+    for (const auto& th :
+         kernel_state()->object_table()->GetObjectsByType<XThread>()) {
+      if (!th || !th->is_guest_thread() || !th->thread_state()) continue;
+      auto* c = th->thread_state()->context();
+      if (!c || !c->milestone) continue;
+      if (!miles.empty()) miles += " ";
+      // mask = every milestone this thread has EVER reached; last = where it is
+      // now. The mask is the one that answers "did this branch run", because
+      // `last` is overwritten by whatever came next.
+      std::string hit;
+      for (size_t i = 0; i < xe::countof(kMilestoneNames); ++i) {
+        if (!(c->milestone_mask & (1u << i))) continue;
+        if (!hit.empty()) hit += ",";
+        hit += kMilestoneNames[i];
+      }
+      miles += fmt::format("{}:[{}]/last{:08X}x{}", th->thread_id(), hit,
+                           c->milestone, c->milestone_count);
+    }
+
+    // The three readings this probe exists to separate, all from one line:
+    //   no SVTHREAD / no SVFRAME  -> the server thread never ran. That alone
+    //                               explains gate 3, because hSvFrame is
+    //                               created unsignalled and only the server
+    //                               thread ever sets it.
+    //   svwait without SETIDLE    -> the DB thread is parked in
+    //                               WaitForSingleObject(hSvFrame, INFINITE)
+    //                               inside DB_SetIdleSynchronous.
+    //   GATE3OK present           -> gate 3 is fine and the fault is later.
+    // clearidle without any SETIDLE/setidle4 afterwards means hDbIdle was
+    // reset and never restored, which is the same failure seen from the
+    // DB_LoadXAssets side.
+
+    XELOGE(
+        "[bo1-ffotd] dlsize={:08X} dldone={} zoned={} execd={} | ring={:08X} "
+        "consumed={:08X} blocks={} off={:08X} | sptr={:08X} slen={:08X} "
+        "nstream={} window={:08X} neg={} | waith={:08X} zcnt={:08X} "
+        "zptr={:08X} zname='{}' | inflight='{}' pend={} outst={} idleflg={} "
+        "svfh={:08X} | miles[{}]",
+        dlsize, dldone, zoned, execd, ringbase, consumed, blocks, offset, sptr,
+        slen, nstream, (uint32_t)window, window < 0 ? 1 : 0, waith, zcnt, zptr,
+        zname, iname, pend, outst, idleflg, svfh, miles);
+  }
+
   // TODO(gibbed): modify ret to be what's actually copied to the guest
   // fd_sets?
   return handles_count;
@@ -2853,6 +3041,36 @@ dword_result_t NetDll_XNetUnregisterKey_entry(dword_t caller,
   return 0;
 }
 DECLARE_XAM_EXPORT1(NetDll_XNetUnregisterKey, kNetworking, kStub);
+
+dword_result_t XamBackgroundDownloadSetMode_entry(dword_t mode) {
+  download_mode_ = static_cast<X_BACKGROUND_DOWNLOAD_MODE>(mode.value());
+  return X_ERROR_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamBackgroundDownloadSetMode, kMisc, kStub);
+
+dword_result_t XamBackgroundDownloadGetMode_entry() {
+  return static_cast<uint32_t>(download_mode_);
+}
+DECLARE_XAM_EXPORT1(XamBackgroundDownloadGetMode, kMisc, kStub);
+
+dword_result_t XamBackgroundDownloadItemGetStatus_entry(
+    dword_t user_index, pointer_t<XCONTENT_DATA_INTERNAL> content_ptr,
+    dword_t validate_content, dword_t unkn1, lpdword_t unkn2_ptr,
+    lpdword_t unkn3_ptr, lpdword_t unkn4_ptr) {
+  // Set either unkn2_ptr or unkn3_ptr to 1 so function succeeds.
+  *unkn2_ptr = 0;
+  *unkn3_ptr = 0;
+  *unkn4_ptr = 0;
+  return X_ERROR_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamBackgroundDownloadItemGetStatus, kMisc, kStub);
+
+dword_result_t XamBackgroundDownloadItemGetHistoryStatus_entry(
+    dword_t user_index, pointer_t<XCONTENT_DATA_INTERNAL> content_ptr,
+    dword_t unkn1) {
+  return X_ERROR_NOT_FOUND;
+}
+DECLARE_XAM_EXPORT1(XamBackgroundDownloadItemGetHistoryStatus, kMisc, kStub);
 
 // Remove completed UPnP actions
 void CleanupUPnPActions() {

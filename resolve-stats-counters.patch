@@ -1,0 +1,177 @@
+--- a/src/xenia/gpu/d3d12/d3d12_command_processor.cc
++++ b/src/xenia/gpu/d3d12/d3d12_command_processor.cc
+@@ -12,6 +12,7 @@
+ #include "xenia/apu/audio_system.h"
+ #include "xenia/base/assert.h"
+ #include "xenia/base/byte_order.h"
++#include "xenia/base/clock.h"
+ #include "xenia/base/cvar.h"
+ #include "xenia/base/logging.h"
+ #include "xenia/base/math.h"
+@@ -39,12 +40,50 @@
+             "possible to submit immediately to try to reduce frame latency.",
+             "D3D12");
+ 
++DEFINE_int32(resolve_stats_interval, 5,
++             "Report resolve readback counters and timings every N seconds. "
++             "0 disables reporting. Measures what the readback actually costs: "
++             "how many resolves run, how many bytes they move, and how long the "
++             "GPU wait and the copy into guest memory take.",
++             "GPU");
++
+ DECLARE_bool(clear_memory_page_state);
+ 
+ namespace xe {
+ namespace gpu {
+ namespace d3d12 {
+ 
++namespace {
++
++// Resolve readback measurement. Aggregated and reported on an interval rather
++// than per resolve - per-resolve logging is louder than the thing being
++// measured and distorts the timings it is meant to report.
++struct ResolveStats {
++  uint64_t window_start_ms = 0;
++  uint64_t frames = 0;
++  uint64_t resolves = 0;         // resolves that reached the readback path
++  uint64_t resolves_skipped = 0; // scaled, or destination not writable
++  uint64_t bytes = 0;            // bytes copied into guest memory
++  uint64_t gpu_wait_us = 0;      // time blocked waiting for the GPU
++  uint64_t copy_us = 0;          // Map + copy into guest memory
++  uint64_t stalls = 0;           // how many resolves had to wait at all
++
++  void Reset(uint64_t now_ms) {
++    const uint64_t start = now_ms;
++    *this = ResolveStats();
++    window_start_ms = start;
++  }
++};
++
++ResolveStats g_resolve_stats;
++
++uint64_t NowMicroseconds() {
++  return xe::Clock::QueryHostTickCount() * 1000000ull /
++         xe::Clock::host_tick_frequency_platform();
++}
++
++}  // namespace
++
+ // Generated with `xb buildshaders`.
+ namespace shaders {
+ #include "xenia/gpu/shaders/bytecode/d3d12_5_1/apply_gamma_pwl_cs.h"
+@@ -3074,6 +3113,10 @@
+   uint32_t written_address, written_length;
+   if (render_target_cache_->Resolve(*memory_, *shared_memory_, *texture_cache_,
+                                     written_address, written_length)) {
++    if (cvars::resolve_stats_interval > 0 && written_length &&
++        texture_cache_->IsDrawResolutionScaled()) {
++      ++g_resolve_stats.resolves_skipped;
++    }
+     if (!texture_cache_->IsDrawResolutionScaled() && written_length) {
+       // Early check: if destination memory is not accessible, skip all the
+       // expensive GPU readback work.
+@@ -3095,9 +3138,16 @@
+ 
+       if (!memory_accessible) {
+         // Destination memory not accessible, skip readback entirely
++        if (cvars::resolve_stats_interval > 0) {
++          ++g_resolve_stats.resolves_skipped;
++        }
+         return true;
+       }
+ 
++      if (cvars::resolve_stats_interval > 0) {
++        ++g_resolve_stats.resolves;
++      }
++
+       // Create a key for this specific resolve operation
+       uint64_t resolve_key =
+           MakeReadbackResolveKey(written_address, written_length);
+@@ -3143,12 +3193,20 @@
+       bool use_delayed_sync = (readback_mode == ReadbackResolveMode::kFast);
+       uint32_t read_index = write_index;
+ 
++      const bool stats_enabled = cvars::resolve_stats_interval > 0;
++
+       if (use_delayed_sync) {
+         // Use previous frame's data (avoid stall)
+         read_index = 1 - write_index;
+       } else {
+         // Wait for GPU to finish (accurate but slow)
+-        if (!AwaitAllQueueOperationsCompletion()) {
++        const uint64_t wait_start_us = stats_enabled ? NowMicroseconds() : 0;
++        const bool completed = AwaitAllQueueOperationsCompletion();
++        if (stats_enabled) {
++          g_resolve_stats.gpu_wait_us += NowMicroseconds() - wait_start_us;
++          ++g_resolve_stats.stalls;
++        }
++        if (!completed) {
+           return true;
+         }
+       }
+@@ -3162,7 +3220,13 @@
+           (read_source == nullptr || written_length > rb.sizes[read_index])) {
+         read_source = rb.buffers[write_index];
+         read_index = write_index;
+-        if (!AwaitAllQueueOperationsCompletion()) {
++        const uint64_t wait_start_us = stats_enabled ? NowMicroseconds() : 0;
++        const bool completed = AwaitAllQueueOperationsCompletion();
++        if (stats_enabled) {
++          g_resolve_stats.gpu_wait_us += NowMicroseconds() - wait_start_us;
++          ++g_resolve_stats.stalls;
++        }
++        if (!completed) {
+           return true;
+         }
+       }
+@@ -3172,6 +3236,7 @@
+         readback_range.Begin = 0;
+         readback_range.End = written_length;
+         void* readback_mapping;
++        const uint64_t copy_start_us = stats_enabled ? NowMicroseconds() : 0;
+         if (SUCCEEDED(
+                 read_source->Map(0, &readback_range, &readback_mapping))) {
+           // Memory accessibility already checked at the start of this function
+@@ -3206,6 +3271,10 @@
+               });
+           D3D12_RANGE readback_write_range = {};
+           read_source->Unmap(0, &readback_write_range);
++          if (stats_enabled) {
++            g_resolve_stats.copy_us += NowMicroseconds() - copy_start_us;
++            g_resolve_stats.bytes += written_length;
++          }
+         }
+       }
+     }
+@@ -3497,6 +3566,31 @@
+     texture_cache_->EndFrame();
+ 
+     primitive_processor_->EndFrame();
++
++    if (cvars::resolve_stats_interval > 0) {
++      ++g_resolve_stats.frames;
++      const uint64_t now_ms = xe::Clock::QueryHostUptimeMillis();
++      if (!g_resolve_stats.window_start_ms) {
++        g_resolve_stats.window_start_ms = now_ms;
++      }
++      const uint64_t window_ms = now_ms - g_resolve_stats.window_start_ms;
++      if (window_ms >= uint64_t(cvars::resolve_stats_interval) * 1000ull) {
++        const ResolveStats& s = g_resolve_stats;
++        const double seconds = double(window_ms) / 1000.0;
++        const double frames = double(s.frames ? s.frames : 1);
++        XELOGE(
++            "Resolve readback over {:.1f}s: {} resolves ({:.2f}/frame), {} "
++            "skipped, {:.2f} MB ({:.2f} MB/frame, {:.1f} MB/s), gpu wait {} us "
++            "({} stalls, {:.1f} us/frame), copy {} us ({:.1f} us/frame)",
++            seconds, s.resolves, double(s.resolves) / frames,
++            s.resolves_skipped, double(s.bytes) / (1024.0 * 1024.0),
++            double(s.bytes) / (1024.0 * 1024.0) / frames,
++            double(s.bytes) / (1024.0 * 1024.0) / seconds, s.gpu_wait_us,
++            s.stalls, double(s.gpu_wait_us) / frames, s.copy_us,
++            double(s.copy_us) / frames);
++        g_resolve_stats.Reset(now_ms);
++      }
++    }
+   }
+ 
+   if (submission_open_) {

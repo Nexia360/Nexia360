@@ -33,19 +33,41 @@ entry_inputs_end_code_begin_compute_xe
   if (pixel_index.x >= resolve_info.width_div_8_scaled << 3u) {
     return;
   }
+  #ifdef XE_RESOLVE_DOWNSAMPLE
+    uint2_xe source_pixel_index =
+        pixel_index * uint2_xe(XE_RESOLVE_DOWNSAMPLE_SCALE_X,
+                               XE_RESOLVE_DOWNSAMPLE_SCALE_Y);
+  #else
+    uint2_xe source_pixel_index =
+        uint2_xe(pixel_index.x,
+                 max(pixel_index.y,
+                     resolve_info.half_pixel_offset_fill_source.y));
+  #endif
   uint source_address = XeEdramOffsetBytes(
-      uint2_xe(pixel_index.x,
-               max(pixel_index.y,
-                   resolve_info.half_pixel_offset_fill_source.y)) +
-          resolve_info.edram_offset_scaled,
+      source_pixel_index + resolve_info.edram_offset_scaled,
       resolve_info.edram_base_tiles, true, resolve_info.edram_pitch_tiles,
       resolve_info.edram_msaa_samples, false, 1u,
       XeResolveFirstSampleIndex(resolve_info.sample_select),
       resolve_info.resolution_scale);
-  uint4_xe pixels_01 = byte_buffer_align16_load16_xe(xe_resolve_edram,
-                                                     source_address);
-  uint4_xe pixels_23 = byte_buffer_align16_load16_xe(xe_resolve_edram,
-                                                     source_address + 16u);
+  #ifdef XE_RESOLVE_DOWNSAMPLE
+    // A bitwise copy can't average, so take the top left host pixel of every
+    // box - the same point sampling a hardware depth resolve does. 16 bytes
+    // hold 2 consecutive host pixels, so every other one is .xy.
+    uint4_xe pixels_01, pixels_23;
+    pixels_01.xy =
+        byte_buffer_align16_load16_xe(xe_resolve_edram, source_address).xy;
+    pixels_01.zw = byte_buffer_align16_load16_xe(xe_resolve_edram,
+                                                 source_address + 16u).xy;
+    pixels_23.xy = byte_buffer_align16_load16_xe(xe_resolve_edram,
+                                                 source_address + 32u).xy;
+    pixels_23.zw = byte_buffer_align16_load16_xe(xe_resolve_edram,
+                                                 source_address + 48u).xy;
+  #else
+    uint4_xe pixels_01 = byte_buffer_align16_load16_xe(xe_resolve_edram,
+                                                       source_address);
+    uint4_xe pixels_23 = byte_buffer_align16_load16_xe(xe_resolve_edram,
+                                                       source_address + 16u);
+  #endif
   dont_flatten_xe
   if (pixel_index.x == 0u &&
       resolve_info.half_pixel_offset_fill_source.x != 0u) {

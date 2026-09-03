@@ -31,6 +31,7 @@ VirtualFileSystem::~VirtualFileSystem() {
 }
 
 void VirtualFileSystem::Clear() {
+  overlay_devices_.clear();
   devices_.clear();
   symlinks_.clear();
 }
@@ -126,6 +127,52 @@ bool VirtualFileSystem::ResolveSymbolicLink(const std::string_view path,
   return was_resolved;
 }
 
+bool VirtualFileSystem::RegisterOverlayDevice(
+    const std::string_view shadowed_mount, std::unique_ptr<Device> device) {
+  auto global_lock = global_critical_region_.Acquire();
+  overlay_devices_.push_back(
+      {std::string(shadowed_mount), std::move(device)});
+  XELOGD("Registered overlay device over: {}", shadowed_mount);
+  return true;
+}
+
+void VirtualFileSystem::UnregisterOverlayDevices() {
+  auto global_lock = global_critical_region_.Acquire();
+  overlay_devices_.clear();
+}
+
+Entry* VirtualFileSystem::ResolveOverlayPath(const std::string_view path) {
+  auto global_lock = global_critical_region_.Acquire();
+  if (overlay_devices_.empty()) {
+    return nullptr;
+  }
+
+  auto normalized_path(xe::utf8::canonicalize_guest_path(path));
+  std::string resolved_path;
+  if (ResolveSymbolicLink(normalized_path, resolved_path)) {
+    normalized_path = resolved_path;
+  }
+
+  for (const auto& overlay : overlay_devices_) {
+    const auto& mount = overlay.shadowed_mount;
+    if (!xe::utf8::starts_with_case(normalized_path, mount)) {
+      continue;
+    }
+    auto relative_path = normalized_path.substr(mount.size());
+    while (!relative_path.empty() &&
+           (relative_path.front() == '\\' || relative_path.front() == '/')) {
+      relative_path.erase(0, 1);
+    }
+    if (relative_path.empty()) {
+      continue;
+    }
+    if (Entry* entry = overlay.device->ResolvePath(relative_path)) {
+      return entry;
+    }
+  }
+  return nullptr;
+}
+
 Entry* VirtualFileSystem::ResolvePath(const std::string_view path) {
   auto global_lock = global_critical_region_.Acquire();
 
@@ -138,11 +185,22 @@ Entry* VirtualFileSystem::ResolvePath(const std::string_view path) {
     normalized_path = resolved_path;
   }
 
+  // An active title update shadows the disc, file by file. A directory must
+  // NOT shadow - returning the update's copy of a folder hides every disc file
+  // in it, because lookups then only ever see the update's children. Only fall
+  // back to the update's directory when the disc doesn't have one at all.
+  Entry* overlay_directory = nullptr;
+  if (Entry* overlay_entry = ResolveOverlayPath(normalized_path)) {
+    if (!(overlay_entry->attributes() & kFileAttributeDirectory)) {
+      return overlay_entry;
+    }
+    overlay_directory = overlay_entry;
+  }
+
   // Find the device. Match must end on a path-component boundary so that a
-  // shorter device mount ("\Device\Flash") doesn't swallow a request for a
-  // longer one ("\Device\FlashFs\MobileB.dat") just because the names share
-  // a prefix. Either the prefix consumes the whole path (exact match) or the
-  // character following the prefix is a path separator.
+  // shorter mount does not swallow a request for a longer one whose name
+  // merely starts with it. Either the prefix consumes the whole path (exact
+  // match) or the character following the prefix is a path separator.
   auto it =
       std::find_if(devices_.cbegin(), devices_.cend(), [&](const auto& d) {
         const auto& mount = d->mount_path();
@@ -153,7 +211,7 @@ Entry* VirtualFileSystem::ResolvePath(const std::string_view path) {
           return true;  // exact device-root match
         }
         // A mount that already ends in a separator is itself a component
-        // boundary (content devices mount as "\Device\Content\N\").
+        // boundary - content mounts carry a trailing separator.
         const char mount_last = mount.back();
         if (mount_last == '\\' || mount_last == '/') {
           return true;
@@ -162,6 +220,9 @@ Entry* VirtualFileSystem::ResolvePath(const std::string_view path) {
         return next == '\\' || next == '/';
       });
   if (it == devices_.cend()) {
+    if (overlay_directory) {
+      return overlay_directory;
+    }
     // Supress logging the error for ShaderDumpxe:\CompareBackEnds as this is
     // not an actual problem nor something we care about.
     if (path != "ShaderDumpxe:\\CompareBackEnds") {
@@ -172,7 +233,9 @@ Entry* VirtualFileSystem::ResolvePath(const std::string_view path) {
 
   const auto& device = *it;
   auto relative_path = normalized_path.substr(device->mount_path().size());
-  return device->ResolvePath(relative_path);
+  Entry* entry = device->ResolvePath(relative_path);
+  // A folder the update adds that the disc doesn't have.
+  return entry ? entry : overlay_directory;
 }
 
 Entry* VirtualFileSystem::CreatePath(const std::string_view path,
@@ -241,6 +304,22 @@ X_STATUS VirtualFileSystem::OpenFile(Entry* root_entry,
   // If no device or parent, fail.
   Entry* parent_entry = nullptr;
   Entry* entry = nullptr;
+
+  // A title update shadows the disc for reads. Writes are never sent to the
+  // overlay - it is read-only, and a title writing a file that happens to
+  // share a name with update content must still write to the real device.
+  if (!root_entry && !(desired_access & FileAccess::kFileWriteData) &&
+      creation_disposition != FileDisposition::kCreate &&
+      creation_disposition != FileDisposition::kOverwrite &&
+      creation_disposition != FileDisposition::kSuperscede) {
+    if (Entry* overlay_entry = ResolveOverlayPath(path)) {
+      if (!(overlay_entry->attributes() & kFileAttributeDirectory) ||
+          !is_non_directory) {
+        *out_action = FileAction::kOpened;
+        return overlay_entry->Open(desired_access, out_file);
+      }
+    }
+  }
 
   auto base_path = xe::utf8::find_base_guest_path(path);
   if (!base_path.empty()) {

@@ -212,7 +212,7 @@ X_STATUS XSocket::Initialize(AddressFamily af, Type type, Protocol proto) {
   }
 
   native_handle_ = socket(af, type_, proto_);
-  if (native_handle_ == -1) {
+  if (native_handle_ == X_INVALID_SOCKET) {
     return X_STATUS_UNSUCCESSFUL;
   }
 
@@ -286,7 +286,7 @@ void XSocket::ReleaseTransportPort() {
   claimed_transport_port_ = 0;
 }
 
-X_STATUS XSocket::Close() {
+int XSocket::Close() {
   // Hand the port back before anything else, so nothing queues for a socket
   // that is on its way out.
   ReleaseTransportPort();
@@ -311,20 +311,23 @@ X_STATUS XSocket::Close() {
   lock.unlock();
 
   std::unique_lock socket_lock(receive_socket_mutex_);
+
+  int ret = X_ERROR_SUCCESS;
+
 #if XE_PLATFORM_WIN32
-  int ret = closesocket(native_handle_);
+  ret = closesocket(static_cast<SOCKET>(native_handle_));
 #else
-  int ret = close(native_handle_);
+  ret = close(static_cast<int>(native_handle_));
 #endif
   socket_lock.unlock();
 
-  if (ret != 0) {
-    return X_STATUS_UNSUCCESSFUL;
+  if (ret == X_ERROR_SUCCESS) {
+    socket_closed_ = true;
+  } else {
+    XELOGE("Socket close failed: {}", WSAGetLastError());
   }
 
-  socket_closed_ = true;
-
-  return X_STATUS_SUCCESS;
+  return ret;
 }
 
 X_STATUS XSocket::GetOption(uint32_t level, uint32_t optname, void* optval_ptr,
@@ -332,6 +335,10 @@ X_STATUS XSocket::GetOption(uint32_t level, uint32_t optname, void* optval_ptr,
   int ret =
       getsockopt(native_handle_, level, optname, static_cast<char*>(optval_ptr),
                  reinterpret_cast<socklen_t*>(optlen));
+  if (ret < 0) {
+    // TODO: WSAGetLastError()
+    return X_STATUS_UNSUCCESSFUL;
+  }
 
   // Because values provided in optval_ptr are in LE we must to somehow save
   // them in BE.
@@ -352,10 +359,6 @@ X_STATUS XSocket::GetOption(uint32_t level, uint32_t optname, void* optval_ptr,
       break;
   }
 
-  if (ret < 0) {
-    // TODO: WSAGetLastError()
-    return X_STATUS_UNSUCCESSFUL;
-  }
   return X_STATUS_SUCCESS;
 }
 
@@ -408,7 +411,7 @@ int XSocket::SetOption(uint32_t level, uint32_t optname, void* optval_ptr,
   if (ret < 0) {
     // TODO: WSAGetLastError()
     XELOGE("XSocket::SetOption: failed with error {:08X}", GetLastWSAError());
-    return -1;
+    return X_SOCKET_ERROR;
   }
 
   if (level == 0xFFFF && optname == 0x0020) {
@@ -634,12 +637,15 @@ uint16_t XSocket::GetImplicitlyBoundPort() const {
     return api ? api->GetLocalPlayerPort() : 0;
   }
 
-  sockaddr_in sock_name = {};
-  int sock_name_len = sizeof(sockaddr);
+  sockaddr_storage storage = {};
+  socklen_t addr_len = sizeof(storage);
 
-  if (!getsockname(native_handle_, reinterpret_cast<sockaddr*>(&sock_name),
-                   &sock_name_len)) {
-    return xe::byte_swap(sock_name.sin_port);
+  if (getsockname(native_handle_, reinterpret_cast<sockaddr*>(&storage),
+                  &addr_len) == 0) {
+    if (storage.ss_family == AF_INET) {
+      const sockaddr_in* sockaddr = reinterpret_cast<sockaddr_in*>(&storage);
+      return xe::byte_swap(sockaddr->sin_port);
+    }
   }
 
   assert_always();
@@ -666,7 +672,7 @@ object_ref<XSocket> XSocket::Accept(XSOCKADDR_IN* name, int* name_len) {
 
   const uint64_t socket_handle = accept(native_handle_, name ? &sa : nullptr,
                                         name_len ? &addrlen : nullptr);
-  if (socket_handle == -1) {
+  if (socket_handle == X_INVALID_SOCKET) {
     return nullptr;
   }
 
@@ -682,9 +688,6 @@ object_ref<XSocket> XSocket::Accept(XSOCKADDR_IN* name, int* name_len) {
   socket->type_ = type_;
   socket->proto_ = proto_;
   socket->vdp_ = vdp_;
-
-  sockaddr_in sock_name = {};
-  int sock_name_len = sizeof(sockaddr);
 
   // Implicit Bind
   socket->bound_port_ = bound_port_ = GetImplicitlyBoundPort();
@@ -708,8 +711,9 @@ int XSocket::Recv(uint8_t* buf, uint32_t buf_len, uint32_t flags) {
     }
 
     const size_t copied =
-        std::min(static_cast<size_t>(buf_len), relayed.data.size());
-    std::memcpy(buf, relayed.data.data(), copied);
+        std::min(static_cast<size_t>(buf_len), relayed.payload_size());
+    std::memcpy(buf, relayed.payload(), copied);
+    transport->ReturnBuffer(std::move(relayed.data));
     return static_cast<int>(copied);
   }
 
@@ -736,8 +740,8 @@ int XSocket::RecvFrom(uint8_t* buf, uint32_t buf_len, uint32_t flags,
     }
 
     const size_t copied =
-        std::min(static_cast<size_t>(buf_len), relayed.data.size());
-    std::memcpy(buf, relayed.data.data(), copied);
+        std::min(static_cast<size_t>(buf_len), relayed.payload_size());
+    std::memcpy(buf, relayed.payload(), copied);
 
     if (from) {
       // The wire carries no address, only the sender's XUID - so hand the guest
@@ -750,18 +754,18 @@ int XSocket::RecvFrom(uint8_t* buf, uint32_t buf_len, uint32_t flags,
       from->to_guest(&sa);
     }
 
+    transport->ReturnBuffer(std::move(relayed.data));
     return static_cast<int>(copied);
   }
 
   int ret = recvfrom(native_handle_, reinterpret_cast<char*>(buf), buf_len,
                      flags, from ? &sa : nullptr, from_len);
 
-  // TCP ignores from and from_len.
   // 555307EE expects port even with TCP, include IP anyway.
   // Verified on console.
   if (proto_ == X_IPPROTO_TCP) {
-    socklen_t peer_addar_len = sizeof(sockaddr);
-    getpeername(native_handle_, &sa, &peer_addar_len);
+    socklen_t peer_addr_len = sizeof(sockaddr);
+    getpeername(native_handle_, &sa, &peer_addr_len);
   }
 
   if (from) {
@@ -1136,16 +1140,31 @@ int XSocket::PushWSASendTo(bool wait, WSASendToData send_async_data) {
   // Relayed: flatten the scatter segments and hand the datagram to the relay,
   // which frames it as ChannelData and sends from its own socket.
   if (relay) {
-    std::vector<uint8_t> payload;
+    // Sized once and filled, rather than grown segment by segment. This is the
+    // path the title actually sends on - voice rides in the same datagram as
+    // game data - so a reallocating vector here means the allocator is hit
+    // several times for every packet leaving the machine. The buffer comes
+    // from the relay's pool and goes straight back, so the steady state does
+    // not allocate at all.
+    size_t total = do_tag ? kVdpTagSize : 0;
+    for (uint32_t i = 0; i < send_async_data.num_buffers; i++) {
+      total += send_async_data.buffers[i].len;
+    }
+
+    std::vector<uint8_t> payload = turn->TakeBuffer();
+    payload.resize(total);
+
+    size_t offset = 0;
     for (uint32_t i = 0; i < send_async_data.num_buffers; i++) {
       const auto* segment = reinterpret_cast<const uint8_t*>(
           kernel_state()->memory()->TranslateVirtual(
               send_async_data.buffers[i].buf_ptr));
-      payload.insert(payload.end(), segment,
-                     segment + send_async_data.buffers[i].len);
+      const uint32_t len = send_async_data.buffers[i].len;
+      std::memcpy(payload.data() + offset, segment, len);
+      offset += len;
     }
     if (do_tag) {
-      payload.insert(payload.end(), tag, tag + kVdpTagSize);
+      std::memcpy(payload.data() + offset, tag, kVdpTagSize);
     }
 
     // Source port is this socket's own, so several sockets multiplex over one
@@ -1168,6 +1187,8 @@ int XSocket::PushWSASendTo(bool wait, WSASendToData send_async_data) {
       bytes_sent = static_cast<uint32_t>(payload.size());
       ret = 0;
     }
+
+    turn->ReturnBuffer(std::move(payload));
     goto relayed_done;
   }
 
@@ -1417,11 +1438,11 @@ int XSocket::PollWSARecvFrom(bool wait, WSARecvFromData receive_async_data) {
       // the sender so the title cannot tell the difference.
       size_t copied = 0;
       for (uint32_t i = 0;
-           i < receive_async_data.num_buffers && copied < relayed.data.size();
+           i < receive_async_data.num_buffers && copied < relayed.payload_size();
            i++) {
         const size_t take = std::min(static_cast<size_t>(buffers[i].len),
-                                     relayed.data.size() - copied);
-        std::memcpy(buffers[i].buf, relayed.data.data() + copied, take);
+                                     relayed.payload_size() - copied);
+        std::memcpy(buffers[i].buf, relayed.payload() + copied, take);
         copied += take;
       }
 
@@ -1437,6 +1458,8 @@ int XSocket::PollWSARecvFrom(bool wait, WSARecvFromData receive_async_data) {
         rewritten->sin_addr.s_addr = XLiveAPI::SyntheticOnlineIP(relayed.xuid);
         rewritten->sin_port = relayed.port_be;
       }
+
+      turn->ReturnBuffer(std::move(relayed.data));
     } else if (relay) {
       // Relaying with nothing queued: report "would block" rather than
       // reading this socket, which carries no game traffic in relay mode.
@@ -1803,8 +1826,9 @@ int XSocket::SendTo(uint8_t* buf, uint32_t buf_len, uint32_t flags,
 
 int XSocket::WSAEventSelect(uint64_t socket_handle, uint64_t event_handle,
                             uint32_t flags) {
-  return ::WSAEventSelect(socket_handle, reinterpret_cast<HANDLE>(event_handle),
-                          flags);
+  const HANDLE hEvent =
+      reinterpret_cast<HANDLE>(static_cast<uintptr_t>(event_handle));
+  return ::WSAEventSelect(socket_handle, hEvent, flags);
 }
 
 bool XSocket::QueuePacket(uint32_t src_ip, uint16_t src_port,

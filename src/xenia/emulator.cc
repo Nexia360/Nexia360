@@ -322,8 +322,11 @@ X_STATUS Emulator::Setup(
     return result;
   }
 
-  // Add inputSystem to UI
-  imgui_drawer_->LoadInputSystem(input_system_.get());
+  // Add inputSystem to UI. Headless hosts - the trace dump and viewer tools -
+  // have no window and so no drawer.
+  if (imgui_drawer_) {
+    imgui_drawer_->LoadInputSystem(input_system_.get());
+  }
 
   XELOGI("{}: Initializing VFS...", __func__);
   // Bring up the virtual filesystem used by the kernel.
@@ -394,7 +397,7 @@ X_STATUS Emulator::TerminateTitle() {
   // every launch starts from a clean VFS.
   if (file_system_) {
     file_system_->UnregisterSymbolicLink("UPDATE:");
-    file_system_->UnregisterDevice("\\Device\\TitleUpdate\\");
+    file_system_->UnregisterDevice(kTitleUpdateMountPath);
   }
 
   title_id_ = std::nullopt;

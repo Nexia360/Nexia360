@@ -1,0 +1,1736 @@
+diff --git a/src/xenia/gpu/command_processor.cc b/src/xenia/gpu/command_processor.cc
+index 940a9a48a..3fbfff4ba 100644
+--- a/src/xenia/gpu/command_processor.cc
++++ b/src/xenia/gpu/command_processor.cc
+@@ -85,6 +85,15 @@ DEFINE_bool(
+     "mid-frame synchronization, so it has a huge performance impact.",
+     "GPU");
+ 
++DEFINE_bool(
++    memexport_enable, true,
++    "Make memory export output visible to the CPU by routing the draws that "
++    "write it to a buffer aliasing guest RAM. Needed by games that read "
++    "exported data on the CPU. Disabling it keeps the output in device-local "
++    "memory, which is faster for the draws that consume it on the GPU. Applies "
++    "at title launch.",
++    "GPU");
++
+ namespace xe {
+ namespace gpu {
+ 
+diff --git a/src/xenia/gpu/d3d12/d3d12_command_processor.cc b/src/xenia/gpu/d3d12/d3d12_command_processor.cc
+index e8e3e0235..6bb21e39a 100644
+--- a/src/xenia/gpu/d3d12/d3d12_command_processor.cc
++++ b/src/xenia/gpu/d3d12/d3d12_command_processor.cc
+@@ -856,6 +856,11 @@ bool D3D12CommandProcessor::SetupContext() {
+     return false;
+   }
+ 
++  // Read-watch consumption tracking for resolves.
++  InitResolveReadWatch();
++  resolve_read_callback_ = memory_->RegisterPhysicalMemoryReadCallback(
++      ResolveReadCallbackThunk, this);
++
+   // Initialize the render target cache before configuring binding - need to
+   // know if using rasterizer-ordered views for the bindless root signature.
+   render_target_cache_ = std::make_unique<D3D12RenderTargetCache>(
+@@ -1501,6 +1506,57 @@ bool D3D12CommandProcessor::SetupContext() {
+     shared_memory_->WriteRawUAVDescriptor(provider.OffsetViewDescriptor(
+         view_bindless_heap_cpu_start_,
+         uint32_t(SystemBindlessView::kSharedMemoryRawUAV)));
++    // Device SRV + UAV pair for memexport draws that also read shared memory
++    // (guest vertex fetch via t0). Both address the device buffer.
++    shared_memory_->WriteRawSRVDescriptor(provider.OffsetViewDescriptor(
++        view_bindless_heap_cpu_start_,
++        uint32_t(SystemBindlessView::kSharedMemoryRawSRVForRW)));
++    shared_memory_->WriteRawUAVDescriptor(provider.OffsetViewDescriptor(
++        view_bindless_heap_cpu_start_,
++        uint32_t(SystemBindlessView::kSharedMemoryRawUAVForRW)));
++    // Host buffer pairs for two-buffer memexport routing, only when it exists.
++    // The read pair is [host SRV, null UAV], the write pair [null SRV, host
++    // UAV], matching the device layout above.
++    if (shared_memory_->GetHostBuffer()) {
++      ui::d3d12::util::CreateBufferRawSRV(
++          device,
++          provider.OffsetViewDescriptor(
++              view_bindless_heap_cpu_start_,
++              uint32_t(SystemBindlessView::kSharedMemoryHostRawSRV)),
++          shared_memory_->GetHostBuffer(), SharedMemory::kBufferSize);
++      ui::d3d12::util::CreateBufferRawUAV(
++          device,
++          provider.OffsetViewDescriptor(
++              view_bindless_heap_cpu_start_,
++              uint32_t(SystemBindlessView::kSharedMemoryHostNullRawUAV)),
++          nullptr, 0);
++      ui::d3d12::util::CreateBufferRawSRV(
++          device,
++          provider.OffsetViewDescriptor(
++              view_bindless_heap_cpu_start_,
++              uint32_t(SystemBindlessView::kSharedMemoryHostNullRawSRV)),
++          nullptr, 0);
++      ui::d3d12::util::CreateBufferRawUAV(
++          device,
++          provider.OffsetViewDescriptor(
++              view_bindless_heap_cpu_start_,
++              uint32_t(SystemBindlessView::kSharedMemoryHostRawUAV)),
++          shared_memory_->GetHostBuffer(), SharedMemory::kBufferSize);
++      // Host SRV + UAV pair for memexport draws that also read shared memory
++      // (guest vertex fetch via t0). Both address the host buffer.
++      ui::d3d12::util::CreateBufferRawSRV(
++          device,
++          provider.OffsetViewDescriptor(
++              view_bindless_heap_cpu_start_,
++              uint32_t(SystemBindlessView::kSharedMemoryHostRawSRVForRW)),
++          shared_memory_->GetHostBuffer(), SharedMemory::kBufferSize);
++      ui::d3d12::util::CreateBufferRawUAV(
++          device,
++          provider.OffsetViewDescriptor(
++              view_bindless_heap_cpu_start_,
++              uint32_t(SystemBindlessView::kSharedMemoryHostRawUAVForRW)),
++          shared_memory_->GetHostBuffer(), SharedMemory::kBufferSize);
++    }
+     // kEdramRawSRV.
+     render_target_cache_->WriteEdramRawSRVDescriptor(
+         provider.OffsetViewDescriptor(
+@@ -1579,6 +1635,9 @@ bool D3D12CommandProcessor::SetupContext() {
+ void D3D12CommandProcessor::ShutdownContext() {
+   AwaitAllQueueOperationsCompletion();
+ 
++  ResetMemexportPages();
++  ResetResolveReadWatch();
++
+   for (auto& pair : readback_buffers_) {
+     ui::d3d12::util::ReleaseAndNull(pair.second.buffers[0]);
+     ui::d3d12::util::ReleaseAndNull(pair.second.buffers[1]);
+@@ -2500,6 +2559,33 @@ Shader* D3D12CommandProcessor::LoadShader(xenos::ShaderType shader_type,
+   return pipeline_cache_->LoadShader(shader_type, host_address, dword_count);
+ }
+ 
++bool D3D12CommandProcessor::EnsureMemexportRangeInDeviceBuffer(
++    uint32_t base_bytes, uint32_t size_bytes) {
++  if (shared_memory_->GetHostBuffer() == nullptr || !size_bytes ||
++      base_bytes >= SharedMemory::kBufferSize) {
++    return false;
++  }
++  size_bytes = std::min(size_bytes, SharedMemory::kBufferSize - base_bytes);
++  if (!IsMemexportRange(base_bytes, size_bytes)) {
++    return false;
++  }
++  // Transition the host buffer to a copy source (ordering the memexport writes,
++  // which may have run several draws ago, before the read) and the device
++  // buffer to a copy destination, then copy just this range across. The
++  // following texture-load UseForReading transitions the device buffer to a
++  // read state, ordering the copy before the load.
++  XELOGE("EnsureMemexportRangeInDeviceBuffer: 0x{:08X} {} bytes submission={}",
++         base_bytes, size_bytes, submission_open_);
++  shared_memory_->UseHostAsCopySource();
++  shared_memory_->UseAsCopyDestination();
++  SubmitBarriers();
++  deferred_command_list_.D3DCopyBufferRegion(
++      shared_memory_->GetBuffer(), base_bytes, shared_memory_->GetHostBuffer(),
++      base_bytes, size_bytes);
++  XELOGE("EnsureMemexportRangeInDeviceBuffer: recorded");
++  return true;
++}
++
+ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
+                                       uint32_t index_count,
+                                       IndexBufferInfo* index_buffer_info,
+@@ -2579,6 +2665,32 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
+     return true;
+   }
+ 
++  // Two-buffer memexport routing: producer draws (memexport_used) and geometry
++  // draws consuming memexport output use the host buffer (aliasing guest RAM)
++  // so the output stays CPU coherent and consumers read it directly. Only
++  // texture-sampled ranges are copied into the device buffer on demand. Inert
++  // without the host buffer.
++  bool route_to_host = false;
++  if (shared_memory_->GetHostBuffer() != nullptr) {
++    route_to_host =
++        memexport_used ||
++        (any_memexport_pages_written_ &&
++         ((primitive_processing_result.index_buffer_type ==
++               PrimitiveProcessor::ProcessedIndexBufferType::kGuestDMA &&
++           IsMemexportRange(
++               primitive_processing_result.guest_index_base,
++               primitive_processing_result.guest_draw_vertex_count *
++                   uint32_t(sizeof(uint32_t)))) ||
++          VertexFetchInMemexportRange(regs, *vertex_shader)));
++  }
++  // Logged on the flip, not per draw - the routing is what changes buffers
++  // under the title, so the transitions are the interesting events.
++  if (route_to_host != last_logged_route_to_host_) {
++    last_logged_route_to_host_ = route_to_host;
++    XELOGE("route_to_host -> {} (memexport_used={} any_written={})",
++           route_to_host, memexport_used, any_memexport_pages_written_);
++  }
++
+   reg::RB_DEPTHCONTROL normalized_depth_control =
+       draw_util::GetNormalizedDepthControl(regs);
+ 
+@@ -2729,7 +2841,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
+ 
+   // Update constant buffers, descriptors and root parameters.
+   if (!UpdateBindings(vertex_shader, pixel_shader, root_signature,
+-                      memexport_used)) {
++                      memexport_used, route_to_host)) {
+     return false;
+   }
+   // Must not call anything that can change the descriptor heap from now on!
+@@ -2890,9 +3002,20 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
+       PrimitiveProcessor::ProcessedIndexBufferType::kNone) {
+     if (!memexport_used) {
+       shared_memory_->UseForReading();
+-
++      if (route_to_host) {
++        shared_memory_->UseHostForReading();
++      }
+     } else {
+-      shared_memory_->UseForWriting();
++      // Writes go to whichever buffer is routed, but reads (vertex fetch and
++      // textures through the unbounded SRV range) always come from the device
++      // buffer, so it has to be in a readable state as well - it is left in
++      // COPY_DEST by the memexport range copies.
++      if (route_to_host) {
++        shared_memory_->UseHostForWriting();
++        shared_memory_->UseForReading();
++      } else {
++        shared_memory_->UseForWriting();
++      }
+     }
+     SubmitBarriers();
+     deferred_command_list_.D3DDrawInstanced(
+@@ -2921,10 +3044,13 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
+           if (scratch_index_buffer == nullptr) {
+             return false;
+           }
+-          shared_memory_->UseAsCopySource();
++          route_to_host ? shared_memory_->UseHostAsCopySource()
++                        : shared_memory_->UseAsCopySource();
+           SubmitBarriers();
+           deferred_command_list_.D3DCopyBufferRegion(
+-              scratch_index_buffer, 0, shared_memory_->GetBuffer(),
++              scratch_index_buffer, 0,
++              route_to_host ? shared_memory_->GetHostBuffer()
++                            : shared_memory_->GetBuffer(),
+               primitive_processing_result.guest_index_base,
+               index_buffer_view.SizeInBytes);
+           PushTransitionBarrier(scratch_index_buffer,
+@@ -2934,7 +3060,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
+               scratch_index_buffer->GetGPUVirtualAddress();
+         } else {
+           index_buffer_view.BufferLocation =
+-              shared_memory_->GetGPUAddress() +
++              (route_to_host ? shared_memory_->GetHostGPUAddress()
++                             : shared_memory_->GetGPUAddress()) +
+               primitive_processing_result.guest_index_base;
+         }
+       } break;
+@@ -2955,9 +3082,19 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
+     }
+     deferred_command_list_.D3DIASetIndexBuffer(&index_buffer_view);
+     if (memexport_used) {
+-      shared_memory_->UseForWriting();
++      // See the non-indexed path: reads stay on the device buffer, so it must
++      // be readable even when the writes are routed to the host buffer.
++      if (route_to_host) {
++        shared_memory_->UseHostForWriting();
++        shared_memory_->UseForReading();
++      } else {
++        shared_memory_->UseForWriting();
++      }
+     } else {
+       shared_memory_->UseForReading();
++      if (route_to_host) {
++        shared_memory_->UseHostForReading();
++      }
+     }
+     SubmitBarriers();
+     deferred_command_list_.D3DDrawIndexedInstanced(
+@@ -2973,13 +3110,24 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
+     // memory as a UAV.
+     // TODO(Triang3l): Find some PM4 command that can be used for indication of
+     // when memexports should be awaited?
+-    shared_memory_->MarkUAVWritesCommitNeeded();
++    route_to_host ? shared_memory_->MarkHostUAVWritesCommitNeeded()
++                  : shared_memory_->MarkUAVWritesCommitNeeded();
+     // Invalidate textures in memexported memory and watch for changes.
+     for (const draw_util::MemExportRange& memexport_range : memexport_ranges_) {
+       shared_memory_->RangeWrittenByGpu(
+-          memexport_range.base_address_dwords << 2, memexport_range.size_bytes);
++          memexport_range.base_address_dwords << 2, memexport_range.size_bytes,
++          !route_to_host);
+     }
+-    if (GetGPUSetting(GPUSetting::ReadbackMemexport)) {
++    if (route_to_host) {
++      // Output landed in host_buffer_ (guest RAM), already CPU coherent, so no
++      // readback. Record the written pages so geometry consumers route to the
++      // host buffer and texture loads copy their range into the device buffer.
++      for (const draw_util::MemExportRange& memexport_range :
++           memexport_ranges_) {
++        MarkMemexportPagesWritten(memexport_range.base_address_dwords << 2,
++                                  memexport_range.size_bytes);
++      }
++    } else if (GetGPUSetting(GPUSetting::ReadbackMemexport)) {
+       // Read the exported data on the CPU.
+       uint32_t memexport_total_size = 0;
+       for (const draw_util::MemExportRange& memexport_range :
+@@ -3052,6 +3200,13 @@ void D3D12CommandProcessor::InitializeTrace() {
+   }
+ }
+ 
++void D3D12CommandProcessor::ResolveReadCallbackThunk(void* context,
++                                                     uint32_t physical_address,
++                                                     uint32_t length) {
++  static_cast<D3D12CommandProcessor*>(context)->MarkResolvePagesRead(
++      physical_address, length);
++}
++
+ bool D3D12CommandProcessor::IssueCopy() {
+ #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
+   SCOPE_profile_cpu_f("gpu");
+@@ -3062,9 +3217,17 @@ bool D3D12CommandProcessor::IssueCopy() {
+   ReadbackResolveMode readback_mode = GetReadbackResolveMode();
+   if (readback_mode == ReadbackResolveMode::kDisabled) {
+     uint32_t written_address, written_length;
+-    return render_target_cache_->Resolve(*memory_, *shared_memory_,
+-                                         *texture_cache_, written_address,
+-                                         written_length);
++    bool resolved = render_target_cache_->Resolve(*memory_, *shared_memory_,
++                                                  *texture_cache_,
++                                                  written_address,
++                                                  written_length);
++    // A resolved page is no longer memexport output. Without this the tracked
++    // pages only ever grow, so every later texture load in that span is
++    // treated as memexport output and copied host -> device.
++    if (resolved && written_length) {
++      ClearMemexportPages(written_address, written_length);
++    }
++    return resolved;
+   } else {
+     return IssueCopy_ReadbackResolvePath();
+   }
+@@ -3072,123 +3235,67 @@ bool D3D12CommandProcessor::IssueCopy() {
+ XE_NOINLINE
+ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath() {
+   uint32_t written_address, written_length;
+-  if (render_target_cache_->Resolve(*memory_, *shared_memory_, *texture_cache_,
+-                                    written_address, written_length)) {
+-    if (!texture_cache_->IsDrawResolutionScaled() && written_length) {
+-      // Early check: if destination memory is not accessible, skip all the
+-      // expensive GPU readback work.
+-      VirtualHeap* physical_heap = memory_->GetPhysicalHeap();
+-      bool memory_accessible = false;
+-      if (physical_heap) {
+-        HeapAllocationInfo alloc_info;
+-        if (physical_heap->QueryRegionInfo(written_address, &alloc_info) &&
+-            (alloc_info.state & kMemoryAllocationCommit) &&
+-            (alloc_info.protect & kMemoryProtectWrite)) {
+-          uint32_t end_address = written_address + written_length;
+-          uint32_t region_end =
+-              alloc_info.base_address + alloc_info.region_size;
+-          if (end_address <= region_end) {
+-            memory_accessible = true;
+-          }
+-        }
+-      }
++  if (!render_target_cache_->Resolve(*memory_, *shared_memory_, *texture_cache_,
++                                     written_address, written_length)) {
++    return false;
++  }
+ 
+-      if (!memory_accessible) {
+-        // Destination memory not accessible, skip readback entirely
+-        return true;
+-      }
++  if (!written_length) {
++    return true;
++  }
++  // Readback keeps guest RAM coherent, so this is only for accuracy, but a
++  // resolved page is no longer memexport output either way.
++  ClearMemexportPages(written_address, written_length);
+ 
+-      // Create a key for this specific resolve operation
+-      uint64_t resolve_key =
+-          MakeReadbackResolveKey(written_address, written_length);
+-      ReadbackBuffer& rb = readback_buffers_[resolve_key];
+-      rb.last_used_frame = frame_current_;
++  // Resolution-scaled resolves live in the scaled buffers, not shared memory,
++  // so there is nothing here to hand back to the guest.
++  if (texture_cache_->IsDrawResolutionScaled()) {
++    return true;
++  }
+ 
+-      uint32_t write_index = rb.current_index;
+-      uint32_t size = AlignReadbackBufferSize(written_length);
++  const bool zero_copy = shared_memory_->is_zero_copy();
++  // Readback lands in guest RAM: the host buffer in two-buffer mode, or
++  // buffer_ itself in zero-copy mode, since it already aliases guest RAM.
++  ID3D12Resource* guest_ram_buffer =
++      zero_copy ? shared_memory_->GetBuffer() : shared_memory_->GetHostBuffer();
++  if (guest_ram_buffer == nullptr ||
++      !IsResolveDestinationResident(written_address, written_length)) {
++    return true;
++  }
+ 
+-      // Allocate/resize write buffer if needed
+-      if (size > rb.sizes[write_index]) {
+-        const ui::d3d12::D3D12Provider& provider = GetD3D12Provider();
+-        ID3D12Device* device = provider.GetDevice();
+-        D3D12_RESOURCE_DESC buffer_desc;
+-        ui::d3d12::util::FillBufferResourceDesc(buffer_desc, size,
+-                                                D3D12_RESOURCE_FLAG_NONE);
+-        ID3D12Resource* buffer;
+-        if (SUCCEEDED(device->CreateCommittedResource(
+-                &ui::d3d12::util::kHeapPropertiesReadback,
+-                provider.GetHeapFlagCreateNotZeroed(), &buffer_desc,
+-                D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+-                IID_PPV_ARGS(&buffer)))) {
+-          if (rb.buffers[write_index] != nullptr) {
+-            rb.buffers[write_index]->Release();
+-          }
+-          rb.buffers[write_index] = buffer;
+-          rb.sizes[write_index] = size;
+-        } else {
+-          XELOGE("Failed to create a {} MB readback buffer", size >> 20);
+-          return true;
+-        }
+-      }
++  ReadbackResolveMode readback_mode = GetReadbackResolveMode();
++  bool stall_after_copy;
++  if (!DecideResolveHostCopy(readback_mode, written_address, written_length,
++                             cvars::readback_resolve_sync, stall_after_copy)) {
++    // fast mode: the range has not been read since its last resolve.
++    return true;
++  }
+ 
+-      // Copy resolved data to current frame's buffer
+-      shared_memory_->UseAsCopySource();
+-      SubmitBarriers();
+-      ID3D12Resource* shared_memory_buffer = shared_memory_->GetBuffer();
+-      deferred_command_list_.D3DCopyBufferRegion(
+-          rb.buffers[write_index], 0, shared_memory_buffer, written_address,
+-          written_length);
+-
+-      ReadbackResolveMode readback_mode = GetReadbackResolveMode();
+-      bool use_delayed_sync = (readback_mode == ReadbackResolveMode::kFast);
+-      uint32_t read_index = write_index;
+-
+-      if (use_delayed_sync) {
+-        // Use previous frame's data (avoid stall)
+-        read_index = 1 - write_index;
+-      } else {
+-        // Wait for GPU to finish (accurate but slow)
+-        if (!AwaitAllQueueOperationsCompletion()) {
+-          return true;
+-        }
+-      }
++  // A zero-copy resolve is already in guest RAM, so there is nothing to copy.
++  if (zero_copy) {
++    return true;
++  }
+ 
+-      // Read from the appropriate buffer
+-      ID3D12Resource* read_source = rb.buffers[read_index];
+-
+-      // If using delayed sync but previous buffer doesn't exist, use current
+-      // buffer with sync as fallback
+-      if (use_delayed_sync &&
+-          (read_source == nullptr || written_length > rb.sizes[read_index])) {
+-        read_source = rb.buffers[write_index];
+-        read_index = write_index;
+-        if (!AwaitAllQueueOperationsCompletion()) {
+-          return true;
+-        }
+-      }
++  // Copy straight from the device buffer into the host buffer (guest RAM).
++  shared_memory_->UseAsCopySource();
++  shared_memory_->UseHostAsCopyDestination();
++  SubmitBarriers();
++  deferred_command_list_.D3DCopyBufferRegion(
++      guest_ram_buffer, written_address, shared_memory_->GetBuffer(),
++      written_address, written_length);
+ 
+-      if (read_source != nullptr && written_length <= rb.sizes[read_index]) {
+-        D3D12_RANGE readback_range;
+-        readback_range.Begin = 0;
+-        readback_range.End = written_length;
+-        void* readback_mapping;
+-        if (SUCCEEDED(
+-                read_source->Map(0, &readback_range, &readback_mapping))) {
+-          // Memory accessibility already checked at the start of this function
+-          // chrispy: this memcpy needs to be optimized as much as possible
+-          auto physaddr = memory_->TranslatePhysical(written_address);
+-          memory::vastcpy(physaddr, (uint8_t*)readback_mapping, written_length);
+-          D3D12_RANGE readback_write_range = {};
+-          read_source->Unmap(0, &readback_write_range);
+-        }
+-      }
+-    }
+-  } else {
+-    return false;
++  if (stall_after_copy) {
++    // host_buffer_ is CPU-coherent guest RAM, so waiting makes the copy visible
++    // to the guest CPU before a later read races it. Within-frame GPU consumers
++    // are ordered by the next host-routed draw transitioning host_buffer_ out
++    // of COPY_DEST.
++    AwaitAllQueueOperationsCompletion();
+   }
++
+   return true;
+ }
+ 
++
+ void D3D12CommandProcessor::CheckSubmissionCompletion(
+     uint64_t await_submission) {
+   if (await_submission >= GetCurrentSubmission()) {
+@@ -3404,6 +3511,7 @@ bool D3D12CommandProcessor::BeginSubmission(bool is_guest_command) {
+     cbuffer_binding_bool_loop_.up_to_date = false;
+     cbuffer_binding_fetch_.up_to_date = false;
+     current_shared_memory_binding_is_uav_.reset();
++    current_shared_memory_binding_is_host_.reset();
+     if (bindless_resources_used_) {
+       cbuffer_binding_descriptor_indices_vertex_.up_to_date = false;
+       cbuffer_binding_descriptor_indices_pixel_.up_to_date = false;
+@@ -4322,7 +4430,8 @@ void D3D12CommandProcessor::UpdateSystemConstantValues(
+ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
+                                            const D3D12Shader* pixel_shader,
+                                            ID3D12RootSignature* root_signature,
+-                                           bool shared_memory_is_uav) {
++                                           bool shared_memory_is_uav,
++                                           bool route_to_host) {
+   const ui::d3d12::D3D12Provider& provider = GetD3D12Provider();
+   ID3D12Device* device = provider.GetDevice();
+   const RegisterFile& regs = *register_file_;
+@@ -4526,9 +4635,15 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
+   // Update descriptors.
+   //
+ 
++  // The routing decides which buffer's descriptor pair is bound, so it is part
++  // of the binding's identity - a draw that switches between the device and the
++  // host buffer must not reuse the previous draw's table.
+   if (!current_shared_memory_binding_is_uav_.has_value() ||
+-      current_shared_memory_binding_is_uav_.value() != shared_memory_is_uav) {
++      current_shared_memory_binding_is_uav_.value() != shared_memory_is_uav ||
++      !current_shared_memory_binding_is_host_.has_value() ||
++      current_shared_memory_binding_is_host_.value() != route_to_host) {
+     current_shared_memory_binding_is_uav_ = shared_memory_is_uav;
++    current_shared_memory_binding_is_host_ = route_to_host;
+     current_graphics_root_up_to_date_ &=
+         ~(1u << root_parameter_shared_memory_and_bindful_edram);
+   }
+@@ -4889,14 +5004,28 @@ bool D3D12CommandProcessor::UpdateBindings(const D3D12Shader* vertex_shader,
+     assert_true(current_shared_memory_binding_is_uav_.has_value());
+     D3D12_GPU_DESCRIPTOR_HANDLE gpu_handle_shared_memory_and_bindful_edram;
+     if (bindless_resources_used_) {
++      // The heap holds an adjacent [shared SRV, null UAV] pair for reads and
++      // [null SRV, shared UAV] pair for memexport writes - this path's shaders
++      // fetch vertices through the unbounded SRV range, not through this pair,
++      // so the unused half stays null exactly as it does without routing.
++      //
++      // Routing only moves the UAV to the host buffer, so memexport output
++      // lands in guest RAM. Reads stay on the device buffer, which is the only
++      // one holding GPU-produced data that was never written back to guest RAM.
++      SystemBindlessView shared_memory_view;
++      const bool binding_is_uav = current_shared_memory_binding_is_uav_.value();
++      if (binding_is_uav) {
++        shared_memory_view =
++            (route_to_host && shared_memory_->GetHostBuffer() != nullptr)
++                ? SystemBindlessView::kNullRawSRVAndSharedMemoryHostRawUAVStart
++                : SystemBindlessView::kNullRawSRVAndSharedMemoryRawUAVStart;
++      } else {
++        shared_memory_view = SystemBindlessView::
++            kSharedMemoryRawSRVAndNullRawUAVStart;
++      }
+       gpu_handle_shared_memory_and_bindful_edram =
+-          provider.OffsetViewDescriptor(
+-              view_bindless_heap_gpu_start_,
+-              uint32_t(current_shared_memory_binding_is_uav_.value()
+-                           ? SystemBindlessView ::
+-                                 kNullRawSRVAndSharedMemoryRawUAVStart
+-                           : SystemBindlessView ::
+-                                 kSharedMemoryRawSRVAndNullRawUAVStart));
++          provider.OffsetViewDescriptor(view_bindless_heap_gpu_start_,
++                                        uint32_t(shared_memory_view));
+     } else {
+       gpu_handle_shared_memory_and_bindful_edram =
+           current_shared_memory_binding_is_uav_.value()
+diff --git a/src/xenia/gpu/d3d12/d3d12_command_processor.h b/src/xenia/gpu/d3d12/d3d12_command_processor.h
+index 95687cd98..4d7e278a4 100644
+--- a/src/xenia/gpu/d3d12/d3d12_command_processor.h
++++ b/src/xenia/gpu/d3d12/d3d12_command_processor.h
+@@ -11,12 +11,14 @@
+ #define XENIA_GPU_D3D12_D3D12_COMMAND_PROCESSOR_H_
+ 
+ #include <algorithm>
++#include <array>
+ #include <atomic>
+ #include <deque>
+ #include <memory>
+ #include <optional>
+ #include <string>
+ #include <unordered_map>
++#include <unordered_set>
+ #include <utility>
+ #include <vector>
+ 
+@@ -164,6 +166,30 @@ class D3D12CommandProcessor final : public CommandProcessor {
+     kNullRawSRV = kNullRawSRVAndSharedMemoryRawUAVStart,
+     kSharedMemoryRawUAV,
+ 
++    // Device SRV + UAV pair, the device-buffer version of the host RW pair
++    // below, for memexport draws on the device path.
++    kSharedMemoryRawSRVAndRawUAVStart,
++    kSharedMemoryRawSRVForRW = kSharedMemoryRawSRVAndRawUAVStart,
++    kSharedMemoryRawUAVForRW,
++
++    // Host-imported (guest RAM) buffer pairs mirroring the device pairs above,
++    // bound instead for memexport-touching draws. Written only when the host
++    // buffer exists (two-buffer memexport routing). Unused otherwise.
++    kSharedMemoryHostRawSRVAndNullRawUAVStart,
++    kSharedMemoryHostRawSRV = kSharedMemoryHostRawSRVAndNullRawUAVStart,
++    kSharedMemoryHostNullRawUAV,
++
++    kNullRawSRVAndSharedMemoryHostRawUAVStart,
++    kSharedMemoryHostNullRawSRV = kNullRawSRVAndSharedMemoryHostRawUAVStart,
++    kSharedMemoryHostRawUAV,
++
++    // Host SRV + UAV as one adjacent pair for memexport draws that also read
++    // shared memory through the t0 SRV (guest vertex fetch). Mirrors Vulkan
++    // using one read + write buffer.
++    kSharedMemoryHostRawSRVAndHostRawUAVStart,
++    kSharedMemoryHostRawSRVForRW = kSharedMemoryHostRawSRVAndHostRawUAVStart,
++    kSharedMemoryHostRawUAVForRW,
++
+     kEdramRawSRV,
+     kEdramR32UintSRV,
+     kEdramR32G32UintSRV,
+@@ -210,6 +236,23 @@ class D3D12CommandProcessor final : public CommandProcessor {
+     return pipeline_cache_->GetD3D12PipelineByHandle(handle);
+   }
+ 
++  // Debug marker methods - public so subsystems can annotate their operations.
++  // Our DeferredCommandList has no marker recording, so these are accepted and
++  // dropped; they exist so ported code that annotates its work builds and reads
++  // the same as upstream.
++  void PushDebugMarker(const char* format, ...) {}
++  void PopDebugMarker() {}
++  void InsertDebugMarker(const char* format, ...) {}
++
++  // If this shared memory range holds memexport output (which lives in the host
++  // buffer under two-buffer routing), copies just it into the device buffer so
++  // a following texture load reading the device buffer sees it. No-op for
++  // normal ranges and when the host buffer is unavailable. Called by the
++  // texture cache before loading.
++  // Returns whether it copied, so an upload of the same range can be skipped.
++  bool EnsureMemexportRangeInDeviceBuffer(uint32_t base_bytes,
++                                          uint32_t size_bytes);
++
+   // Sets the current cached values to external ones. This is for cache
+   // invalidation primarily. A submission must be open.
+   void SetExternalPipeline(ID3D12PipelineState* pipeline);
+@@ -475,7 +518,7 @@ class D3D12CommandProcessor final : public CommandProcessor {
+   bool UpdateBindings(const D3D12Shader* vertex_shader,
+                       const D3D12Shader* pixel_shader,
+                       ID3D12RootSignature* root_signature,
+-                      bool shared_memory_is_uav);
++                      bool shared_memory_is_uav, bool route_to_host);
+   XE_COLD
+   XE_NOINLINE
+   void UpdateBindings_UpdateRootBindful();
+@@ -808,6 +851,9 @@ class D3D12CommandProcessor final : public CommandProcessor {
+   // accessed dynamically in the shaders, are used to prevent a validation
+   // message about missing resource states in PIX.
+   std::optional<bool> current_shared_memory_binding_is_uav_;
++  // Whether the currently bound shared memory descriptor pair is the host
++  // (guest RAM) buffer's rather than the device buffer's.
++  std::optional<bool> current_shared_memory_binding_is_host_;
+ 
+   // Pages with the descriptors currently used for handling Xenos draw calls.
+   uint64_t draw_view_bindful_heap_index_;
+@@ -857,6 +903,21 @@ class D3D12CommandProcessor final : public CommandProcessor {
+   std::atomic<bool> pix_capture_requested_ = false;
+   bool pix_capturing_;
+ 
++  // Two-buffer memexport page tracking (data + methods), shared with the Vulkan
++  // command processor.
++#include "../command_processor_memexport.inc"
++
++  // Resolve-to-guest-RAM copy decisions and read-watch consumption tracking,
++  // shared with the Vulkan command processor.
++#include "../command_processor_resolve_readwatch.inc"
++
++  static void ResolveReadCallbackThunk(void* context, uint32_t physical_address,
++                                       uint32_t length);
++
++  // Last logged memexport routing state, so the flip is reported rather than
++  // every draw.
++  bool last_logged_route_to_host_ = false;
++
+   // Temporary storage for memexport stream constants used in the draw.
+   std::vector<draw_util::MemExportRange> memexport_ranges_;
+ };
+diff --git a/src/xenia/gpu/d3d12/d3d12_shared_memory.cc b/src/xenia/gpu/d3d12/d3d12_shared_memory.cc
+index 4a10c3e62..ac20b93f2 100644
+--- a/src/xenia/gpu/d3d12/d3d12_shared_memory.cc
++++ b/src/xenia/gpu/d3d12/d3d12_shared_memory.cc
+@@ -19,7 +19,9 @@
+ #include "xenia/ui/d3d12/d3d12_util.h"
+ 
+ DECLARE_bool(gpu_allow_invalid_upload_range);
++DECLARE_bool(memexport_enable);
+ DECLARE_bool(tiled_shared_memory);
++DECLARE_bool(shared_memory_zero_copy);
+ 
+ namespace xe {
+ namespace gpu {
+@@ -42,49 +44,58 @@ bool D3D12SharedMemory::Initialize() {
+       command_processor_.GetD3D12Provider();
+   ID3D12Device* device = provider.GetDevice();
+ 
+-  D3D12_RESOURCE_DESC buffer_desc;
+-  ui::d3d12::util::FillBufferResourceDesc(
+-      buffer_desc, kBufferSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
+-  buffer_state_ = D3D12_RESOURCE_STATE_COPY_DEST;
+-  if (cvars::tiled_shared_memory &&
+-      provider.GetTiledResourcesTier() !=
+-          D3D12_TILED_RESOURCES_TIER_NOT_SUPPORTED &&
+-      !provider.GetGraphicsAnalysis()) {
+-    if (FAILED(device->CreateReservedResource(
+-            &buffer_desc, buffer_state_, nullptr, IID_PPV_ARGS(&buffer_)))) {
+-      XELOGE("Shared memory: Failed to create the {} MB tiled buffer",
+-             kBufferSize >> 20);
+-      Shutdown();
+-      return false;
+-    }
+-    static_assert(D3D12_TILED_RESOURCE_TILE_SIZE_IN_BYTES == (1 << 16));
+-    InitializeSparseHostGpuMemory(
+-        std::max(kHostGpuMemoryOptimalSparseAllocationLog2, uint32_t(16)));
+-  } else {
+-    XELOGGPU(
+-        "Direct3D 12 tiled resources are not used for shared memory "
+-        "emulation - video memory usage may increase significantly "
+-        "because a full {} MB buffer will be created",
+-        kBufferSize >> 20);
+-    if (provider.GetGraphicsAnalysis()) {
+-      // As of October 8th, 2018, PIX doesn't support tiled buffers.
+-      // FIXME(Triang3l): Re-enable tiled resources with PIX once fixed.
++  // Zero-copy: place buffer_ directly on a heap imported from guest RAM. On
++  // success buffer_ aliases guest RAM, so the device-local buffer, its uploads
++  // and the separate host_buffer_ are all unnecessary and skipped below.
++  const bool zero_copy =
++      cvars::shared_memory_zero_copy && TryInitializeZeroCopy();
++
++  if (!zero_copy) {
++    D3D12_RESOURCE_DESC buffer_desc;
++    ui::d3d12::util::FillBufferResourceDesc(
++        buffer_desc, kBufferSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
++    buffer_state_ = D3D12_RESOURCE_STATE_COPY_DEST;
++    if (cvars::tiled_shared_memory &&
++        provider.GetTiledResourcesTier() !=
++            D3D12_TILED_RESOURCES_TIER_NOT_SUPPORTED &&
++        !provider.GetGraphicsAnalysis()) {
++      if (FAILED(device->CreateReservedResource(
++              &buffer_desc, buffer_state_, nullptr, IID_PPV_ARGS(&buffer_)))) {
++        XELOGE("Shared memory: Failed to create the {} MB tiled buffer",
++               kBufferSize >> 20);
++        Shutdown();
++        return false;
++      }
++      static_assert(D3D12_TILED_RESOURCE_TILE_SIZE_IN_BYTES == (1 << 16));
++      InitializeSparseHostGpuMemory(
++          std::max(kHostGpuMemoryOptimalSparseAllocationLog2, uint32_t(16)));
++    } else {
+       XELOGGPU(
+-          "This is caused by PIX being attached, which doesn't support tiled "
+-          "resources yet.");
+-    }
+-    if (FAILED(device->CreateCommittedResource(
+-            &ui::d3d12::util::kHeapPropertiesDefault,
+-            provider.GetHeapFlagCreateNotZeroed(), &buffer_desc, buffer_state_,
+-            nullptr, IID_PPV_ARGS(&buffer_)))) {
+-      XELOGE("Shared memory: Failed to create the {} MB buffer",
+-             kBufferSize >> 20);
+-      Shutdown();
+-      return false;
++          "Direct3D 12 tiled resources are not used for shared memory "
++          "emulation - video memory usage may increase significantly "
++          "because a full {} MB buffer will be created",
++          kBufferSize >> 20);
++      if (provider.GetGraphicsAnalysis()) {
++        // As of October 8th, 2018, PIX doesn't support tiled buffers.
++        // FIXME(Triang3l): Re-enable tiled resources with PIX once fixed.
++        XELOGGPU(
++            "This is caused by PIX being attached, which doesn't support tiled "
++            "resources yet.");
++      }
++      if (FAILED(device->CreateCommittedResource(
++              &ui::d3d12::util::kHeapPropertiesDefault,
++              provider.GetHeapFlagCreateNotZeroed(), &buffer_desc,
++              buffer_state_, nullptr, IID_PPV_ARGS(&buffer_)))) {
++        XELOGE("Shared memory: Failed to create the {} MB buffer",
++               kBufferSize >> 20);
++        Shutdown();
++        return false;
++      }
+     }
++    buffer_->SetName(L"Shared Memory Buffer");
++    buffer_gpu_address_ = buffer_->GetGPUVirtualAddress();
++    buffer_uav_writes_commit_needed_ = false;
+   }
+-  buffer_gpu_address_ = buffer_->GetGPUVirtualAddress();
+-  buffer_uav_writes_commit_needed_ = false;
+ 
+   D3D12_DESCRIPTOR_HEAP_DESC buffer_descriptor_heap_desc;
+   buffer_descriptor_heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+@@ -117,6 +128,166 @@ bool D3D12SharedMemory::Initialize() {
+       provider, xe::align(ui::d3d12::D3D12UploadBufferPool::kDefaultPageSize,
+                           size_t(1) << page_size_log2()));
+ 
++  if (!zero_copy) {
++    TryInitializeHostBuffer();
++  }
++
++  return true;
++}
++
++bool D3D12SharedMemory::ImportGuestRamHeap(void*& out_view,
++                                           ID3D12Heap*& out_heap) {
++  const ui::d3d12::D3D12Provider& provider =
++      command_processor_.GetD3D12Provider();
++  ID3D12Device* device = provider.GetDevice();
++
++  // OpenExistingHeapFromAddress is on ID3D12Device3.
++  ID3D12Device3* device3 = nullptr;
++  if (FAILED(device->QueryInterface(IID_PPV_ARGS(&device3)))) {
++    XELOGI("Shared memory host import: ID3D12Device3 not available");
++    return false;
++  }
++
++  D3D12_FEATURE_DATA_EXISTING_HEAPS existing_heaps = {};
++  if (FAILED(device3->CheckFeatureSupport(D3D12_FEATURE_EXISTING_HEAPS,
++                                          &existing_heaps,
++                                          sizeof(existing_heaps))) ||
++      !existing_heaps.Supported) {
++    XELOGI("Shared memory host import: existing heaps not supported");
++    device3->Release();
++    return false;
++  }
++
++  // Map a dedicated view of guest physical RAM for the heap import. Importing
++  // the memory-managed view (TranslatePhysical(0)) makes D3D12 own those pages
++  // and Xenia's write-watch VirtualProtect on the same view then fails. A
++  // separate view of the same file-mapping pages keeps them coherent (shared
++  // backing) while isolating protection (per-view PTEs).
++  const size_t physical_offset =
++      size_t(memory().physical_membase() - memory().virtual_membase());
++  void* view = xe::memory::MapFileView(
++      memory().mapping_handle(), nullptr, kBufferSize,
++      xe::memory::PageAccess::kReadWrite, physical_offset);
++  if (view == nullptr) {
++    XELOGI(
++        "Shared memory host import: failed to map a dedicated guest RAM view");
++    device3->Release();
++    return false;
++  }
++
++  // Import the 512 MB view as a heap. Its size comes from the enclosing OS
++  // allocation (this fresh view is exactly the buffer), so the buffer is placed
++  // at offset 0.
++  ID3D12Heap* heap = nullptr;
++  HRESULT hr = device3->OpenExistingHeapFromAddress(view, IID_PPV_ARGS(&heap));
++  device3->Release();
++  if (FAILED(hr)) {
++    XELOGI(
++        "Shared memory host import: OpenExistingHeapFromAddress failed "
++        "(0x{:08X})",
++        static_cast<uint32_t>(hr));
++    xe::memory::UnmapFileView(memory().mapping_handle(), view, kBufferSize);
++    return false;
++  }
++
++  // Log the imported heap's coherency properties. CPUPageProperty WRITE_BACK
++  // (3) is cache-coherent, WRITE_COMBINE (2) is not for GPU-write readback.
++  // This is driver-chosen for the diagnostic heap, not app-selectable.
++  const D3D12_HEAP_DESC heap_desc = heap->GetDesc();
++  XELOGI(
++      "Shared memory host import: heap CPUPageProperty={} MemoryPool={} "
++      "flags=0x{:X}",
++      uint32_t(heap_desc.Properties.CPUPageProperty),
++      uint32_t(heap_desc.Properties.MemoryPoolPreference),
++      uint32_t(heap_desc.Flags));
++
++  out_view = view;
++  out_heap = heap;
++  return true;
++}
++
++void D3D12SharedMemory::TryInitializeHostBuffer() {
++  if (!cvars::memexport_enable) {
++    return;
++  }
++  void* view = nullptr;
++  ID3D12Heap* heap = nullptr;
++  if (!ImportGuestRamHeap(view, heap)) {
++    // Without it memexport output stays device-local and the CPU never sees it.
++    XELOGW(
++        "Shared memory: no host buffer for memexport - memexport_enable is set "
++        "but the import failed, games reading exported data on the CPU will "
++        "misbehave");
++    return;
++  }
++
++  const ui::d3d12::D3D12Provider& provider =
++      command_processor_.GetD3D12Provider();
++  ID3D12Device* device = provider.GetDevice();
++
++  // OpenExistingHeapFromAddress returns a SHARED_CROSS_ADAPTER heap, so the
++  // buffer needs ALLOW_CROSS_ADAPTER. Memexport writes to it as a UAV.
++  D3D12_RESOURCE_DESC buffer_desc;
++  ui::d3d12::util::FillBufferResourceDesc(
++      buffer_desc, kBufferSize,
++      D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER |
++          D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
++  host_buffer_state_ = D3D12_RESOURCE_STATE_COMMON;
++  HRESULT hr =
++      device->CreatePlacedResource(heap, 0, &buffer_desc, host_buffer_state_,
++                                   nullptr, IID_PPV_ARGS(&host_buffer_));
++  if (FAILED(hr)) {
++    XELOGI("Shared memory host import: UAV buffer placement failed (0x{:08X})",
++           static_cast<uint32_t>(hr));
++    host_buffer_ = nullptr;
++    heap->Release();
++    xe::memory::UnmapFileView(memory().mapping_handle(), view, kBufferSize);
++    return;
++  }
++  host_buffer_->SetName(L"Shared Memory Host Buffer");
++  host_buffer_heap_ = heap;
++  host_buffer_view_ = view;
++  host_buffer_gpu_address_ = host_buffer_->GetGPUVirtualAddress();
++  XELOGI("Shared memory: host buffer for memexport ranges ready");
++}
++
++bool D3D12SharedMemory::TryInitializeZeroCopy() {
++  void* view = nullptr;
++  ID3D12Heap* heap = nullptr;
++  if (!ImportGuestRamHeap(view, heap)) {
++    return false;
++  }
++
++  const ui::d3d12::D3D12Provider& provider =
++      command_processor_.GetD3D12Provider();
++  ID3D12Device* device = provider.GetDevice();
++
++  // The imported heap is SHARED_CROSS_ADAPTER, so buffer_ needs
++  // ALLOW_CROSS_ADAPTER. As the primary buffer it is read as index, vertex and
++  // texture data and written by memexport as a UAV.
++  D3D12_RESOURCE_DESC buffer_desc;
++  ui::d3d12::util::FillBufferResourceDesc(
++      buffer_desc, kBufferSize,
++      D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER |
++          D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS);
++  buffer_state_ = D3D12_RESOURCE_STATE_COMMON;
++  HRESULT hr = device->CreatePlacedResource(
++      heap, 0, &buffer_desc, buffer_state_, nullptr, IID_PPV_ARGS(&buffer_));
++  if (FAILED(hr)) {
++    XELOGI("Shared memory zero-copy: buffer placement failed (0x{:08X})",
++           static_cast<uint32_t>(hr));
++    buffer_ = nullptr;
++    heap->Release();
++    xe::memory::UnmapFileView(memory().mapping_handle(), view, kBufferSize);
++    return false;
++  }
++  buffer_->SetName(L"Shared Memory Buffer (zero-copy)");
++  host_buffer_heap_ = heap;
++  host_buffer_view_ = view;
++  buffer_gpu_address_ = buffer_->GetGPUVirtualAddress();
++  buffer_uav_writes_commit_needed_ = false;
++  zero_copy_ = true;
++  XELOGI("Shared memory: using zero-copy guest RAM aliasing");
+   return true;
+ }
+ 
+@@ -127,8 +298,20 @@ void D3D12SharedMemory::Shutdown(bool from_destructor) {
+ 
+   ui::d3d12::util::ReleaseAndNull(buffer_descriptor_heap_);
+ 
+-  // First free the buffer to detach it from the heaps.
++  // Free both buffers before the imported heap that backs them, and unmap the
++  // view backing that heap only after every resource on it is gone. In
++  // zero-copy mode buffer_ is placed on host_buffer_heap_ too, so it must be
++  // released first.
+   ui::d3d12::util::ReleaseAndNull(buffer_);
++  ui::d3d12::util::ReleaseAndNull(host_buffer_);
++  ui::d3d12::util::ReleaseAndNull(host_buffer_heap_);
++  host_buffer_gpu_address_ = 0;
++  zero_copy_ = false;
++  if (host_buffer_view_ != nullptr) {
++    xe::memory::UnmapFileView(memory().mapping_handle(), host_buffer_view_,
++                              kBufferSize);
++    host_buffer_view_ = nullptr;
++  }
+ 
+   for (ID3D12Heap* heap : buffer_tiled_heaps_) {
+     heap->Release();
+@@ -155,6 +338,12 @@ void D3D12SharedMemory::CompletedSubmissionUpdated() {
+ void D3D12SharedMemory::BeginSubmission() {
+   // ExecuteCommandLists is a full UAV barrier.
+   buffer_uav_writes_commit_needed_ = false;
++  host_buffer_uav_writes_commit_needed_ = false;
++  // The host buffer is used only on memexport frames, so unlike buffer_ it can
++  // sit idle across submissions. Buffers decay to COMMON at each
++  // ExecuteCommandLists, so track it from COMMON every submission to avoid a
++  // stale before-state on the next transition.
++  host_buffer_state_ = D3D12_RESOURCE_STATE_COMMON;
+ }
+ 
+ void D3D12SharedMemory::CommitUAVWritesAndTransitionBuffer(
+@@ -167,12 +356,35 @@ void D3D12SharedMemory::CommitUAVWritesAndTransitionBuffer(
+     }
+     return;
+   }
++  XELOGE("shared memory device buffer state {:X} -> {:X}",
++         uint32_t(buffer_state_), uint32_t(new_state));
+   command_processor_.PushTransitionBarrier(buffer_, buffer_state_, new_state);
+   buffer_state_ = new_state;
+   // "UAV -> anything" transition commits the writes implicitly.
+   buffer_uav_writes_commit_needed_ = false;
+ }
+ 
++void D3D12SharedMemory::CommitHostUAVWritesAndTransitionBuffer(
++    D3D12_RESOURCE_STATES new_state) {
++  if (host_buffer_ == nullptr) {
++    return;
++  }
++  if (host_buffer_state_ == new_state) {
++    if (new_state == D3D12_RESOURCE_STATE_UNORDERED_ACCESS &&
++        host_buffer_uav_writes_commit_needed_) {
++      command_processor_.PushUAVBarrier(host_buffer_);
++      host_buffer_uav_writes_commit_needed_ = false;
++    }
++    return;
++  }
++  XELOGE("shared memory host buffer state {:X} -> {:X}",
++         uint32_t(host_buffer_state_), uint32_t(new_state));
++  command_processor_.PushTransitionBarrier(host_buffer_, host_buffer_state_,
++                                           new_state);
++  host_buffer_state_ = new_state;
++  host_buffer_uav_writes_commit_needed_ = false;
++}
++
+ void D3D12SharedMemory::WriteRawSRVDescriptor(
+     D3D12_CPU_DESCRIPTOR_HANDLE handle) {
+   const ui::d3d12::D3D12Provider& provider =
+@@ -226,6 +438,10 @@ bool D3D12SharedMemory::InitializeTraceSubmitDownloads() {
+   auto& command_list = command_processor_.GetDeferredCommandList();
+   UseAsCopySource();
+   command_processor_.SubmitBarriers();
++  command_processor_.InsertDebugMarker(
++      "Trace Download: %u KB, %zu ranges",
++      download_page_count << page_size_log2() >> 10,
++      trace_download_ranges().size());
+   uint32_t download_buffer_offset = 0;
+   for (const auto& download_range : trace_download_ranges()) {
+     command_list.D3DCopyBufferRegion(
+@@ -317,8 +533,51 @@ bool D3D12SharedMemory::UploadRanges(
+   if (!num_upload_page_ranges) {
+     return true;
+   }
++  if (zero_copy_) {
++    // buffer_ aliases guest RAM - nothing to copy, just mark the pages valid so
++    // RequestRange stops asking to upload them.
++    for (uint32_t i = 0; i < num_upload_page_ranges; ++i) {
++      trace_writer_.WriteMemoryRead(
++          upload_page_ranges[i].first << page_size_log2(),
++          upload_page_ranges[i].second << page_size_log2());
++      MakeRangeValid(upload_page_ranges[i].first << page_size_log2(),
++                     upload_page_ranges[i].second << page_size_log2(), false);
++    }
++    return true;
++  }
++  // Ranges holding memexport output live in the host buffer (guest RAM) and may
++  // still be being written by the GPU, so reading them with the CPU below races
++  // those writes. Refresh those on the GPU and upload only what is left.
++  cpu_upload_ranges_.clear();
++  for (uint32_t i = 0; i < num_upload_page_ranges; ++i) {
++    uint32_t range_base = upload_page_ranges[i].first << page_size_log2();
++    uint32_t range_size = upload_page_ranges[i].second << page_size_log2();
++    if (command_processor_.EnsureMemexportRangeInDeviceBuffer(range_base,
++                                                              range_size)) {
++      MakeRangeValid(range_base, range_size, false);
++      continue;
++    }
++    cpu_upload_ranges_.push_back(upload_page_ranges[i]);
++  }
++  if (cpu_upload_ranges_.empty()) {
++    return true;
++  }
++  upload_page_ranges = cpu_upload_ranges_.data();
++  num_upload_page_ranges = uint32_t(cpu_upload_ranges_.size());
++
+   CommitUAVWritesAndTransitionBuffer(D3D12_RESOURCE_STATE_COPY_DEST);
+   command_processor_.SubmitBarriers();
++  auto& upload_range_front = upload_page_ranges[0];
++  auto& upload_range_back = upload_page_ranges[num_upload_page_ranges - 1];
++  uint32_t total_upload_bytes =
++      (upload_range_back.first + upload_range_back.second -
++       upload_range_front.first)
++      << page_size_log2();
++  command_processor_.PushDebugMarker(
++      "UploadRanges (SharedMem): 0x%08X-0x%08X (%u KB, %u ranges)",
++      upload_range_front.first << page_size_log2(),
++      (upload_range_back.first + upload_range_back.second) << page_size_log2(),
++      total_upload_bytes >> 10, num_upload_page_ranges);
+   auto& command_list = command_processor_.GetDeferredCommandList();
+   for (uint32_t i = 0; i < num_upload_page_ranges; ++i) {
+     auto& upload_range = upload_page_ranges[i];
+@@ -371,9 +630,8 @@ bool D3D12SharedMemory::UploadRanges(
+             memory().TranslatePhysical(upload_range_start << page_size_log2()),
+             static_cast<uint32_t>(upload_buffer_size));
+         swcache::WriteFence();
+-
+       } else {
+-        memcpy(
++        std::memcpy(
+             upload_buffer_mapping,
+             memory().TranslatePhysical(upload_range_start << page_size_log2()),
+             upload_buffer_size);
+@@ -387,6 +645,7 @@ bool D3D12SharedMemory::UploadRanges(
+       upload_range_length -= upload_buffer_pages;
+     }
+   }
++  command_processor_.PopDebugMarker();
+   return true;
+ }
+ 
+diff --git a/src/xenia/gpu/d3d12/d3d12_shared_memory.h b/src/xenia/gpu/d3d12/d3d12_shared_memory.h
+index 60c44c8ef..ed5ca860e 100644
+--- a/src/xenia/gpu/d3d12/d3d12_shared_memory.h
++++ b/src/xenia/gpu/d3d12/d3d12_shared_memory.h
+@@ -42,6 +42,21 @@ class D3D12SharedMemory : public SharedMemory {
+     return buffer_gpu_address_;
+   }
+ 
++  // A second buffer placed on a heap imported from guest RAM
++  // (OpenExistingHeapFromAddress), or null if unavailable. Bound instead of
++  // buffer() for memexport-touching draws so their output is coherent with the
++  // CPU (no clobber, since it aliases guest RAM). Mirrors the Vulkan
++  // host_buffer().
++  ID3D12Resource* GetHostBuffer() const { return host_buffer_; }
++  D3D12_GPU_VIRTUAL_ADDRESS GetHostGPUAddress() const {
++    return host_buffer_gpu_address_;
++  }
++
++  // True when buffer_ aliases guest RAM directly (zero-copy import). Uploads
++  // are then unnecessary and host_buffer_ is null, since buffer_ already is
++  // guest RAM.
++  bool is_zero_copy() const { return zero_copy_; }
++
+   void CompletedSubmissionUpdated();
+   void BeginSubmission();
+ 
+@@ -64,6 +79,11 @@ class D3D12SharedMemory : public SharedMemory {
+   void UseAsCopySource() {
+     CommitUAVWritesAndTransitionBuffer(D3D12_RESOURCE_STATE_COPY_SOURCE);
+   }
++  // Makes the buffer usable as a destination for copy commands (used to copy
++  // memexport output back from the host buffer for texture loads).
++  void UseAsCopyDestination() {
++    CommitUAVWritesAndTransitionBuffer(D3D12_RESOURCE_STATE_COPY_DEST);
++  }
+   // Must be called when doing draws/dispatches modifying data within the shared
+   // memory buffer as a UAV, to make sure that when UseForWriting is called the
+   // next time, a UAV barrier will be done, and subsequent overlapping UAV
+@@ -74,6 +94,30 @@ class D3D12SharedMemory : public SharedMemory {
+     }
+   }
+ 
++  // Same as the UseFor* methods above, for the host buffer (guest RAM), used by
++  // memexport-routed draws. No-ops when the host buffer is unavailable.
++  void UseHostForReading() {
++    CommitHostUAVWritesAndTransitionBuffer(
++        D3D12_RESOURCE_STATE_INDEX_BUFFER |
++        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE |
++        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
++  }
++  void UseHostForWriting() {
++    CommitHostUAVWritesAndTransitionBuffer(
++        D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
++  }
++  void UseHostAsCopySource() {
++    CommitHostUAVWritesAndTransitionBuffer(D3D12_RESOURCE_STATE_COPY_SOURCE);
++  }
++  void UseHostAsCopyDestination() {
++    CommitHostUAVWritesAndTransitionBuffer(D3D12_RESOURCE_STATE_COPY_DEST);
++  }
++  void MarkHostUAVWritesCommitNeeded() {
++    if (host_buffer_state_ == D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
++      host_buffer_uav_writes_commit_needed_ = true;
++    }
++  }
++
+   void WriteRawSRVDescriptor(D3D12_CPU_DESCRIPTOR_HANDLE handle);
+   void WriteRawUAVDescriptor(D3D12_CPU_DESCRIPTOR_HANDLE handle);
+ 
+@@ -100,6 +144,37 @@ class D3D12SharedMemory : public SharedMemory {
+   bool buffer_uav_writes_commit_needed_ = false;
+   void CommitUAVWritesAndTransitionBuffer(D3D12_RESOURCE_STATES new_state);
+ 
++  // True when buffer_ is placed directly on a heap imported from guest RAM, so
++  // it aliases guest RAM and needs no per-frame uploads. host_buffer_ is then
++  // not created. The import is tracked by host_buffer_view_/host_buffer_heap_.
++  bool zero_copy_ = false;
++
++  // A dedicated file-mapping view of guest RAM backing the imported heap, kept
++  // separate from the memory-managed views so the write-watch VirtualProtect
++  // never touches D3D12-owned pages. Unmapped after the heap is released. Backs
++  // buffer_ in zero-copy mode, host_buffer_ otherwise.
++  void* host_buffer_view_ = nullptr;
++  ID3D12Heap* host_buffer_heap_ = nullptr;
++  // Second buffer aliasing guest RAM, bound for memexport-touching draws. Null
++  // when guest RAM can't be imported as a GPU heap (feature unsupported, or the
++  // adapter rejects a UAV buffer on a CPU-visible heap).
++  ID3D12Resource* host_buffer_ = nullptr;
++  D3D12_GPU_VIRTUAL_ADDRESS host_buffer_gpu_address_ = 0;
++  D3D12_RESOURCE_STATES host_buffer_state_ = D3D12_RESOURCE_STATE_COMMON;
++  bool host_buffer_uav_writes_commit_needed_ = false;
++  void CommitHostUAVWritesAndTransitionBuffer(D3D12_RESOURCE_STATES new_state);
++  // Imports guest RAM as host_buffer_. No-op on failure (host_buffer_ stays
++  // null and the device-local path is used unchanged).
++  void TryInitializeHostBuffer();
++  // Maps a dedicated guest RAM view and opens it as a D3D12 heap
++  // (OpenExistingHeapFromAddress). Returns true with out_view/out_heap set;
++  // false with nothing to clean up.
++  bool ImportGuestRamHeap(void*& out_view, ID3D12Heap*& out_heap);
++  // Places buffer_ directly on a heap imported from guest RAM (full zero-copy).
++  // Returns true (buffer_/zero_copy_ set) or false to use the device-local
++  // path.
++  bool TryInitializeZeroCopy();
++
+   // Non-shader-visible buffer descriptor heap for faster binding (via copying
+   // rather than creation).
+   enum class BufferDescriptorIndex : uint32_t {
+@@ -112,6 +187,8 @@ class D3D12SharedMemory : public SharedMemory {
+   D3D12_CPU_DESCRIPTOR_HANDLE buffer_descriptor_heap_start_;
+ 
+   std::unique_ptr<ui::d3d12::D3D12UploadBufferPool> upload_buffer_pool_;
++  // Upload ranges left after the memexport ones are refreshed on the GPU.
++  std::vector<std::pair<uint32_t, uint32_t>> cpu_upload_ranges_;
+ 
+   // Created temporarily, only for downloading.
+   ID3D12Resource* trace_download_buffer_ = nullptr;
+diff --git a/src/xenia/gpu/d3d12/d3d12_texture_cache.cc b/src/xenia/gpu/d3d12/d3d12_texture_cache.cc
+index a4de12e35..f3cee90a9 100644
+--- a/src/xenia/gpu/d3d12/d3d12_texture_cache.cc
++++ b/src/xenia/gpu/d3d12/d3d12_texture_cache.cc
+@@ -1398,6 +1398,21 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+   }
+   const LoadShaderInfo& load_shader_info = GetLoadShaderInfo(load_shader);
+ 
++  // Memexport output lives in the host buffer under two-buffer routing, so pull
++  // the ranges this texture covers into the device buffer the load reads from.
++  // Scaled-resolve textures read from separate scaled buffers, not shared
++  // memory, so they are unaffected.
++  if (!texture_resolution_scaled) {
++    if (load_base) {
++      command_processor_.EnsureMemexportRangeInDeviceBuffer(
++          texture_key.base_page << 12, d3d12_texture.GetGuestBaseSize());
++    }
++    if (load_mips) {
++      command_processor_.EnsureMemexportRangeInDeviceBuffer(
++          texture_key.mip_page << 12, d3d12_texture.GetGuestMipsSize());
++    }
++  }
++
+   // Get the guest layout.
+   const texture_util::TextureGuestLayout& guest_layout =
+       d3d12_texture.guest_layout();
+diff --git a/src/xenia/gpu/gpu_flags.cc b/src/xenia/gpu/gpu_flags.cc
+index 88b55444d..d4237c122 100644
+--- a/src/xenia/gpu/gpu_flags.cc
++++ b/src/xenia/gpu/gpu_flags.cc
+@@ -9,6 +9,24 @@
+ 
+ #include "xenia/gpu/gpu_flags.h"
+ 
++#include "xenia/base/platform.h"
++
++#if XE_ARCH_ARM64
++#define XE_GPU_ZERO_COPY_DEFAULT true
++#else
++#define XE_GPU_ZERO_COPY_DEFAULT false
++#endif
++DEFINE_bool(
++    shared_memory_zero_copy, XE_GPU_ZERO_COPY_DEFAULT,
++    "Alias guest RAM directly as the GPU shared-memory buffer instead "
++    "of uploading dirty pages each frame. Removes upload copies and "
++    "keeps memexport and resolve output coherent with the CPU for free. "
++    "Default on for ARM64 (unified-memory) builds, off for x86-64. "
++    "Turn off on discrete GPUs, where shared-memory fetches cross PCIe "
++    "and are slow.",
++    "GPU");
++#undef XE_GPU_ZERO_COPY_DEFAULT
++
+ DEFINE_path(trace_gpu_prefix, "scratch/gpu/",
+             "Prefix path for GPU trace files.", "GPU");
+ DEFINE_bool(trace_gpu_stream, false, "Trace all GPU packets.", "GPU");
+@@ -106,6 +124,12 @@ DEFINE_bool(no_discard_stencil_in_transfer_pipelines, false,
+             "May improve performance on some GPUs.",
+             "GPU");
+ 
++DEFINE_bool(readback_resolve_sync, true,
++            "Stall the GPU after each readback_resolve copy so guest RAM is "
++            "coherent in "
++            "the same frame, instead of copying asynchronously.",
++            "GPU");
++
+ DEFINE_bool(gpu_3d_to_2d_texture, true,
+             "Handle shaders that sample 3D textures as 2D by creating a 2D "
+             "texture from slice 0 of the guest memory.",
+diff --git a/src/xenia/gpu/gpu_flags.h b/src/xenia/gpu/gpu_flags.h
+index 3d19728cd..40c7a158d 100644
+--- a/src/xenia/gpu/gpu_flags.h
++++ b/src/xenia/gpu/gpu_flags.h
+@@ -48,6 +48,10 @@ DECLARE_bool(gpu_3d_to_2d_texture);
+ 
+ DECLARE_bool(ac6_ground_fix);
+ 
++DECLARE_bool(shared_memory_zero_copy);
++
++DECLARE_bool(readback_resolve_sync);
++
+ #define XE_GPU_FINE_GRAINED_DRAW_SCOPES 1
+ 
+ #endif  // XENIA_GPU_GPU_FLAGS_H_
+diff --git a/src/xenia/gpu/primitive_processor.cc b/src/xenia/gpu/primitive_processor.cc
+index a39f5a9cf..04ea30dc9 100644
+--- a/src/xenia/gpu/primitive_processor.cc
++++ b/src/xenia/gpu/primitive_processor.cc
+@@ -435,6 +435,7 @@ bool PrimitiveProcessor::Process(ProcessingResult& result_out) {
+   uint32_t guest_index_base = 0, guest_index_buffer_needed_bytes = 0;
+   CachedResult cacheable;
+   cacheable.host_draw_vertex_count = guest_draw_vertex_count;
++  cacheable.guest_draw_vertex_count = guest_draw_vertex_count;
+   cacheable.host_primitive_reset_enabled = false;
+   cacheable.host_index_buffer_handle = SIZE_MAX;
+   if (host_vertex_shader_type ==
+@@ -981,6 +982,7 @@ bool PrimitiveProcessor::Process(ProcessingResult& result_out) {
+   result_out.host_vertex_shader_type = host_vertex_shader_type;
+   result_out.tessellation_mode = tessellation_mode;
+   result_out.host_draw_vertex_count = cacheable.host_draw_vertex_count;
++  result_out.guest_draw_vertex_count = cacheable.guest_draw_vertex_count;
+   result_out.line_loop_closing_index = line_loop_closing_index;
+   result_out.index_buffer_type = cacheable.index_buffer_type;
+   result_out.guest_index_base = guest_index_base;
+diff --git a/src/xenia/gpu/primitive_processor.h b/src/xenia/gpu/primitive_processor.h
+index d1150e638..d3ccf7e29 100644
+--- a/src/xenia/gpu/primitive_processor.h
++++ b/src/xenia/gpu/primitive_processor.h
+@@ -136,6 +136,10 @@ class PrimitiveProcessor {
+     // TODO(Triang3l): If important, split into the index count and the actual
+     // index buffer size, using zeros for out-of-bounds indices.
+     uint32_t host_draw_vertex_count;
++    // Guest-side draw index count before host primitive expansion / conversion.
++    // Needed by shader-side bounds checks when loading guest indices from
++    // shared memory (VS expansion, full 32-bit index loads).
++    uint32_t guest_draw_vertex_count;
+     uint32_t line_loop_closing_index;
+     ProcessedIndexBufferType index_buffer_type;
+     uint32_t guest_index_base;
+@@ -770,6 +774,7 @@ class PrimitiveProcessor {
+   // the reset index).
+   struct CachedResult {
+     uint32_t host_draw_vertex_count;
++    uint32_t guest_draw_vertex_count;
+     ProcessedIndexBufferType index_buffer_type;
+     xenos::IndexFormat host_index_format;
+     xenos::Endian host_shader_index_endian;
+diff --git a/src/xenia/gpu/shared_memory.cc b/src/xenia/gpu/shared_memory.cc
+index a3bfdaec5..133df074a 100644
+--- a/src/xenia/gpu/shared_memory.cc
++++ b/src/xenia/gpu/shared_memory.cc
+@@ -307,7 +307,8 @@ void SharedMemory::FireWatches(uint32_t page_first, uint32_t page_last,
+   }
+ }
+ 
+-void SharedMemory::RangeWrittenByGpu(uint32_t start, uint32_t length) {
++void SharedMemory::RangeWrittenByGpu(uint32_t start, uint32_t length,
++                                     bool written_to_buffer) {
+   if (length == 0 || start >= kBufferSize) {
+     return;
+   }
+@@ -322,7 +323,10 @@ void SharedMemory::RangeWrittenByGpu(uint32_t start, uint32_t length) {
+ 
+   // Mark the range as valid (so pages are not reuploaded until modified by the
+   // CPU) and watch it so the CPU can reuse it and this will be caught.
+-  MakeRangeValid(start, length, true);
++  // written_to_buffer also marks it GPU-authoritative, which must not happen
++  // when the write went to guest RAM instead - that would keep the buffer's
++  // stale copy across cache clears.
++  MakeRangeValid(start, length, written_to_buffer);
+ }
+ 
+ bool SharedMemory::AllocateSparseHostGpuMemoryRange(
+diff --git a/src/xenia/gpu/shared_memory.h b/src/xenia/gpu/shared_memory.h
+index c1b8b6ee4..c0119344a 100644
+--- a/src/xenia/gpu/shared_memory.h
++++ b/src/xenia/gpu/shared_memory.h
+@@ -103,7 +103,8 @@ class SharedMemory {
+   // be called, to make sure, if the GPU writes don't overwrite *everything* in
+   // the pages they touch, the CPU data is properly loaded to the unmodified
+   // regions in those pages.
+-  void RangeWrittenByGpu(uint32_t start, uint32_t length);
++  void RangeWrittenByGpu(uint32_t start, uint32_t length,
++                         bool written_to_buffer = true);
+ 
+  protected:
+   SharedMemory(Memory& memory);
+diff --git a/src/xenia/memory.cc b/src/xenia/memory.cc
+index 1b64b754d..84777c05b 100644
+--- a/src/xenia/memory.cc
++++ b/src/xenia/memory.cc
+@@ -672,6 +672,30 @@ void Memory::UnregisterPhysicalMemoryInvalidationCallback(
+   delete entry;
+ }
+ 
++void* Memory::RegisterPhysicalMemoryReadCallback(
++    PhysicalMemoryReadCallback callback, void* callback_context) {
++  auto entry = new std::pair<PhysicalMemoryReadCallback, void*>(
++      callback, callback_context);
++  auto lock = global_critical_region_.Acquire();
++  physical_memory_read_callbacks_.push_back(entry);
++  return entry;
++}
++
++void Memory::UnregisterPhysicalMemoryReadCallback(void* callback_handle) {
++  auto entry = reinterpret_cast<std::pair<PhysicalMemoryReadCallback, void*>*>(
++      callback_handle);
++  {
++    auto lock = global_critical_region_.Acquire();
++    auto it = std::find(physical_memory_read_callbacks_.begin(),
++                        physical_memory_read_callbacks_.end(), entry);
++    assert_true(it != physical_memory_read_callbacks_.end());
++    if (it != physical_memory_read_callbacks_.end()) {
++      physical_memory_read_callbacks_.erase(it);
++    }
++  }
++  delete entry;
++}
++
+ void Memory::EnablePhysicalMemoryAccessCallbacks(
+     uint32_t physical_address, uint32_t length,
+     bool enable_invalidation_notifications, bool enable_data_providers) {
+@@ -1994,8 +2018,6 @@ void PhysicalHeap::EnableAccessCallbacks(uint32_t physical_address,
+                                          uint32_t length,
+                                          bool enable_invalidation_notifications,
+                                          bool enable_data_providers) {
+-  // TODO(Triang3l): Implement data providers.
+-  assert_false(enable_data_providers);
+   if (!enable_invalidation_notifications && !enable_data_providers) {
+     return;
+   }
+@@ -2033,15 +2055,20 @@ void PhysicalHeap::EnableAccessCallbacks(uint32_t physical_address,
+ 
+   auto global_lock = global_critical_region_.Acquire();
+   if (enable_invalidation_notifications) {
+-    EnableAccessCallbacksInner<true>(system_page_first, system_page_last,
+-                                     protect_access);
++    if (enable_data_providers) {
++      EnableAccessCallbacksInner<true, true>(system_page_first,
++                                             system_page_last, protect_access);
++    } else {
++      EnableAccessCallbacksInner<true, false>(system_page_first,
++                                              system_page_last, protect_access);
++    }
+   } else {
+-    EnableAccessCallbacksInner<false>(system_page_first, system_page_last,
+-                                      protect_access);
++    EnableAccessCallbacksInner<false, true>(system_page_first, system_page_last,
++                                            protect_access);
+   }
+ }
+ 
+-template <bool enable_invalidation_notifications>
++template <bool enable_invalidation_notifications, bool enable_data_providers>
+ XE_NOINLINE void PhysicalHeap::EnableAccessCallbacksInner(
+     const uint32_t system_page_first, const uint32_t system_page_last,
+     xe::memory::PageAccess protect_access) XE_RESTRICT {
+@@ -2102,15 +2129,23 @@ XE_NOINLINE void PhysicalHeap::EnableAccessCallbacksInner(
+     // enable invalidation notifications for read-only pages for the same
+     // reason.
+     if (current_page_access != xe::memory::PageAccess::kNoAccess) {
+-      // TODO(Triang3l): Enable data providers.
+       if constexpr (enable_invalidation_notifications) {
+         if (current_page_access != xe::memory::PageAccess::kReadOnly &&
+             (page_flags_block.notify_on_invalidation & page_flags_bit) == 0) {
+-          // TODO(Triang3l): Check if data providers are already enabled.
+-          // If data providers are already enabled for the page, it has even
+-          // stricter protection.
+-          protect_system_page = true;
+           page_flags_block.notify_on_invalidation |= page_flags_bit;
++          // A read-watched page is already protected no-access, stricter than
++          // read-only, so don't loosen it here.
++          if ((page_flags_block.notify_on_read & page_flags_bit) == 0) {
++            protect_system_page = true;
++          }
++        }
++      }
++      if constexpr (enable_data_providers) {
++        // Read watches protect the page no-access, so an accessible page not
++        // yet read-watched needs protecting.
++        if ((page_flags_block.notify_on_read & page_flags_bit) == 0) {
++          protect_system_page = true;
++          page_flags_block.notify_on_read |= page_flags_bit;
+         }
+       }
+     }
+@@ -2140,12 +2175,6 @@ XE_NOINLINE void PhysicalHeap::EnableAccessCallbacksInner(
+ bool PhysicalHeap::TriggerCallbacks(
+     global_unique_lock_type global_lock_locked_once, uint32_t virtual_address,
+     uint32_t length, bool is_write, bool unwatch_exact_range, bool unprotect) {
+-  // TODO(Triang3l): Support read watches.
+-  assert_true(is_write);
+-  if (!is_write) {
+-    return false;
+-  }
+-
+   if (virtual_address < heap_base_) {
+     if (heap_base_ - virtual_address >= length) {
+       return false;
+@@ -2172,10 +2201,90 @@ bool PhysicalHeap::TriggerCallbacks(
+   uint32_t block_index_first = system_page_first >> 6;
+   uint32_t block_index_last = system_page_last >> 6;
+ 
++  // Read watches: the first read of a no-access-armed page notifies the read
++  // callbacks, then the page is downgraded and unwatched so the access
++  // proceeds. A write to such a page is handled by the write path below, which
++  // also clears the read watch.
++  if (!is_write) {
++    bool any_read_watched = false;
++    for (uint32_t i = block_index_first; i <= block_index_last; ++i) {
++      uint64_t block = system_page_flags_[i].notify_on_read;
++      if (i == block_index_first) {
++        block &= ~((uint64_t(1) << (system_page_first & 63)) - 1);
++      }
++      if (i == block_index_last && (system_page_last & 63) != 63) {
++        block &= (uint64_t(1) << ((system_page_last & 63) + 1)) - 1;
++      }
++      if (block) {
++        any_read_watched = true;
++        break;
++      }
++    }
++    if (!any_read_watched) {
++      // No read watch here. If the guest mapping is accessible this is a race
++      // with another thread that cleared the watch, so retry. If it is
++      // no-access it is a genuine access violation, so propagate. Checked via
++      // the page table to stay signal safe.
++      return SystemPageGuestAccess(system_page_first) !=
++             xe::memory::PageAccess::kNoAccess;
++    }
++    uint32_t physical_address_offset = GetPhysicalAddress(heap_base_);
++    uint32_t physical_address_start =
++        xe::sat_sub(system_page_first << system_page_shift_,
++                    host_address_offset()) +
++        physical_address_offset;
++    uint32_t physical_length = std::min(
++        xe::sat_sub(
++            (system_page_last << system_page_shift_) + system_page_size_,
++            host_address_offset()) +
++            physical_address_offset - physical_address_start,
++        heap_size_ - (physical_address_start - physical_address_offset));
++    for (auto read_callback : memory_->physical_memory_read_callbacks_) {
++      read_callback->first(read_callback->second, physical_address_start,
++                           physical_length);
++    }
++    // Downgrade each read-watched page so the access proceeds. Keep it
++    // read-only if it also has a write watch, otherwise restore the guest
++    // protection. Then clear the read watch.
++    if (unprotect) {
++      uint8_t* protect_base = membase_ + heap_base_;
++      for (uint32_t i = system_page_first; i <= system_page_last; ++i) {
++        uint64_t bit = uint64_t(1) << (i & 63);
++        SystemPageFlagsBlock& flags = system_page_flags_[i >> 6];
++        if (!(flags.notify_on_read & bit)) {
++          continue;
++        }
++        xe::memory::PageAccess guest_access = SystemPageGuestAccess(i);
++        xe::memory::PageAccess target;
++        if (guest_access == xe::memory::PageAccess::kNoAccess) {
++          target = xe::memory::PageAccess::kNoAccess;
++        } else if (flags.notify_on_invalidation & bit) {
++          target = xe::memory::PageAccess::kReadOnly;
++        } else {
++          target = guest_access;
++        }
++        xe::memory::Protect(protect_base + (i << system_page_shift_),
++                            system_page_size_, target);
++      }
++    }
++    for (uint32_t i = block_index_first; i <= block_index_last; ++i) {
++      uint64_t mask = 0;
++      if (i == block_index_first) {
++        mask |= (uint64_t(1) << (system_page_first & 63)) - 1;
++      }
++      if (i == block_index_last && (system_page_last & 63) != 63) {
++        mask |= ~((uint64_t(1) << ((system_page_last & 63) + 1)) - 1);
++      }
++      system_page_flags_[i].notify_on_read &= mask;
++    }
++    return true;
++  }
++
+   // Check if watching any page, whether need to call the callback at all.
+   bool any_watched = false;
+   for (uint32_t i = block_index_first; i <= block_index_last; ++i) {
+-    uint64_t block = system_page_flags_[i].notify_on_invalidation;
++    uint64_t block = system_page_flags_[i].notify_on_invalidation |
++                     system_page_flags_[i].notify_on_read;
+     if (i == block_index_first) {
+       block &= ~((uint64_t(1) << (system_page_first & 63)) - 1);
+     }
+@@ -2265,7 +2374,10 @@ bool PhysicalHeap::TriggerCallbacks(
+     uint32_t unprotect_system_page_first = UINT32_MAX;
+     for (uint32_t i = system_page_first; i <= system_page_last; ++i) {
+       // Check if need to allow writing to this page.
+-      bool unprotect_page = (system_page_flags_[i >> 6].notify_on_invalidation &
++      // Read-watched pages are unprotected here too so a write to one doesn't
++      // re-fault.
++      bool unprotect_page = ((system_page_flags_[i >> 6].notify_on_invalidation |
++                              system_page_flags_[i >> 6].notify_on_read) &
+                              (uint64_t(1) << (i & 63))) != 0;
+       if (unprotect_page) {
+         uint32_t guest_page_number =
+@@ -2310,6 +2422,7 @@ bool PhysicalHeap::TriggerCallbacks(
+       mask |= ~((uint64_t(1) << ((system_page_last & 63) + 1)) - 1);
+     }
+     system_page_flags_[i].notify_on_invalidation &= mask;
++    system_page_flags_[i].notify_on_read &= mask;
+   }
+ 
+   return true;
+diff --git a/src/xenia/memory.h b/src/xenia/memory.h
+index bd9519a40..e457ee627 100644
+--- a/src/xenia/memory.h
++++ b/src/xenia/memory.h
+@@ -58,6 +58,15 @@ enum MemoryProtectFlag : uint32_t {
+   kMemoryProtectNoAccess = 0,
+ };
+ 
++inline bool IsWritableProtect(uint32_t protect) {
++  return (protect & kMemoryProtectWrite) ||
++         (protect & kMemoryProtectWriteCombine);
++}
++
++// Host page access a guest protection mask maps to. Defined in memory.cc;
++// declared here because inline heap helpers resolve protection per page.
++xe::memory::PageAccess ToPageAccess(uint32_t protect);
++
+ // Equivalent to the Win32 MEMORY_BASIC_INFORMATION struct.
+ struct HeapAllocationInfo {
+   // A pointer to the base address of the region of pages.
+@@ -285,11 +294,48 @@ class PhysicalHeap : public BaseHeap {
+   void EnableAccessCallbacks(uint32_t physical_address, uint32_t length,
+                              bool enable_invalidation_notifications,
+                              bool enable_data_providers);
+-  template <bool enable_invalidation_notifications>
++  template <bool enable_invalidation_notifications, bool enable_data_providers>
+   XE_NOINLINE void EnableAccessCallbacksInner(
+       const uint32_t system_page_first, const uint32_t system_page_last,
+       xe::memory::PageAccess protect_access) XE_RESTRICT;
+ 
++  // The most permissive guest access of the guest pages a system page covers.
++  // Protection has system page granularity and BaseHeap::Protect resolves a
++  // system page the same way, so anything deciding on protection has to agree
++  // with it - the host page can be larger than the guest page. Inline, called
++  // per page in the arming loop.
++  xe::memory::PageAccess SystemPageGuestAccess(
++      uint32_t system_page_number) const {
++    uint32_t offset = host_address_offset();
++    uint32_t system_base = system_page_number << system_page_shift_;
++    uint32_t system_last = system_base + (system_page_size_ - 1);
++    if (system_last < offset) {
++      return xe::memory::PageAccess::kNoAccess;
++    }
++    uint32_t guest_page_first =
++        system_base > offset ? (system_base - offset) >> page_size_shift_ : 0;
++    uint32_t guest_page_count = uint32_t(page_table_.size());
++    if (guest_page_first >= guest_page_count) {
++      return xe::memory::PageAccess::kNoAccess;
++    }
++    uint32_t guest_page_last = (system_last - offset) >> page_size_shift_;
++    if (guest_page_last >= guest_page_count) {
++      guest_page_last = guest_page_count - 1;
++    }
++    xe::memory::PageAccess access = xe::memory::PageAccess::kNoAccess;
++    for (uint32_t i = guest_page_first; i <= guest_page_last; ++i) {
++      xe::memory::PageAccess page_access =
++          ToPageAccess(page_table_[i].current_protect);
++      if (page_access == xe::memory::PageAccess::kReadWrite) {
++        return xe::memory::PageAccess::kReadWrite;
++      }
++      if (page_access == xe::memory::PageAccess::kReadOnly) {
++        access = xe::memory::PageAccess::kReadOnly;
++      }
++    }
++    return access;
++  }
++
+   // Returns true if any page in the range was watched.
+   bool TriggerCallbacks(global_unique_lock_type global_lock_locked_once,
+                         uint32_t virtual_address, uint32_t length,
+@@ -321,7 +367,10 @@ class PhysicalHeap : public BaseHeap {
+   struct SystemPageFlagsBlock {
+     // Whether writing to each page should result trigger invalidation
+     // callbacks.
+-    uint64_t notify_on_invalidation;
++    uint64_t notify_on_invalidation = 0;
++    // Whether the first access of each page triggers read callbacks. These
++    // pages are protected no-access. The watch is one-shot, cleared on access.
++    uint64_t notify_on_read = 0;
+   };
+   // Protected by global_critical_region. Flags for each 64 system pages,
+   // interleaved as blocks, so bit scan can be used to quickly extract ranges.
+@@ -399,6 +448,13 @@ class Memory {
+   // This is often something like 0x200000000.
+   inline uint8_t* physical_membase() const { return physical_membase_; }
+ 
++  // The file mapping backing all guest memory views. Lets a consumer map its
++  // own separate view of guest RAM, e.g. to hand to a GPU heap import, without
++  // colliding with the write-watch protection on the managed views.
++  inline xe::memory::FileMappingHandle mapping_handle() const {
++    return mapping_;
++  }
++
+   // Translates a guest physical address to a host address that can be accessed
+   // as a normal pointer.
+   // Note that the contents at the specified host address are big-endian.
+@@ -501,6 +557,18 @@ class Memory {
+   // RegisterPhysicalMemoryInvalidationCallback.
+   void UnregisterPhysicalMemoryInvalidationCallback(void* callback_handle);
+ 
++  // Called on the first CPU access of a page armed as a read watch (via
++  // EnablePhysicalMemoryAccessCallbacks with data providers). The page is
++  // downgraded and unwatched right after, so it fires once per arm. Must be
++  // lightweight and non-blocking. It runs in the fault handler under the global
++  // critical region.
++  typedef void (*PhysicalMemoryReadCallback)(void* context_ptr,
++                                             uint32_t physical_address_start,
++                                             uint32_t length);
++  void* RegisterPhysicalMemoryReadCallback(PhysicalMemoryReadCallback callback,
++                                           void* callback_context);
++  void UnregisterPhysicalMemoryReadCallback(void* callback_handle);
++
+   // Enables physical memory access callbacks for the specified memory range,
+   // snapped to system page boundaries.
+   void EnablePhysicalMemoryAccessCallbacks(
+@@ -613,6 +681,8 @@ class Memory {
+   xe::global_critical_region global_critical_region_;
+   std::vector<std::pair<PhysicalMemoryInvalidationCallback, void*>*>
+       physical_memory_invalidation_callbacks_;
++  std::vector<std::pair<PhysicalMemoryReadCallback, void*>*>
++      physical_memory_read_callbacks_;
+ };
+ 
+ }  // namespace xe

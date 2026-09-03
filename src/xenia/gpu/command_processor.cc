@@ -66,17 +66,6 @@ DEFINE_string(
     "         Most accurate, but may be somewhat less performant.",
     "GPU");
 
-DEFINE_string(
-    readback_resolve, "none",
-    "Controls CPU readback of render-to-texture resolve results.\n"
-    " fast: Read from previous frame (1 frame delay, no GPU stall, slight "
-    "performance hit)\n"
-    " full: Wait for GPU to finish (accurate but slow, GPU-CPU sync stall)\n"
-    " none: Disable readback completely (some games render better without it)",
-    "GPU");
-
-UPDATE_from_string(readback_resolve, 2025, 12, 4, 21, "fast");
-
 DEFINE_bool(
     readback_memexport, false,
     "Read data written by memory export in shaders on the CPU. "
@@ -109,22 +98,6 @@ bool GetGPUSetting(GPUSetting setting) {
       return cvars::readback_memexport;
   }
   return false;
-}
-
-ReadbackResolveMode GetReadbackResolveMode() {
-  const std::string& mode = cvars::readback_resolve;
-  if (mode == "full") {
-    return ReadbackResolveMode::kFull;
-  } else if (mode == "none") {
-    return ReadbackResolveMode::kDisabled;
-  } else {
-    // Default to "fast" for any unrecognized value
-    return ReadbackResolveMode::kFast;
-  }
-}
-
-void SetReadbackResolveMode(const std::string& mode) {
-  OVERRIDE_string(readback_resolve, mode);
 }
 
 ZPDMode GetZPDMode() {
@@ -331,12 +304,14 @@ void CommandProcessor::WorkerThreadMain() {
       // We've run out of commands to execute.
       // We spin here waiting for new ones, as the overhead of waiting on our
       // event is too high.
+      OnWorkerIdle();
       PrepareForWait();
       uint32_t loop_count = 0;
       do {
         // If we spin around too much, revert to a "low-power" state.
         if (loop_count > 500) {
           constexpr int wait_time_ms = 2;
+          OnWorkerIdle();
           xe::threading::Wait(write_ptr_index_event_.get(), true,
                               std::chrono::milliseconds(wait_time_ms));
         } else {

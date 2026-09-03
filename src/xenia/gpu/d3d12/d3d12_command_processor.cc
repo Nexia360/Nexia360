@@ -12,6 +12,7 @@
 #include "xenia/apu/audio_system.h"
 #include "xenia/base/assert.h"
 #include "xenia/base/byte_order.h"
+#include "xenia/base/clock.h"
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
@@ -787,6 +788,12 @@ bool D3D12CommandProcessor::SetupContext() {
     XELOGE("Failed to initialize base command processor context");
     return false;
   }
+
+  resolve_contract_invalidation_callback_ =
+      memory_->RegisterPhysicalMemoryInvalidationCallback(
+          ResolveContractInvalidationCallbackThunk, this);
+  memory_->SetResolveContractFaultCallback(ResolveContractFaultCallbackThunk,
+                                           this);
 
   const ui::d3d12::D3D12Provider& provider = GetD3D12Provider();
   ID3D12Device* device = provider.GetDevice();
@@ -1579,11 +1586,27 @@ bool D3D12CommandProcessor::SetupContext() {
 void D3D12CommandProcessor::ShutdownContext() {
   AwaitAllQueueOperationsCompletion();
 
-  for (auto& pair : readback_buffers_) {
-    ui::d3d12::util::ReleaseAndNull(pair.second.buffers[0]);
-    ui::d3d12::util::ReleaseAndNull(pair.second.buffers[1]);
+  memory_->SetResolveContractFaultCallback(nullptr, nullptr);
+  if (resolve_contract_invalidation_callback_) {
+    memory_->UnregisterPhysicalMemoryInvalidationCallback(
+        resolve_contract_invalidation_callback_);
+    resolve_contract_invalidation_callback_ = nullptr;
   }
-  readback_buffers_.clear();
+  std::lock_guard<std::mutex> resolve_contracts_lock(resolve_contracts_mutex_);
+  for (auto& pair : resolve_contracts_) {
+    ui::d3d12::util::ReleaseAndNull(pair.second.buffer);
+    ui::d3d12::util::ReleaseAndNull(pair.second.readback_buffer);
+  }
+  resolve_contracts_.clear();
+  resolve_contracts_bytes_ = 0;
+  for (auto& pending : resolve_contracts_pending_release_) {
+    pending.first->Release();
+  }
+  resolve_contracts_pending_release_.clear();
+  {
+    std::lock_guard<std::mutex> lock(resolve_contract_invalidations_mutex_);
+    resolve_contract_invalidations_.clear();
+  }
 
   ui::d3d12::util::ReleaseAndNull(memexport_readback_buffer_);
   memexport_readback_buffer_size_ = 0;
@@ -2978,6 +3001,8 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
     for (const draw_util::MemExportRange& memexport_range : memexport_ranges_) {
       shared_memory_->RangeWrittenByGpu(
           memexport_range.base_address_dwords << 2, memexport_range.size_bytes);
+      InvalidateResolveContracts(memexport_range.base_address_dwords << 2,
+                                 memexport_range.size_bytes);
     }
     if (GetGPUSetting(GPUSetting::ReadbackMemexport)) {
       // Read the exported data on the CPU.
@@ -3059,134 +3084,363 @@ bool D3D12CommandProcessor::IssueCopy() {
   if (!BeginSubmission(true)) {
     return false;
   }
-  ReadbackResolveMode readback_mode = GetReadbackResolveMode();
-  if (readback_mode == ReadbackResolveMode::kDisabled) {
-    uint32_t written_address, written_length;
-    return render_target_cache_->Resolve(*memory_, *shared_memory_,
-                                         *texture_cache_, written_address,
-                                         written_length);
-  } else {
-    return IssueCopy_ReadbackResolvePath();
-  }
-}
-XE_NOINLINE
-bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath() {
   uint32_t written_address, written_length;
-  if (render_target_cache_->Resolve(*memory_, *shared_memory_, *texture_cache_,
-                                    written_address, written_length)) {
-    if (!texture_cache_->IsDrawResolutionScaled() && written_length) {
-      // Early check: if destination memory is not accessible, skip all the
-      // expensive GPU readback work.
-      VirtualHeap* physical_heap = memory_->GetPhysicalHeap();
-      bool memory_accessible = false;
-      if (physical_heap) {
-        HeapAllocationInfo alloc_info;
-        if (physical_heap->QueryRegionInfo(written_address, &alloc_info) &&
-            (alloc_info.state & kMemoryAllocationCommit) &&
-            (alloc_info.protect & kMemoryProtectWrite)) {
-          uint32_t end_address = written_address + written_length;
-          uint32_t region_end =
-              alloc_info.base_address + alloc_info.region_size;
-          if (end_address <= region_end) {
-            memory_accessible = true;
-          }
-        }
-      }
-
-      if (!memory_accessible) {
-        // Destination memory not accessible, skip readback entirely
-        return true;
-      }
-
-      // Create a key for this specific resolve operation
-      uint64_t resolve_key =
-          MakeReadbackResolveKey(written_address, written_length);
-      ReadbackBuffer& rb = readback_buffers_[resolve_key];
-      rb.last_used_frame = frame_current_;
-
-      uint32_t write_index = rb.current_index;
-      uint32_t size = AlignReadbackBufferSize(written_length);
-
-      // Allocate/resize write buffer if needed
-      if (size > rb.sizes[write_index]) {
-        const ui::d3d12::D3D12Provider& provider = GetD3D12Provider();
-        ID3D12Device* device = provider.GetDevice();
-        D3D12_RESOURCE_DESC buffer_desc;
-        ui::d3d12::util::FillBufferResourceDesc(buffer_desc, size,
-                                                D3D12_RESOURCE_FLAG_NONE);
-        ID3D12Resource* buffer;
-        if (SUCCEEDED(device->CreateCommittedResource(
-                &ui::d3d12::util::kHeapPropertiesReadback,
-                provider.GetHeapFlagCreateNotZeroed(), &buffer_desc,
-                D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-                IID_PPV_ARGS(&buffer)))) {
-          if (rb.buffers[write_index] != nullptr) {
-            rb.buffers[write_index]->Release();
-          }
-          rb.buffers[write_index] = buffer;
-          rb.sizes[write_index] = size;
-        } else {
-          XELOGE("Failed to create a {} MB readback buffer", size >> 20);
-          return true;
-        }
-      }
-
-      // Copy resolved data to current frame's buffer
-      shared_memory_->UseAsCopySource();
-      SubmitBarriers();
-      ID3D12Resource* shared_memory_buffer = shared_memory_->GetBuffer();
-      deferred_command_list_.D3DCopyBufferRegion(
-          rb.buffers[write_index], 0, shared_memory_buffer, written_address,
-          written_length);
-
-      ReadbackResolveMode readback_mode = GetReadbackResolveMode();
-      bool use_delayed_sync = (readback_mode == ReadbackResolveMode::kFast);
-      uint32_t read_index = write_index;
-
-      if (use_delayed_sync) {
-        // Use previous frame's data (avoid stall)
-        read_index = 1 - write_index;
-      } else {
-        // Wait for GPU to finish (accurate but slow)
-        if (!AwaitAllQueueOperationsCompletion()) {
-          return true;
-        }
-      }
-
-      // Read from the appropriate buffer
-      ID3D12Resource* read_source = rb.buffers[read_index];
-
-      // If using delayed sync but previous buffer doesn't exist, use current
-      // buffer with sync as fallback
-      if (use_delayed_sync &&
-          (read_source == nullptr || written_length > rb.sizes[read_index])) {
-        read_source = rb.buffers[write_index];
-        read_index = write_index;
-        if (!AwaitAllQueueOperationsCompletion()) {
-          return true;
-        }
-      }
-
-      if (read_source != nullptr && written_length <= rb.sizes[read_index]) {
-        D3D12_RANGE readback_range;
-        readback_range.Begin = 0;
-        readback_range.End = written_length;
-        void* readback_mapping;
-        if (SUCCEEDED(
-                read_source->Map(0, &readback_range, &readback_mapping))) {
-          // Memory accessibility already checked at the start of this function
-          // chrispy: this memcpy needs to be optimized as much as possible
-          auto physaddr = memory_->TranslatePhysical(written_address);
-          memory::vastcpy(physaddr, (uint8_t*)readback_mapping, written_length);
-          D3D12_RANGE readback_write_range = {};
-          read_source->Unmap(0, &readback_write_range);
-        }
-      }
-    }
-  } else {
+  if (!render_target_cache_->Resolve(*memory_, *shared_memory_, *texture_cache_,
+                                     written_address, written_length)) {
     return false;
   }
+  // The guest's copy is owed, not made - the contract's watches collect on it
+  // if anything ever touches the range.
+  RegisterResolveContract(written_address, written_length);
   return true;
+}
+std::pair<uint32_t, uint32_t>
+D3D12CommandProcessor::ResolveContractInvalidationCallbackThunk(
+    void* context_ptr, uint32_t physical_address_start, uint32_t length,
+    bool exact_range) {
+  auto command_processor =
+      reinterpret_cast<D3D12CommandProcessor*>(context_ptr);
+  {
+    std::lock_guard<std::mutex> lock(
+        command_processor->resolve_contract_invalidations_mutex_);
+    command_processor->resolve_contract_invalidations_.emplace_back(
+        physical_address_start, length);
+  }
+  return std::make_pair(uint32_t(0), UINT32_MAX);
+}
+
+void D3D12CommandProcessor::ReleaseResolveContractBuffer(
+    ID3D12Resource* buffer) {
+  if (!buffer) {
+    return;
+  }
+  resolve_contracts_pending_release_.emplace_back(buffer,
+                                                  GetCurrentSubmission());
+}
+
+void D3D12CommandProcessor::DrainResolveContractInvalidations() {
+  std::lock_guard<std::mutex> lock(resolve_contracts_mutex_);
+  DrainResolveContractInvalidationsLocked();
+}
+
+void D3D12CommandProcessor::DrainResolveContractInvalidationsLocked() {
+  std::vector<std::pair<uint32_t, uint32_t>> invalidations;
+  {
+    std::lock_guard<std::mutex> lock(resolve_contract_invalidations_mutex_);
+    invalidations.swap(resolve_contract_invalidations_);
+  }
+  for (const auto& invalidation : invalidations) {
+    InvalidateResolveContractsLocked(invalidation.first, invalidation.second);
+  }
+
+  uint64_t completed_submission = GetCompletedSubmission();
+  for (auto it = resolve_contracts_pending_release_.begin();
+       it != resolve_contracts_pending_release_.end();) {
+    if (it->second <= completed_submission) {
+      it->first->Release();
+      it = resolve_contracts_pending_release_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
+void D3D12CommandProcessor::EvictResolveContracts(uint64_t incoming_bytes,
+                                                  uint64_t keep_key) {
+  while (resolve_contracts_bytes_ + incoming_bytes >
+         kResolveContractsMaxBytes) {
+    auto oldest = resolve_contracts_.end();
+    for (auto it = resolve_contracts_.begin(); it != resolve_contracts_.end();
+         ++it) {
+      if (it->first == keep_key || !it->second.buffer) {
+        continue;
+      }
+      if (oldest == resolve_contracts_.end() ||
+          it->second.last_used_frame < oldest->second.last_used_frame) {
+        oldest = it;
+      }
+    }
+    if (oldest == resolve_contracts_.end()) {
+      // Nothing evictable left - the incoming contract alone is over the cap.
+      break;
+    }
+    ReleaseResolveContractBuffer(oldest->second.buffer);
+    ReleaseResolveContractBuffer(oldest->second.readback_buffer);
+    resolve_contracts_bytes_ -= oldest->second.buffer_size;
+    resolve_contracts_.erase(oldest);
+  }
+}
+
+void D3D12CommandProcessor::RegisterResolveContract(uint32_t guest_base,
+                                                    uint32_t length) {
+  std::lock_guard<std::mutex> lock(resolve_contracts_mutex_);
+  DrainResolveContractInvalidationsLocked();
+  if (!length || texture_cache_->IsDrawResolutionScaled()) {
+    return;
+  }
+  uint64_t key = MakeReadbackResolveKey(guest_base, length);
+  // Anything else covering this memory is stale now. The entry for this exact
+  // range is kept so its buffer can be reused instead of reallocated.
+  uint32_t end = guest_base + length;
+  for (auto it = resolve_contracts_.begin(); it != resolve_contracts_.end();) {
+    if (it->first != key && it->second.guest_base < end &&
+        guest_base < it->second.guest_base + it->second.length) {
+      ReleaseResolveContractBuffer(it->second.buffer);
+      ReleaseResolveContractBuffer(it->second.readback_buffer);
+      resolve_contracts_bytes_ -= it->second.buffer_size;
+      it = resolve_contracts_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  uint32_t size = AlignReadbackBufferSize(length);
+  {
+    auto existing = resolve_contracts_.find(key);
+    uint32_t reused =
+        existing != resolve_contracts_.end() ? existing->second.buffer_size : 0;
+    if (size > reused) {
+      EvictResolveContracts(size - reused, key);
+    }
+  }
+  ResolveContract& contract = resolve_contracts_[key];
+  if (size > contract.buffer_size) {
+    const ui::d3d12::D3D12Provider& provider = GetD3D12Provider();
+    ID3D12Device* device = provider.GetDevice();
+    D3D12_RESOURCE_DESC buffer_desc;
+    ui::d3d12::util::FillBufferResourceDesc(buffer_desc, size,
+                                            D3D12_RESOURCE_FLAG_NONE);
+    ID3D12Resource* buffer;
+    if (FAILED(device->CreateCommittedResource(
+            &ui::d3d12::util::kHeapPropertiesDefault,
+            provider.GetHeapFlagCreateNotZeroed(), &buffer_desc,
+            D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&buffer)))) {
+      XELOGE("Failed to create a {} MB resolve contract buffer", size >> 20);
+      ReleaseResolveContractBuffer(contract.buffer);
+      ReleaseResolveContractBuffer(contract.readback_buffer);
+      resolve_contracts_bytes_ -= contract.buffer_size;
+      resolve_contracts_.erase(key);
+      return;
+    }
+    ReleaseResolveContractBuffer(contract.buffer);
+    resolve_contracts_bytes_ -= contract.buffer_size;
+    contract.buffer = buffer;
+    contract.buffer_size = size;
+    resolve_contracts_bytes_ += size;
+    contract.state = D3D12_RESOURCE_STATE_COPY_DEST;
+  }
+  PushTransitionBarrier(contract.buffer, contract.state,
+                        D3D12_RESOURCE_STATE_COPY_DEST);
+  contract.state = D3D12_RESOURCE_STATE_COPY_DEST;
+  shared_memory_->UseAsCopySource();
+  SubmitBarriers();
+  ID3D12Resource* shared_memory_buffer = shared_memory_->GetBuffer();
+  contract.valid_runs.clear();
+  shared_memory_->ForEachGpuWrittenRange(
+      guest_base, length,
+      [this, &contract, guest_base, shared_memory_buffer](uint32_t sub_start,
+                                                          uint32_t sub_length) {
+        uint32_t offset = sub_start - guest_base;
+        deferred_command_list_.D3DCopyBufferRegion(contract.buffer, offset,
+                                                   shared_memory_buffer,
+                                                   sub_start, sub_length);
+        contract.valid_runs.emplace_back(offset, sub_length);
+      });
+  if (contract.valid_runs.empty()) {
+    // Nothing of ours in there - don't hand out a buffer of zeros.
+    ReleaseResolveContractBuffer(contract.buffer);
+    ReleaseResolveContractBuffer(contract.readback_buffer);
+    resolve_contracts_bytes_ -= contract.buffer_size;
+    resolve_contracts_.erase(key);
+    return;
+  }
+  // Stage the same runs for the guest. Nothing waits on this - if the guest
+  // never touches the range, the copy into guest memory never happens.
+  if (size > contract.readback_size) {
+    const ui::d3d12::D3D12Provider& provider = GetD3D12Provider();
+    ID3D12Device* device = provider.GetDevice();
+    D3D12_RESOURCE_DESC buffer_desc;
+    ui::d3d12::util::FillBufferResourceDesc(buffer_desc, size,
+                                            D3D12_RESOURCE_FLAG_NONE);
+    ID3D12Resource* readback_buffer;
+    if (SUCCEEDED(device->CreateCommittedResource(
+            &ui::d3d12::util::kHeapPropertiesReadback,
+            provider.GetHeapFlagCreateNotZeroed(), &buffer_desc,
+            D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+            IID_PPV_ARGS(&readback_buffer)))) {
+      ReleaseResolveContractBuffer(contract.readback_buffer);
+      contract.readback_buffer = readback_buffer;
+      contract.readback_size = size;
+    }
+  }
+  if (contract.readback_buffer) {
+    PushTransitionBarrier(contract.buffer, contract.state,
+                          D3D12_RESOURCE_STATE_COPY_SOURCE);
+    contract.state = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    SubmitBarriers();
+    for (const auto& run : contract.valid_runs) {
+      deferred_command_list_.D3DCopyBufferRegion(contract.readback_buffer,
+                                                 run.first, contract.buffer,
+                                                 run.first, run.second);
+    }
+  }
+
+  contract.guest_base = guest_base;
+  contract.length = length;
+  contract.submission = GetCurrentSubmission();
+  contract.last_used_frame = frame_current_;
+  contract.materialized = false;
+
+  // The guest's copy is now owed, not made. Take the pages so the first access
+  // to them pays for it.
+  for (const auto& run : contract.valid_runs) {
+    memory_->ArmResolveReadWatch(guest_base + run.first, run.second);
+  }
+}
+
+bool D3D12CommandProcessor::ResolveContractFaultCallbackThunk(
+    void* context_ptr, uint32_t physical_address) {
+  return reinterpret_cast<D3D12CommandProcessor*>(context_ptr)
+      ->MaterializeResolveContractForGuest(physical_address);
+}
+
+void D3D12CommandProcessor::AwaitSubmissionFromAnyThread(uint64_t submission) {
+  ID3D12Fence* fence = completion_timeline_->GetFence();
+  if (!fence || fence->GetCompletedValue() >= submission) {
+    return;
+  }
+  HANDLE event = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+  if (!event) {
+    return;
+  }
+  if (SUCCEEDED(fence->SetEventOnCompletion(submission, event))) {
+    WaitForSingleObject(event, INFINITE);
+  }
+  CloseHandle(event);
+}
+
+bool D3D12CommandProcessor::MaterializeResolveContractForGuest(
+    uint32_t physical_address) {
+  ResolveContract* contract = nullptr;
+  uint64_t submission = 0;
+  {
+    std::lock_guard<std::mutex> lock(resolve_contracts_mutex_);
+    for (auto& contract_pair : resolve_contracts_) {
+      ResolveContract& candidate = contract_pair.second;
+      if (candidate.materialized || !candidate.readback_buffer ||
+          physical_address < candidate.guest_base ||
+          physical_address >= candidate.guest_base + candidate.length) {
+        continue;
+      }
+      contract = &candidate;
+      submission = candidate.submission;
+      break;
+    }
+    if (!contract) {
+      return false;
+    }
+    // Claim it before releasing the lock so two faulting threads don't both
+    // wait and both copy.
+    contract->materialized = true;
+  }
+
+  AwaitSubmissionFromAnyThread(submission);
+
+  std::lock_guard<std::mutex> lock(resolve_contracts_mutex_);
+  // The contract may have been invalidated or evicted while we waited.
+  bool still_live = false;
+  for (auto& contract_pair : resolve_contracts_) {
+    if (&contract_pair.second == contract) {
+      still_live = true;
+      break;
+    }
+  }
+  if (!still_live) {
+    return false;
+  }
+  D3D12_RANGE readback_range;
+  readback_range.Begin = 0;
+  readback_range.End = contract->length;
+  void* readback_mapping;
+  if (FAILED(contract->readback_buffer->Map(0, &readback_range,
+                                            &readback_mapping))) {
+    return false;
+  }
+  const uint8_t* readback_bytes =
+      reinterpret_cast<const uint8_t*>(readback_mapping);
+  for (const auto& run : contract->valid_runs) {
+    std::memcpy(memory_->TranslatePhysical(contract->guest_base + run.first),
+                readback_bytes + run.first, run.second);
+  }
+  D3D12_RANGE readback_write_range = {};
+  contract->readback_buffer->Unmap(0, &readback_write_range);
+  return true;
+}
+
+ID3D12Resource* D3D12CommandProcessor::AcquireResolveForGpu(
+    uint32_t guest_base, uint32_t length, uint32_t* out_offset) {
+  if (!length) {
+    return nullptr;
+  }
+  std::lock_guard<std::mutex> lock(resolve_contracts_mutex_);
+  // Only a handful of ranges are ever live, so a scan is cheaper than an
+  // interval tree here.
+  for (auto& contract_pair : resolve_contracts_) {
+    ResolveContract& contract = contract_pair.second;
+    if (!contract.buffer || !contract.length || guest_base < contract.guest_base) {
+      continue;
+    }
+    uint32_t offset = guest_base - contract.guest_base;
+    if (offset > contract.length || length > contract.length - offset) {
+      // Partial overlap can't be served - fall back to shared memory.
+      continue;
+    }
+    // The request has to sit entirely inside one run the GPU wrote. Anything
+    // else would read bytes the resolve never produced.
+    bool covered = false;
+    for (const auto& run : contract.valid_runs) {
+      uint32_t run_end = run.first + run.second;
+      if (offset >= run.first && offset < run_end && length <= run_end - offset) {
+        covered = true;
+        break;
+      }
+    }
+    if (!covered) {
+      continue;
+    }
+    PushTransitionBarrier(contract.buffer, contract.state,
+                          D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    contract.state = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    contract.last_used_frame = frame_current_;
+    *out_offset = offset;
+    return contract.buffer;
+  }
+  return nullptr;
+}
+
+void D3D12CommandProcessor::InvalidateResolveContracts(uint32_t guest_base,
+                                                       uint32_t length) {
+  std::lock_guard<std::mutex> lock(resolve_contracts_mutex_);
+  InvalidateResolveContractsLocked(guest_base, length);
+}
+
+void D3D12CommandProcessor::InvalidateResolveContractsLocked(
+    uint32_t guest_base, uint32_t length) {
+  if (!length) {
+    return;
+  }
+  uint32_t end = guest_base + length;
+  for (auto it = resolve_contracts_.begin(); it != resolve_contracts_.end();) {
+    const ResolveContract& contract = it->second;
+    if (contract.guest_base < end &&
+        guest_base < contract.guest_base + contract.length) {
+      ReleaseResolveContractBuffer(contract.buffer);
+      ReleaseResolveContractBuffer(contract.readback_buffer);
+      resolve_contracts_bytes_ -= contract.buffer_size;
+      it = resolve_contracts_.erase(it);
+    } else {
+      ++it;
+    }
+  }
 }
 
 void D3D12CommandProcessor::CheckSubmissionCompletion(
@@ -3365,34 +3619,6 @@ bool D3D12CommandProcessor::BeginSubmission(bool is_guest_command) {
   if (is_opening_frame) {
     frame_open_ = true;
 
-    // Swap all readback buffers for delayed sync (one frame behind)
-    for (auto& pair : readback_buffers_) {
-      pair.second.current_index = 1 - pair.second.current_index;
-    }
-
-    // Evict old readback buffers only when map gets too large to prevent
-    // unbounded memory growth. Don't do this every frame as it's expensive.
-    if (readback_buffers_.size() > kMaxReadbackBuffers) {
-      for (auto it = readback_buffers_.begin();
-           it != readback_buffers_.end();) {
-        // Evict if not used recently
-        if (frame_current_ > kReadbackBufferEvictionAgeFrames &&
-            it->second.last_used_frame <
-                frame_current_ - kReadbackBufferEvictionAgeFrames) {
-          // Release both buffers
-          if (it->second.buffers[0] != nullptr) {
-            it->second.buffers[0]->Release();
-          }
-          if (it->second.buffers[1] != nullptr) {
-            it->second.buffers[1]->Release();
-          }
-          it = readback_buffers_.erase(it);
-        } else {
-          ++it;
-        }
-      }
-    }
-
     // Reset bindings that depend on the data stored in the pools.
     std::memset(current_float_constant_map_vertex_, 0,
                 sizeof(current_float_constant_map_vertex_));
@@ -3471,6 +3697,8 @@ bool D3D12CommandProcessor::EndSubmission(bool is_swap) {
     texture_cache_->EndFrame();
 
     primitive_processor_->EndFrame();
+
+    DrainResolveContractInvalidations();
   }
 
   if (submission_open_) {
