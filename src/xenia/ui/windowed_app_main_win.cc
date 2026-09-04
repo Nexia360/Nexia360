@@ -312,9 +312,9 @@ static bool stack_trace_handle(HostExceptionReport* report) {
       break;
     }
 
-    sprintf_s(frame_buffer, "  [%02u] %s\n", frame_index,
-              report->GetFormattedAddress(
-                  static_cast<uintptr_t>(program_counter)));
+    sprintf_s(
+        frame_buffer, "  [%02u] %s\n", frame_index,
+        report->GetFormattedAddress(static_cast<uintptr_t>(program_counter)));
     report->AddString(frame_buffer);
 
     // A frame that does not advance the stack means the unwind is not making
@@ -358,9 +358,12 @@ static bool stack_trace_handle(HostExceptionReport* report) {
 }
 
 static ExceptionInfoCategoryHandler host_exception_category_handlers[] = {
-    exception_pointers_handler,      exception_win32_error_handle,
-    exception_ntstatus_error_handle, exception_cerror_handle,
-    thread_name_handle,              stack_trace_handle};
+    exception_pointers_handler,
+    exception_win32_error_handle,
+    exception_ntstatus_error_handle,
+    exception_cerror_handle,
+    thread_name_handle,
+    stack_trace_handle};
 
 LONG _UnhandledExceptionFilter(_EXCEPTION_POINTERS* ExceptionInfo) {
   HostExceptionReport report{ExceptionInfo};

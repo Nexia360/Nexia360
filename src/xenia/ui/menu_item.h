@@ -61,6 +61,11 @@ class MenuItem {
 
   virtual void SetEnabled(bool enabled) {}
 
+  // Relabel an item that is already on screen - a count that changes while the
+  // menu sits there, for instance. Call Window::CompleteMainMenuItemsUpdate
+  // afterwards for a top-level item, or the bar keeps the old width.
+  virtual void SetText(const std::string& text) { text_ = text; }
+
  protected:
   MenuItem(Type type, const std::string& text, const std::string& hotkey,
            std::function<void()> callback);

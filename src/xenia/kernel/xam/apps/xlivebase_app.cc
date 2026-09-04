@@ -1017,6 +1017,10 @@ X_HRESULT XLiveBaseApp::XInviteGetAcceptedInfo(uint32_t buffer_ptr,
   // Reset self invite
   user_profile->SetSelfInvite({});
 
+  if (!invite_info->xuid_inviter) {
+    return X_ONLINE_E_SESSION_NOT_FOUND;
+  }
+
   const auto presence = kernel_state_->presence_manager()->GetFriendsPresence(
       user_profile->xuid(), {invite_info->xuid_inviter});
 
@@ -1027,20 +1031,12 @@ X_HRESULT XLiveBaseApp::XInviteGetAcceptedInfo(uint32_t buffer_ptr,
   }
 
   if (!session_id) {
-    new xe::ui::HostNotificationWindow(
-        kernel_state_->emulator()->imgui_drawer(), "Joining Session",
-        "Unable to join session", 0);
-
     return X_ONLINE_E_SESSION_NOT_FOUND;
   }
 
   const auto session = kernel_state_->GetXboxLiveAPI()->XSessionGet(session_id);
 
   if (!session.SessionID_UInt()) {
-    new xe::ui::HostNotificationWindow(
-        kernel_state_->emulator()->imgui_drawer(), "Joining Session",
-        "Unable to join session", 0);
-
     return X_ONLINE_E_SESSION_NOT_FOUND;
   }
 

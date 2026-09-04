@@ -166,6 +166,8 @@ class Win32MenuItem : public MenuItem {
 
   void SetEnabled(bool enabled) override;
 
+  void SetText(const std::string& text) override;
+
   using MenuItem::OnSelected;
 
  protected:

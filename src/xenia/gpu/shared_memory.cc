@@ -182,8 +182,8 @@ SharedMemory::WatchHandle SharedMemory::WatchMemoryRange(
   WatchRange* range = watch_range_first_free_;
   // Pool membership is checked first: a corrupt head may not be dereferenceable
   // at all, and reading its state would fault instead of reporting.
-  if (range != nullptr && (!IsWatchRangeFromPool(range) ||
-                           range->alloc_state != kWatchAllocFree)) {
+  if (range != nullptr &&
+      (!IsWatchRangeFromPool(range) || range->alloc_state != kWatchAllocFree)) {
     XELOGE(
         "SharedMemory: watch range free list corrupt at {} (state {:08X}, from "
         "pool: {}); dropping the list and allocating fresh",

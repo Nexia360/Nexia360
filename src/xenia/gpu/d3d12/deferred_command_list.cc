@@ -25,7 +25,12 @@ DeferredCommandList::DeferredCommandList(
   command_stream_.reserve(initial_size / sizeof(uintmax_t));
 }
 
-void DeferredCommandList::Reset() { command_stream_.clear(); }
+void DeferredCommandList::Reset() {
+  command_stream_.clear();
+  // Each replay starts a fresh command list, and DRED numbers breadcrumbs per
+  // command list - operation 0 being the list opening itself.
+  breadcrumb_index_ = 1;
+}
 
 void DeferredCommandList::Execute(ID3D12GraphicsCommandList* command_list,
                                   ID3D12GraphicsCommandList1* command_list_1,
@@ -320,6 +325,10 @@ void DeferredCommandList::Execute(ID3D12GraphicsCommandList* command_list,
 
 void* DeferredCommandList::WriteCommand(Command command,
                                         size_t arguments_size_bytes) {
+  if (ProducesBreadcrumb(command)) {
+    ++breadcrumb_index_;
+  }
+
   size_t arguments_size_elements =
       round_up(arguments_size_bytes, sizeof(uintmax_t), false);
 

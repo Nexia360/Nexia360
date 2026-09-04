@@ -42,6 +42,7 @@ DECLARE_bool(disassemble_pm4);
 
 DECLARE_bool(no_discard_stencil_in_transfer_pipelines);
 
+DECLARE_int32(shader_control_flow_limit);
 DECLARE_bool(async_shader_compilation);
 
 DECLARE_bool(gpu_3d_to_2d_texture);

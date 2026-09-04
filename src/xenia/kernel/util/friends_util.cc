@@ -139,6 +139,15 @@ std::vector<uint8_t> GetFriendGamerpic(uint64_t owner_xuid,
     if (record.has_value()) {
       cached = small_tile ? record->gamerpic_small : record->gamerpic;
     }
+
+    // Nothing on the friends row - the shared SeenPlayers cache may still
+    // have a face for this XUID from before they were a friend.
+    if (cached.empty()) {
+      const auto seen = db->GetSeenPlayer(friend_xuid);
+      if (seen.has_value()) {
+        cached = small_tile ? seen->gamerpic_small : seen->gamerpic;
+      }
+    }
   }
 
   // Us being offline means there is nothing to ask. Returning empty is fine -
@@ -183,6 +192,20 @@ std::vector<uint8_t> GetFriendGamerpic(uint64_t owner_xuid,
                       small_tile ? record->gamerpic : downloaded,
                       small_tile ? downloaded : record->gamerpic_small);
     }
+
+    // And into the shared cache, so the face survives being unfriended and is
+    // available to any list drawn from SeenPlayers.
+    const auto seen = db->GetSeenPlayer(friend_xuid);
+    const std::string key = record.has_value() ? record->gamerpic_key
+                                               : std::string();
+
+    db->SetSeenPlayerGamerpic(
+        friend_xuid, key,
+        small_tile ? (seen.has_value() ? seen->gamerpic : std::vector<uint8_t>())
+                   : downloaded,
+        small_tile ? downloaded
+                   : (seen.has_value() ? seen->gamerpic_small
+                                       : std::vector<uint8_t>()));
   }
 
   return downloaded;

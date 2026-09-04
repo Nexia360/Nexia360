@@ -25,10 +25,10 @@
 #include "xenia/gpu/registers.h"
 #include "xenia/gpu/shader.h"
 #include "xenia/gpu/spirv_shader_translator.h"
+#include "xenia/gpu/vulkan/vulkan_emu_msaa4x.h"
 #include "xenia/gpu/vulkan/vulkan_pipeline_cache.h"
 #include "xenia/gpu/vulkan/vulkan_render_target_cache.h"
 #include "xenia/gpu/vulkan/vulkan_shader.h"
-#include "xenia/gpu/vulkan/vulkan_emu_msaa4x.h"
 #include "xenia/gpu/vulkan/vulkan_shared_memory.h"
 #include "xenia/gpu/xenos.h"
 #include "xenia/gpu/xenos_zpd_report.h"
@@ -2925,8 +2925,8 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
                                       memexport_range.size_bytes);
     {
       std::lock_guard<std::mutex> lock(resolve_contracts_mutex_);
-      InvalidateResolveContractsLocked(
-          memexport_range.base_address_dwords << 2, memexport_range.size_bytes);
+      InvalidateResolveContractsLocked(memexport_range.base_address_dwords << 2,
+                                       memexport_range.size_bytes);
     }
   }
 
@@ -2934,10 +2934,42 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   if (GetGPUSetting(GPUSetting::ReadbackMemexport) &&
       !memexport_ranges_.empty()) {
     // Calculate total size of all memexport ranges.
-    uint32_t memexport_total_size = 0;
+    //
+    // The ranges come from guest shader constants: base_address is 30 bits (a
+    // physical address >> 2, so up to ~4 GB) and index_count is 23 bits, so a
+    // stream can name memory far outside the 512 MB shared memory buffer.
+    // RangeWrittenByGpu above clamps for exactly that reason, and these copies
+    // have to agree with it - an unclamped copy reads past the end of the
+    // buffer, and the resulting GPU fault is reported as device loss. The same
+    // range is used to write back into guest memory below, where an
+    // out-of-range address would corrupt the host heap instead.
+    struct ReadbackRange {
+      uint32_t source_offset;
+      uint32_t size;
+    };
+    std::vector<ReadbackRange> readback_ranges;
+    readback_ranges.reserve(memexport_ranges_.size());
+    // Widened: a 32-bit sum of ranges this large can wrap, and a total smaller
+    // than the copies would overrun the destination buffer.
+    uint64_t memexport_total_size_wide = 0;
     for (const draw_util::MemExportRange& memexport_range : memexport_ranges_) {
-      memexport_total_size += memexport_range.size_bytes;
+      uint32_t source_offset = memexport_range.base_address_dwords << 2;
+      if (!memexport_range.size_bytes ||
+          source_offset >= SharedMemory::kBufferSize) {
+        continue;
+      }
+      uint32_t size = std::min(memexport_range.size_bytes,
+                               SharedMemory::kBufferSize - source_offset);
+      readback_ranges.push_back({source_offset, size});
+      memexport_total_size_wide += size;
     }
+    if (memexport_total_size_wide > UINT32_MAX) {
+      XELOGE("Memexport readback of {} bytes is too large, skipping",
+             memexport_total_size_wide);
+      memexport_total_size_wide = 0;
+    }
+    uint32_t memexport_total_size =
+        static_cast<uint32_t>(memexport_total_size_wide);
 
     if (memexport_total_size > 0) {
       VkBuffer readback_buffer = RequestReadbackBuffer(memexport_total_size);
@@ -2954,17 +2986,16 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
 
         // Copy each memexport range to the readback buffer.
         uint32_t readback_buffer_offset = 0;
-        for (const draw_util::MemExportRange& memexport_range :
-             memexport_ranges_) {
+        for (const ReadbackRange& readback_range : readback_ranges) {
           VkBufferCopy copy_region = {};
-          copy_region.srcOffset = memexport_range.base_address_dwords << 2;
+          copy_region.srcOffset = readback_range.source_offset;
           copy_region.dstOffset = readback_buffer_offset;
-          copy_region.size = memexport_range.size_bytes;
+          copy_region.size = readback_range.size;
 
           deferred_command_buffer_.CmdVkCopyBuffer(
               shared_memory_buffer, readback_buffer, 1, &copy_region);
 
-          readback_buffer_offset += memexport_range.size_bytes;
+          readback_buffer_offset += readback_range.size;
         }
 
         // Wait for GPU to finish (SYNCHRONIZATION STALL)
@@ -2977,12 +3008,11 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
             if (mapped_data) {
               const uint8_t* readback_bytes =
                   static_cast<const uint8_t*>(mapped_data);
-              for (const draw_util::MemExportRange& memexport_range :
-                   memexport_ranges_) {
-                std::memcpy(memory_->TranslatePhysical(
-                                memexport_range.base_address_dwords << 2),
-                            readback_bytes, memexport_range.size_bytes);
-                readback_bytes += memexport_range.size_bytes;
+              for (const ReadbackRange& readback_range : readback_ranges) {
+                std::memcpy(
+                    memory_->TranslatePhysical(readback_range.source_offset),
+                    readback_bytes, readback_range.size);
+                readback_bytes += readback_range.size;
               }
             } else {
               XELOGE(

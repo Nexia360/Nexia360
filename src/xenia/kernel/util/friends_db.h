@@ -34,6 +34,19 @@ struct FriendRecord {
   std::vector<uint8_t> gamerpic_small;
 };
 
+// One player the hub has told us about at some point: a name and a face for a
+// XUID. Not scoped to a profile - an identity is the same whoever is signed
+// in - and kept so the lists still have something to show when the hub cannot
+// be reached.
+struct SeenPlayerRecord {
+  uint64_t xuid = 0;
+  std::string gamertag;
+  std::string gamerpic_key;
+  std::vector<uint8_t> gamerpic;
+  std::vector<uint8_t> gamerpic_small;
+  int64_t last_seen_utc = 0;
+};
+
 // Per-profile friends list backed by <storage_root>/friends.sqlite.
 //
 // Friends used to live in the global `friends_xuids` cvar, which every profile
@@ -81,6 +94,26 @@ class FriendsDB {
   // the import never overwrites, which is what makes it safe to run on every
   // launch.
   uint32_t ImportXUIDs(uint64_t owner_xuid, const std::set<uint64_t>& xuids);
+
+  // ---- SeenPlayers ------------------------------------------------------
+  // Every player the hub has named for us, whether or not they are a friend.
+  // Written whenever a hub list comes back, read when one cannot.
+
+  // Upserts the identity and refreshes last seen. An existing cached picture
+  // is kept: the name is cheap to restate, the tile was paid for.
+  bool RecordSeenPlayer(uint64_t xuid, const std::string& gamertag);
+
+  bool SetSeenPlayerGamerpic(uint64_t xuid, const std::string& gamerpic_key,
+                             const std::vector<uint8_t>& tile,
+                             const std::vector<uint8_t>& small_tile);
+
+  bool SeenPlayerGamerpicKeyMatches(uint64_t xuid,
+                                    const std::string& gamerpic_key) const;
+
+  std::optional<SeenPlayerRecord> GetSeenPlayer(uint64_t xuid) const;
+
+  // Most recently seen first. `limit` of 0 means every row.
+  std::vector<SeenPlayerRecord> GetSeenPlayers(size_t limit = 0) const;
 
  private:
   bool Exec(const char* sql);

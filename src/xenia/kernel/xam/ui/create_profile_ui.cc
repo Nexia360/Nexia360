@@ -20,6 +20,19 @@ namespace xam {
 namespace ui {
 
 void CreateProfileUI::OnDraw(ImGuiIO& io) {
+  auto* drawer = imgui_drawer();
+  auto* focus_manager = drawer->GetFocusManager();
+
+  // UIFocusManager: Wait for button release before closing
+  // This prevents input bleed to the parent dialog
+  if (pending_close_) {
+    if (!drawer->IsAnyGamepadActionPressed()) {
+      focus_manager->UIDropFocus("CreateProfileUI");
+      Close();
+    }
+    return;
+  }
+
   // While the on-screen keyboard is open, keep this dialog alive but do NOT
   // draw the "Create Profile" popup. The keyboard is its own modal popup; ImGui
   // closes a same-level popup when another opens, so drawing both fights and
@@ -32,12 +45,21 @@ void CreateProfileUI::OnDraw(ImGuiIO& io) {
   }
 
   if (!create_profile_args_.dialog_open) {
+    focus_manager->UISetFocus("CreateProfileUI");
     ImGui::OpenPopup("Create Profile");
     create_profile_args_.dialog_open = true;
   }
 
+  const auto& input = focus_manager->XamInputFocus("CreateProfileUI");
+
+  if (input.ShouldClose()) {
+    create_profile_args_.dialog_open = false;
+    pending_close_ = true;
+    return;
+  }
+
   if (!xeDrawCreateProfile(imgui_drawer(), emulator_, create_profile_args_)) {
-    Close();
+    pending_close_ = true;
   }
 }
 
@@ -128,7 +150,7 @@ bool xeDrawCreateProfile(xe::ui::ImGuiDrawer* imgui_drawer, Emulator* emulator,
     auto* profile_manager_ptr = profile_manager;
     auto* keyboard = xe::ui::KeyboardDialog::ShowKeyboard(
         imgui_drawer, "Enter Gamertag", std::string(args.gamertag),
-        xe::ui::KeyboardDialog::InputType::kText, nullptr, "",
+        xe::ui::KeyboardDialog::InputType::kText, nullptr, "CreateProfileUI",
         "OnScreenKeyboard");
     keyboard->set_close_callback([args_ptr, profile_manager_ptr, keyboard]() {
       if (!keyboard->was_cancelled()) {

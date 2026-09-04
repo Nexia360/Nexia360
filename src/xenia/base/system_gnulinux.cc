@@ -29,6 +29,10 @@ void LaunchWebBrowser(const std::string_view url) {
   system(cmd.c_str());
 }
 
+void LaunchSelf() {
+  // Not implemented: the pending-launch relaunch is Windows-only for now.
+}
+
 void LaunchFileExplorer(const std::filesystem::path& path) {
   auto cmd = std::string("xdg-open ");
   cmd.append(path);

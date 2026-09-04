@@ -146,8 +146,180 @@ bool FriendsDB::Open(const std::filesystem::path& path) {
       "  imported_utc INTEGER NOT NULL"
       ");");
 
+  // Every player the hub has ever named for us. Not keyed by owner: a XUID's
+  // name and face are the same whoever is signed in, and this exists so the
+  // lists still have something to show when the hub cannot be reached.
+  Exec(
+      "CREATE TABLE IF NOT EXISTS SeenPlayers ("
+      "  xuid           INTEGER PRIMARY KEY,"
+      "  gamertag       TEXT,"
+      "  gamerpic_key   TEXT,"
+      "  gamerpic       BLOB,"
+      "  gamerpic_small BLOB,"
+      "  last_seen_utc  INTEGER NOT NULL"
+      ");");
+
+  Exec(
+      "CREATE INDEX IF NOT EXISTS idx_seen_players_last_seen"
+      " ON SeenPlayers(last_seen_utc DESC);");
+
   XELOGI("FriendsDB: opened {}", utf8_path);
   return true;
+}
+
+bool FriendsDB::RecordSeenPlayer(uint64_t xuid, const std::string& gamertag) {
+  std::lock_guard lock(mutex_);
+  if (!db_ || !xuid) {
+    return false;
+  }
+
+  // The picture is deliberately untouched - it cost a download, and a list
+  // that only carries names must not wipe it. A blank gamertag does not
+  // overwrite a good one either, for the same reason.
+  Stmt stmt(db_,
+            "INSERT INTO SeenPlayers (xuid, gamertag, last_seen_utc)"
+            " VALUES (?, ?, ?)"
+            " ON CONFLICT(xuid) DO UPDATE SET"
+            "   gamertag = CASE WHEN excluded.gamertag IS NULL"
+            "                     OR excluded.gamertag = ''"
+            "                   THEN SeenPlayers.gamertag"
+            "                   ELSE excluded.gamertag END,"
+            "   last_seen_utc = excluded.last_seen_utc;");
+  if (!stmt) {
+    return false;
+  }
+
+  sqlite3_bind_int64(stmt.get(), 1, static_cast<sqlite3_int64>(xuid));
+  sqlite3_bind_text(stmt.get(), 2, gamertag.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_int64(stmt.get(), 3, NowUtc());
+
+  return sqlite3_step(stmt.get()) == SQLITE_DONE;
+}
+
+bool FriendsDB::SetSeenPlayerGamerpic(uint64_t xuid,
+                                      const std::string& gamerpic_key,
+                                      const std::vector<uint8_t>& tile,
+                                      const std::vector<uint8_t>& small_tile) {
+  std::lock_guard lock(mutex_);
+  if (!db_ || !xuid) {
+    return false;
+  }
+
+  Stmt stmt(db_,
+            "INSERT INTO SeenPlayers"
+            " (xuid, gamerpic_key, gamerpic, gamerpic_small, last_seen_utc)"
+            " VALUES (?, ?, ?, ?, ?)"
+            " ON CONFLICT(xuid) DO UPDATE SET"
+            "   gamerpic_key = excluded.gamerpic_key,"
+            "   gamerpic = excluded.gamerpic,"
+            "   gamerpic_small = excluded.gamerpic_small;");
+  if (!stmt) {
+    return false;
+  }
+
+  sqlite3_bind_int64(stmt.get(), 1, static_cast<sqlite3_int64>(xuid));
+  sqlite3_bind_text(stmt.get(), 2, gamerpic_key.c_str(), -1, SQLITE_TRANSIENT);
+  sqlite3_bind_blob(stmt.get(), 3, tile.empty() ? nullptr : tile.data(),
+                    static_cast<int>(tile.size()), SQLITE_TRANSIENT);
+  sqlite3_bind_blob(stmt.get(), 4,
+                    small_tile.empty() ? nullptr : small_tile.data(),
+                    static_cast<int>(small_tile.size()), SQLITE_TRANSIENT);
+  sqlite3_bind_int64(stmt.get(), 5, NowUtc());
+
+  return sqlite3_step(stmt.get()) == SQLITE_DONE;
+}
+
+bool FriendsDB::SeenPlayerGamerpicKeyMatches(
+    uint64_t xuid, const std::string& gamerpic_key) const {
+  std::lock_guard lock(mutex_);
+  if (!db_) {
+    return false;
+  }
+
+  Stmt stmt(db_,
+            "SELECT gamerpic_key, LENGTH(gamerpic) FROM SeenPlayers"
+            " WHERE xuid = ?;");
+  if (!stmt) {
+    return false;
+  }
+
+  sqlite3_bind_int64(stmt.get(), 1, static_cast<sqlite3_int64>(xuid));
+
+  if (sqlite3_step(stmt.get()) != SQLITE_ROW) {
+    return false;
+  }
+
+  // A matching key with no tile behind it is not a hit - the picture still
+  // has to be fetched.
+  return ColumnText(stmt.get(), 0) == gamerpic_key &&
+         sqlite3_column_int(stmt.get(), 1) > 0;
+}
+
+std::optional<SeenPlayerRecord> FriendsDB::GetSeenPlayer(uint64_t xuid) const {
+  std::lock_guard lock(mutex_);
+  if (!db_) {
+    return std::nullopt;
+  }
+
+  Stmt stmt(db_,
+            "SELECT xuid, gamertag, gamerpic_key, gamerpic, gamerpic_small,"
+            "       last_seen_utc"
+            " FROM SeenPlayers WHERE xuid = ?;");
+  if (!stmt) {
+    return std::nullopt;
+  }
+
+  sqlite3_bind_int64(stmt.get(), 1, static_cast<sqlite3_int64>(xuid));
+
+  if (sqlite3_step(stmt.get()) != SQLITE_ROW) {
+    return std::nullopt;
+  }
+
+  SeenPlayerRecord record;
+  record.xuid = static_cast<uint64_t>(sqlite3_column_int64(stmt.get(), 0));
+  record.gamertag = ColumnText(stmt.get(), 1);
+  record.gamerpic_key = ColumnText(stmt.get(), 2);
+  record.gamerpic = ColumnBlob(stmt.get(), 3);
+  record.gamerpic_small = ColumnBlob(stmt.get(), 4);
+  record.last_seen_utc = sqlite3_column_int64(stmt.get(), 5);
+
+  return record;
+}
+
+std::vector<SeenPlayerRecord> FriendsDB::GetSeenPlayers(size_t limit) const {
+  std::lock_guard lock(mutex_);
+
+  std::vector<SeenPlayerRecord> records;
+
+  if (!db_) {
+    return records;
+  }
+
+  Stmt stmt(db_,
+            "SELECT xuid, gamertag, gamerpic_key, gamerpic, gamerpic_small,"
+            "       last_seen_utc"
+            " FROM SeenPlayers ORDER BY last_seen_utc DESC"
+            " LIMIT CASE WHEN ? > 0 THEN ? ELSE -1 END;");
+  if (!stmt) {
+    return records;
+  }
+
+  sqlite3_bind_int64(stmt.get(), 1, static_cast<sqlite3_int64>(limit));
+  sqlite3_bind_int64(stmt.get(), 2, static_cast<sqlite3_int64>(limit));
+
+  while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
+    SeenPlayerRecord record;
+    record.xuid = static_cast<uint64_t>(sqlite3_column_int64(stmt.get(), 0));
+    record.gamertag = ColumnText(stmt.get(), 1);
+    record.gamerpic_key = ColumnText(stmt.get(), 2);
+    record.gamerpic = ColumnBlob(stmt.get(), 3);
+    record.gamerpic_small = ColumnBlob(stmt.get(), 4);
+    record.last_seen_utc = sqlite3_column_int64(stmt.get(), 5);
+
+    records.push_back(std::move(record));
+  }
+
+  return records;
 }
 
 bool FriendsDB::AddFriend(uint64_t owner_xuid, uint64_t friend_xuid) {

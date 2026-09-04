@@ -131,6 +131,11 @@ class Emulator {
     return !title_id_.has_value() ? 0 : title_id_.value();
   }
 
+  // Media ID of the running title, as 8 uppercase hex digits. Identifies which
+  // release of a game this is - title updates are published per media ID, so a
+  // package for another one does not apply.
+  const std::string& media_id() const { return media_id_; }
+
   // Are we currently running a title?
   bool is_title_open() const { return title_id_.has_value(); }
 
@@ -366,6 +371,7 @@ class Emulator {
 
   std::string title_name_;
   std::string title_version_;
+  std::string media_id_;
 
   ui::Window* display_window_ = nullptr;
   ui::ImGuiDrawer* imgui_drawer_ = nullptr;

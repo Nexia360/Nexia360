@@ -111,6 +111,25 @@ class ImGuiDrawer : public WindowInputListener, public UIDrawer {
   // Get the UI Focus Manager for dialog navigation (Nexia)
   UIFocusManager* GetFocusManager() { return &focus_manager_; }
 
+  // THE DIALOG STACK. dialogs_ is append-ordered, so the last entry is the
+  // most recently opened - opening a child pushes it, closing pops it, and
+  // whatever was underneath becomes the top again. A modal dialog that is not
+  // the top must suspend itself: ImGui allows one popup per level, and a
+  // suspended parent that keeps drawing would fight its own child for the slot.
+  ImGuiDialog* GetTopDialog() const {
+    return dialogs_.empty() ? nullptr : dialogs_.back();
+  }
+
+  // Shut the input gate. Called automatically when a dialog is added; also
+  // available to anything that opens a menu without adding a dialog.
+  void CloseInputGate() {
+    input_gate_closed_ = true;
+    gate_suppressing_ = true;
+  }
+
+  // True while the gate is swallowing input.
+  bool IsInputGateClosed() const { return input_gate_closed_; }
+
   // Show on-screen keyboard for text input fields when using controller (Nexia)
   void CheckAndShowKeyboardForTextInput();
 
@@ -234,6 +253,27 @@ class ImGuiDrawer : public WindowInputListener, public UIDrawer {
   bool gamepad_a_just_released_ = false;
   bool gamepad_b_just_released_ = false;
   bool gamepad_back_just_released_ = false;
+
+  // Input gate. Shut whenever a dialog is added; reopens only once the
+  // controller reports nothing at all - no button, trigger, d-pad or stick.
+  // Until then no gamepad input reaches ImGui or any dialog, so the press that
+  // opened the dialog can never act inside it.
+  bool input_gate_closed_ = false;
+  bool gate_suppressing_ = false;
+
+  // ImGui popup stack depth last frame, to notice nested modals opening.
+  int last_open_popup_count_ = 0;
+
+  // Previous d-pad/stick state, so only the rising edge reaches ImGui and
+  // navigation never repeats while a direction is held.
+  bool prev_dpad_up_ = false;
+  bool prev_dpad_down_ = false;
+  bool prev_dpad_left_ = false;
+  bool prev_dpad_right_ = false;
+  bool prev_lstick_up_ = false;
+  bool prev_lstick_down_ = false;
+  bool prev_lstick_left_ = false;
+  bool prev_lstick_right_ = false;
 
   // Close request - set when Back/B pressed, cleared when all buttons released
   bool gamepad_close_requested_ = false;

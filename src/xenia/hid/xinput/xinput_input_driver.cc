@@ -153,9 +153,12 @@ X_RESULT XInputInputDriver::GetState(uint32_t user_index,
   } native_state;
 
   // If the guide button is enabled use XInputGetStateEx, otherwise use the
-  // default XInputGetState.
-  auto xigs = cvars::guide_button ? (decltype(&XInputGetState))XInputGetStateEx_
-                                  : (decltype(&XInputGetState))XInputGetState_;
+  // default XInputGetState. XInputGetStateEx is an undocumented ordinal and is
+  // not required by Setup(), so fall back when it did not resolve - calling it
+  // null would take the process down.
+  auto xigs = (cvars::guide_button && XInputGetStateEx_)
+                  ? (decltype(&XInputGetState))XInputGetStateEx_
+                  : (decltype(&XInputGetState))XInputGetState_;
 
   DWORD result = xigs(user_index, &native_state.state);
   if (result) {

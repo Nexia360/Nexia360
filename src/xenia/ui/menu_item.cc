@@ -46,6 +46,10 @@ void MenuItem::AddChild(std::unique_ptr<MenuItem> child_item) {
 
 void MenuItem::AddChild(MenuItemPtr child_item) {
   auto child_item_ptr = child_item.get();
+  // Nothing set this before, so parent_item() answered null for every item in
+  // the tree. An item's label lives in its PARENT's menu, so relabelling one
+  // needs the link.
+  child_item_ptr->parent_item_ = this;
   children_.emplace_back(std::move(child_item));
   OnChildAdded(child_item_ptr);
 }
@@ -53,6 +57,9 @@ void MenuItem::AddChild(MenuItemPtr child_item) {
 void MenuItem::RemoveChild(MenuItem* child_item) {
   for (auto it = children_.begin(); it != children_.end(); ++it) {
     if (it->get() == child_item) {
+      // Items added by raw pointer outlive the removal - do not leave one
+      // pointing at a parent it is no longer in.
+      child_item->parent_item_ = nullptr;
       children_.erase(it);
       OnChildRemoved(child_item);
       break;

@@ -17,6 +17,7 @@
 #include "third_party/fmt/include/fmt/format.h"
 #include "third_party/stb/stb_image.h"
 #include "xenia/app/discord/discord_presence.h"
+#include "xenia/apu/sdl/voice_chat.h"
 #include "xenia/base/threading.h"
 #include "xenia/kernel/XLiveAPI.h"
 #include "xenia/kernel/kernel_state.h"
@@ -25,7 +26,6 @@
 #include "xenia/kernel/xam/user_property.h"
 #include "xenia/kernel/xam/user_settings.h"
 #include "xenia/kernel/xam/user_tracker.h"
-#include "xenia/apu/sdl/voice_chat.h"
 #include "xenia/kernel/xam/xdbf/gpd_info.h"
 #include "xenia/ui/imgui_host_notification.h"
 
@@ -789,7 +789,7 @@ void UserTracker::UpdateProfileGpd() {
 
 std::vector<Achievement> UserTracker::GetUserTitleAchievements(
     uint64_t xuid, uint32_t title_id) const {
-  auto user = kernel_state()->xam_state()->GetUserProfile(xuid);
+  auto user = kernel_state()->xam_state()->GetUserProfileAny(xuid);
   if (!user) {
     return {};
   }
@@ -961,11 +961,10 @@ std::optional<UserSetting> UserTracker::GetGpdSetting(
 std::optional<UserSetting> UserTracker::GetSetting(UserProfile* user,
                                                    uint32_t title_id,
                                                    uint32_t setting_id) const {
-  if (setting_id == static_cast<uint32_t>(
-                        UserSettingId::XPROFILE_OPTION_VOICE_VOLUME)) {
-    return UserSetting(
-        UserSettingId::XPROFILE_OPTION_VOICE_VOLUME,
-        int32_t(apu::sdl::VoiceChat::Get().voice_volume()));
+  if (setting_id ==
+      static_cast<uint32_t>(UserSettingId::XPROFILE_OPTION_VOICE_VOLUME)) {
+    return UserSetting(UserSettingId::XPROFILE_OPTION_VOICE_VOLUME,
+                       int32_t(apu::sdl::VoiceChat::Get().voice_volume()));
   }
 
   auto gpd_setting = GetGpdSetting(user, title_id, setting_id);

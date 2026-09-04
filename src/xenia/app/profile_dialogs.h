@@ -35,6 +35,8 @@ class NoProfileDialog final : public ui::ImGuiDialog {
  protected:
   void OnDraw(ImGuiIO& io) override;
 
+  bool has_opened_ = false;
+  bool pending_close_ = false;
   EmulatorWindow* emulator_window_;
 };
 
@@ -61,6 +63,8 @@ class ProfileConfigDialog final : public ui::ImGuiDialog {
 
   uint64_t selected_xuid_ = 0;
   uint8_t signed_in_profiles_count_ = 0;
+  bool has_opened_ = false;
+  bool pending_close_ = false;
   EmulatorWindow* emulator_window_;
 };
 
@@ -77,6 +81,7 @@ class ManagerDialog final : public ui::ImGuiDialog {
 
  private:
   bool manager_opened_ = false;
+  bool pending_close_ = false;
   uint64_t selected_xuid_ = 0;
   uint64_t removed_xuid_ = 0;
   Emulator* emulator_;

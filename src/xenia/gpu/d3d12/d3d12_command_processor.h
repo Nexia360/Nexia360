@@ -420,6 +420,9 @@ class D3D12CommandProcessor final : public CommandProcessor {
   // resources and, if needed, starting capturing - is opened if pending (as
   // opposed to simply resuming after mid-frame synchronization). Returns
   // whether a submission is open currently and the device is not removed.
+  // Logs what DRED recorded about a device removal, when it was enabled.
+  void ReportDeviceRemovedExtendedData();
+
   bool BeginSubmission(bool is_guest_command);
   // If is_swap is true, a full frame is closed - with, if needed, cache
   // clearing and stopping capturing. Returns whether the submission was done
@@ -811,7 +814,6 @@ class D3D12CommandProcessor final : public CommandProcessor {
   void InvalidateResolveContracts(uint32_t guest_base, uint32_t length);
 
  private:
-
   // Simple single buffer for memexport (always syncs, no double-buffering)
   ID3D12Resource* memexport_readback_buffer_ = nullptr;
   uint32_t memexport_readback_buffer_size_ = 0;

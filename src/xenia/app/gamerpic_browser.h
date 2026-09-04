@@ -168,6 +168,7 @@ class TitleGamerpicBrowser final : public ui::ImGuiDialog {
   xe::ui::ImmediateTexture* profile_icon_;
   std::optional<kernel::xam::UserSetting> picture_key_setting_;
 
+  bool pending_close_ = false;
   TitleGamerpicBrowserArgs titles_args_ = {};
   GamerpicBrowserArgs gamerpic_args_ = {};
 

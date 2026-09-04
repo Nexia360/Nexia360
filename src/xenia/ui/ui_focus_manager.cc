@@ -21,7 +21,9 @@ void UIFocusManager::UpdateInput(
     bool x_pressed, bool y_pressed, bool lb_pressed, bool rb_pressed,
     bool dpad_up, bool dpad_down, bool dpad_left, bool dpad_right,
     bool lstick_up, bool lstick_down, bool lstick_left, bool lstick_right) {
-  // Detect releases (was pressed, now not pressed)
+  // Detect releases (was pressed, now not pressed). Input arriving here has
+  // already passed the drawer's input gate, which withholds everything until
+  // the controller is idle after a dialog opens - so no filtering is needed.
   current_input_.a_released = prev_a_ && !a_pressed;
   current_input_.b_released = prev_b_ && !b_pressed;
   current_input_.x_released = prev_x_ && !x_pressed;
@@ -82,11 +84,6 @@ void UIFocusManager::UISetFocus(const std::string& name) {
     return;
   }
 
-  // Start input cooldown - block input for 500ms
-  focus_change_time_ = std::chrono::duration_cast<std::chrono::milliseconds>(
-                           std::chrono::steady_clock::now().time_since_epoch())
-                           .count();
-
   // If there's already a focus tree, this new dialog becomes a child of the
   // deepest focused dialog This allows game dialogs to open on top of user
   // dialogs
@@ -111,11 +108,6 @@ void UIFocusManager::UIChildFocus(const std::string& parent,
   if (parent.empty() || child.empty()) {
     return;
   }
-
-  // Start input cooldown - block input for 500ms
-  focus_change_time_ = std::chrono::duration_cast<std::chrono::milliseconds>(
-                           std::chrono::steady_clock::now().time_since_epoch())
-                           .count();
 
   // Parent must exist
   auto parent_it = nodes_.find(parent);
@@ -190,24 +182,7 @@ bool UIFocusManager::IsFocused(const std::string& name) const {
   return focus_path_.back() == name;
 }
 
-bool UIFocusManager::IsInputCoolingDown() const {
-  if (focus_change_time_ == 0) {
-    return false;
-  }
-
-  uint64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
-                     std::chrono::steady_clock::now().time_since_epoch())
-                     .count();
-
-  return (now - focus_change_time_) < kInputCooldownMs;
-}
-
 const UIInput& UIFocusManager::GetInput(const std::string& name) const {
-  // Block all input during cooldown period after focus change
-  if (IsInputCoolingDown()) {
-    return kNoInput;
-  }
-
   if (IsFocused(name)) {
     return current_input_;
   }

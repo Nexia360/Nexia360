@@ -11,11 +11,14 @@
 #define XENIA_APP_TITLE_UPDATE_DIALOG_H_
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <filesystem>
+#include <future>
 #include <string>
 #include <vector>
 
+#include "xenia/kernel/util/title_update_downloader.h"
 #include "xenia/kernel/util/title_update_manager.h"
 #include "xenia/ui/imgui_dialog.h"
 #include "xenia/ui/imgui_drawer.h"
@@ -55,6 +58,34 @@ class TitleUpdateDialog final : public ui::ImGuiDialog {
 
   std::vector<std::string> import_conflicts_;
   std::string import_status_;
+
+  // ---- Download Title Updates -------------------------------------------
+  // Updates offered for this exact title id + media id. The catalogue groups
+  // by media id because a package built for another release does not apply,
+  // so the match is strict and anything else is never shown.
+  void DrawDownloadSection();
+  void StartCatalogueQuery();
+  void StartDownload(const kernel::util::RemoteTitleUpdate& update);
+
+  // Media id of the game being launched, read from its XEX. Empty when it
+  // could not be read, which disables the whole section.
+  std::string media_id_;
+
+  std::future<std::vector<kernel::util::RemoteTitleUpdate>> catalogue_query_;
+  std::vector<kernel::util::RemoteTitleUpdate> catalogue_;
+  bool catalogue_queried_ = false;
+  bool catalogue_loading_ = false;
+
+  // Set by the worker thread, read by the UI thread each frame.
+  std::atomic<uint64_t> download_received_{0};
+  std::atomic<uint64_t> download_total_{0};
+  std::atomic<bool> download_cancel_{false};
+  std::atomic<bool> download_active_{false};
+  std::atomic<bool> download_finished_{false};
+  std::atomic<bool> download_succeeded_{false};
+  std::string downloading_version_;
+  std::string download_status_;
+  std::filesystem::path download_path_;
 };
 
 }  // namespace app

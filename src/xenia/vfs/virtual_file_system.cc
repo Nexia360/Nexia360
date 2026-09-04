@@ -130,8 +130,7 @@ bool VirtualFileSystem::ResolveSymbolicLink(const std::string_view path,
 bool VirtualFileSystem::RegisterOverlayDevice(
     const std::string_view shadowed_mount, std::unique_ptr<Device> device) {
   auto global_lock = global_critical_region_.Acquire();
-  overlay_devices_.push_back(
-      {std::string(shadowed_mount), std::move(device)});
+  overlay_devices_.push_back({std::string(shadowed_mount), std::move(device)});
   XELOGD("Registered overlay device over: {}", shadowed_mount);
   return true;
 }

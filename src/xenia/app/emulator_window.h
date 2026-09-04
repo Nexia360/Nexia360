@@ -36,12 +36,17 @@ namespace xe {
 namespace app {
 
 class ConsoleSettingsDialog;
+class MessagesDialog;
 
 struct RecentTitleEntry {
   std::string title_name;
   std::filesystem::path path_to_file;
   std::time_t last_run_time;
   uint32_t title_id = 0;
+  // Which release of the game this is, as 8 hex digits. Recorded alongside the
+  // title id because title updates are published per media id - a package for
+  // a different one does not apply to this copy.
+  std::string media_id;
 };
 
 class EmulatorWindow {
@@ -96,6 +101,10 @@ class EmulatorWindow {
   void OnEmulatorInitialized();
 
   xe::X_STATUS RunTitle(const std::filesystem::path& path_to_file);
+
+  // Installs packages already on disk, skipping the file picker that
+  // InstallContent() opens. Used by the title update downloader.
+  void InstallContentPackages(const std::vector<std::filesystem::path>& paths);
   // Shows the title-update selector for the given file, then launches it.
   void OpenTitleUpdateSelector(const std::filesystem::path& path,
                                uint32_t title_id);
@@ -119,6 +128,26 @@ class EmulatorWindow {
   void ToggleXMPConfigDialog();
   void ToggleConsoleSettingsDialog();
   void ToggleFriendsDialog();
+
+  // True when this run should start a fresh instance as it goes away: the
+  // user chose Exit, and the guest has left launch data behind. Called from
+  // the app's shutdown path.
+  bool ShouldRelaunchOnExit() const;
+
+  // Starts that fresh instance. Called at the very end of shutdown, after the
+  // config is written and the hub sessions and ports are handed back, so the
+  // new process never races the old one for any of them.
+  void RelaunchForPendingLaunchData() const;
+
+  // Social menu. Texts and voice mail each open the inbox in their own mode;
+  // the counts in the labels and the fullscreen badge are driven by the hub's
+  // notification loop, not by these being open.
+  void ToggleTextMessagesDialog();
+  void ToggleVoiceMessagesDialog();
+
+  // Relabels "Texts (N)" / "VM (V)" and puts a dot next to Social when either
+  // is waiting. UI thread only.
+  void UpdateSocialMenu();
   void ToggleUpdaterDialog();
   void ToggleCompletionDialog();
   void ToggleNetplaySettingsDialog();
@@ -330,6 +359,12 @@ class EmulatorWindow {
   void OnMouseUp(const ui::MouseEvent& e);
   void FileOpen();
   void FileClose();
+
+  // The Exit menu item. Distinct from closing the window any other way: a
+  // title switch left pending by the guest is only picked up at startup, so
+  // exiting deliberately with one waiting relaunches instead of quitting.
+  void FileExit();
+
   void InstallContent();
   void ExtractZarchive();
   void CreateZarchive();
@@ -364,7 +399,8 @@ class EmulatorWindow {
   void FillRecentlyLaunchedTitlesWithTUMenu(xe::ui::MenuItem* recent_menu);
   void LoadRecentlyLaunchedTitles();
   void AddRecentlyLaunchedTitle(std::filesystem::path path_to_file,
-                                std::string title_name, uint32_t title_id = 0);
+                                std::string title_name, uint32_t title_id,
+                                const std::string& media_id);
 
   void ClearDialogs();
 
@@ -393,7 +429,14 @@ class EmulatorWindow {
   // short press (netplay manager) or a long press (profile menu).
   bool guide_button_was_pressed_[XUserMaxUserCount] = {};
   uint64_t guide_button_press_time_[XUserMaxUserCount] = {};
+  bool back_button_was_pressed_[XUserMaxUserCount] = {};
+  uint64_t back_button_press_time_[XUserMaxUserCount] = {};
+  uint16_t last_hotkey_buttons_[XUserMaxUserCount] = {};
   static constexpr uint64_t kGuideLongPressMs = 500;  // 500ms for long press
+
+  // Set only by the Exit menu item, never by the window's close button or
+  // Alt+F4 - a deliberate exit is the only one that relaunches.
+  bool exit_requested_from_menu_ = false;
 
   std::unique_ptr<DisplayConfigDialog> display_config_dialog_;
   std::unique_ptr<ConsoleSettingsDialog> console_settings_dialog_;
@@ -408,6 +451,21 @@ class EmulatorWindow {
 
   std::unique_ptr<ManagerDialog> friends_manager_dialog_;
 
+  // NOT owned. An ImGuiDialog deletes itself the frame after it closes, so a
+  // unique_ptr here would free it a second time the next time the menu item
+  // was used. The dialog reports its own destruction and nulls these.
+  MessagesDialog* text_messages_dialog_ = nullptr;
+  MessagesDialog* voice_messages_dialog_ = nullptr;
+
+  void OnMessagesDialogClosed(MessagesDialog** slot);
+
+  // Owned by the main menu, not by us - kept only to relabel them as the
+  // counts change.
+  ui::MenuItem* social_menu_item_ = nullptr;
+  ui::MenuItem* social_texts_item_ = nullptr;
+  ui::MenuItem* social_vm_item_ = nullptr;
+
+
   std::unique_ptr<UpdaterDialog> updater_dialog_;
 
   std::unique_ptr<UpdaterCompletionDialog> updater_completion_dialog_;
@@ -417,6 +475,13 @@ class EmulatorWindow {
   std::unique_ptr<NetplayStatusDialog> netplay_status_dialog_;
 
   std::vector<RecentTitleEntry> recently_launched_titles_;
+
+ public:
+  // Media id recorded for a game the last time it was launched, or empty if it
+  // has never been launched by this build. Saves re-parsing the XEX.
+  std::string GetRecentMediaId(const std::filesystem::path& path) const;
+
+ private:
 };
 
 }  // namespace app

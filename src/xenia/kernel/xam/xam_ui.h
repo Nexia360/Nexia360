@@ -67,6 +67,7 @@ class MessageBoxDialog : public XamDialog {
 
  private:
   bool has_opened_ = false;
+  bool pending_close_ = false;
   std::string title_;
   std::string description_;
   std::vector<std::string> buttons_;
@@ -107,6 +108,7 @@ class KeyboardInputDialog : public XamDialog {
 
  private:
   bool has_opened_ = false;
+  bool pending_close_ = false;
   std::string title_;
   std::string description_;
   std::string default_text_;
@@ -124,9 +126,28 @@ bool xeDrawProfileContent(xe::ui::ImGuiDrawer* imgui_drawer,
                           std::function<void()> on_profile_change,
                           uint64_t* selected_xuid);
 
+// Asks the hub to add someone, and reports back what happened. Returns true
+// only when the friendship was made now; a request held for approval returns
+// false and tells the player it is waiting.
+bool xeRequestFriend(xe::ui::ImGuiDrawer* imgui_drawer, UserProfile* profile,
+                     uint64_t target_xuid, const std::string& description);
+
+namespace ui {
+struct FriendsUIArgs;
+
+// Draws the child dialogs of the friends popup. Defined in friends_ui.cc, in
+// this namespace, and called from INSIDE the friends popup so ImGui nests them
+// one level deeper.
+void xeDrawFriendsChildren(xe::ui::ImGuiDrawer* imgui_drawer,
+                           UserProfile* profile,
+                           FriendsUIArgs& friends_ui_args);
+}  // namespace ui
+
+// Takes the whole args rather than just content_args, because the child
+// dialogs have to be drawn inside the popup this opens.
 bool xeDrawFriendsContent(
     xe::ui::ImGuiDrawer* imgui_drawer, UserProfile* profile,
-    ui::FriendsContentArgs& args, std::vector<X_ONLINE_FRIEND>& presences,
+    ui::FriendsUIArgs& args, std::vector<X_ONLINE_FRIEND>& presences,
     std::map<uint64_t, std::shared_ptr<xe::ui::ImmediateTexture>>&
         immediate_gamerpics);
 

@@ -108,12 +108,28 @@ void TitleGamerpicBrowser::CloseGamerpicsThreads() {
 }
 
 void TitleGamerpicBrowser::OnDraw(ImGuiIO& io) {
+  auto* drawer = imgui_drawer();
+  auto* focus_manager = drawer->GetFocusManager();
+
+  // Wait for button release before closing to prevent input bleed
+  if (pending_close_) {
+    if (!drawer->IsAnyGamepadActionPressed()) {
+      focus_manager->UIDropFocus("GamerpicBrowser");
+      Close();
+      emulator_window_->ToggleGamerpicBrowserDialog();
+    }
+    return;
+  }
+
   if (!titles_args_.browser_open) {
     titles_args_.first_draw = true;
     titles_args_.browser_open = true;
 
+    focus_manager->UISetFocus("GamerpicBrowser");
     ImGui::OpenPopup("Gamerpic Browser");
   }
+
+  const auto& input = focus_manager->XamInputFocus("GamerpicBrowser");
 
   ImVec2 source_group_size = {};
 
@@ -375,8 +391,7 @@ void TitleGamerpicBrowser::OnDraw(ImGuiIO& io) {
 
         const std::string lbl_search_title_contexts = "##SearchTitleContexts";
 
-        if (ImGui::IsItemFocused() &&
-            ImGui::IsKeyPressed(ImGuiKey::ImGuiKey_GamepadFaceDown, false)) {
+        if (ImGui::IsItemFocused() && input.Activated()) {
           ImGui::OpenPopup(lbl_search_title_contexts.c_str());
         }
 
@@ -511,8 +526,7 @@ void TitleGamerpicBrowser::OnDraw(ImGuiIO& io) {
         std::string context_label =
             fmt::format("##TitleContext{:08X}", title.id);
 
-        if (ImGui::IsItemFocused() &&
-            ImGui::IsKeyPressed(ImGuiKey::ImGuiKey_GamepadFaceLeft, false)) {
+        if (ImGui::IsItemFocused() && input.x_released) {
           ImGui::OpenPopup(context_label.c_str());
         }
 
@@ -645,8 +659,7 @@ void TitleGamerpicBrowser::OnDraw(ImGuiIO& io) {
   }
 
   if (!titles_args_.browser_open) {
-    Close();
-    emulator_window_->ToggleGamerpicBrowserDialog();
+    pending_close_ = true;
   }
 }
 
@@ -720,7 +733,10 @@ void TitleGamerpicBrowser::DrawGamerpicsBrowser(xe::kernel::GameTitle game,
             ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedSame |
                 ImGuiTableFlags_SizingStretchSame | ImGuiTableFlags_ScrollY,
             table_size)) {
-      if (ImGui::IsKeyPressed(ImGuiKey::ImGuiKey_GamepadFaceRight, false)) {
+      if (imgui_drawer()
+              ->GetFocusManager()
+              ->XamInputFocus("GamerpicBrowser")
+              .ShouldClose()) {
         ImGui::CloseCurrentPopup();
       }
 

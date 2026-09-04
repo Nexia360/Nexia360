@@ -59,6 +59,7 @@ class NetplaySettingsDialog final : public ui::ImGuiDialog {
   void ActivateDiscordState(const bool state);
 
   bool dialog_opened_ = false;
+  bool pending_close_ = false;
 
   int selected_interface_index_ = 0;
   const char* selected_network_interface_item_ = nullptr;
@@ -100,6 +101,7 @@ class NetplayStatusDialog final : public ui::ImGuiDialog {
 
  private:
   bool dialog_opened_ = false;
+  bool pending_close_ = false;
   EmulatorWindow* emulator_window_ = nullptr;
   kernel::NetworkAdapterManager* network_adapter_manager_ = nullptr;
 };

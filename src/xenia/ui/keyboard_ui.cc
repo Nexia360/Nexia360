@@ -248,7 +248,27 @@ KeyboardDialog* KeyboardDialog::ShowKeyboard(
   auto* dialog =
       new KeyboardDialog(imgui_drawer, title, initial_text, type, callback);
   dialog->focus_parent_ = focus_parent;
-  dialog->focus_name_ = focus_name;
+
+  // Always take part in focus management, even when the caller named nothing -
+  // registering is what makes the manager ignore the button that was held to
+  // open this keyboard, so an unnamed keyboard would type a character from the
+  // opening press.
+  dialog->focus_name_ = focus_name.empty() ? "OnScreenKeyboard" : focus_name;
+
+  // Register NOW rather than on the first draw. The dialog is created on the
+  // press, so latching here catches the still-held button; waiting until
+  // OnDraw leaves one frame in which its release can activate a key.
+  if (imgui_drawer) {
+    auto* focus_manager = imgui_drawer->GetFocusManager();
+    if (focus_manager) {
+      if (!dialog->focus_parent_.empty()) {
+        focus_manager->UIChildFocus(dialog->focus_parent_, dialog->focus_name_);
+      } else {
+        focus_manager->UISetFocus(dialog->focus_name_);
+      }
+    }
+  }
+
   return dialog;
 }
 
@@ -281,7 +301,9 @@ void KeyboardDialog::OnDraw(ImGuiIO& io) {
           std::chrono::steady_clock::now().time_since_epoch())
           .count();
 
-  // Check if we're still in the input ignore period
+  // Check if we're still in the input ignore period. The opening press is
+  // handled by the drawer's input gate, which withholds everything until the
+  // controller goes idle; this timer only covers the mouse/keyboard path.
   bool ignore_inputs = (current_time - open_time_) < kInputIgnoreDelayMs;
 
   // Handle actual keyboard input

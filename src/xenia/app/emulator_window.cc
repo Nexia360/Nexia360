@@ -21,13 +21,17 @@
 #endif
 
 #include "xenia/app/console_settings_dialog.h"
+#include "xenia/app/messages_dialog.h"
 #include "xenia/app/title_update_dialog.h"
 #include "xenia/base/assert.h"
 #include "xenia/base/clock.h"
 #include "xenia/base/cvar.h"
 #include "xenia/base/debugging.h"
+#include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/platform.h"
+#include "xenia/base/string_util.h"
+#include "xenia/base/utf8.h"
 #include "xenia/base/profiling.h"
 #include "xenia/base/system.h"
 #include "xenia/base/threading.h"
@@ -63,7 +67,6 @@ DECLARE_string(hid);
 DECLARE_bool(guide_button);
 
 DECLARE_bool(clear_memory_page_state);
-
 
 DECLARE_bool(readback_memexport);
 
@@ -303,12 +306,13 @@ void EmulatorWindow::OnEmulatorInitialized() {
         "controller hotkeys!!!");
   }
 
-  // Create a thread to listen for controller hotkeys.
-  if (cvars::controller_hotkeys) {
-    Gamepad_HotKeys_Listener =
-        threading::Thread::Create({}, [&] { GamepadHotKeys(); });
-    Gamepad_HotKeys_Listener->set_name("Gamepad HotKeys Listener");
-  }
+  // Create a thread to listen for controller hotkeys. Started unconditionally:
+  // it also carries the Guide and Back menu presses, which are console
+  // behaviour rather than debug hotkeys. The button combinations themselves
+  // stay behind cvars::controller_hotkeys.
+  Gamepad_HotKeys_Listener =
+      threading::Thread::Create({}, [&] { GamepadHotKeys(); });
+  Gamepad_HotKeys_Listener->set_name("Gamepad HotKeys Listener");
 
   // Startup auto-update check disabled (Nexia does not use the Xenia updater).
 #if 0
@@ -335,6 +339,19 @@ void EmulatorWindow::OnEmulatorInitialized() {
           ->LoggedInToLive()) {
     emulator()->GetXboxLiveAPI()->StartWhoamiAsync();
   }
+
+  // The message notification loop. Started unconditionally and left running:
+  // it resolves the signed-in profile itself on every tick, so signing in
+  // later, or switching profiles, needs no hook here. It only calls back when
+  // the counts actually change, and the menu can only be touched from the UI
+  // thread.
+  emulator()->GetXboxLiveAPI()->SetMessageCountsCallback([this]() {
+    app_context_.CallInUIThread([this]() { UpdateSocialMenu(); });
+  });
+
+  emulator()->GetXboxLiveAPI()->StartMessageNotifications();
+
+  UpdateSocialMenu();
 }
 
 void EmulatorWindow::ShowUpdateAvailableDialog(const std::string& commit,
@@ -989,7 +1006,7 @@ bool EmulatorWindow::Initialize() {
     file_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
     file_menu->AddChild(
         MenuItem::Create(MenuItem::Type::kString, "E&xit", "Alt+F4",
-                         [this]() { window_->RequestClose(); }));
+                         std::bind(&EmulatorWindow::FileExit, this)));
   }
   main_menu->AddChild(std::move(file_menu));
 
@@ -1120,6 +1137,28 @@ bool EmulatorWindow::Initialize() {
         std::bind(&EmulatorWindow::ToggleFriendsDialog, this)));
   }
   main_menu->AddChild(std::move(Netplay_menu));
+
+  // Social menu. The counts in the labels are filled in by UpdateSocialMenu as
+  // the notification loop reports them - the text here is only what shows
+  // before the first poll comes back.
+  {
+    auto social_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Social");
+
+    auto texts_item = MenuItem::Create(
+        MenuItem::Type::kString, "Texts (0)", "",
+        std::bind(&EmulatorWindow::ToggleTextMessagesDialog, this));
+    social_texts_item_ = texts_item.get();
+    social_menu->AddChild(std::move(texts_item));
+
+    auto vm_item = MenuItem::Create(
+        MenuItem::Type::kString, "VM (0)", "",
+        std::bind(&EmulatorWindow::ToggleVoiceMessagesDialog, this));
+    social_vm_item_ = vm_item.get();
+    social_menu->AddChild(std::move(vm_item));
+
+    social_menu_item_ = social_menu.get();
+    main_menu->AddChild(std::move(social_menu));
+  }
 
   // Help menu.
   auto help_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Help");
@@ -1516,6 +1555,51 @@ void EmulatorWindow::FileOpen() {
 
 void EmulatorWindow::FileClose() { emulator_->TerminateTitle(); }
 
+// A title switch - a game changing mode, or launching another title - is done
+// by the guest writing launch data and terminating. That data is only read
+// when the emulator starts, so the switch cannot happen inside this process:
+// something has to run again. If the user exits with one waiting, this is that
+// something.
+bool EmulatorWindow::ShouldRelaunchOnExit() const {
+  if (!exit_requested_from_menu_) {
+    return false;
+  }
+
+  std::error_code error;
+  const std::filesystem::path folder = xe::filesystem::GetExecutableFolder();
+
+  for (const auto& entry :
+       std::filesystem::directory_iterator(folder, error)) {
+    if (error) {
+      break;
+    }
+
+    if (!entry.is_regular_file(error) || error) {
+      continue;
+    }
+
+    // launch_data.bin is the one the kernel writes; the pattern is wider so a
+    // file dropped in by anything else that drives a launch counts too.
+    const std::string name =
+        xe::utf8::lower_ascii(xe::path_to_utf8(entry.path().filename()));
+
+    if (name.starts_with("launch") && name.ends_with(".bin")) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+void EmulatorWindow::RelaunchForPendingLaunchData() const {
+  xe::LaunchSelf();
+}
+
+void EmulatorWindow::FileExit() {
+  exit_requested_from_menu_ = true;
+  window_->RequestClose();
+}
+
 void EmulatorWindow::InstallContent() {
   std::vector<std::filesystem::path> paths;
 
@@ -1531,6 +1615,14 @@ void EmulatorWindow::InstallContent() {
     paths = file_picker->selected_files();
   }
 
+  InstallContentPackages(paths);
+}
+
+// The install half of InstallContent, without the file picker, so a package
+// obtained some other way - a downloaded title update - goes through exactly
+// the same path: header scan, DLC/TU targeting, then the install dialog.
+void EmulatorWindow::InstallContentPackages(
+    const std::vector<std::filesystem::path>& paths) {
   if (paths.empty()) {
     return;
   }
@@ -1945,6 +2037,73 @@ void EmulatorWindow::ToggleFriendsDialog() {
     }
     emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
   }
+}
+
+// An ImGuiDialog owns itself: the drawer deletes it the frame after it closes.
+// So opening one hands it over, and closing one only asks - the teardown
+// below runs from the dialog's own destructor, whether it went away because
+// the menu item was used again or because the user pressed Close inside it.
+void EmulatorWindow::OnMessagesDialogClosed(MessagesDialog** slot) {
+  *slot = nullptr;
+
+  disable_hotkeys_ = false;
+  emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 0);
+  emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
+}
+
+void EmulatorWindow::ToggleTextMessagesDialog() {
+  if (text_messages_dialog_) {
+    text_messages_dialog_->Close();
+    return;
+  }
+
+  disable_hotkeys_ = true;
+  emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 1);
+  emulator_->kernel_state()->xam_state()->xam_dialogs_shown_++;
+
+  text_messages_dialog_ = new MessagesDialog(imgui_drawer_.get(), this,
+                                             MessagesDialog::Mode::kText);
+
+  text_messages_dialog_->set_closed_callback(
+      [this]() { OnMessagesDialogClosed(&text_messages_dialog_); });
+}
+
+void EmulatorWindow::ToggleVoiceMessagesDialog() {
+  if (voice_messages_dialog_) {
+    voice_messages_dialog_->Close();
+    return;
+  }
+
+  disable_hotkeys_ = true;
+  emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 1);
+  emulator_->kernel_state()->xam_state()->xam_dialogs_shown_++;
+
+  voice_messages_dialog_ = new MessagesDialog(imgui_drawer_.get(), this,
+                                              MessagesDialog::Mode::kVoice);
+
+  voice_messages_dialog_->set_closed_callback(
+      [this]() { OnMessagesDialogClosed(&voice_messages_dialog_); });
+}
+
+void EmulatorWindow::UpdateSocialMenu() {
+  if (!social_menu_item_) {
+    return;
+  }
+
+  const kernel::MessageCounts counts =
+      emulator_->GetXboxLiveAPI()->message_counts();
+
+  social_texts_item_->SetText(fmt::format("Texts ({})", counts.text));
+  social_vm_item_->SetText(fmt::format("VM ({})", counts.voice));
+
+  // The dot goes to the right of the label, where a submenu arrow would sit on
+  // a child item. A native menu bar has no way to colour part of a label, so
+  // this is the glyph itself rather than a tinted draw.
+  social_menu_item_->SetText(counts.total() ? "&Social \xE2\x97\x8F"
+                                            : "&Social");
+
+  window_->CompleteMainMenuItemsUpdate();
+
 }
 
 void EmulatorWindow::ToggleUpdaterDialog() {
@@ -2465,8 +2624,18 @@ void EmulatorWindow::GamepadHotKeys() {
           const uint16_t buttons =
               controller_states[user_index].second.gamepad.buttons;
 
-          // Guide button: long press opens the profile menu, short press opens
-          // the netplay manager. Marshalled to the UI thread.
+          if (buttons != last_hotkey_buttons_[user_index]) {
+            last_hotkey_buttons_[user_index] = buttons;
+            XELOGD("GamepadHotKeys: user {} buttons {:04X}{}", user_index,
+                   buttons, (buttons & X_INPUT_GAMEPAD_GUIDE) ? " GUIDE" : "");
+          }
+
+          // Guide is Guide. Back is NEVER substituted for it: Back is Select,
+          // which the running game uses, so standing it in for Guide would
+          // fire emulator menus on a button the title is reading.
+          //
+          // Guide button: short press opens the profile selector, long press
+          // opens console settings. Marshalled to the UI thread.
           bool guide_pressed = (buttons & X_INPUT_GAMEPAD_GUIDE) != 0;
           bool solo_guide =
               guide_pressed && (buttons & ~X_INPUT_GAMEPAD_GUIDE) == 0;
@@ -2477,12 +2646,13 @@ void EmulatorWindow::GamepadHotKeys() {
             guide_button_was_pressed_[user_index] = false;
             uint64_t duration = now_ms() - guide_button_press_time_[user_index];
             if (duration >= kGuideLongPressMs) {
-              // Long press - profile menu.
+              // Long press - console settings.
+              app_context_.CallInUIThread(
+                  [this]() { ToggleConsoleSettingsDialog(); });
+            } else if (duration > 50) {
+              // Short press - profile selector (debounce very short presses).
               app_context_.CallInUIThread(
                   [this]() { ToggleProfilesConfigDialog(); });
-            } else if (duration > 50) {
-              // Short press - netplay manager (debounce very short presses).
-              app_context_.CallInUIThread([this]() { ToggleFriendsDialog(); });
             }
           } else if (guide_pressed && !solo_guide) {
             // Guide with other buttons - cancel solo tracking, let the hotkey
@@ -2490,7 +2660,33 @@ void EmulatorWindow::GamepadHotKeys() {
             guide_button_was_pressed_[user_index] = false;
           }
 
-          if (ProcessControllerHotkey(buttons).rumble) {
+          // Back button: LONG press only opens the netplay menu. A short press
+          // is left alone - it is Select, and the game is using it.
+          {
+            bool back_pressed = (buttons & X_INPUT_GAMEPAD_BACK) != 0;
+            bool solo_back =
+                back_pressed && (buttons & ~X_INPUT_GAMEPAD_BACK) == 0;
+            if (solo_back && !back_button_was_pressed_[user_index]) {
+              back_button_was_pressed_[user_index] = true;
+              back_button_press_time_[user_index] = now_ms();
+            } else if (!back_pressed && back_button_was_pressed_[user_index]) {
+              back_button_was_pressed_[user_index] = false;
+              uint64_t duration =
+                  now_ms() - back_button_press_time_[user_index];
+              if (duration >= kGuideLongPressMs) {
+                // Long press - netplay menu.
+                app_context_.CallInUIThread(
+                    [this]() { ToggleFriendsDialog(); });
+              }
+            } else if (back_pressed && !solo_back) {
+              // Back with other buttons (e.g. Back + Start) - cancel solo
+              // tracking and let the hotkey map handle the combo.
+              back_button_was_pressed_[user_index] = false;
+            }
+          }
+
+          if (cvars::controller_hotkeys &&
+              ProcessControllerHotkey(buttons).rumble) {
             // Enable Vibration
             VibrateController(input_sys, user_index, true);
 
@@ -2683,7 +2879,7 @@ xe::X_STATUS EmulatorWindow::RunTitle(
     emulator_->file_system()->Clear();
   } else {
     AddRecentlyLaunchedTitle(path_to_file, emulator_->title_name(),
-                             emulator_->title_id());
+                             emulator_->title_id(), emulator_->media_id());
 
     auto xam =
         emulator_->kernel_state()->GetKernelModule<kernel::xam::XamModule>(
@@ -2773,6 +2969,17 @@ void EmulatorWindow::FillRecentlyLaunchedTitlesWithTUMenu(
   }
 }
 
+std::string EmulatorWindow::GetRecentMediaId(
+    const std::filesystem::path& path) const {
+  for (const RecentTitleEntry& entry : recently_launched_titles_) {
+    if (entry.path_to_file == path) {
+      return entry.media_id;
+    }
+  }
+
+  return "";
+}
+
 void EmulatorWindow::LoadRecentlyLaunchedTitles() {
   std::ifstream file(emulator()->storage_root() /
                      kRecentlyPlayedTitlesFilename);
@@ -2812,15 +3019,22 @@ void EmulatorWindow::LoadRecentlyLaunchedTitles() {
         title_id = static_cast<uint32_t>(id_node->get());
       }
 
+      // Absent for entries written before media ids were recorded; those are
+      // filled in the next time the title is launched.
+      std::string media_id;
+      if (auto media_node = entry_table->get_as<std::string>("media_id")) {
+        media_id = media_node->get();
+      }
+
       recently_launched_titles_.push_back(
-          {title_name, path, last_run_time, title_id});
+          {title_name, path, last_run_time, title_id, media_id});
     }
   }
 }
 
 void EmulatorWindow::AddRecentlyLaunchedTitle(
     std::filesystem::path path_to_file, std::string title_name,
-    uint32_t title_id) {
+    uint32_t title_id, const std::string& media_id) {
   if (cvars::recent_titles_entry_amount <= 0) {
     return;
   }
@@ -2837,7 +3051,7 @@ void EmulatorWindow::AddRecentlyLaunchedTitle(
 
   recently_launched_titles_.insert(
       recently_launched_titles_.cbegin(),
-      {title_name, path_to_file, time(nullptr), title_id});
+      {title_name, path_to_file, time(nullptr), title_id, media_id});
   // Serialize to toml
   auto toml_table = toml::table();
 
@@ -2851,6 +3065,7 @@ void EmulatorWindow::AddRecentlyLaunchedTitle(
     entry_table.insert("path", str_path);
     entry_table.insert("last_run_time", entry.last_run_time);
     entry_table.insert("title_id", static_cast<int64_t>(entry.title_id));
+    entry_table.insert("media_id", entry.media_id);
 
     toml_table.insert(std::to_string(index++), entry_table);
 

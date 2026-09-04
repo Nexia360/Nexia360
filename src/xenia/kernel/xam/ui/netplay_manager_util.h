@@ -35,6 +35,13 @@ struct FriendsContentArgs {
   bool filter_title;
   bool filter_offline;
   bool refresh_presence;
+  bool player_search_open;
+  bool blocked_list_open;
+  bool recent_players_open;
+  // Who may add this player: 0 anyone, 1 friends-of-friends, 2 approval.
+  int friend_privacy;
+  bool privacy_loaded;
+  bool publish_privacy;
   AddFriendArgs add_friend_args = {};
   ImGuiTextFilter filter = {};
 };

@@ -307,7 +307,8 @@ class PhysicalHeap : public BaseHeap {
   // out_invalidation_watched receives whether the page was left read-only to
   // keep an existing invalidation watch working. The global critical region
   // must be held.
-  bool DisarmReadWatch(uint32_t virtual_address, bool* out_invalidation_watched);
+  bool DisarmReadWatch(uint32_t virtual_address,
+                       bool* out_invalidation_watched);
 
   uint32_t SystemPagenumToGuestPagenum(uint32_t num) const {
     return ((num << system_page_shift_) - host_address_offset()) >>

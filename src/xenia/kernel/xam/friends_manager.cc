@@ -8,6 +8,8 @@
  */
 
 #include "xenia/kernel/xam/friends_manager.h"
+
+#include <cstring>
 #include "xenia/base/logging.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/friends_util.h"
@@ -124,6 +126,25 @@ bool FriendsManager::UpdateFriend(const uint64_t xuid,
   }
 
   *it = update_friend;
+
+  // Persist the name alongside the picture the cache already keeps. Without
+  // this a friends list rendered from the database - which is what happens
+  // when the hub cannot be reached - had faces but no names.
+  auto* db = friends_db_;
+  if (db && db->is_open()) {
+    // Not guaranteed to be NUL-terminated when the name fills the field.
+    const std::string gamertag(
+        update_friend.Gamertag,
+        strnlen(update_friend.Gamertag, sizeof(update_friend.Gamertag)));
+
+    if (!gamertag.empty()) {
+      db->SetGamertag(user->xuid(), update_friend.xuid, gamertag);
+
+      // A friend is a seen player too, so the same name is available to
+      // anything reading the shared identity cache.
+      db->RecordSeenPlayer(update_friend.xuid, gamertag);
+    }
+  }
 
   return true;
 }

@@ -29,6 +29,12 @@ void LaunchFileExplorer(const std::filesystem::path& path);
 
 bool SetProcessPriorityClass(const uint32_t priority_class);
 
+// Starts a second instance of this executable, in the executable's own folder,
+// with no arguments, and returns without waiting for it. Used when a title
+// switch has been left pending: the launch data the guest wrote is only ever
+// read at startup, so the switch needs another run of the emulator to happen.
+void LaunchSelf();
+
 // Determine if the Xbox Gamebar is enabled via the Windows registry
 bool IsUseNexusForGameBarEnabled();
 

@@ -281,6 +281,8 @@ void LaunchWebBrowser(const std::string_view url) {
   jni_env->DeleteLocalRef(intent);
 }
 
+void LaunchSelf() { assert_always(); }
+
 void LaunchFileExplorer(const std::filesystem::path& path) { assert_always(); }
 
 void ShowSimpleMessageBox(SimpleMessageBoxType type, std::string_view message) {

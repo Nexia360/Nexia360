@@ -403,6 +403,7 @@ X_STATUS Emulator::TerminateTitle() {
   title_id_ = std::nullopt;
   title_name_ = "";
   title_version_ = "";
+  media_id_ = "";
   on_terminate();
   return X_STATUS_SUCCESS;
 }
@@ -1598,6 +1599,7 @@ X_STATUS Emulator::CompleteLaunch(const std::filesystem::path& path,
   title_id_ = std::nullopt;
   title_name_ = "";
   title_version_ = "";
+  media_id_ = "";
   display_window_->SetIcon(nullptr, 0);
 
   // Allow xam to request module loads.
@@ -1649,6 +1651,7 @@ X_STATUS Emulator::CompleteLaunch(const std::filesystem::path& path,
     title_id_ = 0;
   } else {
     title_id_ = info->title_id;
+    media_id_ = fmt::format("{:08X}", info->media_id.get());
     auto title_version = info->version();
     if (title_version.value != 0) {
       title_version_ = format_version(title_version);

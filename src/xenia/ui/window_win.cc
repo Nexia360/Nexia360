@@ -1339,6 +1339,49 @@ void Win32MenuItem::SetEnabled(bool enabled) {
   }
 }
 
+void Win32MenuItem::SetText(const std::string& text) {
+  MenuItem::SetText(text);
+
+  // The label lives in the PARENT's menu - an item does not own its own entry.
+  // Nothing to relabel until it has been added to one.
+  auto parent = static_cast<Win32MenuItem*>(parent_item());
+
+  if (!parent || !parent->handle_) {
+    return;
+  }
+
+  UINT index = 0;
+  bool found = false;
+
+  for (auto& child : parent->children_) {
+    if (child.get() == this) {
+      found = true;
+      break;
+    }
+    ++index;
+  }
+
+  if (!found) {
+    return;
+  }
+
+  std::string full_name = text_;
+
+  if (!hotkey_.empty()) {
+    full_name += "\t" + hotkey_;
+  }
+
+  std::u16string wide_name = xe::to_utf16(full_name);
+
+  // By position: a popup has no command id to address it by.
+  MENUITEMINFOW info = {0};
+  info.cbSize = sizeof(info);
+  info.fMask = MIIM_STRING;
+  info.dwTypeData = reinterpret_cast<LPWSTR>(wide_name.data());
+
+  SetMenuItemInfoW(parent->handle_, index, TRUE, &info);
+}
+
 void Win32MenuItem::OnChildAdded(MenuItem* generic_child_item) {
   auto child_item = static_cast<Win32MenuItem*>(generic_child_item);
 

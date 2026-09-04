@@ -58,6 +58,17 @@ bool D3D12SharedMemory::Initialize() {
       return false;
     }
     static_assert(D3D12_TILED_RESOURCE_TILE_SIZE_IN_BYTES == (1 << 16));
+    // Give every tile something real behind it before any of it is used. A
+    // reserved resource starts fully unmapped, and reading or writing an
+    // unmapped tile is undefined - benign on some drivers, a page fault and a
+    // lost device on others. Anything that reaches an address the guest has
+    // not caused to be allocated now lands on one shared scratch tile instead
+    // of nowhere.
+    if (!MapUnallocatedTilesToNullTile()) {
+      XELOGE("Shared memory: Failed to map the null tile");
+      Shutdown();
+      return false;
+    }
     InitializeSparseHostGpuMemory(
         std::max(kHostGpuMemoryOptimalSparseAllocationLog2, uint32_t(16)));
   } else {
@@ -134,6 +145,10 @@ void D3D12SharedMemory::Shutdown(bool from_destructor) {
     heap->Release();
   }
   buffer_tiled_heaps_.clear();
+
+  // Released after the buffer, like the tile heaps above - the buffer has to
+  // be detached from it first.
+  ui::d3d12::util::ReleaseAndNull(buffer_null_tile_heap_);
 
   // If calling from the destructor, the SharedMemory destructor will call
   // ShutdownCommon.
@@ -262,6 +277,45 @@ void D3D12SharedMemory::InitializeTraceCompleteDownloads() {
 void D3D12SharedMemory::ResetTraceDownload() {
   ui::d3d12::util::ReleaseAndNull(trace_download_buffer_);
   ReleaseTraceDownloadRanges();
+}
+
+bool D3D12SharedMemory::MapUnallocatedTilesToNullTile() {
+  const ui::d3d12::D3D12Provider& provider =
+      command_processor_.GetD3D12Provider();
+  ID3D12Device* device = provider.GetDevice();
+  ID3D12CommandQueue* direct_queue = provider.GetDirectQueue();
+
+  // One tile, shared by the whole address space. 64 KB for the entire 512 MB
+  // buffer - the cost of this safety net is a rounding error.
+  D3D12_HEAP_DESC heap_desc = {};
+  heap_desc.SizeInBytes = D3D12_TILED_RESOURCE_TILE_SIZE_IN_BYTES;
+  heap_desc.Properties.Type = D3D12_HEAP_TYPE_DEFAULT;
+  // Deliberately NOT create-not-zeroed, unlike the real tile heaps: this one
+  // is only ever touched by accident, and zeros are what a read of nothing
+  // should look like. It is 64 KB, once, so the zeroing costs nothing.
+  heap_desc.Flags = D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS;
+  if (FAILED(device->CreateHeap(&heap_desc,
+                                IID_PPV_ARGS(&buffer_null_tile_heap_)))) {
+    return false;
+  }
+
+  D3D12_TILED_RESOURCE_COORDINATE region_start_coordinates = {};
+  D3D12_TILE_REGION_SIZE region_size;
+  region_size.NumTiles = kBufferSize / D3D12_TILED_RESOURCE_TILE_SIZE_IN_BYTES;
+  region_size.UseBox = false;
+
+  // REUSE_SINGLE_TILE points every tile in the region at the same heap tile,
+  // which is the whole trick - it costs one tile of memory rather than 512 MB.
+  D3D12_TILE_RANGE_FLAGS range_flags =
+      D3D12_TILE_RANGE_FLAG_REUSE_SINGLE_TILE;
+  UINT heap_range_start_offset = 0;
+  UINT range_tile_count = region_size.NumTiles;
+  direct_queue->UpdateTileMappings(
+      buffer_, 1, &region_start_coordinates, &region_size,
+      buffer_null_tile_heap_, 1, &range_flags, &heap_range_start_offset,
+      &range_tile_count, D3D12_TILE_MAPPING_FLAG_NONE);
+  command_processor_.NotifyQueueOperationsDoneDirectly();
+  return true;
 }
 
 bool D3D12SharedMemory::AllocateSparseHostGpuMemoryRange(

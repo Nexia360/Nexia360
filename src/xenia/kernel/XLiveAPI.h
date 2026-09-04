@@ -10,7 +10,9 @@
 #ifndef XENIA_KERNEL_XLIVEAPI_H_
 #define XENIA_KERNEL_XLIVEAPI_H_
 
+#include <atomic>
 #include <condition_variable>
+#include <functional>
 #include <future>
 #include <map>
 #include <mutex>
@@ -65,6 +67,50 @@ using user_settings_map =
 using gamerpics_pair = std::pair<std::vector<uint8_t>, std::vector<uint8_t>>;
 
 namespace kernel {
+
+// One row of the hub's player browser: everyone the hub has seen recently.
+// Player records carry a one-day lifetime server side, so this list is by
+// definition "recently active".
+struct HubPlayer {
+  uint64_t xuid = 0;
+  std::string gamertag;
+  uint32_t title_id = 0;
+  uint32_t state = 0;
+  std::string rich_presence;
+  std::string gamerpic_url;
+};
+
+// One message in the inbox. Text and voice share the envelope; `voice` says
+// which payload it carries. The voice samples are NOT here - a listing would
+// drag every recording across the wire - they are fetched per message when
+// one is played.
+struct HubMessage {
+  std::string id;
+  uint64_t from_xuid = 0;
+  std::string from_name;
+  bool voice = false;
+  bool read = false;
+  std::string text;
+  uint32_t duration_ms = 0;
+  std::string created_at;
+};
+
+// What the notification loop watches: how many of each are waiting unread.
+struct MessageCounts {
+  uint32_t text = 0;
+  uint32_t voice = 0;
+
+  uint32_t total() const { return text + voice; }
+};
+
+// Why a send did not happen. 'Denied' means the hub refused it: messages only
+// travel between friends and players from the last 48 hours, and that rule is
+// enforced there rather than here.
+enum class SendMessageOutcome {
+  kSent,
+  kDenied,
+  kInvalid,
+};
 
 class XLiveAPI {
  public:
@@ -187,6 +233,149 @@ class XLiveAPI {
 
   std::vector<std::unique_ptr<SessionObjectJSON>> GetTitleSessions(
       uint32_t title_id = 0);
+
+  // Player browser. Empty search = recently active, newest first. A non-empty
+  // search matches a gamertag substring, case-insensitively.
+  std::vector<HubPlayer> GetHubPlayers(const std::string& search = "",
+                                       uint32_t limit = 0);
+
+  std::future<std::vector<HubPlayer>> GetHubPlayersAsync(
+      const std::string& search = "", uint32_t limit = 0);
+
+  // Who may add this player as a friend.
+  enum class FriendPrivacy : uint32_t {
+    kAnyone = 0,
+    kFriendsOfFriends = 1,
+    kApproval = 2,
+  };
+
+  // What came back from asking to add someone. The hub decides this from the
+  // target's own setting, so it cannot be bypassed by a modified client.
+  enum class FriendRequestOutcome {
+    kAccepted,
+    kPending,
+  };
+
+  // Publishes our setting and, so the hub can judge a friend-of-friends
+  // request, our friend XUIDs. The hub keeps no friend graph of its own.
+  void PublishFriendPrivacy(uint64_t xuid, FriendPrivacy privacy,
+                            const std::vector<uint64_t>& friends);
+
+  FriendPrivacy GetFriendPrivacy(uint64_t xuid);
+
+  FriendRequestOutcome SendFriendRequest(uint64_t from_xuid, uint64_t to_xuid);
+
+  // Requests waiting for this player to approve or decline.
+  std::vector<HubPlayer> GetIncomingFriendRequests(uint64_t xuid);
+
+  std::future<std::vector<HubPlayer>> GetIncomingFriendRequestsAsync(
+      uint64_t xuid);
+
+  std::future<std::vector<uint64_t>> DrainFriendApprovalsAsync(uint64_t xuid);
+
+  void RespondToFriendRequest(uint64_t xuid, uint64_t from_xuid, bool approve);
+
+  // Approvals addressed to us. Reading consumes them, so each is acted on once.
+  std::vector<uint64_t> DrainFriendApprovals(uint64_t xuid);
+
+  void BlockPlayer(uint64_t xuid, uint64_t target_xuid, bool block = true);
+
+  // Everyone this player has blocked, named so the list can show who they are.
+  std::vector<HubPlayer> GetBlockedPlayers(uint64_t xuid);
+
+  // Everyone this player shared a session with in the last 48 hours, newest
+  // first. The window is the hub's, not ours.
+  std::vector<HubPlayer> GetRecentPlayers(uint64_t xuid);
+
+  std::future<std::vector<HubPlayer>> GetRecentPlayersAsync(uint64_t xuid);
+
+  std::future<std::vector<HubPlayer>> GetBlockedPlayersAsync(uint64_t xuid);
+
+  // ---- Offline identity cache -------------------------------------------
+  // Every player the hub names for us is written to the SeenPlayers table, so
+  // a list can still be shown - with names, and with faces where one was ever
+  // downloaded - when the hub cannot be reached.
+  void RememberPlayers(const std::vector<HubPlayer>& players);
+
+  // The saved players, most recently seen first. Used in place of a hub list
+  // when the request to the hub fails outright.
+  std::vector<HubPlayer> PlayersFromCache(size_t limit = 0);
+
+  // ---- Messages ---------------------------------------------------------
+  // Text and voice mail between friends and recent players. The hub decides
+  // who may send to whom; a refusal comes back as kDenied.
+  SendMessageOutcome SendTextMessage(uint64_t from_xuid, uint64_t to_xuid,
+                                     const std::string& text);
+
+  // Voice mail as signed 16-bit mono PCM at sample_rate, sent as-is. No codec
+  // on either end: playback hands the samples straight to the voice mixer.
+  SendMessageOutcome SendVoiceMessage(uint64_t from_xuid, uint64_t to_xuid,
+                                      const std::vector<int16_t>& pcm,
+                                      uint32_t sample_rate);
+
+  // kind is "text", "voice", or empty for both. Newest first.
+  std::vector<HubMessage> GetMessages(uint64_t xuid, const std::string& kind);
+
+  std::future<std::vector<HubMessage>> GetMessagesAsync(
+      uint64_t xuid, const std::string& kind);
+
+  // The samples of one voice message. False when it is gone or not ours.
+  bool GetMessageAudio(uint64_t xuid, const std::string& id,
+                       std::vector<int16_t>& pcm_out, uint32_t& sample_rate);
+
+  // Unread counts - what the notification loop polls.
+  MessageCounts GetMessageCounts(uint64_t xuid);
+
+  void MarkMessageRead(uint64_t xuid, const std::string& id);
+
+  void DeleteMessage(uint64_t xuid, const std::string& id);
+
+  // The notification loop itself. Started once and left running: it polls the
+  // unread counts on a timer so the Social menu and the fullscreen badge have
+  // something to show without any UI being open. It resolves the signed-in
+  // profile on every tick rather than being told once, so signing in or
+  // switching profiles needs no hook anywhere. Reading the counts costs
+  // nothing - they are plain atomics.
+  void StartMessageNotifications();
+  void StopMessageNotifications();
+
+  // Raised on the poll thread whenever the counts actually change. Set it
+  // before starting the loop; the callee is responsible for getting itself
+  // onto whichever thread it needs.
+  void SetMessageCountsCallback(std::function<void()> callback);
+
+  // The profile the loop is currently watching, or 0 when signed out.
+  uint64_t message_xuid() const {
+    return watched_xuid_.load(std::memory_order_relaxed);
+  }
+
+  MessageCounts message_counts() const {
+    MessageCounts counts;
+    counts.text = unread_text_.load(std::memory_order_relaxed);
+    counts.voice = unread_voice_.load(std::memory_order_relaxed);
+    return counts;
+  }
+
+  // Bumped every time the counts change, so a consumer can tell "nothing new"
+  // from "polled again" without comparing fields.
+  uint32_t message_counts_revision() const {
+    return counts_revision_.load(std::memory_order_relaxed);
+  }
+
+  // Called after the inbox is read so the badge clears immediately instead of
+  // waiting out the poll interval.
+  void RefreshMessageCounts();
+
+  // "Later" on an approval prompt: the request stays on the hub undrained, but
+  // is not shown again for the rest of this run. Deliberately session-scoped
+  // and not persisted, so it comes back on the next launch.
+  void DeferFriendRequest(uint64_t from_xuid) {
+    deferred_friend_requests_.insert(from_xuid);
+  }
+
+  bool IsFriendRequestDeferred(uint64_t from_xuid) const {
+    return deferred_friend_requests_.count(from_xuid) != 0;
+  }
 
   const std::vector<std::unique_ptr<SessionObjectJSON>> SessionSearch(
       XGI_SESSION_SEARCH* data, uint32_t num_users);
@@ -454,6 +643,11 @@ class XLiveAPI {
   }
 
  private:
+  // Friend requests the player answered with "Later". Held in memory only and
+  // never written anywhere, so they are shown again on the next launch. The
+  // hub still has them - "Later" answers nothing.
+  std::unordered_set<uint64_t> deferred_friend_requests_;
+
   // The LOCAL bound port of the player (VDP) socket. Set from the actual bind
   // in XSocket::Bind - never hardcoded. ports.json (DownloadPortMappings)
   // supplies the guest->external mapping that GetPlayerPort() resolves this
@@ -501,6 +695,23 @@ class XLiveAPI {
   void StopQoSWorker();
 
   std::future<sockaddr_in> whoami_result_;
+
+  // ---- Message notification loop ----------------------------------------
+  // One thread, sleeping on a condition variable so a shutdown or a manual
+  // refresh does not wait out the interval.
+  void MessageNotificationMain();
+
+  std::thread message_poll_thread_;
+  std::mutex message_poll_mutex_;
+  std::condition_variable message_poll_cv_;
+  bool message_poll_running_ = false;
+  bool message_poll_wake_ = false;
+  std::function<void()> counts_callback_;
+
+  std::atomic<uint64_t> watched_xuid_{0};
+  std::atomic<uint32_t> unread_text_{0};
+  std::atomic<uint32_t> unread_voice_{0};
+  std::atomic<uint32_t> counts_revision_{0};
 
   std::map<uint32_t, std::vector<uint8_t>> cached_gamerpics = {};
 

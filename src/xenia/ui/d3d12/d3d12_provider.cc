@@ -19,6 +19,15 @@
 #include "xenia/ui/d3d12/d3d12_util.h"
 DEFINE_bool(d3d12_debug, false, "Enable Direct3D 12 and DXGI debug layer.",
             "D3D12");
+DEFINE_bool(
+    d3d12_dred, true,
+    "Enable Direct3D 12 Device Removed Extended Data. On a lost device this "
+    "reports the address that faulted and the last commands the GPU actually "
+    "ran, instead of only that the device is gone. On by default: a device "
+    "loss that explains itself is worth more than the small cost of the "
+    "breadcrumbs, and it costs nothing at all until something goes wrong. "
+    "Set to false if you suspect it of costing frames.",
+    "D3D12");
 DEFINE_bool(d3d12_break_on_error, false,
             "Break on Direct3D 12 validation errors.", "D3D12");
 DEFINE_bool(d3d12_break_on_warning, false,
@@ -237,6 +246,21 @@ bool D3D12Provider::Initialize() {
             DXGI_DEBUG_ALL, DXGI_INFO_QUEUE_MESSAGE_SEVERITY_WARNING, true);
       }
       dxgi_info_queue->Release();
+    }
+  }
+
+  // Turn on device-removal breadcrumbs before the device exists - after it is
+  // created it is too late for these to be recorded.
+  if (cvars::d3d12_dred) {
+    ID3D12DeviceRemovedExtendedDataSettings* dred_settings;
+    if (SUCCEEDED(
+            pfn_d3d12_get_debug_interface_(IID_PPV_ARGS(&dred_settings)))) {
+      dred_settings->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+      dred_settings->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+      dred_settings->Release();
+      XELOGI("Direct3D 12 Device Removed Extended Data enabled");
+    } else {
+      XELOGW("Failed to enable Device Removed Extended Data");
     }
   }
 

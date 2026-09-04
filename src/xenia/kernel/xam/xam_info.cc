@@ -9,14 +9,18 @@
 
 #include <cstddef>
 #include <cstring>
+#include <filesystem>
 #include <unordered_map>
 #include <unordered_set>
 
 #include "xenia/base/clock.h"
 #include "xenia/base/cvar.h"
+#include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/string.h"
 #include "xenia/base/string_util.h"
+#include "xenia/base/system.h"
+#include "xenia/base/utf8.h"
 #include "xenia/config.h"
 #include "xenia/kernel/XLiveAPI.h"
 #include "xenia/kernel/kernel_state.h"
@@ -590,6 +594,35 @@ dword_result_t XamLoaderGetLaunchData_entry(lpvoid_t buffer_ptr,
 }
 DECLARE_XAM_EXPORT1(XamLoaderGetLaunchData, kNone, kSketchy);
 
+// Is there launch data sitting next to the executable for the next run to
+// pick up? Matches launch*.bin rather than just the kernel's own
+// launch_data.bin, so a file dropped in by anything else driving a launch
+// counts too.
+static bool HasPendingLaunchData() {
+  std::error_code error;
+  const std::filesystem::path folder = xe::filesystem::GetExecutableFolder();
+
+  for (const auto& entry :
+       std::filesystem::directory_iterator(folder, error)) {
+    if (error) {
+      break;
+    }
+
+    if (!entry.is_regular_file(error) || error) {
+      continue;
+    }
+
+    const std::string name =
+        xe::utf8::lower_ascii(xe::path_to_utf8(entry.path().filename()));
+
+    if (name.starts_with("launch") && name.ends_with(".bin")) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 void XamLoaderLaunchTitle_entry(lpstring_t raw_name_ptr, dword_t flags) {
   auto xam = kernel_state()->GetKernelModule<XamModule>("xam.xex");
 
@@ -628,6 +661,18 @@ void XamLoaderLaunchTitle_entry(lpstring_t raw_name_ptr, dword_t flags) {
             }
 
             config::SaveConfig();
+
+            // The launch data written above is only read at startup, so the
+            // switch the guest asked for needs another run of the emulator.
+            // Start one before going away, so the user does not have to.
+            //
+            // This is the exit that actually happens for a title switch: the
+            // quick_exit below leaves from a detached thread, so none of the
+            // app's own shutdown - and nothing hooked into it - ever runs.
+            if (HasPendingLaunchData()) {
+              xe::LaunchSelf();
+            }
+
             xe::FlushLog();
 
             std::quick_exit(0);

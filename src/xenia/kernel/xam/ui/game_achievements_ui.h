@@ -43,6 +43,8 @@ class GameAchievementsUI final : public XamDialog {
 
  private:
   bool show_locked_info_ = false;
+  bool has_opened_ = false;
+  bool pending_close_ = false;
 
   uint64_t window_id_;
   const ImVec2 drawing_position_ = {};

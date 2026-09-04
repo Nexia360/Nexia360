@@ -35,8 +35,23 @@ namespace xe {
 namespace app {
 
 void NetplaySettingsDialog::OnDraw(ImGuiIO& io) {
+  auto* drawer = imgui_drawer();
+  auto* focus_manager = drawer->GetFocusManager();
+
+  // Wait for button release before closing to prevent input bleed
+  if (pending_close_) {
+    if (!drawer->IsAnyGamepadActionPressed()) {
+      focus_manager->UIDropFocus("NetplaySettingsDialog");
+      Close();
+      ImGui::CloseCurrentPopup();
+      emulator_window_->ToggleNetplaySettingsDialog();
+    }
+    return;
+  }
+
   if (!dialog_opened_) {
     dialog_opened_ = true;
+    focus_manager->UISetFocus("NetplaySettingsDialog");
     ImGui::OpenPopup("Netplay Settings");
   }
 
@@ -50,6 +65,19 @@ void NetplaySettingsDialog::OnDraw(ImGuiIO& io) {
   if (ImGui::BeginPopupModal(
           "Netplay Settings", &dialog_opened_,
           ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+    // Get input only if we have focus
+    const auto& input = focus_manager->XamInputFocus("NetplaySettingsDialog");
+
+    // Only close this dialog when no nested popup is up, otherwise B would
+    // dismiss the nested popup and this dialog in the same press.
+    const bool nested_popup_open = ImGui::IsPopupOpen("Remove API Address") ||
+                                   ImGui::IsPopupOpen("API Addresses");
+
+    if (!nested_popup_open && input.ShouldClose()) {
+      dialog_opened_ = false;
+      pending_close_ = true;
+    }
+
     ImGui::SetWindowFontScale(1.05f);
 
     const auto emulator = emulator_window_->emulator();
@@ -314,7 +342,7 @@ void NetplaySettingsDialog::OnDraw(ImGuiIO& io) {
     ImGui::SetNextWindowSizeConstraints(ImVec2(225, 90), ImVec2(225, 90));
     if (ImGui::BeginPopupModal("Remove API Address", nullptr,
                                ImGuiWindowFlags_AlwaysAutoResize)) {
-      if (ImGui::IsKeyPressed(ImGuiKey::ImGuiKey_GamepadFaceRight, false)) {
+      if (input.ShouldClose()) {
         ImGui::CloseCurrentPopup();
       }
 
@@ -356,8 +384,7 @@ void NetplaySettingsDialog::OnDraw(ImGuiIO& io) {
     ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     if (ImGui::BeginPopupModal("API Addresses", &add_api_address_dialog_open_,
                                ImGuiWindowFlags_AlwaysAutoResize)) {
-      if (!add_address_context_open_ &&
-          ImGui::IsKeyPressed(ImGuiKey::ImGuiKey_GamepadFaceRight, false)) {
+      if (!add_address_context_open_ && input.ShouldClose()) {
         ImGui::CloseCurrentPopup();
       }
 
@@ -377,8 +404,7 @@ void NetplaySettingsDialog::OnDraw(ImGuiIO& io) {
         ImGui::SetTooltip("Right Click/Gamepad A");
       }
 
-      if (ImGui::IsItemFocused() &&
-          ImGui::IsKeyPressed(ImGuiKey::ImGuiKey_GamepadFaceDown, false)) {
+      if (ImGui::IsItemFocused() && input.Activated()) {
         ImGui::OpenPopup("##AddAddressContexts");
       }
 
@@ -426,7 +452,8 @@ void NetplaySettingsDialog::OnDraw(ImGuiIO& io) {
     ImGui::EndPopup();
   }
 
-  if (!dialog_opened_) {
+  if (!dialog_opened_ && !pending_close_) {
+    focus_manager->UIDropFocus("NetplaySettingsDialog");
     Close();
     ImGui::CloseCurrentPopup();
     emulator_window_->ToggleNetplaySettingsDialog();
@@ -532,8 +559,23 @@ void NetplaySettingsDialog::ActivateDiscordState(bool state) {
 }
 
 void NetplayStatusDialog::OnDraw(ImGuiIO& io) {
+  auto* drawer = imgui_drawer();
+  auto* focus_manager = drawer->GetFocusManager();
+
+  // Wait for button release before closing to prevent input bleed
+  if (pending_close_) {
+    if (!drawer->IsAnyGamepadActionPressed()) {
+      focus_manager->UIDropFocus("NetplayStatusDialog");
+      Close();
+      ImGui::CloseCurrentPopup();
+      emulator_window_->ToggleNetplayStatusDialog();
+    }
+    return;
+  }
+
   if (!dialog_opened_) {
     dialog_opened_ = true;
+    focus_manager->UISetFocus("NetplayStatusDialog");
     ImGui::OpenPopup("Netplay Status");
   }
 
@@ -545,8 +587,12 @@ void NetplayStatusDialog::OnDraw(ImGuiIO& io) {
   if (ImGui::BeginPopupModal(
           "Netplay Status", &dialog_opened_,
           ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
-    if (ImGui::IsKeyPressed(ImGuiKey::ImGuiKey_GamepadFaceRight, false)) {
-      ImGui::CloseCurrentPopup();
+    // Get input only if we have focus
+    const auto& input = focus_manager->XamInputFocus("NetplayStatusDialog");
+
+    if (input.ShouldClose()) {
+      dialog_opened_ = false;
+      pending_close_ = true;
     }
 
     ImGui::SetWindowFontScale(1.10f);
@@ -629,7 +675,8 @@ void NetplayStatusDialog::OnDraw(ImGuiIO& io) {
     ImGui::EndPopup();
   }
 
-  if (!dialog_opened_) {
+  if (!dialog_opened_ && !pending_close_) {
+    focus_manager->UIDropFocus("NetplayStatusDialog");
     Close();
     ImGui::CloseCurrentPopup();
     emulator_window_->ToggleNetplayStatusDialog();

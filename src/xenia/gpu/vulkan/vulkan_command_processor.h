@@ -861,8 +861,7 @@ class VulkanCommandProcessor final : public CommandProcessor {
     VkDeviceMemory memory;
     uint64_t submission;
   };
-  std::vector<PendingResolveContractDestroy>
-      resolve_contracts_pending_destroy_;
+  std::vector<PendingResolveContractDestroy> resolve_contracts_pending_destroy_;
 
   static std::pair<uint32_t, uint32_t> ResolveContractInvalidationCallbackThunk(
       void* context_ptr, uint32_t physical_address_start, uint32_t length,

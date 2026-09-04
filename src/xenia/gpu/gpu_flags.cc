@@ -111,6 +111,18 @@ DEFINE_bool(gpu_3d_to_2d_texture, true,
             "texture from slice 0 of the guest memory.",
             "GPU");
 
+DEFINE_int32(
+    shader_control_flow_limit, 65536,
+    "Maximum number of control flow iterations a single translated shader "
+    "invocation may run before it gives up and returns whatever it has. Guest "
+    "control flow has no guarantee of terminating, and a shader that does not "
+    "terminate hangs the GPU until the device is lost. Note that this is per "
+    "invocation - a limit that looks small is still multiplied by every pixel "
+    "in the draw, so a value in the hundreds is what actually prevents a "
+    "timeout, while real shaders never come close to it. 0 disables the "
+    "limit entirely (the old behaviour: a runaway shader kills the device).",
+    "GPU");
+
 DEFINE_bool(
     async_shader_compilation, true,
     "Compile shaders and create pipelines asynchronously in background "

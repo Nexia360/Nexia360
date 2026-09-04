@@ -8,6 +8,8 @@
  */
 
 #include <map>
+#include "xenia/base/filesystem.h"
+#include "xenia/base/logging.h"
 #include "xenia/base/platform_win.h"
 #include "xenia/base/string.h"
 #include "xenia/base/system.h"
@@ -18,6 +20,27 @@ void LaunchWebBrowser(const std::string_view url) {
   auto wide_url = xe::to_utf16(url);
   ShellExecuteW(nullptr, L"open", reinterpret_cast<LPCWSTR>(wide_url.c_str()),
                 nullptr, nullptr, SW_SHOWNORMAL);
+}
+
+void LaunchSelf() {
+  const std::filesystem::path executable = xe::filesystem::GetExecutablePath();
+  const std::filesystem::path folder = xe::filesystem::GetExecutableFolder();
+
+  XELOGI("Relaunching: {}", xe::path_to_utf8(executable));
+
+  // SEE_MASK_NOASYNC because the caller is on its way out: without it the
+  // shell call can be abandoned when this process dies, and nothing starts.
+  SHELLEXECUTEINFOW info = {};
+  info.cbSize = sizeof(info);
+  info.fMask = SEE_MASK_NOASYNC;
+  info.lpVerb = L"open";
+  info.lpFile = reinterpret_cast<LPCWSTR>(executable.c_str());
+  info.lpDirectory = reinterpret_cast<LPCWSTR>(folder.c_str());
+  info.nShow = SW_SHOWNORMAL;
+
+  if (!ShellExecuteExW(&info)) {
+    XELOGE("Relaunch failed: {:08X}", GetLastError());
+  }
 }
 
 void LaunchFileExplorer(const std::filesystem::path& url) {

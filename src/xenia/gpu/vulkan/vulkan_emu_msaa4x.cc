@@ -80,8 +80,8 @@ void VulkanEmuMsaa4x::Shutdown() {
   linear_blit_supported_ = false;
 }
 
-bool VulkanEmuMsaa4x::Resolve(VkImage source, VkImage dest,
-                              uint32_t dest_width, uint32_t dest_height) {
+bool VulkanEmuMsaa4x::Resolve(VkImage source, VkImage dest, uint32_t dest_width,
+                              uint32_t dest_height) {
   if (!active_ || source == VK_NULL_HANDLE || dest == VK_NULL_HANDLE ||
       !dest_width || !dest_height) {
     return false;

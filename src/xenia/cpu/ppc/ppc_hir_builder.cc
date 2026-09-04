@@ -292,14 +292,14 @@ void PPCHIRBuilder::MaybeMilestone(uint32_t address) {
   // Sticky bit: `milestone` alone is useless for anything transient, because it
   // only keeps the last address written. OR into a mask so "was this branch
   // ever taken" survives no matter what runs afterwards.
-  StoreContext(
-      offsetof(PPCContext, milestone_mask),
-      Or(LoadContext(offsetof(PPCContext, milestone_mask), INT32_TYPE),
-         LoadConstantUint32(1u << index)));
+  StoreContext(offsetof(PPCContext, milestone_mask),
+               Or(LoadContext(offsetof(PPCContext, milestone_mask), INT32_TYPE),
+                  LoadConstantUint32(1u << index)));
   StoreContext(offsetof(PPCContext, milestone), LoadConstantUint32(address));
-  StoreContext(offsetof(PPCContext, milestone_count),
-               Add(LoadContext(offsetof(PPCContext, milestone_count), INT32_TYPE),
-                   LoadConstantUint32(1)));
+  StoreContext(
+      offsetof(PPCContext, milestone_count),
+      Add(LoadContext(offsetof(PPCContext, milestone_count), INT32_TYPE),
+          LoadConstantUint32(1)));
 }
 
 void PPCHIRBuilder::MaybeBreakOnInstruction(uint32_t address) {

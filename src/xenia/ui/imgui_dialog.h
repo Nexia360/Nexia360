@@ -36,6 +36,11 @@ class ImGuiDialog {
 
   bool IsClosing() const { return has_close_pending_; }
 
+  // Is this the top of the drawer's dialog stack? A modal dialog that is not
+  // on top has had a child opened over it and must stop drawing until that
+  // child closes and pops off.
+  bool IsTopmostDialog() const;
+
  protected:
   ImGuiDialog(ImGuiDrawer* imgui_drawer);
 

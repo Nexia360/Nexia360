@@ -17,6 +17,7 @@
 #include "xenia/base/cvar.h"
 #include "xenia/base/math.h"
 #include "xenia/gpu/dxbc_shader.h"
+#include "xenia/gpu/gpu_flags.h"
 #include "xenia/gpu/xenos.h"
 #include "xenia/ui/graphics_provider.h"
 
@@ -970,6 +971,9 @@ void DxbcShaderTranslator::StartTranslation() {
     system_temp_loop_count_ = PushSystemTemp(0b1111);
     system_temp_grad_h_lod_ = PushSystemTemp(0b1111);
     system_temp_grad_v_vfetch_address_ = PushSystemTemp(0b1111);
+    // .x counts iterations of the control flow loop below, .y is scratch for
+    // the limit test. Zeroed - it has to start counting from nothing.
+    system_temp_control_flow_iterations_ = PushSystemTemp(0b0011);
   }
 
   // Write stage-specific prologue.
@@ -986,6 +990,29 @@ void DxbcShaderTranslator::StartTranslation() {
 
   // Start the main loop (for jumping to labels by setting pc and continuing).
   a_.OpLoop();
+
+  // Guest control flow drives this loop: a jump sets pc and continues. Nothing
+  // in the guest program guarantees that ever terminates, and a shader that
+  // does not terminate does not fail - it hangs the GPU until Windows resets
+  // the device, taking the emulator with it (DXGI_ERROR_DEVICE_HUNG).
+  //
+  // So it is bounded. The limit is far above anything real shader control flow
+  // reaches, so a shader that hits it was never going to finish; it leaves
+  // with whatever it has, drawing wrong pixels instead of killing the device.
+  if (!is_depth_only_pixel_shader_ && cvars::shader_control_flow_limit > 0) {
+    a_.OpIAdd(dxbc::Dest::R(system_temp_control_flow_iterations_, 0b0001),
+              dxbc::Src::R(system_temp_control_flow_iterations_,
+                           dxbc::Src::kXXXX),
+              dxbc::Src::LU(1));
+    a_.OpUGE(dxbc::Dest::R(system_temp_control_flow_iterations_, 0b0010),
+             dxbc::Src::R(system_temp_control_flow_iterations_,
+                          dxbc::Src::kXXXX),
+             dxbc::Src::LU(uint32_t(cvars::shader_control_flow_limit)));
+    a_.OpIf(true, dxbc::Src::R(system_temp_control_flow_iterations_,
+                               dxbc::Src::kYYYY));
+    a_.OpBreak();
+    a_.OpEndIf();
+  }
   // Switch and the first label (pc == 0).
   if (UseSwitchForControlFlow()) {
     a_.OpSwitch(dxbc::Src::R(system_temp_ps_pc_p0_a0_, dxbc::Src::kYYYY));
@@ -1137,7 +1164,8 @@ void DxbcShaderTranslator::CompleteShaderCode() {
     // - system_temp_loop_count_.
     // - system_temp_grad_h_lod_.
     // - system_temp_grad_v_vfetch_address_.
-    PopSystemTemp(6);
+    // - system_temp_control_flow_iterations_.
+    PopSystemTemp(7);
   }
 
   uint8_t memexport_eM_written = current_shader().memexport_eM_written();

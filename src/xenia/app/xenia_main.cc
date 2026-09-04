@@ -628,6 +628,15 @@ void EmulatorApp::OnDestroy() {
   // Write all cvar overrides to the config.
   config::SaveConfig();
 
+  // A game that asked to switch mode wrote its launch data and terminated,
+  // and that data is only ever read at startup - so the switch needs another
+  // run of the emulator to happen at all. Done here, at the very end: the
+  // config is already written and the hub sessions and port reservations are
+  // already handed back, so the new instance never races this one for them.
+  if (emulator_window_ && emulator_window_->ShouldRelaunchOnExit()) {
+    emulator_window_->RelaunchForPendingLaunchData();
+  }
+
   // TODO(DrChat): Remove this code and do a proper exit.
   XELOGI("Cheap-skate exit!");
 

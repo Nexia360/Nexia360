@@ -30,6 +30,12 @@
 #include "xenia/ui/d3d12/d3d12_presenter.h"
 #include "xenia/ui/d3d12/d3d12_util.h"
 
+DEFINE_bool(
+    d3d12_log_draw_breadcrumbs, false,
+    "Log every draw with the DRED breadcrumb index it will have, so the "
+    "operation named by a device loss can be matched back to the draw that "
+    "hung. A line per draw - only useful while chasing a lost device.",
+    "D3D12");
 DEFINE_bool(d3d12_bindless, true,
             "Use bindless resources where available - may improve performance, "
             "but may make debugging more complicated.",
@@ -2918,6 +2924,17 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
       shared_memory_->UseForWriting();
     }
     SubmitBarriers();
+    if (cvars::d3d12_log_draw_breadcrumbs) {
+      XELOGI(
+          "Draw breadcrumb {}: non-indexed, {} vertices, tessellated {}, "
+          "primitive type {}, VS {:016X}, PS {:016X}",
+          deferred_command_list_.next_breadcrumb_index(),
+          primitive_processing_result.host_draw_vertex_count,
+          primitive_processing_result.IsTessellated() ? 1 : 0,
+          uint32_t(primitive_processing_result.host_primitive_type),
+          vertex_shader ? vertex_shader->ucode_data_hash() : 0,
+          pixel_shader ? pixel_shader->ucode_data_hash() : 0);
+    }
     deferred_command_list_.D3DDrawInstanced(
         primitive_processing_result.host_draw_vertex_count, 1, 0, 0);
   } else {
@@ -2983,6 +3000,20 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
       shared_memory_->UseForReading();
     }
     SubmitBarriers();
+    // When a device loss reports which breadcrumb operation never completed,
+    // this is what turns that number back into a draw. Off by default - it is
+    // a line per draw.
+    if (cvars::d3d12_log_draw_breadcrumbs) {
+      XELOGI(
+          "Draw breadcrumb {}: indexed, {} vertices, tessellated {}, "
+          "primitive type {}, VS {:016X}, PS {:016X}",
+          deferred_command_list_.next_breadcrumb_index(),
+          primitive_processing_result.host_draw_vertex_count,
+          primitive_processing_result.IsTessellated() ? 1 : 0,
+          uint32_t(primitive_processing_result.host_primitive_type),
+          vertex_shader ? vertex_shader->ucode_data_hash() : 0,
+          pixel_shader ? pixel_shader->ucode_data_hash() : 0);
+    }
     deferred_command_list_.D3DDrawIndexedInstanced(
         primitive_processing_result.host_draw_vertex_count, 1, 0, 0, 0);
     if (scratch_index_buffer != nullptr) {
@@ -3006,11 +3037,44 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
     }
     if (GetGPUSetting(GPUSetting::ReadbackMemexport)) {
       // Read the exported data on the CPU.
-      uint32_t memexport_total_size = 0;
+      //
+      // The ranges come from guest shader constants: base_address is 30 bits
+      // (a physical address >> 2, so up to ~4 GB) and index_count is 23 bits,
+      // so a stream can name memory far outside the 512 MB shared memory
+      // buffer. RangeWrittenByGpu above clamps for exactly that reason, and
+      // these copies have to agree with it - an unclamped CopyBufferRegion
+      // reads past the end of the buffer, and a GPU page fault is reported as
+      // device removal ("graphics device lost"). The same range is also used
+      // to write back into guest memory below, where an out-of-range address
+      // would corrupt the host heap instead.
+      struct ReadbackRange {
+        uint32_t source_offset;
+        uint32_t size;
+      };
+      std::vector<ReadbackRange> readback_ranges;
+      readback_ranges.reserve(memexport_ranges_.size());
+      // Widened: a 32-bit sum of ranges this large can wrap, and a total
+      // smaller than the copies would overrun the destination buffer.
+      uint64_t memexport_total_size_wide = 0;
       for (const draw_util::MemExportRange& memexport_range :
            memexport_ranges_) {
-        memexport_total_size += memexport_range.size_bytes;
+        uint32_t source_offset = memexport_range.base_address_dwords << 2;
+        if (!memexport_range.size_bytes ||
+            source_offset >= SharedMemory::kBufferSize) {
+          continue;
+        }
+        uint32_t size = std::min(memexport_range.size_bytes,
+                                 SharedMemory::kBufferSize - source_offset);
+        readback_ranges.push_back({source_offset, size});
+        memexport_total_size_wide += size;
       }
+      if (memexport_total_size_wide > UINT32_MAX) {
+        XELOGE("Memexport readback of {} bytes is too large, skipping",
+               memexport_total_size_wide);
+        memexport_total_size_wide = 0;
+      }
+      uint32_t memexport_total_size =
+          static_cast<uint32_t>(memexport_total_size_wide);
       if (memexport_total_size != 0) {
         ID3D12Resource* readback_buffer =
             RequestReadbackBuffer(memexport_total_size);
@@ -3019,13 +3083,11 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
           SubmitBarriers();
           ID3D12Resource* shared_memory_buffer = shared_memory_->GetBuffer();
           uint32_t readback_buffer_offset = 0;
-          for (const draw_util::MemExportRange& memexport_range :
-               memexport_ranges_) {
-            uint32_t memexport_range_size = memexport_range.size_bytes;
+          for (const ReadbackRange& readback_range_entry : readback_ranges) {
             deferred_command_list_.D3DCopyBufferRegion(
                 readback_buffer, readback_buffer_offset, shared_memory_buffer,
-                memexport_range.base_address_dwords << 2, memexport_range_size);
-            readback_buffer_offset += memexport_range_size;
+                readback_range_entry.source_offset, readback_range_entry.size);
+            readback_buffer_offset += readback_range_entry.size;
           }
           if (AwaitAllQueueOperationsCompletion()) {
             D3D12_RANGE readback_range;
@@ -3036,12 +3098,12 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
                                                &readback_mapping))) {
               const uint8_t* readback_bytes =
                   reinterpret_cast<const uint8_t*>(readback_mapping);
-              for (const draw_util::MemExportRange& memexport_range :
-                   memexport_ranges_) {
-                std::memcpy(memory_->TranslatePhysical(
-                                memexport_range.base_address_dwords << 2),
-                            readback_bytes, memexport_range.size_bytes);
-                readback_bytes += memexport_range.size_bytes;
+              for (const ReadbackRange& readback_range_entry :
+                   readback_ranges) {
+                std::memcpy(
+                    memory_->TranslatePhysical(readback_range_entry.source_offset),
+                    readback_bytes, readback_range_entry.size);
+                readback_bytes += readback_range_entry.size;
               }
               D3D12_RANGE readback_write_range = {};
               readback_buffer->Unmap(0, &readback_write_range);
@@ -3386,7 +3448,8 @@ ID3D12Resource* D3D12CommandProcessor::AcquireResolveForGpu(
   // interval tree here.
   for (auto& contract_pair : resolve_contracts_) {
     ResolveContract& contract = contract_pair.second;
-    if (!contract.buffer || !contract.length || guest_base < contract.guest_base) {
+    if (!contract.buffer || !contract.length ||
+        guest_base < contract.guest_base) {
       continue;
     }
     uint32_t offset = guest_base - contract.guest_base;
@@ -3399,7 +3462,8 @@ ID3D12Resource* D3D12CommandProcessor::AcquireResolveForGpu(
     bool covered = false;
     for (const auto& run : contract.valid_runs) {
       uint32_t run_end = run.first + run.second;
-      if (offset >= run.first && offset < run_end && length <= run_end - offset) {
+      if (offset >= run.first && offset < run_end &&
+          length <= run_end - offset) {
         covered = true;
         break;
       }
@@ -3528,6 +3592,64 @@ void D3D12CommandProcessor::CheckSubmissionCompletion(
   PumpQueryResolves();
 }
 
+// Dumps whatever DRED recorded, if it was enabled (d3d12_dred). Without it
+// a lost device gives no more than a status code; with it, the address that
+// faulted and the last commands the GPU actually completed are known.
+void D3D12CommandProcessor::ReportDeviceRemovedExtendedData() {
+  ID3D12Device* device = GetD3D12Provider().GetDevice();
+
+  ID3D12DeviceRemovedExtendedData* dred;
+  if (FAILED(device->QueryInterface(IID_PPV_ARGS(&dred)))) {
+    XELOGE(
+        "Device Removed Extended Data is not available - set d3d12_dred = "
+        "true and reproduce to find out what the GPU was doing");
+    return;
+  }
+
+  D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT breadcrumbs;
+  if (SUCCEEDED(dred->GetAutoBreadcrumbsOutput(&breadcrumbs))) {
+    const D3D12_AUTO_BREADCRUMB_NODE* node = breadcrumbs.pHeadAutoBreadcrumbNode;
+    uint32_t node_index = 0;
+    while (node != nullptr && node_index < 8) {
+      // The count is what the GPU finished; anything after it in the list was
+      // recorded but never completed, so the fault is at that boundary.
+      uint32_t completed =
+          node->pLastBreadcrumbValue ? *node->pLastBreadcrumbValue : 0;
+      XELOGE("DRED breadcrumb node {}: {} of {} operations completed",
+             node_index, completed, node->BreadcrumbCount);
+      for (uint32_t i = completed;
+           i < node->BreadcrumbCount && i < completed + 4; ++i) {
+        XELOGE("  did not complete: op {} (D3D12_AUTO_BREADCRUMB_OP {})", i,
+               uint32_t(node->pCommandHistory[i]));
+      }
+      node = node->pNext;
+      ++node_index;
+    }
+  }
+
+  D3D12_DRED_PAGE_FAULT_OUTPUT page_fault;
+  if (SUCCEEDED(dred->GetPageFaultAllocationOutput(&page_fault))) {
+    XELOGE("DRED page fault at GPU virtual address 0x{:016X}",
+           uint64_t(page_fault.PageFaultVA));
+    for (const D3D12_DRED_ALLOCATION_NODE* allocation =
+             page_fault.pHeadExistingAllocationNode;
+         allocation != nullptr; allocation = allocation->pNext) {
+      XELOGE("  live allocation at the faulting address: type {}",
+             uint32_t(allocation->AllocationType));
+    }
+    for (const D3D12_DRED_ALLOCATION_NODE* allocation =
+             page_fault.pHeadRecentFreedAllocationNode;
+         allocation != nullptr; allocation = allocation->pNext) {
+      // A freed allocation here is the answer: something was released while
+      // the GPU was still using it.
+      XELOGE("  RECENTLY FREED allocation at the faulting address: type {}",
+             uint32_t(allocation->AllocationType));
+    }
+  }
+
+  dred->Release();
+}
+
 bool D3D12CommandProcessor::BeginSubmission(bool is_guest_command) {
 #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
@@ -3547,6 +3669,37 @@ bool D3D12CommandProcessor::BeginSubmission(bool is_guest_command) {
   HRESULT device_removed_reason = device->GetDeviceRemovedReason();
   if (FAILED(device_removed_reason)) {
     device_removed_ = true;
+    // The reason used to be reduced to a bool and thrown away, so a lost
+    // device said nothing about why. These four are very different problems -
+    // a hang is our command stream taking too long, a removal is usually a
+    // bad access, an internal error is the driver's own fault - and the log
+    // is the only place the difference is ever visible.
+    const char* reason_name;
+    switch (device_removed_reason) {
+      case DXGI_ERROR_DEVICE_HUNG:
+        reason_name = "DXGI_ERROR_DEVICE_HUNG (the GPU timed out on our work)";
+        break;
+      case DXGI_ERROR_DEVICE_REMOVED:
+        reason_name = "DXGI_ERROR_DEVICE_REMOVED (invalid GPU access, or the "
+                      "adapter was physically removed or reset)";
+        break;
+      case DXGI_ERROR_DEVICE_RESET:
+        reason_name = "DXGI_ERROR_DEVICE_RESET";
+        break;
+      case DXGI_ERROR_DRIVER_INTERNAL_ERROR:
+        reason_name = "DXGI_ERROR_DRIVER_INTERNAL_ERROR (a driver bug)";
+        break;
+      case DXGI_ERROR_INVALID_CALL:
+        reason_name = "DXGI_ERROR_INVALID_CALL (we asked for something illegal)";
+        break;
+      default:
+        reason_name = "unrecognized";
+        break;
+    }
+    XELOGE("Direct3D 12 device lost: {} (0x{:08X})", reason_name,
+           uint32_t(device_removed_reason));
+    ReportDeviceRemovedExtendedData();
+    xe::FlushLog();
     graphics_system_->OnHostGpuLossFromAnyThread(device_removed_reason !=
                                                  DXGI_ERROR_DEVICE_REMOVED);
     return false;

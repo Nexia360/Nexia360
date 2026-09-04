@@ -39,6 +39,13 @@ void ImGuiDialog::Close() { has_close_pending_ = true; }
 
 ImGuiIO& ImGuiDialog::GetIO() { return imgui_drawer()->GetIO(); }
 
+bool ImGuiDialog::IsTopmostDialog() const {
+  // The stack is the drawer's dialog list: last opened is on top. A child
+  // closing pops itself on the same frame it is removed, so its parent is
+  // top again on the next one.
+  return imgui_drawer()->GetTopDialog() == this;
+}
+
 void ImGuiDialog::Draw() {
   // Draw UI.
   if (!has_close_pending_) {

@@ -14,6 +14,7 @@
 #include <ranges>
 
 #include "third_party/imgui/imgui.h"
+#include "third_party/imgui/imgui_internal.h"
 #include "xenia/base/assert.h"
 #include "xenia/base/clock.h"
 #include "xenia/base/logging.h"
@@ -90,6 +91,11 @@ void ImGuiDrawer::AddDialog(ImGuiDialog* dialog) {
       dialogs_.cend()) {
     return;
   }
+
+  // A dialog just appeared. Everything the pad reports is a leftover from
+  // whatever opened it, so shut the gate: no input reaches ImGui or any dialog
+  // until the controller is completely idle - no buttons, no triggers.
+  CloseInputGate();
   if (dialogs_.empty() && !IsDrawingDialogs()) {
     // First dialog added. !IsDrawingDialogs() is also checked because in a
     // situation of removing the only dialog, then adding a dialog, from within
@@ -712,6 +718,21 @@ void ImGuiDrawer::Draw(UIDrawContext& ui_draw_context) {
   }
   dialog_loop_next_index_ = SIZE_MAX;
 
+  // A nested popup (ImGui::OpenPopup from inside a dialog that is already up)
+  // never goes through AddDialog, so watch the popup stack directly: any time
+  // it grows, something opened, and the button that opened it must not be able
+  // to act inside it. This covers every modal in one place, no matter who
+  // opened it.
+  {
+    ImGuiContext* imgui_context = ImGui::GetCurrentContext();
+    const int open_popup_count =
+        imgui_context ? imgui_context->OpenPopupStack.Size : 0;
+    if (open_popup_count > last_open_popup_count_) {
+      CloseInputGate();
+    }
+    last_open_popup_count_ = open_popup_count;
+  }
+
   // Nexia: auto-show the on-screen keyboard when a text field becomes active.
   CheckAndShowKeyboardForTextInput();
 
@@ -1082,6 +1103,47 @@ void ImGuiDrawer::PollXInput() {
                               lb_pressed || rb_pressed || ls_pressed ||
                               rs_pressed || lt_pressed || rt_pressed;
 
+    // THE GATE. A dialog opening shuts it; nothing but a completely idle
+    // controller opens it again. While shut, every button, trigger and stick
+    // reads as untouched - ImGui is told nothing and the focus manager is fed
+    // zeros - so the press that opened the dialog cannot activate anything in
+    // it, no matter how long it is held or which button it was.
+    const WORD dpad_mask =
+        XINPUT_GAMEPAD_DPAD_UP | XINPUT_GAMEPAD_DPAD_DOWN |
+        XINPUT_GAMEPAD_DPAD_LEFT | XINPUT_GAMEPAD_DPAD_RIGHT;
+    const float gate_stick_deadzone = 0.3f;
+    const bool sticks_deflected =
+        (pad.sThumbLX / 32767.0f) > gate_stick_deadzone ||
+        (pad.sThumbLX / 32767.0f) < -gate_stick_deadzone ||
+        (pad.sThumbLY / 32767.0f) > gate_stick_deadzone ||
+        (pad.sThumbLY / 32767.0f) < -gate_stick_deadzone;
+    const bool dpad_or_stick_active =
+        (pad.wButtons & dpad_mask) != 0 || sticks_deflected;
+
+    if (input_gate_closed_) {
+      if (any_action_pressed || dpad_or_stick_active) {
+        a_pressed = b_pressed = back_pressed = start_pressed = false;
+        x_pressed = y_pressed = lb_pressed = rb_pressed = false;
+        ls_pressed = rs_pressed = lt_pressed = rt_pressed = false;
+        any_action_pressed = false;
+        gate_suppressing_ = true;
+
+        // Clear the edge trackers too. Without this, forcing the buttons to
+        // false above would look exactly like a release and manufacture the
+        // activation this gate exists to stop.
+        gamepad_a_was_pressed_ = false;
+        gamepad_b_was_pressed_ = false;
+        gamepad_back_was_pressed_ = false;
+        gamepad_a_just_released_ = false;
+        gamepad_b_just_released_ = false;
+        gamepad_back_just_released_ = false;
+      } else {
+        // Controller is idle - the user has let go of everything.
+        input_gate_closed_ = false;
+        gate_suppressing_ = false;
+      }
+    }
+
     // Process pending callback when all buttons released
     if (pending_gamepad_callback_) {
       if (!any_action_pressed && gamepad_buttons_were_pressed_) {
@@ -1130,6 +1192,12 @@ void ImGuiDrawer::PollXInput() {
     bool lstick_left = lx < -deadzone;
     bool lstick_right = lx > deadzone;
 
+    // Gate shut: navigation is silenced along with everything else.
+    if (gate_suppressing_) {
+      dpad_up = dpad_down = dpad_left = dpad_right = false;
+      lstick_up = lstick_down = lstick_left = lstick_right = false;
+    }
+
     // Update the focus manager with all input state
     // UIFocusManager handles A, B, X, Y, Start, Back, LB, RB, D-pad
     focus_manager_.UpdateInput(
@@ -1141,8 +1209,21 @@ void ImGuiDrawer::PollXInput() {
     // Only if ImGui context is active (dialogs are open)
     if (ImGui::GetCurrentContext() != nullptr) {
       auto& imgui_io = ImGui::GetIO();
-      imgui_io.AddKeyEvent(ImGuiKey_GamepadFaceDown, a_pressed);   // A
-      imgui_io.AddKeyEvent(ImGuiKey_GamepadFaceRight, b_pressed);  // B
+      // A is handed to ImGui as a ONE-FRAME PULSE ON RELEASE, not as the held
+      // press. ImGui's gamepad nav activates the focused widget the moment
+      // FaceDown goes down, so forwarding the press made every button fire
+      // while the physical button was still held - the release then landed on
+      // whatever was underneath, the parent dialog or the game itself.
+      // Pulsing on release means the widget activates only once the button is
+      // already up, so there is nothing left to leak downwards.
+      // A press that began before a dialog opened never gets this far - the
+      // input gate above swallows it until the controller goes idle.
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadFaceDown,
+                           gamepad_a_just_released_);  // A (release)
+      // B likewise: ImGui treats FaceRight as nav-cancel and closes the popup
+      // on the press, which leaks the release to the layer below.
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadFaceRight,
+                           gamepad_b_just_released_);  // B (release)
       imgui_io.AddKeyEvent(ImGuiKey_GamepadFaceLeft, x_pressed);   // X
       imgui_io.AddKeyEvent(ImGuiKey_GamepadFaceUp, y_pressed);     // Y
       imgui_io.AddKeyEvent(ImGuiKey_GamepadStart, start_pressed);
@@ -1154,21 +1235,41 @@ void ImGuiDrawer::PollXInput() {
       imgui_io.AddKeyEvent(ImGuiKey_GamepadL3, ls_pressed);  // LS click
       imgui_io.AddKeyEvent(ImGuiKey_GamepadR3, rs_pressed);  // RS click
 
-      // D-pad
-      imgui_io.AddKeyEvent(ImGuiKey_GamepadDpadUp, dpad_up);
-      imgui_io.AddKeyEvent(ImGuiKey_GamepadDpadDown, dpad_down);
-      imgui_io.AddKeyEvent(ImGuiKey_GamepadDpadLeft, dpad_left);
-      imgui_io.AddKeyEvent(ImGuiKey_GamepadDpadRight, dpad_right);
+      // D-pad and stick: ONE-FRAME PULSE ON PRESS, so navigation moves exactly
+      // one item per push. Held directions are what ImGui turns into key
+      // repeat, which runs the selection away across a list; sending only the
+      // rising edge removes the repeat entirely.
+      const bool dpad_up_edge = dpad_up && !prev_dpad_up_;
+      const bool dpad_down_edge = dpad_down && !prev_dpad_down_;
+      const bool dpad_left_edge = dpad_left && !prev_dpad_left_;
+      const bool dpad_right_edge = dpad_right && !prev_dpad_right_;
+      const bool lstick_up_edge = lstick_up && !prev_lstick_up_;
+      const bool lstick_down_edge = lstick_down && !prev_lstick_down_;
+      const bool lstick_left_edge = lstick_left && !prev_lstick_left_;
+      const bool lstick_right_edge = lstick_right && !prev_lstick_right_;
 
-      // Left stick
-      imgui_io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickUp, lstick_up,
-                                 lstick_up ? ly : 0.0f);
-      imgui_io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickDown, lstick_down,
-                                 lstick_down ? -ly : 0.0f);
-      imgui_io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickLeft, lstick_left,
-                                 lstick_left ? -lx : 0.0f);
-      imgui_io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickRight, lstick_right,
-                                 lstick_right ? lx : 0.0f);
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadDpadUp, dpad_up_edge);
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadDpadDown, dpad_down_edge);
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadDpadLeft, dpad_left_edge);
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadDpadRight, dpad_right_edge);
+
+      imgui_io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickUp, lstick_up_edge,
+                                 lstick_up_edge ? ly : 0.0f);
+      imgui_io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickDown, lstick_down_edge,
+                                 lstick_down_edge ? -ly : 0.0f);
+      imgui_io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickLeft, lstick_left_edge,
+                                 lstick_left_edge ? -lx : 0.0f);
+      imgui_io.AddKeyAnalogEvent(ImGuiKey_GamepadLStickRight, lstick_right_edge,
+                                 lstick_right_edge ? lx : 0.0f);
+
+      prev_dpad_up_ = dpad_up;
+      prev_dpad_down_ = dpad_down;
+      prev_dpad_left_ = dpad_left;
+      prev_dpad_right_ = dpad_right;
+      prev_lstick_up_ = lstick_up;
+      prev_lstick_down_ = lstick_down;
+      prev_lstick_left_ = lstick_left;
+      prev_lstick_right_ = lstick_right;
     }
 
     // Only use first connected controller

@@ -26,6 +26,7 @@ class ShowCommunitySessionsUI : public XamDialog {
   void OnDraw(ImGuiIO& io) override;
 
   ui::SessionsContentArgs sessions_args = {};
+  bool pending_close_ = false;
   UserProfile* profile_;
   std::vector<std::unique_ptr<SessionObjectJSON>> sessions_;
 };

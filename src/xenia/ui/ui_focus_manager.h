@@ -180,6 +180,17 @@ class UIFocusManager {
   bool IsFocused(const std::string& name) const;
 
   /**
+   * Is this dialog registered at all? A dialog whose parent closed has been
+   * dropped along with it (UIDropFocus is recursive), which leaves it running
+   * with no node and therefore no input. Lets such a dialog notice and
+   * re-register itself without stealing focus from anything above it.
+   */
+  bool IsRegistered(const std::string& name) const {
+    return nodes_.find(name) != nodes_.cend();
+  }
+
+
+  /**
    * Get input for a dialog. Returns kNoInput if not focused.
    */
   const UIInput& GetInput(const std::string& name) const;
@@ -254,11 +265,6 @@ class UIFocusManager {
   bool prev_lstick_down_ = false;
   bool prev_lstick_left_ = false;
   bool prev_lstick_right_ = false;
-
-  // Input cooldown - block input for 500ms after focus changes
-  static constexpr uint64_t kInputCooldownMs = 500;
-  uint64_t focus_change_time_ = 0;  // Timestamp when focus last changed
-  bool IsInputCoolingDown() const;
 
   // Empty string for returning references
   std::string empty_string_;

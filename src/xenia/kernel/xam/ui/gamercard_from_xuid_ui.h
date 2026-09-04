@@ -28,6 +28,7 @@ class GamercardFromXUIDUI : public XamDialog {
   void OnDraw(ImGuiIO& io) override;
 
   bool dialog_open = false;
+  bool pending_close_ = false;
   bool is_self = false;
   bool are_friends = false;
   std::string title_ = "Gamercard";

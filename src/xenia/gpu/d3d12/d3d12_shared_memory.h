@@ -96,6 +96,14 @@ class D3D12SharedMemory : public SharedMemory {
   ID3D12Resource* buffer_ = nullptr;
   D3D12_GPU_VIRTUAL_ADDRESS buffer_gpu_address_ = 0;
   std::vector<ID3D12Heap*> buffer_tiled_heaps_;
+
+  // A single tile that every part of the reserved buffer is mapped to before
+  // anything real is allocated there. Tiles left unmapped are undefined to
+  // read or write - on some drivers that is a page fault and the device is
+  // lost - so nothing is ever left unmapped. Allocations simply remap their
+  // own tiles over this one.
+  ID3D12Heap* buffer_null_tile_heap_ = nullptr;
+  bool MapUnallocatedTilesToNullTile();
   D3D12_RESOURCE_STATES buffer_state_ = D3D12_RESOURCE_STATE_COPY_DEST;
   bool buffer_uav_writes_commit_needed_ = false;
   void CommitUAVWritesAndTransitionBuffer(D3D12_RESOURCE_STATES new_state);

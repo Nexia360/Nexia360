@@ -9,7 +9,9 @@
 
 #include "xenia/app/title_update_dialog.h"
 
+#include <chrono>
 #include <cstring>
+#include <thread>
 
 #include "third_party/fmt/include/fmt/format.h"
 #include "third_party/imgui/imgui_internal.h"
@@ -204,6 +206,8 @@ void TitleUpdateDialog::OnDraw(ImGuiIO& io) {
       ImGui::TextUnformatted(import_status_.c_str());
     }
 
+    DrawDownloadSection();
+
     if (ImGui::Button("Load")) {
       if (manager) {
         for (size_t i = 0; i < entries_.size(); ++i) {
@@ -235,6 +239,164 @@ void TitleUpdateDialog::OnDraw(ImGuiIO& io) {
   if (!open) {
     Close();
   }
+}
+
+void TitleUpdateDialog::StartCatalogueQuery() {
+  catalogue_queried_ = true;
+
+  // Prefer the media id recorded in recent.toml the last time this game ran.
+  if (media_id_.empty()) {
+    media_id_ = emulator_window_->GetRecentMediaId(launch_path_);
+  }
+
+  // Never launched by this build, so nothing was recorded: read it from the
+  // game on disk. This selector runs BEFORE the title is loaded, so there is
+  // no module to ask.
+  if (media_id_.empty()) {
+    media_id_ = kernel::util::TitleUpdateDownloader::ReadMediaId(launch_path_);
+  }
+
+  if (media_id_.empty()) {
+    return;
+  }
+
+  catalogue_loading_ = true;
+
+  const uint32_t title_id = title_id_;
+  const std::string media_id = media_id_;
+
+  catalogue_query_ = std::async(std::launch::async, [title_id, media_id]() {
+    return kernel::util::TitleUpdateDownloader::List(title_id, media_id);
+  });
+}
+
+void TitleUpdateDialog::StartDownload(
+    const kernel::util::RemoteTitleUpdate& update) {
+  download_received_ = 0;
+  download_total_ = 0;
+  download_cancel_ = false;
+  download_active_ = true;
+  download_finished_ = false;
+  download_succeeded_ = false;
+  downloading_version_ = update.version;
+  download_status_.clear();
+
+  download_path_ = std::filesystem::temp_directory_path() /
+                   fmt::format("nexia_tu_{:08X}_{}.bin", title_id_, update.id);
+
+  const std::filesystem::path dest = download_path_;
+
+  // Off the UI thread: these packages run to tens of megabytes.
+  std::thread worker([this, update, dest]() {
+    const bool ok = kernel::util::TitleUpdateDownloader::Download(
+        update, dest,
+        [this](uint64_t received, uint64_t total) {
+          download_received_ = received;
+          download_total_ = total;
+        },
+        &download_cancel_);
+
+    download_succeeded_ = ok;
+    download_finished_ = true;
+    download_active_ = false;
+  });
+
+  worker.detach();
+}
+
+void TitleUpdateDialog::DrawDownloadSection() {
+  ImGui::Spacing();
+  ImGui::Separator();
+  ImGui::Spacing();
+
+  ImGui::TextUnformatted("Download Title Updates");
+
+  if (!catalogue_queried_) {
+    StartCatalogueQuery();
+  }
+
+  if (media_id_.empty()) {
+    ImGui::TextDisabled("Media ID could not be read from this game.");
+    return;
+  }
+
+  if (catalogue_loading_ && catalogue_query_.valid() &&
+      catalogue_query_.wait_for(std::chrono::seconds(0)) ==
+          std::future_status::ready) {
+    catalogue_ = catalogue_query_.get();
+    catalogue_loading_ = false;
+  }
+
+  // An install can only be started from the UI thread, so the handoff to the
+  // installer happens here rather than on the download worker.
+  if (download_finished_.exchange(false)) {
+    if (download_succeeded_) {
+      download_status_ = "Installing...";
+      emulator_window_->InstallContentPackages({download_path_});
+      Reload();
+      download_status_ = fmt::format("Installed TU {}", downloading_version_);
+    } else {
+      download_status_ = download_cancel_ ? "Cancelled" : "Download failed";
+    }
+  }
+
+  if (catalogue_loading_) {
+    ImGui::TextDisabled("Checking for updates...");
+    return;
+  }
+
+  if (catalogue_.empty()) {
+    ImGui::TextDisabled("No updates published for this game (media %s).",
+                        media_id_.c_str());
+    return;
+  }
+
+  if (download_active_) {
+    const uint64_t received = download_received_.load();
+    const uint64_t total = download_total_.load();
+
+    const float fraction =
+        total ? static_cast<float>(static_cast<double>(received) /
+                                   static_cast<double>(total))
+              : 0.0f;
+
+    ImGui::ProgressBar(fraction, ImVec2(480.0f, 0),
+                       fmt::format("TU {} - {:.1f} / {:.1f} MiB",
+                                   downloading_version_,
+                                   received / 1048576.0, total / 1048576.0)
+                           .c_str());
+
+    if (ImGui::Button("Cancel Download")) {
+      download_cancel_ = true;
+    }
+
+    return;
+  }
+
+  if (!download_status_.empty()) {
+    ImGui::TextUnformatted(download_status_.c_str());
+  }
+
+  ImGui::BeginChild("##tu_download_list", ImVec2(480.0f, 140.0f), true);
+
+  for (const auto& update : catalogue_) {
+    ImGui::PushID(static_cast<int>(update.id));
+
+    // Size is published in KiB.
+    ImGui::Text("TU %s      %.1f MiB      %s", update.version.c_str(),
+                update.listed_size / 1024.0,
+                update.upload_date.substr(0, 10).c_str());
+
+    ImGui::SameLine(360.0f);
+
+    if (ImGui::Button("Download")) {
+      StartDownload(update);
+    }
+
+    ImGui::PopID();
+  }
+
+  ImGui::EndChild();
 }
 
 }  // namespace app

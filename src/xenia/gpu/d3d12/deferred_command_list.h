@@ -667,6 +667,39 @@ class DeferredCommandList {
 
   void* WriteCommand(Command command, size_t arguments_size_bytes);
 
+  // Whether a command becomes a DRED auto-breadcrumb operation when replayed.
+  // State-setting calls do not; work-submitting ones do. Keeping this in step
+  // with D3D12_AUTO_BREADCRUMB_OP is what lets a breadcrumb index reported
+  // after a device loss be matched back to the command that caused it.
+  static constexpr bool ProducesBreadcrumb(Command command) {
+    switch (command) {
+      case Command::kD3DClearDepthStencilView:
+      case Command::kD3DClearRenderTargetView:
+      case Command::kD3DClearUnorderedAccessViewUint:
+      case Command::kD3DCopyBufferRegion:
+      case Command::kD3DCopyResource:
+      case Command::kCopyTexture:
+      case Command::kD3DCopyTextureRegion:
+      case Command::kD3DDispatch:
+      case Command::kD3DDrawIndexedInstanced:
+      case Command::kD3DDrawInstanced:
+      case Command::kD3DResolveQueryData:
+      case Command::kD3DResourceBarrier:
+        return true;
+      default:
+        return false;
+    }
+  }
+
+ public:
+  // Index the next work-submitting command will have in the DRED breadcrumb
+  // list. Operation 0 is the command list opening itself, which is why this
+  // starts at 1.
+  uint32_t next_breadcrumb_index() const { return breadcrumb_index_; }
+
+ private:
+  uint32_t breadcrumb_index_ = 1;
+
   const D3D12CommandProcessor& command_processor_;
 
   // uintmax_t to ensure uint64_t and pointer alignment of all structures.

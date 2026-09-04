@@ -1180,6 +1180,11 @@ class DxbcShaderTranslator : public ShaderTranslator {
   // .w stores `base + index * stride` in bytes from the last vfetch_full as it
   // may be needed by vfetch_mini.
   uint32_t system_temp_grad_v_vfetch_address_;
+  // .x iterations of the guest control flow loop so far, .y scratch for the
+  // limit test. Bounding that loop is what keeps a guest shader that never
+  // terminates from hanging the GPU.
+  uint32_t system_temp_control_flow_iterations_;
+
 
   // The bool constant number containing the condition for the currently
   // processed exec (or the last - unless a label has reset this), or

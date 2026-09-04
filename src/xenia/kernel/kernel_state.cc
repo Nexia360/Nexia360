@@ -753,8 +753,8 @@ X_RESULT KernelState::ApplyTitleUpdate(
           // update: - so layer the same folder over the game mount. Lookups
           // miss straight through to the disc for anything the update does
           // not carry.
-          auto overlay = std::make_unique<vfs::HostPathDevice>(
-              mount_path, lib_path, true);
+          auto overlay =
+              std::make_unique<vfs::HostPathDevice>(mount_path, lib_path, true);
           if (overlay->Initialize()) {
             file_system()->RegisterOverlayDevice(mount_path,
                                                  std::move(overlay));

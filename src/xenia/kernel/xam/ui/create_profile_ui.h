@@ -53,6 +53,7 @@ class CreateProfileUI final : public XamDialog {
   void Initialize();
 
   Emulator* emulator_;
+  bool pending_close_ = false;
   CreateProfileUIArgs create_profile_args_ = {};
 };
 

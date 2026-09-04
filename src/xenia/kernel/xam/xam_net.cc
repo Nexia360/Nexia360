@@ -2617,16 +2617,20 @@ int_result_t NetDll_select_entry(dword_t caller, dword_t nfds,
     // has allocated them is normal, so this must not be a crash.
     auto mapped = [](uint32_t va) -> bool {
       auto* heap = kernel_memory()->LookupHeap(va);
-      return heap && heap->QueryRangeAccess(va, va) !=
-                         memory::PageAccess::kNoAccess;
+      return heap &&
+             heap->QueryRangeAccess(va, va) != memory::PageAccess::kNoAccess;
     };
     auto t8 = [&mapped](uint32_t va) -> uint32_t {
-      if (!mapped(va)) return 0xFFu;
+      if (!mapped(va)) {
+        return 0xFFu;
+      }
       auto* p = kernel_memory()->TranslateVirtual<uint8_t*>(va);
       return p ? *p : 0xFFu;
     };
     auto t32 = [&mapped](uint32_t va) -> uint32_t {
-      if (!mapped(va)) return 0xFFFFFFFFu;
+      if (!mapped(va)) {
+        return 0xFFFFFFFFu;
+      }
       auto* p = kernel_memory()->TranslateVirtual<xe::be<uint32_t>*>(va);
       return p ? p->get() : 0xFFFFFFFFu;
     };
@@ -2670,25 +2674,34 @@ int_result_t NetDll_select_entry(dword_t caller, dword_t nfds,
     // so `lis r11,0x82C2 / lwz r10,0xD074(r11)` is 0x82C20000 - 0x2F8C, not
     // 0x82C20000 + 0xD074. Reading them unsigned pointed at unrelated memory
     // and printed ASCII (outst came back 0x20202020, four spaces).
-    const uint32_t pend = t32(0x82C1D074u);    // pendingCount  (0x822838BC)
-    const uint32_t outst = t32(0x82A08614u);   // outstanding   (0x8228394C)
-    const uint32_t idleflg = t32(0x834C0430u); // the idle flag DB_SetIdle* sets
-    const uint32_t svfh = t32(0x834C044Cu);    // hSvFrame
+    const uint32_t pend = t32(0x82C1D074u);   // pendingCount  (0x822838BC)
+    const uint32_t outst = t32(0x82A08614u);  // outstanding   (0x8228394C)
+    const uint32_t idleflg =
+        t32(0x834C0430u);                    // the idle flag DB_SetIdle* sets
+    const uint32_t svfh = t32(0x834C044Cu);  // hSvFrame
     char zname[32] = {};
     if (zptr && mapped(zptr)) {
       for (uint32_t i = 0; i < sizeof(zname) - 1; i++) {
-        if (!mapped(zptr + i)) break;
+        if (!mapped(zptr + i)) {
+          break;
+        }
         char c = (char)t8(zptr + i);
-        if (!c) break;
+        if (!c) {
+          break;
+        }
         zname[i] = c;
       }
     }
     char iname[32] = {};
     if (inflight && mapped(inflight)) {
       for (uint32_t i = 0; i < sizeof(iname) - 1; i++) {
-        if (!mapped(inflight + i)) break;
+        if (!mapped(inflight + i)) {
+          break;
+        }
         char c = (char)t8(inflight + i);
-        if (!c) break;
+        if (!c) {
+          break;
+        }
         iname[i] = c;
       }
     }
@@ -2702,30 +2715,38 @@ int_result_t NetDll_select_entry(dword_t caller, dword_t nfds,
     // ppc_hir_builder.cc. A bare hex mask is unreadable at 26 bits and the
     // whole point of this probe is that one specific bit is missing.
     static const char* kMilestoneNames[] = {
-        "apply",      "gate12ok",  "GATE3OK",   "gate4call", "gate4ok",
-        "already",    "memopen",
-        "svinit",     "svcreate",  "SVTHREAD",  "svloop",    "SVFRAME",
-        "svloopback",
-        "setidlesyn", "svwait",    "SETIDLE",   "setidle4",  "clearidle",
-        "signalwork", "waitidle",
-        "dbthread",   "dbwait",    "dblevel",   "dbpendtest", "dbloadone",
+        "apply",      "gate12ok", "GATE3OK",    "gate4call",  "gate4ok",
+        "already",    "memopen",  "svinit",     "svcreate",   "SVTHREAD",
+        "svloop",     "SVFRAME",  "svloopback", "setidlesyn", "svwait",
+        "SETIDLE",    "setidle4", "clearidle",  "signalwork", "waitidle",
+        "dbthread",   "dbwait",   "dblevel",    "dbpendtest", "dbloadone",
         "dbbatchend",
     };
 
     std::string miles;
     for (const auto& th :
          kernel_state()->object_table()->GetObjectsByType<XThread>()) {
-      if (!th || !th->is_guest_thread() || !th->thread_state()) continue;
+      if (!th || !th->is_guest_thread() || !th->thread_state()) {
+        continue;
+      }
       auto* c = th->thread_state()->context();
-      if (!c || !c->milestone) continue;
-      if (!miles.empty()) miles += " ";
+      if (!c || !c->milestone) {
+        continue;
+      }
+      if (!miles.empty()) {
+        miles += " ";
+      }
       // mask = every milestone this thread has EVER reached; last = where it is
       // now. The mask is the one that answers "did this branch run", because
       // `last` is overwritten by whatever came next.
       std::string hit;
       for (size_t i = 0; i < xe::countof(kMilestoneNames); ++i) {
-        if (!(c->milestone_mask & (1u << i))) continue;
-        if (!hit.empty()) hit += ",";
+        if (!(c->milestone_mask & (1u << i))) {
+          continue;
+        }
+        if (!hit.empty()) {
+          hit += ",";
+        }
         hit += kMilestoneNames[i];
       }
       miles += fmt::format("{}:[{}]/last{:08X}x{}", th->thread_id(), hit,

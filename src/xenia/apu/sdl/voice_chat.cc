@@ -26,11 +26,11 @@
 
 #if XE_PLATFORM_WIN32
 #include <audioclient.h>
-#include <mmreg.h>
+#include <functiondiscoverykeys_devpkey.h>
 #include <ks.h>
 #include <ksmedia.h>
-#include <functiondiscoverykeys_devpkey.h>
 #include <mmdeviceapi.h>
+#include <mmreg.h>
 #include <objbase.h>
 #pragma comment(lib, "ole32.lib")
 #endif
@@ -272,8 +272,8 @@ static void WasapiCaptureThread(VoiceWasapiStream* s) {
       BYTE* data = nullptr;
       UINT32 frames = 0;
       DWORD flags = 0;
-      if (FAILED(
-              s->capture->GetBuffer(&data, &frames, &flags, nullptr, nullptr))) {
+      if (FAILED(s->capture->GetBuffer(&data, &frames, &flags, nullptr,
+                                       nullptr))) {
         break;
       }
       if (frames) {
@@ -330,8 +330,7 @@ static void WasapiRenderThread(VoiceWasapiStream* s) {
     if (!frames) {
       continue;
     }
-    const size_t need =
-        static_cast<size_t>(s->pos + frames * step) + 2;
+    const size_t need = static_cast<size_t>(s->pos + frames * step) + 2;
     if (s->src.size() < need) {
       const size_t base = s->src.size();
       s->src.resize(need);
@@ -487,7 +486,8 @@ static bool WasapiOpen(VoiceWasapiStream** slot, bool capture,
   }
 
   s->run.store(true);
-  s->thread = std::thread(capture ? WasapiCaptureThread : WasapiRenderThread, s);
+  s->thread =
+      std::thread(capture ? WasapiCaptureThread : WasapiRenderThread, s);
   *slot = s;
   return true;
 }
@@ -557,16 +557,16 @@ int VoiceChat::voice_volume() {
 void VoiceChat::SetMicGain(int gain) {
   std::lock_guard<std::mutex> lock(state_mutex_);
   gain = std::clamp(gain, 1, 32);
-  if (mic_gain_ == gain) {
+  if (mic_gain_.load() == gain) {
     return;
   }
-  mic_gain_ = gain;
+  mic_gain_.store(gain);
   SaveSettingsLocked();
 }
 
 int VoiceChat::mic_gain() {
   std::lock_guard<std::mutex> lock(state_mutex_);
-  return mic_gain_;
+  return mic_gain_.load();
 }
 
 void VoiceChat::SetSettingsPath(const std::filesystem::path& path) {
@@ -588,7 +588,7 @@ void VoiceChat::SaveSettingsLocked() {
   f << "mic=" << mic_name_ << "\n";
   f << "output=" << output_name_ << "\n";
   f << "volume=" << voice_volume_ << "\n";
-  f << "mic_gain=" << mic_gain_ << "\n";
+  f << "mic_gain=" << mic_gain_.load() << "\n";
 }
 
 void VoiceChat::LoadSettingsLocked() {
@@ -623,7 +623,7 @@ void VoiceChat::LoadSettingsLocked() {
       }
     } else if (key == "mic_gain") {
       try {
-        mic_gain_ = std::clamp(std::stoi(val), 1, 32);
+        mic_gain_.store(std::clamp(std::stoi(val), 1, 32));
       } catch (...) {
       }
     }
@@ -666,8 +666,15 @@ bool VoiceChat::enabled() {
   return enabled_;
 }
 
+void VoiceChat::SetMessagePlayback(bool active) {
+  std::lock_guard<std::mutex> lock(state_mutex_);
+  message_playback_ = active;
+  UpdateRunningLocked();
+  // Deliberately not saved: this is not the user's voice chat setting.
+}
+
 void VoiceChat::UpdateRunningLocked() {
-  const bool want = enabled_ && ref_count_ > 0;
+  const bool want = (enabled_ || message_playback_) && ref_count_ > 0;
   if (want && !running_) {
     Start();
   } else if (!want && running_) {
@@ -797,11 +804,9 @@ void VoiceChat::Stop() {
 }
 
 void VoiceChat::OnCapture(const int16_t* samples, size_t count) {
-  int max_gain;
-  {
-    std::lock_guard<std::mutex> lock(state_mutex_);
-    max_gain = mic_gain_;
-  }
+  // No state_mutex_ here. This runs on the capture thread, and Stop() joins
+  // that thread while holding state_mutex_ - taking it here deadlocks both.
+  const int max_gain = mic_gain_.load(std::memory_order_relaxed);
   int block_peak = 0;
   for (size_t i = 0; i < count; ++i) {
     int a = samples[i] < 0 ? -samples[i] : samples[i];
@@ -859,6 +864,63 @@ size_t VoiceChat::ReadCapturePcm(int16_t* out, size_t max_samples) {
   return n;
 }
 
+void VoiceChat::PlayPcmMessage(const int16_t* samples, size_t count) {
+  std::lock_guard<std::mutex> lock(queue_mutex_);
+
+  // Its own queue. Sharing the chat one meant a single guest voice packet
+  // trimmed the message to the last 100 ms and it stopped dead.
+  message_pcm_.clear();
+  message_pcm_.insert(message_pcm_.end(), samples, samples + count);
+
+  // A minute of 16 kHz playback. Long enough for the longest message the
+  // client will record, and a bound in case anything else calls this.
+  constexpr size_t kMaxMessageSamples = kSampleRate * 60;
+
+  if (message_pcm_.size() > kMaxMessageSamples) {
+    message_pcm_.resize(kMaxMessageSamples);
+  }
+}
+
+void VoiceChat::StopPcmMessage() {
+  std::lock_guard<std::mutex> lock(queue_mutex_);
+  message_pcm_.clear();
+}
+
+uint64_t VoiceChat::capture_position() {
+  std::lock_guard<std::mutex> lock(queue_mutex_);
+  return capture_total_;
+}
+
+size_t VoiceChat::ReadCaptureSince(uint64_t& cursor, int16_t* out,
+                                   size_t max_samples) {
+  std::lock_guard<std::mutex> lock(queue_mutex_);
+
+  // Anything older than the ring is gone. Skipping to the oldest surviving
+  // sample loses audio, but it keeps the recording moving forward rather than
+  // replaying whatever happens to still be in the buffer.
+  const uint64_t lo =
+      capture_total_ > kCaptureRing ? capture_total_ - kCaptureRing : 0;
+
+  if (cursor < lo) {
+    cursor = lo;
+  }
+
+  if (cursor > capture_total_) {
+    cursor = capture_total_;
+  }
+
+  const size_t n =
+      std::min<size_t>(max_samples, size_t(capture_total_ - cursor));
+
+  for (size_t i = 0; i < n; ++i) {
+    out[i] = capture_ring_[(cursor + i) % kCaptureRing];
+  }
+
+  cursor += n;
+
+  return n;
+}
+
 void VoiceChat::PlayPcm(const int16_t* samples, size_t count) {
   std::lock_guard<std::mutex> lock(queue_mutex_);
   playback_pcm_.insert(playback_pcm_.end(), samples, samples + count);
@@ -872,25 +934,51 @@ void VoiceChat::PlayPcm(const int16_t* samples, size_t count) {
 
 void VoiceChat::FillPlayback(int16_t* out, size_t count) {
   std::lock_guard<std::mutex> lock(queue_mutex_);
+
+  // Live chat first, with its jitter priming. Not returning early any more
+  // when it has nothing: a voice message may still need to be played.
   constexpr size_t kPrimeSamples = kSampleRate / 20;
-  if (!playback_primed_) {
-    if (playback_pcm_.size() < kPrimeSamples) {
-      std::memset(out, 0, count * sizeof(int16_t));
-      return;
-    }
+
+  if (!playback_primed_ && playback_pcm_.size() >= kPrimeSamples) {
     playback_primed_ = true;
   }
-  size_t avail = std::min(count, playback_pcm_.size());
+
+  const size_t avail =
+      playback_primed_ ? std::min(count, playback_pcm_.size()) : 0;
+
   for (size_t i = 0; i < avail; ++i) {
     out[i] = playback_pcm_[i];
   }
-  playback_pcm_.erase(playback_pcm_.begin(), playback_pcm_.begin() + avail);
+
+  if (avail) {
+    playback_pcm_.erase(playback_pcm_.begin(), playback_pcm_.begin() + avail);
+  }
+
   for (size_t i = avail; i < count; ++i) {
     out[i] = 0;
   }
+
   if (playback_pcm_.empty()) {
     playback_primed_ = false;
   }
+
+  if (message_pcm_.empty()) {
+    return;
+  }
+
+  // Voice mail mixed on top, so a message and live chat can both be heard
+  // rather than one silencing the other.
+  const size_t message_avail = std::min(count, message_pcm_.size());
+
+  for (size_t i = 0; i < message_avail; ++i) {
+    const int32_t mixed =
+        static_cast<int32_t>(out[i]) + static_cast<int32_t>(message_pcm_[i]);
+
+    out[i] = static_cast<int16_t>(std::clamp(mixed, -32768, 32767));
+  }
+
+  message_pcm_.erase(message_pcm_.begin(),
+                     message_pcm_.begin() + message_avail);
 }
 
 void VoiceChat::CaptureThunk(void* userdata, uint8_t* stream, int len) {

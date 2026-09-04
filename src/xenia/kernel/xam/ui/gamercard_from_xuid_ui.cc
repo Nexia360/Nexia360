@@ -105,9 +105,29 @@ GamercardFromXUIDUI::GamercardFromXUIDUI(xe::ui::ImGuiDrawer* imgui_drawer,
 }
 
 void GamercardFromXUIDUI::OnDraw(ImGuiIO& io) {
+  auto* drawer = imgui_drawer();
+  auto* focus_manager = drawer->GetFocusManager();
+
+  if (pending_close_) {
+    if (!drawer->IsAnyGamepadActionPressed()) {
+      focus_manager->UIDropFocus("GamercardFromXUIDUI");
+      Close();
+    }
+    return;
+  }
+
   if (!dialog_open) {
+    focus_manager->UISetFocus("GamercardFromXUIDUI");
     dialog_open = true;
     ImGui::OpenPopup(title_.c_str());
+  }
+
+  const auto& input = focus_manager->XamInputFocus("GamercardFromXUIDUI");
+
+  if (input.ShouldClose()) {
+    dialog_open = false;
+    pending_close_ = true;
+    return;
   }
 
   ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -122,20 +142,20 @@ void GamercardFromXUIDUI::OnDraw(ImGuiIO& io) {
   ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
   if (ImGui::BeginPopupModal(title_.c_str(), &dialog_open,
                              ImGuiWindowFlags_AlwaysAutoResize)) {
-    if (ImGui::IsKeyPressed(ImGuiKey::ImGuiKey_GamepadFaceRight, false)) {
-      ImGui::CloseCurrentPopup();
-    }
-
     friend_presence_ = presence_.GetFriendPresence();
 
     xeDrawFriendContent(imgui_drawer(), profile_, gamerpic_texture_,
                         friend_presence_, nullptr, nullptr);
 
     ImGui::EndPopup();
+  } else if (dialog_open) {
+    // Popup closed by ImGui itself (nav-cancel/Escape) without clearing
+    // dialog_open - close the dialog rather than leaving it holding focus.
+    pending_close_ = true;
   }
 
   if (!dialog_open) {
-    Close();
+    pending_close_ = true;
   }
 }
 

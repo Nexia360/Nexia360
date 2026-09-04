@@ -34,6 +34,8 @@ class TitleListUI final : public XamDialog {
   static constexpr uint8_t title_name_filter_size = 15;
 
   std::string dialog_name_ = "";
+  bool has_opened_ = false;
+  bool pending_close_ = false;
   char title_name_filter_[title_name_filter_size] = "";
   uint32_t selected_title_ = 0;
   const ImVec2 drawing_position_ = {};

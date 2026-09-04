@@ -1437,8 +1437,8 @@ int XSocket::PollWSARecvFrom(bool wait, WSARecvFromData receive_async_data) {
       // own. Copy the payload into the guest's buffers and report the peer as
       // the sender so the title cannot tell the difference.
       size_t copied = 0;
-      for (uint32_t i = 0;
-           i < receive_async_data.num_buffers && copied < relayed.payload_size();
+      for (uint32_t i = 0; i < receive_async_data.num_buffers &&
+                           copied < relayed.payload_size();
            i++) {
         const size_t take = std::min(static_cast<size_t>(buffers[i].len),
                                      relayed.payload_size() - copied);

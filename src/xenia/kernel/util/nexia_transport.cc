@@ -214,8 +214,7 @@ bool NexiaTransport::TryStartUdp() {
     }
 
     uint8_t ack[kUdpDatagramBytes] = {};
-    const int received =
-        recv(fd, reinterpret_cast<char*>(ack), sizeof(ack), 0);
+    const int received = recv(fd, reinterpret_cast<char*>(ack), sizeof(ack), 0);
     if (received < static_cast<int>(kUdpFragHeaderBytes + kHeaderSize)) {
       continue;
     }
@@ -422,7 +421,6 @@ bool NexiaTransport::SendTo(uint64_t dest_xuid, uint16_t source_port_be,
     XELOGE("NexiaTransport: payload {} exceeds LEN field - dropped", size);
     return false;
   }
-
 
   if (is_udp()) {
     // Built wire-ready here, fragment header and all, so the writer hands the

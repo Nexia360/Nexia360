@@ -2251,8 +2251,9 @@ bool PhysicalHeap::DisarmReadWatch(uint32_t virtual_address,
     page_access = xe::memory::PageAccess::kReadOnly;
     *out_invalidation_watched = true;
   }
-  xe::memory::Protect(membase_ + heap_base_ + (system_page << system_page_shift_),
-                      size_t(1) << system_page_shift_, page_access);
+  xe::memory::Protect(
+      membase_ + heap_base_ + (system_page << system_page_shift_),
+      size_t(1) << system_page_shift_, page_access);
   return true;
 }
 

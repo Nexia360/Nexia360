@@ -16,14 +16,23 @@
 #include "third_party/libcurl/include/curl/curl.h"
 // clang-format on
 
+#include <cctype>
+#include <cstring>
 #include <random>
 #include <thread>
+
+// Voice mail travels as base64 PCM. Same encoder XLast already uses.
+extern "C" {
+#include "third_party/FFmpeg/libavutil/base64.h"
+}
 
 #include "xenia/base/cvar.h"
 #include "xenia/base/firewall.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/string_util.h"
 #include "xenia/base/threading.h"
+#include "xenia/kernel/util/friends_db.h"
+#include "xenia/kernel/xam/xam_state.h"
 #include "xenia/kernel/xam/xam_ui.h"
 #include "xenia/emulator.h"
 #include "xenia/kernel/XLiveAPI.h"
@@ -106,6 +115,7 @@ XLiveAPI::~XLiveAPI() {
   // Both hold a raw `this` and use libcurl / sockets - stop them before
   // either goes away.
   StopQoSWorker();
+  StopMessageNotifications();
   transport_.Stop();
 
   // TODO(Adrian): Cleanup libcurl multiplexing handles.
@@ -1545,8 +1555,17 @@ std::vector<std::unique_ptr<SessionObjectJSON>> XLiveAPI::GetTitleSessions(
     title_id = kernel_state()->title_id();
   }
 
-  std::string endpoint =
-      BuildEndpoint(fmt::format("title/{:08X}/sessions/search", title_id));
+  // Hosts on a different title update cannot be joined, so the browser asks
+  // for its own version and the hub returns only those sessions.
+  const std::string& title_version = kernel_state()->emulator()->title_version();
+
+  std::string route = fmt::format("title/{:08X}/sessions/search", title_id);
+
+  if (!title_version.empty()) {
+    route += fmt::format("?version={}", title_version);
+  }
+
+  std::string endpoint = BuildEndpoint(route);
 
   std::unique_ptr<HTTPResponseObjectJSON> response = Get(endpoint);
 
@@ -1581,6 +1600,945 @@ std::vector<std::unique_ptr<SessionObjectJSON>> XLiveAPI::GetTitleSessions(
   return sessions;
 }
 
+std::vector<HubPlayer> XLiveAPI::GetHubPlayers(const std::string& search,
+                                               uint32_t limit) {
+  std::vector<HubPlayer> players;
+
+  std::string route = "players/list";
+  std::string separator = "?";
+
+  if (!search.empty()) {
+    // Percent-encode anything that is not unreserved, so a gamertag with a
+    // space or symbol cannot break the query string.
+    std::string encoded;
+
+    for (const unsigned char character : search) {
+      if (std::isalnum(character) || character == '-' || character == '_' ||
+          character == '.' || character == '~') {
+        encoded += static_cast<char>(character);
+      } else {
+        encoded += fmt::format("%{:02X}", character);
+      }
+    }
+
+    route += separator + "search=" + encoded;
+    separator = "&";
+  }
+
+  if (limit) {
+    route += separator + fmt::format("limit={}", limit);
+  }
+
+  std::unique_ptr<HTTPResponseObjectJSON> response = Get(BuildEndpoint(route));
+
+  if (response->StatusCode() != HTTP_STATUS_CODE::HTTP_OK) {
+    XELOGE("GetHubPlayers error message: {}", response->Message());
+
+    // Hub unreachable - show who we know about rather than an empty browser.
+    return PlayersFromCache(limit);
+  }
+
+  Document doc;
+  doc.Swap(doc.Parse(response->RawResponse().response));
+
+  if (!doc.IsArray()) {
+    return players;
+  }
+
+  for (Value::ConstValueIterator entry = doc.Begin(); entry != doc.End();
+       ++entry) {
+    if (!entry->IsObject()) {
+      continue;
+    }
+
+    HubPlayer player = {};
+
+    if (entry->HasMember("xuid") && (*entry)["xuid"].IsString()) {
+      player.xuid = string_util::from_string<uint64_t>(
+          (*entry)["xuid"].GetString(), true);
+    }
+
+    if (entry->HasMember("gamertag") && (*entry)["gamertag"].IsString()) {
+      player.gamertag = (*entry)["gamertag"].GetString();
+    }
+
+    // Sent as an uppercase hex string.
+    if (entry->HasMember("titleId") && (*entry)["titleId"].IsString()) {
+      player.title_id = string_util::from_string<uint32_t>(
+          (*entry)["titleId"].GetString(), true);
+    }
+
+    if (entry->HasMember("state") && (*entry)["state"].IsNumber()) {
+      player.state = (*entry)["state"].GetUint();
+    }
+
+    if (entry->HasMember("richPresence") &&
+        (*entry)["richPresence"].IsString()) {
+      player.rich_presence = (*entry)["richPresence"].GetString();
+    }
+
+    if (entry->HasMember("gamerpic") && (*entry)["gamerpic"].IsString()) {
+      player.gamerpic_url = (*entry)["gamerpic"].GetString();
+    }
+
+    if (player.xuid) {
+      players.push_back(player);
+    }
+  }
+
+  XELOGD("GetHubPlayers found {} players.", players.size());
+
+  RememberPlayers(players);
+
+  return players;
+}
+
+std::future<std::vector<HubPlayer>> XLiveAPI::GetHubPlayersAsync(
+    const std::string& search, uint32_t limit) {
+  return std::async(std::launch::async, [this, search, limit]() {
+    return GetHubPlayers(search, limit);
+  });
+}
+
+void XLiveAPI::PublishFriendPrivacy(uint64_t xuid, FriendPrivacy privacy,
+                                    const std::vector<uint64_t>& friends) {
+  Document doc;
+  doc.SetObject();
+
+  const std::string xuid_str = fmt::format("{:016X}", xuid);
+
+  doc.AddMember("xuid", xuid_str, doc.GetAllocator());
+  doc.AddMember("privacy", static_cast<uint32_t>(privacy), doc.GetAllocator());
+
+  Value friends_array(kArrayType);
+
+  for (const uint64_t friend_xuid : friends) {
+    Value entry(fmt::format("{:016X}", friend_xuid), doc.GetAllocator());
+    friends_array.PushBack(entry.Move(), doc.GetAllocator());
+  }
+
+  doc.AddMember("friends", friends_array, doc.GetAllocator());
+
+  rapidjson::StringBuffer buffer;
+  PrettyWriter<rapidjson::StringBuffer> writer(buffer);
+  doc.Accept(writer);
+
+  std::unique_ptr<HTTPResponseObjectJSON> response =
+      Post(BuildEndpoint("players/friendprivacy"),
+           reinterpret_cast<const uint8_t*>(buffer.GetString()));
+
+  if (response->StatusCode() != HTTP_STATUS_CODE::HTTP_CREATED &&
+      response->StatusCode() != HTTP_STATUS_CODE::HTTP_OK) {
+    XELOGE("PublishFriendPrivacy error message: {}", response->Message());
+  }
+}
+
+XLiveAPI::FriendPrivacy XLiveAPI::GetFriendPrivacy(uint64_t xuid) {
+  std::unique_ptr<HTTPResponseObjectJSON> response = Get(BuildEndpoint(
+      fmt::format("players/friendprivacy/{:016X}", xuid)));
+
+  if (response->StatusCode() != HTTP_STATUS_CODE::HTTP_OK) {
+    return FriendPrivacy::kAnyone;
+  }
+
+  Document doc;
+  doc.Swap(doc.Parse(response->RawResponse().response));
+
+  if (!doc.IsObject() || !doc.HasMember("privacy") ||
+      !doc["privacy"].IsNumber()) {
+    return FriendPrivacy::kAnyone;
+  }
+
+  return static_cast<FriendPrivacy>(doc["privacy"].GetUint());
+}
+
+XLiveAPI::FriendRequestOutcome XLiveAPI::SendFriendRequest(uint64_t from_xuid,
+                                                          uint64_t to_xuid) {
+  Document doc;
+  doc.SetObject();
+
+  const std::string from_str = fmt::format("{:016X}", from_xuid);
+  const std::string to_str = fmt::format("{:016X}", to_xuid);
+
+  doc.AddMember("fromXuid", from_str, doc.GetAllocator());
+  doc.AddMember("toXuid", to_str, doc.GetAllocator());
+
+  rapidjson::StringBuffer buffer;
+  PrettyWriter<rapidjson::StringBuffer> writer(buffer);
+  doc.Accept(writer);
+
+  std::unique_ptr<HTTPResponseObjectJSON> response =
+      Post(BuildEndpoint("players/friendrequest"),
+           reinterpret_cast<const uint8_t*>(buffer.GetString()));
+
+  if (response->StatusCode() != HTTP_STATUS_CODE::HTTP_CREATED &&
+      response->StatusCode() != HTTP_STATUS_CODE::HTTP_OK) {
+    XELOGE("SendFriendRequest error message: {}", response->Message());
+
+    // The hub could not be asked. Adding locally is the pre-existing
+    // behaviour, and no approval rule is being bypassed - the hub simply has
+    // no opinion to enforce.
+    return FriendRequestOutcome::kAccepted;
+  }
+
+  Document result;
+  result.Swap(result.Parse(response->RawResponse().response));
+
+  if (result.IsObject() && result.HasMember("outcome") &&
+      result["outcome"].IsString() &&
+      std::string(result["outcome"].GetString()) == "pending") {
+    return FriendRequestOutcome::kPending;
+  }
+
+  return FriendRequestOutcome::kAccepted;
+}
+
+std::vector<HubPlayer> XLiveAPI::GetIncomingFriendRequests(uint64_t xuid) {
+  std::vector<HubPlayer> requests;
+
+  std::unique_ptr<HTTPResponseObjectJSON> response = Get(
+      BuildEndpoint(fmt::format("players/friendrequests/{:016X}", xuid)));
+
+  if (response->StatusCode() != HTTP_STATUS_CODE::HTTP_OK) {
+    return requests;
+  }
+
+  Document doc;
+  doc.Swap(doc.Parse(response->RawResponse().response));
+
+  if (!doc.IsArray()) {
+    return requests;
+  }
+
+  for (Value::ConstValueIterator entry = doc.Begin(); entry != doc.End();
+       ++entry) {
+    if (!entry->IsObject()) {
+      continue;
+    }
+
+    HubPlayer requester = {};
+
+    if (entry->HasMember("xuid") && (*entry)["xuid"].IsString()) {
+      requester.xuid = string_util::from_string<uint64_t>(
+          (*entry)["xuid"].GetString(), true);
+    }
+
+    if (entry->HasMember("gamertag") && (*entry)["gamertag"].IsString()) {
+      requester.gamertag = (*entry)["gamertag"].GetString();
+    }
+
+    if (entry->HasMember("gamerpic") && (*entry)["gamerpic"].IsString()) {
+      requester.gamerpic_url = (*entry)["gamerpic"].GetString();
+    }
+
+    if (requester.xuid) {
+      requests.push_back(requester);
+    }
+  }
+
+  RememberPlayers(requests);
+
+  return requests;
+}
+
+std::future<std::vector<HubPlayer>> XLiveAPI::GetIncomingFriendRequestsAsync(
+    uint64_t xuid) {
+  return std::async(std::launch::async,
+                    [this, xuid]() { return GetIncomingFriendRequests(xuid); });
+}
+
+std::future<std::vector<uint64_t>> XLiveAPI::DrainFriendApprovalsAsync(
+    uint64_t xuid) {
+  return std::async(std::launch::async,
+                    [this, xuid]() { return DrainFriendApprovals(xuid); });
+}
+
+void XLiveAPI::RespondToFriendRequest(uint64_t xuid, uint64_t from_xuid,
+                                      bool approve) {
+  Document doc;
+  doc.SetObject();
+
+  const std::string xuid_str = fmt::format("{:016X}", xuid);
+  const std::string from_str = fmt::format("{:016X}", from_xuid);
+
+  doc.AddMember("xuid", xuid_str, doc.GetAllocator());
+  doc.AddMember("fromXuid", from_str, doc.GetAllocator());
+  doc.AddMember("approve", approve, doc.GetAllocator());
+
+  rapidjson::StringBuffer buffer;
+  PrettyWriter<rapidjson::StringBuffer> writer(buffer);
+  doc.Accept(writer);
+
+  std::unique_ptr<HTTPResponseObjectJSON> response =
+      Post(BuildEndpoint("players/friendrequest/respond"),
+           reinterpret_cast<const uint8_t*>(buffer.GetString()));
+
+  if (response->StatusCode() != HTTP_STATUS_CODE::HTTP_CREATED &&
+      response->StatusCode() != HTTP_STATUS_CODE::HTTP_OK) {
+    XELOGE("RespondToFriendRequest error message: {}", response->Message());
+  }
+}
+
+void XLiveAPI::BlockPlayer(uint64_t xuid, uint64_t target_xuid, bool block) {
+  Document doc;
+  doc.SetObject();
+
+  const std::string xuid_str = fmt::format("{:016X}", xuid);
+  const std::string target_str = fmt::format("{:016X}", target_xuid);
+
+  doc.AddMember("xuid", xuid_str, doc.GetAllocator());
+  doc.AddMember("targetXuid", target_str, doc.GetAllocator());
+  doc.AddMember("block", block, doc.GetAllocator());
+
+  rapidjson::StringBuffer buffer;
+  PrettyWriter<rapidjson::StringBuffer> writer(buffer);
+  doc.Accept(writer);
+
+  std::unique_ptr<HTTPResponseObjectJSON> response =
+      Post(BuildEndpoint("players/block"),
+           reinterpret_cast<const uint8_t*>(buffer.GetString()));
+
+  if (response->StatusCode() != HTTP_STATUS_CODE::HTTP_CREATED &&
+      response->StatusCode() != HTTP_STATUS_CODE::HTTP_OK) {
+    XELOGE("BlockPlayer error message: {}", response->Message());
+  }
+}
+
+std::vector<HubPlayer> XLiveAPI::GetBlockedPlayers(uint64_t xuid) {
+  std::vector<HubPlayer> blocked;
+
+  std::unique_ptr<HTTPResponseObjectJSON> response =
+      Get(BuildEndpoint(fmt::format("players/blocked/{:016X}", xuid)));
+
+  if (response->StatusCode() != HTTP_STATUS_CODE::HTTP_OK) {
+    return blocked;
+  }
+
+  Document doc;
+  doc.Swap(doc.Parse(response->RawResponse().response));
+
+  if (!doc.IsArray()) {
+    return blocked;
+  }
+
+  for (Value::ConstValueIterator entry = doc.Begin(); entry != doc.End();
+       ++entry) {
+    if (!entry->IsObject()) {
+      continue;
+    }
+
+    HubPlayer player = {};
+
+    if (entry->HasMember("xuid") && (*entry)["xuid"].IsString()) {
+      player.xuid = string_util::from_string<uint64_t>(
+          (*entry)["xuid"].GetString(), true);
+    }
+
+    if (entry->HasMember("gamertag") && (*entry)["gamertag"].IsString()) {
+      player.gamertag = (*entry)["gamertag"].GetString();
+    }
+
+    if (entry->HasMember("gamerpic") && (*entry)["gamerpic"].IsString()) {
+      player.gamerpic_url = (*entry)["gamerpic"].GetString();
+    }
+
+    if (player.xuid) {
+      blocked.push_back(player);
+    }
+  }
+
+  RememberPlayers(blocked);
+
+  return blocked;
+}
+
+std::vector<HubPlayer> XLiveAPI::GetRecentPlayers(uint64_t xuid) {
+  std::vector<HubPlayer> recent;
+
+  std::unique_ptr<HTTPResponseObjectJSON> response =
+      Get(BuildEndpoint(fmt::format("players/recentplayers/{:016X}", xuid)));
+
+  if (response->StatusCode() != HTTP_STATUS_CODE::HTTP_OK) {
+    // Hub unreachable. The saved players are not the same thing as "played
+    // with in the last 48 hours" - that window is the hub's to know - but
+    // they are the people this console has actually met, which is far more
+    // use than nothing.
+    return PlayersFromCache();
+  }
+
+  Document doc;
+  doc.Swap(doc.Parse(response->RawResponse().response));
+
+  if (!doc.IsArray()) {
+    return recent;
+  }
+
+  for (Value::ConstValueIterator entry = doc.Begin(); entry != doc.End();
+       ++entry) {
+    if (!entry->IsObject()) {
+      continue;
+    }
+
+    HubPlayer player = {};
+
+    if (entry->HasMember("xuid") && (*entry)["xuid"].IsString()) {
+      player.xuid = string_util::from_string<uint64_t>(
+          (*entry)["xuid"].GetString(), true);
+    }
+
+    if (entry->HasMember("gamertag") && (*entry)["gamertag"].IsString()) {
+      player.gamertag = (*entry)["gamertag"].GetString();
+    }
+
+    if (entry->HasMember("gamerpic") && (*entry)["gamerpic"].IsString()) {
+      player.gamerpic_url = (*entry)["gamerpic"].GetString();
+    }
+
+    if (entry->HasMember("titleId") && (*entry)["titleId"].IsString()) {
+      player.title_id = string_util::from_string<uint32_t>(
+          (*entry)["titleId"].GetString(), true);
+    }
+
+    // Reused to carry when they were last seen, so the row can say so.
+    if (entry->HasMember("lastSeen") && (*entry)["lastSeen"].IsString()) {
+      player.rich_presence = (*entry)["lastSeen"].GetString();
+    }
+
+    if (player.xuid) {
+      recent.push_back(player);
+    }
+  }
+
+  RememberPlayers(recent);
+
+  return recent;
+}
+
+std::future<std::vector<HubPlayer>> XLiveAPI::GetRecentPlayersAsync(
+    uint64_t xuid) {
+  return std::async(std::launch::async,
+                    [this, xuid]() { return GetRecentPlayers(xuid); });
+}
+
+std::future<std::vector<HubPlayer>> XLiveAPI::GetBlockedPlayersAsync(
+    uint64_t xuid) {
+  return std::async(std::launch::async,
+                    [this, xuid]() { return GetBlockedPlayers(xuid); });
+}
+
+// ---- Offline identity cache ---------------------------------------------
+
+void XLiveAPI::RememberPlayers(const std::vector<HubPlayer>& players) {
+  if (players.empty() || !kernel_state() || !kernel_state()->xam_state()) {
+    return;
+  }
+
+  auto* db = kernel_state()->xam_state()->friends_db();
+
+  if (!db || !db->is_open()) {
+    return;
+  }
+
+  for (const auto& player : players) {
+    if (!player.xuid) {
+      continue;
+    }
+
+    db->RecordSeenPlayer(player.xuid, player.gamertag);
+  }
+}
+
+std::vector<HubPlayer> XLiveAPI::PlayersFromCache(size_t limit) {
+  std::vector<HubPlayer> players;
+
+  if (!kernel_state() || !kernel_state()->xam_state()) {
+    return players;
+  }
+
+  auto* db = kernel_state()->xam_state()->friends_db();
+
+  if (!db || !db->is_open()) {
+    return players;
+  }
+
+  for (const auto& record : db->GetSeenPlayers(limit)) {
+    HubPlayer player = {};
+    player.xuid = record.xuid;
+    player.gamertag = record.gamertag;
+
+    // Presence is live state - the hub is the only source for it, so a cached
+    // row deliberately reports none rather than a stale title or status.
+    players.push_back(std::move(player));
+  }
+
+  if (!players.empty()) {
+    XELOGI("Hub unavailable: {} player(s) from the local cache",
+           players.size());
+  }
+
+  return players;
+}
+
+// ---- Messages -----------------------------------------------------------
+
+SendMessageOutcome XLiveAPI::SendTextMessage(uint64_t from_xuid,
+                                            uint64_t to_xuid,
+                                            const std::string& text) {
+  Document doc;
+  doc.SetObject();
+
+  const std::string from_str = fmt::format("{:016X}", from_xuid);
+  const std::string to_str = fmt::format("{:016X}", to_xuid);
+
+  doc.AddMember("xuid", from_str, doc.GetAllocator());
+  doc.AddMember("targetXuid", to_str, doc.GetAllocator());
+  doc.AddMember("kind", std::string("text"), doc.GetAllocator());
+  doc.AddMember("text", text, doc.GetAllocator());
+
+  rapidjson::StringBuffer buffer;
+  PrettyWriter<rapidjson::StringBuffer> writer(buffer);
+  doc.Accept(writer);
+
+  std::unique_ptr<HTTPResponseObjectJSON> response =
+      Post(BuildEndpoint("players/message"),
+           reinterpret_cast<const uint8_t*>(buffer.GetString()));
+
+  if (response->StatusCode() != HTTP_STATUS_CODE::HTTP_CREATED &&
+      response->StatusCode() != HTTP_STATUS_CODE::HTTP_OK) {
+    XELOGE("SendTextMessage error message: {}", response->Message());
+    return SendMessageOutcome::kInvalid;
+  }
+
+  Document result;
+  result.Swap(result.Parse(response->RawResponse().response));
+
+  if (result.IsObject() && result.HasMember("outcome") &&
+      result["outcome"].IsString()) {
+    const std::string outcome = result["outcome"].GetString();
+
+    if (outcome == "denied") {
+      return SendMessageOutcome::kDenied;
+    }
+
+    if (outcome == "invalid") {
+      return SendMessageOutcome::kInvalid;
+    }
+  }
+
+  return SendMessageOutcome::kSent;
+}
+
+SendMessageOutcome XLiveAPI::SendVoiceMessage(uint64_t from_xuid,
+                                              uint64_t to_xuid,
+                                              const std::vector<int16_t>& pcm,
+                                              uint32_t sample_rate) {
+  if (pcm.empty() || !sample_rate) {
+    return SendMessageOutcome::kInvalid;
+  }
+
+  const int pcm_bytes = static_cast<int>(pcm.size() * sizeof(int16_t));
+
+  // Base64 of the raw samples. AV_BASE64_SIZE covers the padding and the
+  // terminator, so the buffer is never short.
+  const int encoded_size = AV_BASE64_SIZE(pcm_bytes);
+  std::vector<char> encoded(encoded_size);
+
+  if (!av_base64_encode(encoded.data(), encoded_size,
+                        reinterpret_cast<const uint8_t*>(pcm.data()),
+                        pcm_bytes)) {
+    return SendMessageOutcome::kInvalid;
+  }
+
+  const std::string audio(encoded.data());
+
+  const uint32_t duration_ms =
+      static_cast<uint32_t>((pcm.size() * 1000ull) / sample_rate);
+
+  Document doc;
+  doc.SetObject();
+
+  const std::string from_str = fmt::format("{:016X}", from_xuid);
+  const std::string to_str = fmt::format("{:016X}", to_xuid);
+
+  doc.AddMember("xuid", from_str, doc.GetAllocator());
+  doc.AddMember("targetXuid", to_str, doc.GetAllocator());
+  doc.AddMember("kind", std::string("voice"), doc.GetAllocator());
+  doc.AddMember("audio", audio, doc.GetAllocator());
+  doc.AddMember("sampleRate", sample_rate, doc.GetAllocator());
+  doc.AddMember("durationMs", duration_ms, doc.GetAllocator());
+
+  rapidjson::StringBuffer buffer;
+  Writer<rapidjson::StringBuffer> writer(buffer);
+  doc.Accept(writer);
+
+  std::unique_ptr<HTTPResponseObjectJSON> response =
+      Post(BuildEndpoint("players/message"),
+           reinterpret_cast<const uint8_t*>(buffer.GetString()));
+
+  if (response->StatusCode() != HTTP_STATUS_CODE::HTTP_CREATED &&
+      response->StatusCode() != HTTP_STATUS_CODE::HTTP_OK) {
+    XELOGE("SendVoiceMessage error message: {}", response->Message());
+    return SendMessageOutcome::kInvalid;
+  }
+
+  Document result;
+  result.Swap(result.Parse(response->RawResponse().response));
+
+  if (result.IsObject() && result.HasMember("outcome") &&
+      result["outcome"].IsString()) {
+    const std::string outcome = result["outcome"].GetString();
+
+    if (outcome == "denied") {
+      return SendMessageOutcome::kDenied;
+    }
+
+    if (outcome == "invalid") {
+      return SendMessageOutcome::kInvalid;
+    }
+  }
+
+  return SendMessageOutcome::kSent;
+}
+
+std::vector<HubMessage> XLiveAPI::GetMessages(uint64_t xuid,
+                                              const std::string& kind) {
+  std::vector<HubMessage> messages;
+
+  std::string route = fmt::format("players/messages/{:016X}", xuid);
+
+  if (!kind.empty()) {
+    route += fmt::format("?kind={}", kind);
+  }
+
+  std::unique_ptr<HTTPResponseObjectJSON> response = Get(BuildEndpoint(route));
+
+  if (response->StatusCode() != HTTP_STATUS_CODE::HTTP_OK) {
+    return messages;
+  }
+
+  Document doc;
+  doc.Swap(doc.Parse(response->RawResponse().response));
+
+  if (!doc.IsArray()) {
+    return messages;
+  }
+
+  for (Value::ConstValueIterator entry = doc.Begin(); entry != doc.End();
+       ++entry) {
+    if (!entry->IsObject()) {
+      continue;
+    }
+
+    HubMessage message = {};
+
+    if (entry->HasMember("id") && (*entry)["id"].IsString()) {
+      message.id = (*entry)["id"].GetString();
+    }
+
+    if (entry->HasMember("fromXuid") && (*entry)["fromXuid"].IsString()) {
+      message.from_xuid = string_util::from_string<uint64_t>(
+          (*entry)["fromXuid"].GetString(), true);
+    }
+
+    if (entry->HasMember("fromName") && (*entry)["fromName"].IsString()) {
+      message.from_name = (*entry)["fromName"].GetString();
+    }
+
+    if (entry->HasMember("kind") && (*entry)["kind"].IsString()) {
+      message.voice = std::string((*entry)["kind"].GetString()) == "voice";
+    }
+
+    if (entry->HasMember("text") && (*entry)["text"].IsString()) {
+      message.text = (*entry)["text"].GetString();
+    }
+
+    if (entry->HasMember("durationMs") && (*entry)["durationMs"].IsUint()) {
+      message.duration_ms = (*entry)["durationMs"].GetUint();
+    }
+
+    if (entry->HasMember("read") && (*entry)["read"].IsBool()) {
+      message.read = (*entry)["read"].GetBool();
+    }
+
+    if (entry->HasMember("createdAt") && (*entry)["createdAt"].IsString()) {
+      message.created_at = (*entry)["createdAt"].GetString();
+    }
+
+    if (message.id.empty()) {
+      continue;
+    }
+
+    messages.push_back(message);
+  }
+
+  return messages;
+}
+
+std::future<std::vector<HubMessage>> XLiveAPI::GetMessagesAsync(
+    uint64_t xuid, const std::string& kind) {
+  return std::async(std::launch::async,
+                    [this, xuid, kind]() { return GetMessages(xuid, kind); });
+}
+
+bool XLiveAPI::GetMessageAudio(uint64_t xuid, const std::string& id,
+                               std::vector<int16_t>& pcm_out,
+                               uint32_t& sample_rate) {
+  pcm_out.clear();
+  sample_rate = 0;
+
+  std::unique_ptr<HTTPResponseObjectJSON> response = Get(BuildEndpoint(
+      fmt::format("players/message/{:016X}/{}/audio", xuid, id)));
+
+  if (response->StatusCode() != HTTP_STATUS_CODE::HTTP_OK) {
+    return false;
+  }
+
+  Document doc;
+  doc.Swap(doc.Parse(response->RawResponse().response));
+
+  if (!doc.IsObject() || !doc.HasMember("audio") || !doc["audio"].IsString()) {
+    return false;
+  }
+
+  if (doc.HasMember("sampleRate") && doc["sampleRate"].IsUint()) {
+    sample_rate = doc["sampleRate"].GetUint();
+  }
+
+  const char* encoded = doc["audio"].GetString();
+  const rapidjson::SizeType encoded_length = doc["audio"].GetStringLength();
+
+  // Decoded output is always smaller than its base64; 3 bytes per 4 chars.
+  std::vector<uint8_t> decoded((encoded_length / 4) * 3 + 4);
+
+  const int decoded_size = av_base64_decode(
+      decoded.data(), encoded, static_cast<int>(decoded.size()));
+
+  if (decoded_size <= 0) {
+    return false;
+  }
+
+  pcm_out.resize(decoded_size / sizeof(int16_t));
+  std::memcpy(pcm_out.data(), decoded.data(),
+              pcm_out.size() * sizeof(int16_t));
+
+  return !pcm_out.empty();
+}
+
+MessageCounts XLiveAPI::GetMessageCounts(uint64_t xuid) {
+  MessageCounts counts = {};
+
+  std::unique_ptr<HTTPResponseObjectJSON> response =
+      Get(BuildEndpoint(fmt::format("players/messagecounts/{:016X}", xuid)));
+
+  if (response->StatusCode() != HTTP_STATUS_CODE::HTTP_OK) {
+    return counts;
+  }
+
+  Document doc;
+  doc.Swap(doc.Parse(response->RawResponse().response));
+
+  if (!doc.IsObject()) {
+    return counts;
+  }
+
+  if (doc.HasMember("text") && doc["text"].IsUint()) {
+    counts.text = doc["text"].GetUint();
+  }
+
+  if (doc.HasMember("voice") && doc["voice"].IsUint()) {
+    counts.voice = doc["voice"].GetUint();
+  }
+
+  return counts;
+}
+
+void XLiveAPI::MarkMessageRead(uint64_t xuid, const std::string& id) {
+  Document doc;
+  doc.SetObject();
+
+  const std::string xuid_str = fmt::format("{:016X}", xuid);
+
+  doc.AddMember("xuid", xuid_str, doc.GetAllocator());
+  doc.AddMember("id", id, doc.GetAllocator());
+
+  rapidjson::StringBuffer buffer;
+  PrettyWriter<rapidjson::StringBuffer> writer(buffer);
+  doc.Accept(writer);
+
+  Post(BuildEndpoint("players/message/read"),
+       reinterpret_cast<const uint8_t*>(buffer.GetString()));
+}
+
+void XLiveAPI::DeleteMessage(uint64_t xuid, const std::string& id) {
+  Document doc;
+  doc.SetObject();
+
+  const std::string xuid_str = fmt::format("{:016X}", xuid);
+
+  doc.AddMember("xuid", xuid_str, doc.GetAllocator());
+  doc.AddMember("id", id, doc.GetAllocator());
+
+  rapidjson::StringBuffer buffer;
+  PrettyWriter<rapidjson::StringBuffer> writer(buffer);
+  doc.Accept(writer);
+
+  Post(BuildEndpoint("players/message/delete"),
+       reinterpret_cast<const uint8_t*>(buffer.GetString()));
+}
+
+void XLiveAPI::SetMessageCountsCallback(std::function<void()> callback) {
+  std::lock_guard<std::mutex> lock(message_poll_mutex_);
+  counts_callback_ = std::move(callback);
+}
+
+void XLiveAPI::StartMessageNotifications() {
+  {
+    std::lock_guard<std::mutex> lock(message_poll_mutex_);
+
+    if (message_poll_running_) {
+      return;
+    }
+
+    message_poll_running_ = true;
+    message_poll_wake_ = true;
+  }
+
+  message_poll_thread_ =
+      std::thread([this]() { this->MessageNotificationMain(); });
+}
+
+void XLiveAPI::StopMessageNotifications() {
+  {
+    std::lock_guard<std::mutex> lock(message_poll_mutex_);
+
+    if (!message_poll_running_) {
+      return;
+    }
+
+    message_poll_running_ = false;
+  }
+
+  message_poll_cv_.notify_all();
+
+  if (message_poll_thread_.joinable()) {
+    message_poll_thread_.join();
+  }
+
+  // Signed out: nothing is waiting for anybody, so the badge must go.
+  watched_xuid_.store(0, std::memory_order_relaxed);
+  unread_text_.store(0, std::memory_order_relaxed);
+  unread_voice_.store(0, std::memory_order_relaxed);
+  counts_revision_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void XLiveAPI::RefreshMessageCounts() {
+  {
+    std::lock_guard<std::mutex> lock(message_poll_mutex_);
+    message_poll_wake_ = true;
+  }
+
+  message_poll_cv_.notify_all();
+}
+
+void XLiveAPI::MessageNotificationMain() {
+  xe::threading::set_name("Nexia Message Notifications");
+
+  // Slow on purpose. Mail is not latency sensitive and this runs for the whole
+  // session, including while a game is being played.
+  constexpr auto kPollInterval = std::chrono::seconds(15);
+
+  while (true) {
+    std::function<void()> callback;
+
+    {
+      std::unique_lock<std::mutex> lock(message_poll_mutex_);
+
+      if (!message_poll_running_) {
+        return;
+      }
+
+      // A manual refresh sets wake_ and skips the wait entirely.
+      if (!message_poll_wake_) {
+        message_poll_cv_.wait_for(lock, kPollInterval, [this]() {
+          return !message_poll_running_ || message_poll_wake_;
+        });
+      }
+
+      if (!message_poll_running_) {
+        return;
+      }
+
+      message_poll_wake_ = false;
+      callback = counts_callback_;
+    }
+
+    // Resolved every tick: signing in, signing out and switching profiles all
+    // just change what comes back here.
+    uint64_t xuid = 0;
+
+    if (kernel_state() && kernel_state()->xam_state()) {
+      const auto profile = kernel_state()->xam_state()->GetUserProfile(
+          static_cast<uint32_t>(0));
+
+      if (profile) {
+        xuid = profile->GetOnlineXUID();
+      }
+    }
+
+    watched_xuid_.store(xuid, std::memory_order_relaxed);
+
+    const MessageCounts counts = xuid ? GetMessageCounts(xuid) : MessageCounts{};
+
+    const uint32_t previous_text =
+        unread_text_.exchange(counts.text, std::memory_order_relaxed);
+    const uint32_t previous_voice =
+        unread_voice_.exchange(counts.voice, std::memory_order_relaxed);
+
+    if (previous_text != counts.text || previous_voice != counts.voice) {
+      counts_revision_.fetch_add(1, std::memory_order_relaxed);
+
+      if (callback) {
+        callback();
+      }
+    }
+  }
+}
+
+std::vector<uint64_t> XLiveAPI::DrainFriendApprovals(uint64_t xuid) {
+  std::vector<uint64_t> approvals;
+
+  std::unique_ptr<HTTPResponseObjectJSON> response = Get(
+      BuildEndpoint(fmt::format("players/friendresponses/{:016X}", xuid)));
+
+  if (response->StatusCode() != HTTP_STATUS_CODE::HTTP_OK) {
+    return approvals;
+  }
+
+  Document doc;
+  doc.Swap(doc.Parse(response->RawResponse().response));
+
+  if (!doc.IsArray()) {
+    return approvals;
+  }
+
+  for (Value::ConstValueIterator entry = doc.Begin(); entry != doc.End();
+       ++entry) {
+    if (!entry->IsObject() || !entry->HasMember("xuid") ||
+        !(*entry)["xuid"].IsString()) {
+      continue;
+    }
+
+    const uint64_t approver = string_util::from_string<uint64_t>(
+        (*entry)["xuid"].GetString(), true);
+
+    if (approver) {
+      approvals.push_back(approver);
+    }
+  }
+
+  return approvals;
+}
+
 const std::vector<std::unique_ptr<SessionObjectJSON>> XLiveAPI::SessionSearch(
     XGI_SESSION_SEARCH* data, uint32_t num_users) {
   std::string endpoint = BuildEndpoint(
@@ -1596,6 +2554,62 @@ const std::vector<std::unique_ptr<SessionObjectJSON>> XLiveAPI::SessionSearch(
   doc.AddMember("resultsCount", data->num_results, doc.GetAllocator());
   doc.AddMember("numUsers", num_users, doc.GetAllocator());
 
+  // Hosts on a different title update cannot play together, so the hub is
+  // asked for our version only. Read after the title update is applied, so it
+  // is the updated executable's version.
+  const std::string& title_version = kernel_state()->emulator()->title_version();
+
+  if (!title_version.empty()) {
+    Value version_value;
+    version_value.SetString(
+        title_version.c_str(),
+        static_cast<rapidjson::SizeType>(title_version.size()),
+        doc.GetAllocator());
+
+    doc.AddMember("version", version_value, doc.GetAllocator());
+  }
+
+  const xam::XUSER_CONTEXT* contexts_ptr =
+      kernel_memory()->TranslateVirtual<xam::XUSER_CONTEXT*>(data->ctx_ptr);
+
+  const xam::XUSER_PROPERTY* properties_ptr =
+      kernel_memory()->TranslateVirtual<xam::XUSER_PROPERTY*>(data->props_ptr);
+
+  std::vector<xam::XUSER_CONTEXT> guest_contexts(contexts_ptr,
+                                                 contexts_ptr + data->num_ctx);
+
+  std::vector<xam::XUSER_PROPERTY> guest_properties(
+      properties_ptr, properties_ptr + data->num_props);
+
+  std::vector<xam::Property> property_filters;
+  std::vector<std::string> serialized_property_filters;
+
+  for (const auto& guest_context : guest_contexts) {
+    const xam::Property context(guest_context.context_id, guest_context.value);
+
+    if (context.IsContext()) {
+      property_filters.push_back(context);
+    }
+  }
+
+  for (auto& guest_property : guest_properties) {
+    const xam::Property property(
+        guest_property.property_id.get(), sizeof(xam::X_USER_DATA),
+        reinterpret_cast<uint8_t*>(&guest_property.data.data));
+
+    if (!property.IsContext()) {
+      property_filters.push_back(property);
+    }
+  }
+
+  for (const auto& property : property_filters) {
+    const auto serialize_prop = property.SerializeToBase64();
+
+    if (serialize_prop.has_value()) {
+      serialized_property_filters.push_back(serialize_prop.value());
+    }
+  }
+
   // Filter own sessions from search.
   if (user_profile) {
     const std::string searcher_xuid_str =
@@ -1603,6 +2617,16 @@ const std::vector<std::unique_ptr<SessionObjectJSON>> XLiveAPI::SessionSearch(
 
     doc.AddMember("searcher_xuid", searcher_xuid_str, doc.GetAllocator());
   }
+
+  Value properties_array(kArrayType);
+
+  for (const auto& serialized_property : serialized_property_filters) {
+    Value serialized_value(serialized_property, doc.GetAllocator());
+
+    properties_array.PushBack(serialized_value.Move(), doc.GetAllocator());
+  }
+
+  doc.AddMember("filters", properties_array, doc.GetAllocator());
 
   rapidjson::StringBuffer buffer;
   PrettyWriter<rapidjson::StringBuffer> writer(buffer);
@@ -1904,7 +2928,18 @@ void XLiveAPI::XSessionCreate(uint64_t sessionId, XGI_SESSION_CREATE* data) {
 
   const std::string xuid_str = fmt::format("{:016X}", xuid.get());
 
-  SessionObjectJSON session = SessionObjectJSON();
+  const auto xlast =
+      kernel_state()->emulator()->game_info_database()->GetXLast();
+
+  // Technically we could just send the matchmaking query instead of complete
+  // XLast source.
+  std::optional<std::string> xlast_source_base64;
+
+  if (xlast) {
+    xlast_source_base64 = xlast->SerializeSourceToBase64();
+  }
+
+  SessionObjectJSON session;
 
   session.SessionID(sessionId_str);
   session.XUID(xuid_str);
@@ -1918,6 +2953,10 @@ void XLiveAPI::XSessionCreate(uint64_t sessionId, XGI_SESSION_CREATE* data) {
   session.HostAddress(OnlineIP_str());
   session.MacAddress(GetConsoleMacAddress().to_string());
   session.Port(GetPlayerPort());
+
+  if (xlast_source_base64.has_value()) {
+    session.XLast(xlast_source_base64.value());
+  }
 
   std::string session_output;
   bool valid = session.Serialize(session_output);
