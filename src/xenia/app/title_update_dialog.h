@@ -66,6 +66,8 @@ class TitleUpdateDialog final : public ui::ImGuiDialog {
   void DrawDownloadSection();
   void StartCatalogueQuery();
   void StartDownload(const kernel::util::RemoteTitleUpdate& update);
+  static std::string CatalogueTitle(
+      const kernel::util::RemoteTitleUpdate& update);
 
   // Media id of the game being launched, read from its XEX. Empty when it
   // could not be read, which disables the whole section.
@@ -84,6 +86,9 @@ class TitleUpdateDialog final : public ui::ImGuiDialog {
   std::atomic<bool> download_finished_{false};
   std::atomic<bool> download_succeeded_{false};
   std::string downloading_version_;
+  // The catalogue's own title for the update being fetched, so the progress
+  // and status lines name it the same way the list row did.
+  std::string downloading_name_;
   std::string download_status_;
   std::filesystem::path download_path_;
 };

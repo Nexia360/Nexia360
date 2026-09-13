@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <AssemblyName>Nexia.Xna.Host</AssemblyName>
+    <RootNamespace>Nexia.Xna</RootNamespace>
+    <Nullable>disable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- Emits the .runtimeconfig.json that hostfxr_initialize_for_runtime_config
+         needs, and the deps file, for a library loaded by a native host. -->
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Used to emit the XNA facade assemblies in memory; Reflection.Emit
+         cannot write the type-forward rows they consist of. -->
+    <Reference Include="Mono.Cecil"><HintPath>lib/Mono.Cecil.dll</HintPath><Private>true</Private></Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Compile-time only. The XNA types this assembly implements are built on
+         MonoGame's (PlayerIndex, Microphone, ...), but MonoGame itself is NOT
+         published here: it comes from the dependency package, which carries a
+         patched build. ExcludeAssets=runtime keeps it out of the output. -->
+    <PackageReference Include="MonoGame.Framework.DesktopGL" Version="3.8.5.1"
+                      ExcludeAssets="runtime" />
+  </ItemGroup>
+</Project>

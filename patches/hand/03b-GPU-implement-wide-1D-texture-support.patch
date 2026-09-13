@@ -1,0 +1,553 @@
+diff --git a/src/xenia/gpu/dxbc.h b/src/xenia/gpu/dxbc.h
+index af2401b32..f91e45b44 100644
+--- a/src/xenia/gpu/dxbc.h
++++ b/src/xenia/gpu/dxbc.h
+@@ -1451,6 +1451,7 @@ enum class Opcode : uint32_t {
+   kRetC = 63,
+   kRoundNE = 64,
+   kRoundNI = 65,
++  kRoundPI = 66,
+   kRoundZ = 67,
+   kRSq = 68,
+   kSampleL = 72,
+@@ -1896,6 +1897,10 @@ class Assembler {
+     EmitAluOp(Opcode::kRoundNI, 0b0, dest, src, saturate);
+     ++stat_.float_instruction_count;
+   }
++  void OpRoundPI(const Dest& dest, const Src& src, bool saturate = false) {
++    EmitAluOp(Opcode::kRoundPI, 0b0, dest, src, saturate);
++    ++stat_.float_instruction_count;
++  }
+   void OpRoundZ(const Dest& dest, const Src& src, bool saturate = false) {
+     EmitAluOp(Opcode::kRoundZ, 0b0, dest, src, saturate);
+     ++stat_.float_instruction_count;
+diff --git a/src/xenia/gpu/dxbc_shader_translator.h b/src/xenia/gpu/dxbc_shader_translator.h
+index 9946c663e..39eeac6aa 100644
+--- a/src/xenia/gpu/dxbc_shader_translator.h
++++ b/src/xenia/gpu/dxbc_shader_translator.h
+@@ -114,7 +114,7 @@ class DxbcShaderTranslator : public ShaderTranslator {
+     // If anything in this is structure is changed in a way not compatible with
+     // the previous layout, invalidate the pipeline storages by increasing this
+     // version number (0xYYYYMMDD)!
+-    static constexpr uint32_t kVersion = 0x20260808;
++    static constexpr uint32_t kVersion = 0x20260809;
+ 
+     enum class DepthStencilMode : uint32_t {
+       kNoModifiers,
+diff --git a/src/xenia/gpu/dxbc_shader_translator_fetch.cc b/src/xenia/gpu/dxbc_shader_translator_fetch.cc
+index 7996175e3..a25c3fecc 100644
+--- a/src/xenia/gpu/dxbc_shader_translator_fetch.cc
++++ b/src/xenia/gpu/dxbc_shader_translator_fetch.cc
+@@ -831,7 +831,8 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+     if (!instr.attributes.unnormalized_coordinates) {
+       switch (coordinate_dimension) {
+         case xenos::FetchOpDimension::k1D:
+-          size_needed_components |= used_result_nonzero_components & 0b0001;
++          // Always need size for 1D textures to support wide 1D textures.
++          size_needed_components |= 0b0001;
+           break;
+         case xenos::FetchOpDimension::k2D:
+         case xenos::FetchOpDimension::kCube:
+@@ -848,9 +849,9 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+     size_needed_components |= offsets_not_zero;
+     switch (coordinate_dimension) {
+       case xenos::FetchOpDimension::k1D:
+-        if (instr.attributes.unnormalized_coordinates) {
+-          size_needed_components |= 0b0001;
+-        }
++        // Always need size for 1D textures to handle wide 1D textures
++        // (> 8192 wide) which are mapped to 2D grids.
++        size_needed_components |= 0b0001;
+         break;
+       case xenos::FetchOpDimension::k2D:
+         if (instr.attributes.unnormalized_coordinates) {
+@@ -886,12 +887,19 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+   }
+   uint32_t size_and_is_3d_temp =
+       size_needed_components ? PushSystemTemp() : UINT32_MAX;
++  // For 1D textures, save the uint width_minus_1 before it gets converted to
++  // float, as we need it for the wide 1D texture check (> 8192 wide).
++  uint32_t size_1d_width_minus_1_temp = UINT32_MAX;
+   if (size_needed_components) {
+     switch (coordinate_dimension) {
+       case xenos::FetchOpDimension::k1D:
+         a_.OpUBFE(dxbc::Dest::R(size_and_is_3d_temp, 0b0001), dxbc::Src::LU(24),
+                   dxbc::Src::LU(0),
+                   RequestTextureFetchConstantWord(tfetch_index, 2));
++        // Save the uint width_minus_1 for wide 1D texture detection later.
++        size_1d_width_minus_1_temp = PushSystemTemp();
++        a_.OpMov(dxbc::Dest::R(size_1d_width_minus_1_temp, 0b0001),
++                 dxbc::Src::R(size_and_is_3d_temp, dxbc::Src::kXXXX));
+         break;
+       case xenos::FetchOpDimension::k2D:
+       case xenos::FetchOpDimension::kCube:
+@@ -1193,11 +1201,88 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+       }
+     }
+     switch (coordinate_dimension) {
+-      case xenos::FetchOpDimension::k1D:
+-        // Pad to 2D array coordinates.
+-        a_.OpMov(dxbc::Dest::R(coord_and_sampler_temp, 0b0110),
+-                 dxbc::Src::LF(0.0f));
+-        break;
++      case xenos::FetchOpDimension::k1D: {
++        // Check if the fetch constant's actual dimension is k1D (word 5, bits
++        // 9-10). If not, skip wide 1D handling as size bits differ per
++        // dimension.
++        a_.OpUBFE(dxbc::Dest::R(coord_and_sampler_temp, 0b1000),
++                  dxbc::Src::LU(2), dxbc::Src::LU(9),
++                  RequestTextureFetchConstantWord(tfetch_index, 5));
++        a_.OpIEq(dxbc::Dest::R(coord_and_sampler_temp, 0b1000),
++                 dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kWWWW),
++                 dxbc::Src::LU(uint32_t(xenos::DataDimension::k1D)));
++        a_.OpIf(true, dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kWWWW));
++        // Texture is 1D - check if wide (> 8192).
++        a_.OpUGE(dxbc::Dest::R(coord_and_sampler_temp, 0b1000),
++                 dxbc::Src::R(size_1d_width_minus_1_temp, dxbc::Src::kXXXX),
++                 dxbc::Src::LU(xenos::kTexture2DCubeMaxWidthHeight));
++        a_.OpIf(true, dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kWWWW));
++        {
++          // Wide 1D texture - remap to 2D coordinates.
++          // original_width = width_minus_1 + 1
++          a_.OpIAdd(dxbc::Dest::R(coord_and_sampler_temp, 0b1000),
++                    dxbc::Src::R(size_1d_width_minus_1_temp, dxbc::Src::kXXXX),
++                    dxbc::Src::LI(1));
++          a_.OpUToF(dxbc::Dest::R(coord_and_sampler_temp, 0b1000),
++                    dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kWWWW));
++          // linear_x = coord.x * original_width (stored in coord.y temporarily)
++          a_.OpMul(dxbc::Dest::R(coord_and_sampler_temp, 0b0010),
++                   dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kXXXX),
++                   dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kWWWW));
++          // row_width = 8192.0f (constant)
++          // scaled = linear_x / row_width (stored in coord.z temporarily)
++          a_.OpDiv(dxbc::Dest::R(coord_and_sampler_temp, 0b0100),
++                   dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kYYYY),
++                   dxbc::Src::LF(float(xenos::kTexture2DCubeMaxWidthHeight)));
++          // row_index = floor(scaled) (stored in coord.w temporarily)
++          a_.OpRoundNI(dxbc::Dest::R(coord_and_sampler_temp, 0b1000),
++                       dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kZZZZ));
++          // x_in_row = linear_x - row_index * row_width
++          // coord.x = x_in_row / row_width = fract(scaled)
++          a_.OpFrc(dxbc::Dest::R(coord_and_sampler_temp, 0b0001),
++                   dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kZZZZ));
++          // num_rows = ceil(original_width / row_width)
++          // Recompute original_width / row_width for num_rows calculation
++          a_.OpIAdd(dxbc::Dest::R(coord_and_sampler_temp, 0b0100),
++                    dxbc::Src::R(size_1d_width_minus_1_temp, dxbc::Src::kXXXX),
++                    dxbc::Src::LI(1));
++          a_.OpUToF(dxbc::Dest::R(coord_and_sampler_temp, 0b0100),
++                    dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kZZZZ));
++          a_.OpDiv(dxbc::Dest::R(coord_and_sampler_temp, 0b0100),
++                   dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kZZZZ),
++                   dxbc::Src::LF(float(xenos::kTexture2DCubeMaxWidthHeight)));
++          a_.OpRoundPI(dxbc::Dest::R(coord_and_sampler_temp, 0b0100),
++                       dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kZZZZ));
++          // coord.y = (row_index + 0.5) / num_rows - sample at the center of
++          // the row, not its edge. At the edge, linear filtering would blend
++          // 50/50 with the previous row (texels 8192 apart), and even point
++          // sampling could pick the previous row when
++          // (row_index / num_rows) * num_rows rounds to just below row_index.
++          a_.OpAdd(dxbc::Dest::R(coord_and_sampler_temp, 0b1000),
++                   dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kWWWW),
++                   dxbc::Src::LF(0.5f));
++          a_.OpDiv(dxbc::Dest::R(coord_and_sampler_temp, 0b0010),
++                   dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kWWWW),
++                   dxbc::Src::R(coord_and_sampler_temp, dxbc::Src::kZZZZ));
++          // coord.z = 0 (array layer)
++          a_.OpMov(dxbc::Dest::R(coord_and_sampler_temp, 0b0100),
++                   dxbc::Src::LF(0.0f));
++        }
++        a_.OpElse();
++        {
++          // Normal 1D texture - pad to 2D array coordinates.
++          a_.OpMov(dxbc::Dest::R(coord_and_sampler_temp, 0b0110),
++                   dxbc::Src::LF(0.0f));
++        }
++        a_.OpEndIf();
++        a_.OpElse();
++        {
++          // Non-1D texture bound to 1D fetch - just pad coordinates.
++          a_.OpMov(dxbc::Dest::R(coord_and_sampler_temp, 0b0110),
++                   dxbc::Src::LF(0.0f));
++        }
++        a_.OpEndIf();
++      } break;
+       case xenos::FetchOpDimension::k2D:
+         // Pad to 2D array coordinates.
+         a_.OpMov(dxbc::Dest::R(coord_and_sampler_temp, 0b0100),
+@@ -1498,7 +1583,9 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+           grad_v_temp = PushSystemTemp();
+           switch (coordinate_dimension) {
+             case xenos::FetchOpDimension::k1D:
+-              grad_component_count = 1;
++              // Use 2 components for 1D to handle wide 1D textures mapped to
++              // 2D. For normal 1D, Y gradient will be 0 (constant coord.y).
++              grad_component_count = 2;
+               break;
+             case xenos::FetchOpDimension::k2D:
+               grad_component_count = 2;
+@@ -1529,7 +1616,13 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+                    dxbc::Src::R(grad_h_lod_temp, dxbc::Src::kXXXX));
+ #endif
+           // Obtain the gradients and apply biases to them.
+-          if (instr.attributes.use_register_gradients) {
++          // For 1D textures, always use automatic gradients. For wide 1D
++          // textures, coordinates have been remapped to 2D, and register
++          // gradients would be in 1D space without accounting for the 2D
++          // mapping. For normal 1D textures, coordinates[1] is always 0, so
++          // auto gradients give the same result (Y gradient will be 0).
++          if (instr.attributes.use_register_gradients &&
++              instr.dimension != xenos::FetchOpDimension::k1D) {
+             // Register gradients are already in the cube space for cube maps.
+             a_.OpMul(dxbc::Dest::R(grad_h_lod_temp, grad_mask),
+                      dxbc::Src::R(system_temp_grad_h_lod_), lod_src);
+@@ -1573,6 +1666,8 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+             }
+           } else {
+             // Coarse is according to the Direct3D 11.3 specification.
++            // For 1D textures, this computes gradients from the remapped
++            // 2D coordinates.
+             a_.OpDerivRTXCoarse(dxbc::Dest::R(grad_h_lod_temp, grad_mask),
+                                 dxbc::Src::R(coord_and_sampler_temp));
+             a_.OpMul(dxbc::Dest::R(grad_h_lod_temp, grad_mask),
+@@ -2120,6 +2215,10 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
+     }
+   }
+ 
++  if (size_1d_width_minus_1_temp != UINT32_MAX) {
++    PopSystemTemp();
++  }
++
+   if (size_and_is_3d_temp != UINT32_MAX) {
+     PopSystemTemp();
+   }
+diff --git a/src/xenia/gpu/spirv_shader_translator.h b/src/xenia/gpu/spirv_shader_translator.h
+index ba799f4b8..1c660b23a 100644
+--- a/src/xenia/gpu/spirv_shader_translator.h
++++ b/src/xenia/gpu/spirv_shader_translator.h
+@@ -34,7 +34,7 @@ class SpirvShaderTranslator : public ShaderTranslator {
+     // TODO(Triang3l): Change to 0xYYYYMMDD once it's out of the rapid
+     // prototyping stage (easier to do small granular updates with an
+     // incremental counter).
+-    static constexpr uint32_t kVersion = 10;
++    static constexpr uint32_t kVersion = 12;
+ 
+     enum class DepthStencilMode : uint32_t {
+       kNoModifiers,
+diff --git a/src/xenia/gpu/spirv_shader_translator_fetch.cc b/src/xenia/gpu/spirv_shader_translator_fetch.cc
+index a4cb7481f..e9a88b5af 100644
+--- a/src/xenia/gpu/spirv_shader_translator_fetch.cc
++++ b/src/xenia/gpu/spirv_shader_translator_fetch.cc
+@@ -854,7 +854,8 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
+       if (!instr.attributes.unnormalized_coordinates) {
+         switch (coordinate_dimension) {
+           case xenos::FetchOpDimension::k1D:
+-            size_needed_components |= used_result_nonzero_components & 0b0001;
++            // Always need size for 1D textures to support wide 1D textures.
++            size_needed_components |= 0b0001;
+             break;
+           case xenos::FetchOpDimension::k2D:
+           case xenos::FetchOpDimension::kCube:
+@@ -871,9 +872,10 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
+       size_needed_components |= offsets_not_zero;
+       switch (coordinate_dimension) {
+         case xenos::FetchOpDimension::k1D:
+-          if (instr.attributes.unnormalized_coordinates) {
+-            size_needed_components |= 0b0001;
+-          }
++          // Always need size for 1D textures to handle wide 1D textures
++          // (> 8192 wide) which are mapped to 2D grids. The shader needs
++          // the original width to compute the 2D coordinate remapping.
++          size_needed_components |= 0b0001;
+           break;
+         case xenos::FetchOpDimension::k2D:
+           if (instr.attributes.unnormalized_coordinates) {
+@@ -931,6 +933,9 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
+               static_cast<unsigned int>(xenos::DataDimension::k3D)));
+     }
+     spv::Id size[3] = {};
++    // For 1D textures, we need to save the original uint size before it gets
++    // converted to float, so we can check if the texture is "wide" (> 8192).
++    spv::Id size_1d_width_minus_1_uint = spv::NoResult;
+     if (size_needed_components) {
+       // Get the size from the fetch constant word 2.
+       id_vector_temp_.clear();
+@@ -951,6 +956,8 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
+                 spv::OpBitFieldUExtract, type_uint_, fetch_constant_word_2,
+                 const_uint_0_,
+                 builder_->makeUintConstant(xenos::kTexture1DMaxWidthLog2));
++            // Save the uint value for wide 1D texture detection later.
++            size_1d_width_minus_1_uint = size[0];
+           }
+           assert_zero(size_needed_components & 0b110);
+         } break;
+@@ -1235,6 +1242,100 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
+           }
+         }
+       }
++      // Handle wide 1D textures (> 8192 wide) mapped to 2D grids.
++      if (instr.dimension == xenos::FetchOpDimension::k1D &&
++          size_1d_width_minus_1_uint != spv::NoResult) {
++        // Check if the fetch constant's actual dimension is k1D (word 5, bits
++        // 9-10). If not, skip wide 1D handling as size bits differ per
++        // dimension.
++        id_vector_temp_.clear();
++        id_vector_temp_.push_back(const_int_0_);
++        id_vector_temp_.push_back(builder_->makeIntConstant(
++            int((fetch_constant_word_0_index + 5) >> 2)));
++        id_vector_temp_.push_back(builder_->makeIntConstant(
++            int((fetch_constant_word_0_index + 5) & 3)));
++        spv::Id fetch_constant_word_5_for_1d =
++            builder_->createLoad(builder_->createAccessChain(
++                                     spv::StorageClassUniform,
++                                     uniform_fetch_constants_, id_vector_temp_),
++                                 spv::NoPrecision);
++        spv::Id data_dimension_1d = builder_->createTriOp(
++            spv::OpBitFieldUExtract, type_uint_, fetch_constant_word_5_for_1d,
++            builder_->makeUintConstant(9), builder_->makeUintConstant(2));
++        spv::Id is_actually_1d = builder_->createBinOp(
++            spv::OpIEqual, type_bool_, data_dimension_1d,
++            builder_->makeUintConstant(
++                static_cast<unsigned int>(xenos::DataDimension::k1D)));
++
++        // Check if wide (> 8192) - only valid if dimension is actually 1D.
++        spv::Id max_width_minus_1 =
++            builder_->makeUintConstant(xenos::kTexture2DCubeMaxWidthHeight - 1);
++        spv::Id is_wide = builder_->createBinOp(spv::OpUGreaterThan, type_bool_,
++                                                size_1d_width_minus_1_uint,
++                                                max_width_minus_1);
++        spv::Id is_wide_1d = builder_->createBinOp(
++            spv::OpLogicalAnd, type_bool_, is_actually_1d, is_wide);
++
++        // Only apply remapping if actually 1D and wide.
++        SpirvBuilder::IfBuilder if_wide_1d(
++            is_wide_1d, spv::SelectionControlDontFlattenMask, *builder_);
++        spv::Id coord_x_wide, coord_y_wide;
++        {
++          // original_width = width_minus_1 + 1
++          spv::Id original_width_float = builder_->createUnaryOp(
++              spv::OpConvertUToF, type_float_,
++              builder_->createBinOp(spv::OpIAdd, type_uint_,
++                                    size_1d_width_minus_1_uint,
++                                    builder_->makeUintConstant(1)));
++
++          spv::Id row_width_float = builder_->makeFloatConstant(
++              float(xenos::kTexture2DCubeMaxWidthHeight));
++
++          // num_rows = ceil(original_width / row_width)
++          spv::Id num_rows = builder_->createUnaryBuiltinCall(
++              type_float_, ext_inst_glsl_std_450_, GLSLstd450Ceil,
++              builder_->createNoContractionBinOp(spv::OpFDiv, type_float_,
++                                                 original_width_float,
++                                                 row_width_float));
++
++          // linear_x = coord * original_width (denormalize to texel space)
++          spv::Id linear_x = builder_->createNoContractionBinOp(
++              spv::OpFMul, type_float_, coordinates[0], original_width_float);
++
++          // row_index = floor(linear_x / row_width)
++          spv::Id row_index = builder_->createUnaryBuiltinCall(
++              type_float_, ext_inst_glsl_std_450_, GLSLstd450Floor,
++              builder_->createNoContractionBinOp(spv::OpFDiv, type_float_,
++                                                 linear_x, row_width_float));
++
++          // x_in_row = linear_x - row_index * row_width
++          spv::Id x_in_row = builder_->createNoContractionBinOp(
++              spv::OpFSub, type_float_, linear_x,
++              builder_->createNoContractionBinOp(spv::OpFMul, type_float_,
++                                                 row_index, row_width_float));
++
++          // coord_2d.x = x_in_row / row_width (normalized)
++          coord_x_wide = builder_->createNoContractionBinOp(
++              spv::OpFDiv, type_float_, x_in_row, row_width_float);
++
++          // coord_2d.y = (row_index + 0.5) / num_rows (normalized) - sample at
++          // the center of the row, not its edge. At the edge, linear filtering
++          // would blend 50/50 with the previous row (texels 8192 apart), and
++          // even point sampling could pick the previous row when
++          // (row_index / num_rows) * num_rows rounds to just below row_index.
++          coord_y_wide = builder_->createNoContractionBinOp(
++              spv::OpFDiv, type_float_,
++              builder_->createNoContractionBinOp(
++                  spv::OpFAdd, type_float_, row_index,
++                  builder_->makeFloatConstant(0.5f)),
++              num_rows);
++        }
++        if_wide_1d.makeEndIf();
++        coordinates[0] =
++            if_wide_1d.createMergePhi(coord_x_wide, coordinates[0]);
++        coordinates[1] =
++            if_wide_1d.createMergePhi(coord_y_wide, coordinates[1]);
++      }
+       if (instr.dimension == xenos::FetchOpDimension::k3DOrStacked) {
+         spv::Id& z_coordinate_ref = coordinates[2];
+         spv::Id z_offset = offset_values[2]
+@@ -1652,48 +1753,45 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
+               type_float_, ext_inst_glsl_std_450_, GLSLstd450Exp2, lod);
+           switch (coordinate_dimension) {
+             case xenos::FetchOpDimension::k1D: {
+-              spv::Id gradient_h_1d, gradient_v_1d;
+-              if (instr.attributes.use_register_gradients) {
+-                id_vector_temp_.clear();
+-                // First component.
+-                id_vector_temp_.push_back(const_int_0_);
+-                gradient_h_1d = builder_->createLoad(
+-                    builder_->createAccessChain(spv::StorageClassFunction,
+-                                                var_main_tfetch_gradients_h_,
+-                                                id_vector_temp_),
+-                    spv::NoPrecision);
+-                gradient_v_1d = builder_->createLoad(
+-                    builder_->createAccessChain(spv::StorageClassFunction,
+-                                                var_main_tfetch_gradients_v_,
+-                                                id_vector_temp_),
+-                    spv::NoPrecision);
+-                if (instr.attributes.unnormalized_coordinates) {
+-                  // Normalize the gradients.
+-                  assert_true(size[0] != spv::NoResult);
+-                  gradient_h_1d = builder_->createNoContractionBinOp(
+-                      spv::OpFDiv, type_float_, gradient_h_1d, size[0]);
+-                  gradient_v_1d = builder_->createNoContractionBinOp(
+-                      spv::OpFDiv, type_float_, gradient_v_1d, size[0]);
+-                }
+-              } else {
+-                builder_->addCapability(spv::CapabilityDerivativeControl);
+-                gradient_h_1d = builder_->createUnaryOp(
+-                    spv::OpDPdxCoarse, type_float_, coordinates[0]);
+-                gradient_v_1d = builder_->createUnaryOp(
+-                    spv::OpDPdyCoarse, type_float_, coordinates[0]);
+-              }
+-              gradient_h_1d = builder_->createNoContractionBinOp(
+-                  spv::OpFMul, type_float_, gradient_h_1d, lod_gradient_scale);
+-              gradient_v_1d = builder_->createNoContractionBinOp(
+-                  spv::OpFMul, type_float_, gradient_v_1d, lod_gradient_scale);
++              spv::Id gradient_h_x, gradient_v_x;
++              spv::Id gradient_h_y, gradient_v_y;
++              // Always use automatic gradient computation for 1D textures.
++              // For wide 1D textures, coordinates have been remapped to 2D, and
++              // register gradients would be in 1D space without accounting for
++              // the 2D mapping. For normal 1D textures, coordinates[1] is
++              // always 0, so auto gradients give the same result as register
++              // gradients (Y gradient will be 0).
++              builder_->addCapability(spv::CapabilityDerivativeControl);
++              // For wide 1D textures, coordinates[0] and coordinates[1]
++              // have been remapped. Compute gradients from both.
++              gradient_h_x = builder_->createUnaryOp(
++                  spv::OpDPdxCoarse, type_float_, coordinates[0]);
++              gradient_v_x = builder_->createUnaryOp(
++                  spv::OpDPdyCoarse, type_float_, coordinates[0]);
++              // For wide 1D textures, also compute Y gradients.
++              // coordinates[1] is non-zero only for wide 1D.
++              gradient_h_y = builder_->createUnaryOp(
++                  spv::OpDPdxCoarse, type_float_, coordinates[1]);
++              gradient_v_y = builder_->createUnaryOp(
++                  spv::OpDPdyCoarse, type_float_, coordinates[1]);
++              gradient_h_x = builder_->createNoContractionBinOp(
++                  spv::OpFMul, type_float_, gradient_h_x, lod_gradient_scale);
++              gradient_v_x = builder_->createNoContractionBinOp(
++                  spv::OpFMul, type_float_, gradient_v_x, lod_gradient_scale);
++              gradient_h_y = builder_->createNoContractionBinOp(
++                  spv::OpFMul, type_float_, gradient_h_y, lod_gradient_scale);
++              gradient_v_y = builder_->createNoContractionBinOp(
++                  spv::OpFMul, type_float_, gradient_v_y, lod_gradient_scale);
+               // 1D textures are sampled as 2D arrays - need 2-component
+               // gradients.
+               id_vector_temp_.clear();
+-              id_vector_temp_.push_back(gradient_h_1d);
+-              id_vector_temp_.push_back(const_float_0_);
++              id_vector_temp_.push_back(gradient_h_x);
++              id_vector_temp_.push_back(gradient_h_y);
+               gradients_h = builder_->createCompositeConstruct(type_float2_,
+                                                                id_vector_temp_);
+-              id_vector_temp_[0] = gradient_v_1d;
++              id_vector_temp_.clear();
++              id_vector_temp_.push_back(gradient_v_x);
++              id_vector_temp_.push_back(gradient_v_y);
+               gradients_v = builder_->createCompositeConstruct(type_float2_,
+                                                                id_vector_temp_);
+             } break;
+diff --git a/src/xenia/gpu/texture_cache.cc b/src/xenia/gpu/texture_cache.cc
+index 4cdf1e8fe..70e409234 100644
+--- a/src/xenia/gpu/texture_cache.cc
++++ b/src/xenia/gpu/texture_cache.cc
+@@ -984,15 +984,27 @@ void TextureCache::BindingInfoFromFetchConstant(
+     // No texture data at all.
+     return;
+   }
++  uint32_t pitch = fetch.pitch;
+   if (fetch.dimension == xenos::DataDimension::k1D) {
+     bool is_invalid_1d = false;
+-    // TODO(Triang3l): Support long 1D textures.
++    // Handle wide 1D textures (> 8192 wide) by mapping them to a 2D grid.
++    // The shaders will convert 1D coordinates to 2D using the original width
++    // from the fetch constant.
+     if (width_minus_1 >= xenos::kTexture2DCubeMaxWidthHeight) {
+-      XELOGE(
+-          "1D texture is too wide ({}) - ignoring! Report the game to Xenia "
+-          "developers",
+-          width_minus_1 + 1);
+-      is_invalid_1d = true;
++      uint32_t total_width = width_minus_1 + 1;
++      uint32_t row_width = xenos::kTexture2DCubeMaxWidthHeight;
++      uint32_t num_rows = (total_width + row_width - 1) / row_width;
++      width_minus_1 = row_width - 1;
++      height_minus_1 = num_rows - 1;
++      // Disable mipmaps for wide 1D textures. The shader's coordinate remapping
++      // assumes base level dimensions (num_rows), but at mip level N, the 2D
++      // texture becomes (8192 >> N) x (num_rows >> N), which breaks the mapping
++      // when num_rows >> N becomes 1 while the shader still expects multiple
++      // rows. Mipmaps are rarely used with 1D lookup textures anyway.
++      mip_max_level = 0;
++      // The guest pitch is meaningless for a texture the guest believes is 1D
++      // (the 9 bit field couldn't even express the line width).
++      pitch = xenos::kTexture2DCubeMaxWidthHeight >> 5;
+     }
+     assert_false(fetch.tiled);
+     if (fetch.tiled) {
+@@ -1023,7 +1035,7 @@ void TextureCache::BindingInfoFromFetchConstant(
+   key_out.width_minus_1 = width_minus_1;
+   key_out.height_minus_1 = height_minus_1;
+   key_out.depth_or_array_size_minus_1 = depth_or_array_size_minus_1;
+-  key_out.pitch = fetch.pitch;
++  key_out.pitch = pitch;
+   key_out.mip_max_level = mip_max_level;
+   key_out.tiled = fetch.tiled;
+   key_out.packed_mips = fetch.packed_mips;
+diff --git a/src/xenia/gpu/texture_cache.h b/src/xenia/gpu/texture_cache.h
+index 9006b9376..caf5a4741 100644
+--- a/src/xenia/gpu/texture_cache.h
++++ b/src/xenia/gpu/texture_cache.h
+@@ -223,6 +223,17 @@ class TextureCache {
+       return depth_or_array_size_minus_1 + 1;
+     }
+ 
++    // Returns true if this is a wide 1D texture (> 8192 wide) mapped to 2D.
++    bool IsWide1D() const {
++      return dimension == xenos::DataDimension::k1D && height_minus_1 > 0;
++    }
++    uint32_t Get1DWidth() const {
++      if (IsWide1D()) {
++        return GetWidth() * GetHeight();
++      }
++      return GetWidth();
++    }
++
+     texture_util::TextureGuestLayout GetGuestLayout() const {
+       return texture_util::GetGuestTextureLayout(
+           dimension, pitch, GetWidth(), GetHeight(), GetDepthOrArraySize(),
+diff --git a/src/xenia/gpu/texture_util.cc b/src/xenia/gpu/texture_util.cc
+index 5507afe27..4a78b92da 100644
+--- a/src/xenia/gpu/texture_util.cc
++++ b/src/xenia/gpu/texture_util.cc
+@@ -217,7 +217,11 @@ TextureGuestLayout GetGuestTextureLayout(
+     // GetPackedMipOffset may result in packing along Y for `width > height`
+     // textures.
+     assert_false(has_packed_levels);
+-    height_texels = 1;
++    // For wide 1D textures mapped to 2D, height_texels is the number of rows.
++    // Only force height=1 for normal 1D textures.
++    if (height_texels <= 1) {
++      height_texels = 1;
++    }
+   }
+   uint32_t depth =
+       dimension == xenos::DataDimension::k3D ? depth_or_array_size : 1;

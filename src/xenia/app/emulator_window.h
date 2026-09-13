@@ -104,7 +104,8 @@ class EmulatorWindow {
 
   // Installs packages already on disk, skipping the file picker that
   // InstallContent() opens. Used by the title update downloader.
-  void InstallContentPackages(const std::vector<std::filesystem::path>& paths);
+  void InstallContentPackages(const std::vector<std::filesystem::path>& paths,
+                              const std::string& title_update_name = "");
   // Shows the title-update selector for the given file, then launches it.
   void OpenTitleUpdateSelector(const std::filesystem::path& path,
                                uint32_t title_id);
@@ -366,6 +367,16 @@ class EmulatorWindow {
   void FileExit();
 
   void InstallContent();
+
+  // XNA titles are managed code and never load a guest module, so they get
+  // their own shelf rather than sitting among the recently launched xex.
+  void InstallXnaPackage();
+  void InstallXnaDependencies();
+  void InstallXnaDependencyPackage();
+  void ShowXnaDependencies();
+  void FillXnaTitlesMenu(xe::ui::MenuItem* xna_menu);
+  std::filesystem::path GetXnaLibraryPath() const;
+
   void ExtractZarchive();
   void CreateZarchive();
   void ShowContentDirectory();

@@ -1,0 +1,36 @@
+From b0a1f40b4101fb0dbe405f5d50cbc979a1e63404 Mon Sep 17 00:00:00 2001
+From: Herman S <429230+has207@users.noreply.github.com>
+Date: Fri, 4 Sep 2026 00:23:28 +0900
+Subject: [PATCH] [XCrypt] Leave the padded block in the SHA context
+
+XeCryptShaFinal left state->buffer holding the message tail. The console
+pads in place so the last block it compressed stays in the buffer.
+
+Only observable when a title finalizes one context twice and the partial
+block exceeds 56 bytes, where the padding spills into a second block and
+the tail no longer survives the first call. At or below that it is a
+no-op since the padded block's leading bytes are the tail.
+---
+ src/xenia/kernel/xboxkrnl/xboxkrnl_crypt.cc | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/src/xenia/kernel/xboxkrnl/xboxkrnl_crypt.cc b/src/xenia/kernel/xboxkrnl/xboxkrnl_crypt.cc
+index da34c4402..de577756c 100644
+--- a/src/xenia/kernel/xboxkrnl/xboxkrnl_crypt.cc
++++ b/src/xenia/kernel/xboxkrnl/xboxkrnl_crypt.cc
+@@ -468,6 +468,12 @@ void XeCryptShaFinal_entry(pointer_t<XECRYPT_SHA_STATE> sha_state,
+   std::copy_n(digest, std::min<size_t>(xe::countof(digest), out_size),
+               static_cast<uint8_t*>(out));
+   std::copy_n(sha.getDigest(), xe::countof(sha_state->state), sha_state->state);
++  // The console pads in place, so the last block it compressed is left in the
++  // context buffer, not the message tail. Only shows up when a title finalizes
++  // the same context twice and the padding needed a second block, where the
++  // tail no longer survives the first call.
++  std::copy_n(sha.getBlock(), xe::countof(sha_state->buffer),
++              sha_state->buffer);
+ }
+ DECLARE_XBOXKRNL_EXPORT1(XeCryptShaFinal, kNone, kImplemented);
+ 
+-- 
+2.49.0.windows.1
+

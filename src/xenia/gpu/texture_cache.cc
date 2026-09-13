@@ -342,7 +342,8 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
     TextureKey old_key = binding.key;
     uint32_t old_integer_scale_bits = binding.integer_scale_bits;
     uint8_t old_swizzled_signs = binding.swizzled_signs;
-    BindingInfoFromFetchConstant(fetch, binding.key, &binding.swizzled_signs);
+    BindingInfoFromFetchConstant(fetch, binding.key, &binding.swizzled_signs,
+                                 index);
     texture_bindings_in_sync_ |= index_bit;
     if (!binding.key.is_valid) {
       if (old_key.is_valid) {
@@ -897,6 +898,12 @@ bool TextureCache::LoadTextureData(Texture& texture) {
     if (!shared_memory().RequestRange(
             texture_key.base_page << 12,
             xe::align(texture.GetGuestBaseSize(), UINT32_C(16)))) {
+      XELOGW(
+          "Texture base not resident: {}x{} format {} at {:08X}, {} bytes - "
+          "not loaded",
+          texture_key.GetWidth(), texture_key.GetHeight(),
+          uint32_t(texture_key.format), texture_key.base_page << 12,
+          texture.GetGuestBaseSize());
       return false;
     }
   }
@@ -904,6 +911,12 @@ bool TextureCache::LoadTextureData(Texture& texture) {
     if (!shared_memory().RequestRange(
             texture_key.mip_page << 12,
             xe::align(texture.GetGuestMipsSize(), UINT32_C(16)))) {
+      XELOGW(
+          "Texture mips not resident: {}x{} format {} at {:08X}, {} bytes - "
+          "not loaded",
+          texture_key.GetWidth(), texture_key.GetHeight(),
+          uint32_t(texture_key.format), texture_key.mip_page << 12,
+          texture.GetGuestMipsSize());
       return false;
     }
   }
@@ -943,7 +956,7 @@ bool TextureCache::LoadTextureData(Texture& texture) {
 
 void TextureCache::BindingInfoFromFetchConstant(
     const xenos::xe_gpu_texture_fetch_t& fetch, TextureKey& key_out,
-    uint8_t* swizzled_signs_out) {
+    uint8_t* swizzled_signs_out, uint32_t fetch_index) {
   // Reset the key and the signedness.
   key_out.MakeInvalid();
   if (swizzled_signs_out != nullptr) {
@@ -959,19 +972,19 @@ void TextureCache::BindingInfoFromFetchConstant(
         break;
       }
       XELOGW(
-          "Texture fetch constant ({:08X} {:08X} {:08X} {:08X} {:08X} {:08X}) "
-          "has \"invalid\" type! This is incorrect behavior, but you can try "
-          "bypassing this by launching Xenia with "
+          "Texture fetch constant {} ({:08X} {:08X} {:08X} {:08X} {:08X} "
+          "{:08X}) has \"invalid\" type! This is incorrect behavior, but you "
+          "can try bypassing this by launching Xenia with "
           "--gpu_allow_invalid_fetch_constants=true.",
-          fetch.dword_0, fetch.dword_1, fetch.dword_2, fetch.dword_3,
-          fetch.dword_4, fetch.dword_5);
+          fetch_index, fetch.dword_0, fetch.dword_1, fetch.dword_2,
+          fetch.dword_3, fetch.dword_4, fetch.dword_5);
       return;
     default:
       XELOGW(
-          "Texture fetch constant ({:08X} {:08X} {:08X} {:08X} {:08X} {:08X}) "
-          "is completely invalid!",
-          fetch.dword_0, fetch.dword_1, fetch.dword_2, fetch.dword_3,
-          fetch.dword_4, fetch.dword_5);
+          "Texture fetch constant {} ({:08X} {:08X} {:08X} {:08X} {:08X} "
+          "{:08X}) is completely invalid!",
+          fetch_index, fetch.dword_0, fetch.dword_1, fetch.dword_2,
+          fetch.dword_3, fetch.dword_4, fetch.dword_5);
       return;
   }
 
@@ -980,8 +993,12 @@ void TextureCache::BindingInfoFromFetchConstant(
   texture_util::GetSubresourcesFromFetchConstant(
       fetch, &width_minus_1, &height_minus_1, &depth_or_array_size_minus_1,
       &base_page, &mip_page, nullptr, &mip_max_level);
-  if (base_page == 0 && mip_page == 0) {
-    // No texture data at all.
+  if (base_page == 0 && mip_page == 0 &&
+      (fetch.swizzle & 0b110110110110) != 0b100100100100) {
+    // No texture data at all. Any header taking every swizzle component from
+    // literal 0s or 1s may still be valid. 4D530919 binds one as the dummy
+    // alpha plane of Bink movies. Such examples get a texture with their
+    // dimensions for LOD queries. Zero extents skip the upload and watches.
     return;
   }
   if (fetch.dimension == xenos::DataDimension::k1D) {

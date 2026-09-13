@@ -171,14 +171,6 @@ bool XmaContextNew::Work() {
 
   while (remaining_subframe_blocks_in_output_buffer_ >=
          minimum_subframe_decode_count) {
-    XELOGAPU(
-        "XmaContext {}: Write Count: {}, Capacity: {} - {} {} Subframes: {} "
-        "Padding: {}",
-        id(), (uint32_t)output_rb.write_count(),
-        remaining_subframe_blocks_in_output_buffer_,
-        data.input_buffer_0_valid + (data.input_buffer_1_valid << 1),
-        data.output_buffer_valid, data.subframe_decode_count,
-        data.output_buffer_padding);
 
     const uint32_t pre_decode_offset = data.input_buffer_read_offset;
     const uint8_t pre_remaining_subframes = current_frame_remaining_subframes_;
@@ -229,8 +221,6 @@ bool XmaContextNew::Work() {
     data.output_buffer_valid = 0;
   }
 
-  XELOGAPU("XmaContext {}: Read Output: {} Write Output: {}", id(),
-           data.output_buffer_read_offset, data.output_buffer_write_offset);
 
   StoreContextMerged(data, initial_data, context_ptr);
   return true;
@@ -359,10 +349,6 @@ void XmaContextNew::Consume(RingBuffer* XE_RESTRICT output_rb,
   remaining_subframe_blocks_in_output_buffer_ -= subframes_to_write + headroom;
   current_frame_remaining_subframes_ -= subframes_to_write;
 
-  XELOGAPU("XmaContext {}: Consume: {} - {} - {} - {} - {}", id(),
-           remaining_subframe_blocks_in_output_buffer_,
-           data->output_buffer_write_offset, data->output_buffer_read_offset,
-           output_rb->write_offset(), current_frame_remaining_subframes_);
 }
 
 void XmaContextNew::Decode(XMA_CONTEXT_DATA* data) {
@@ -410,12 +396,6 @@ void XmaContextNew::Decode(XMA_CONTEXT_DATA* data) {
     return;
   }
 
-  XELOGAPU(
-      "Processing context {} (offset {}, buffer {}, ptr {:p}, output buffer "
-      "{:08X}, output buffer count {})",
-      id(), data->input_buffer_read_offset, data->current_buffer,
-      static_cast<void*>(current_input_buffer), data->output_buffer_ptr,
-      data->output_buffer_block_count);
 
   // Games like Dirt 2 can kick the decoder with read offset 0 (pointing into
   // the packet header) before filling in a valid offset. Clamp to the first
@@ -568,12 +548,6 @@ void XmaContextNew::Decode(XMA_CONTEXT_DATA* data) {
 
   xma_frame_.fill(0);
 
-  XELOGAPU(
-      "XmaContext {}: Reading Frame {}/{} (size: {}) From Packet "
-      "{}/{}",
-      id(), (int32_t)packet_info.current_frame_, packet_info.frame_count_,
-      packet_info.current_frame_size_, packet_index,
-      current_input_packet_count);
 
   const uint32_t padding_start = static_cast<uint8_t>(
       stream.Copy(xma_frame_.data() + 1, packet_info.current_frame_size_));
@@ -620,9 +594,6 @@ void XmaContextNew::Decode(XMA_CONTEXT_DATA* data) {
     const uint32_t next_frame_offset =
         (data->input_buffer_read_offset + bits_to_copy) % kBitsPerPacket;
 
-    XELOGAPU("XmaContext {}: Index: {}/{} - Next frame offset: {}", id(),
-             (int32_t)packet_info.current_frame_, packet_info.frame_count_,
-             next_frame_offset);
 
     data->input_buffer_read_offset =
         (packet_index * kBitsPerPacket) + next_frame_offset;
@@ -767,9 +738,6 @@ const uint32_t XmaContextNew::GetNextPacketReadOffset(
       const uint32_t new_input_buffer_offset =
           (next_packet_index * kBitsPerPacket) + packet_frame_offset;
 
-      XELOGAPU("XmaContext {}: new offset: {} packet_offset: {} packet: {}/{}",
-               id(), new_input_buffer_offset, packet_frame_offset,
-               next_packet_index, current_input_packet_count);
       return new_input_buffer_offset;
     }
     next_packet_index++;

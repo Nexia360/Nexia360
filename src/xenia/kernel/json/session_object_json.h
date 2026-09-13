@@ -133,6 +133,9 @@ class SessionObjectJSON : public BaseObjectJSON {
   const std::string& XLast() const { return xlast_src_; }
   void XLast(const std::string& xlast_src) { xlast_src_ = xlast_src; }
 
+  const std::string& Icon() const { return icon_; }
+  void Icon(const std::string& icon) { icon_ = icon; }
+
  private:
   std::string sessionid_;
   std::string xuid_;
@@ -148,6 +151,7 @@ class SessionObjectJSON : public BaseObjectJSON {
   bool transport_ = false;
   xe::be<uint16_t> port_;
   std::string xlast_src_;
+  std::string icon_;
 
   // GetDetails
   xe::be<uint32_t> openPublicSlotsCount_;

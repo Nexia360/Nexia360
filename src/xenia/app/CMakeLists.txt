@@ -125,3 +125,45 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 endif()
 
 xe_target_defaults(xenia-app)
+
+# The managed side of the XNA host (Nexia.Xna.Host.dll) is a .NET assembly, not
+# part of this build. It is published beside the emulator so hosted XNA titles
+# can find it - hostfxr needs the .runtimeconfig.json next to the dll, so both
+# travel together.
+#
+# Guarded on dotnet being present: a machine without the SDK still builds the
+# emulator, it just cannot run XNA titles - which is the same thing that
+# happens without the .NET runtime at all.
+# The console's XNA assemblies P/Invoke into modules that only exist on an
+# Xbox. Exporting those entry points from the executable lets the managed side
+# bind them here directly, with no IL rewriting. The names are C++-shaped and
+# not legal C identifiers, so a .def file maps them onto the C symbols.
+if(WIN32)
+  target_link_options(xenia-app PRIVATE
+    "/DEF:${PROJECT_SOURCE_DIR}/src/xenia/kernel/xna/xna_exports.def")
+  set_property(TARGET xenia-app APPEND PROPERTY LINK_DEPENDS
+    ${PROJECT_SOURCE_DIR}/src/xenia/kernel/xna/xna_exports.def)
+endif()
+
+find_program(XE_DOTNET_EXECUTABLE dotnet)
+set(XE_XNA_MANAGED_DIR ${PROJECT_SOURCE_DIR}/src/xenia/kernel/xna/managed)
+if(XE_DOTNET_EXECUTABLE AND EXISTS ${XE_XNA_MANAGED_DIR}/Nexia.Xna.Host.csproj)
+  # A target of its own, in ALL, rather than a POST_BUILD on xenia-app. As a
+  # POST_BUILD it only ran when the executable relinked, so a change to nothing
+  # but C# published nothing and the emulator silently kept running the
+  # previous host - which looks exactly like the fix not working.
+  # dotnet decides for itself whether there is anything to do.
+  add_custom_target(nexia-xna-host ALL
+    COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:xenia-app>/xna
+    COMMAND ${XE_DOTNET_EXECUTABLE} publish
+            ${XE_XNA_MANAGED_DIR}/Nexia.Xna.Host.csproj
+            -c Release --nologo -v quiet
+            -o $<TARGET_FILE_DIR:xenia-app>/xna
+    COMMENT "Publishing Nexia.Xna.Host for XNA titles"
+    VERBATIM
+  )
+  add_dependencies(nexia-xna-host xenia-app)
+else()
+  message(STATUS
+    "dotnet not found - XNA titles will not be launchable from this build")
+endif()

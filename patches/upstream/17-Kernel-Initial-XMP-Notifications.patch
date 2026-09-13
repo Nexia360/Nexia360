@@ -1,0 +1,77 @@
+From 12a0558b8f87789beb9861f7d4ef4ec573b75114 Mon Sep 17 00:00:00 2001
+From: Herman S <429230+has207@users.noreply.github.com>
+Date: Tue, 25 Aug 2026 21:36:29 +0200
+Subject: [PATCH] [Kernel] Initial XMP Notifications
+
+---
+ src/xenia/apu/audio_media_player.h   | 4 ++++
+ src/xenia/kernel/kernel_state.cc     | 9 +++++++++
+ src/xenia/kernel/kernel_state.h      | 1 +
+ src/xenia/kernel/xam/apps/xmp_app.cc | 4 +---
+ 4 files changed, 15 insertions(+), 3 deletions(-)
+
+diff --git a/src/xenia/apu/audio_media_player.h b/src/xenia/apu/audio_media_player.h
+index 43fe8f664..044639f83 100644
+--- a/src/xenia/apu/audio_media_player.h
++++ b/src/xenia/apu/audio_media_player.h
+@@ -86,6 +86,10 @@ class AudioMediaPlayer {
+   XMP_CLIENT GetXMPClient() const { return xmp_client_; }
+ 
+   bool IsTitleInPlaybackControl() const {
++    if (IsXMPOverrideEnabled()) {
++      return false;
++    }
++
+     const bool game_control = xmp_client_ == XMP_CLIENT::Game &&
+                               playback_controller_ == PlaybackController::Game;
+ 
+diff --git a/src/xenia/kernel/kernel_state.cc b/src/xenia/kernel/kernel_state.cc
+index 90001e202..f7fdcbb5b 100644
+--- a/src/xenia/kernel/kernel_state.cc
++++ b/src/xenia/kernel/kernel_state.cc
+@@ -1057,6 +1057,15 @@ void KernelState::RegisterNotifyListener(XNotifyListener* listener) {
+                                   0x001510F1L);
+     listener->EnqueueNotification(kXNotificationLiveLinkStateChanged, 0);
+   }
++
++  if (!has_notified_xmp_startup_ && listener->mask() & kXNotifyXmp) {
++    has_notified_xmp_startup_ = true;
++    // Playback state is idle until the media player broadcasts a transition
++    // of its own, so only the controller is worth priming.
++    listener->EnqueueNotification(
++        kXNotificationXmpPlaybackControllerChanged,
++        emulator()->audio_media_player()->IsTitleInPlaybackControl());
++  }
+ }
+ 
+ void KernelState::UnregisterNotifyListener(XNotifyListener* listener) {
+diff --git a/src/xenia/kernel/kernel_state.h b/src/xenia/kernel/kernel_state.h
+index 6d8b47b79..6752e5675 100644
+--- a/src/xenia/kernel/kernel_state.h
++++ b/src/xenia/kernel/kernel_state.h
+@@ -367,6 +367,7 @@ class KernelState {
+   std::vector<object_ref<XNotifyListener>> notify_listeners_;
+   bool has_notified_startup_ = false;
+   bool has_notified_live_startup_ = false;
++  bool has_notified_xmp_startup_ = false;
+ 
+   object_ref<UserModule> executable_module_;
+   std::vector<object_ref<KernelModule>> kernel_modules_;
+diff --git a/src/xenia/kernel/xam/apps/xmp_app.cc b/src/xenia/kernel/xam/apps/xmp_app.cc
+index 9d6aac7a9..3bec8e7ce 100644
+--- a/src/xenia/kernel/xam/apps/xmp_app.cc
++++ b/src/xenia/kernel/xam/apps/xmp_app.cc
+@@ -383,9 +383,7 @@ X_HRESULT XmpApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+       // 58411446
+       kernel_state_->BroadcastNotification(
+           kXNotificationXmpPlaybackControllerChanged,
+-          media_player->IsXMPOverrideEnabled()
+-              ? false
+-              : media_player->IsTitleInPlaybackControl());
++          media_player->IsTitleInPlaybackControl());
+ 
+       return X_E_SUCCESS;
+     }
+-- 
+2.49.0.windows.1
+

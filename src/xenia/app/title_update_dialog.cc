@@ -279,6 +279,7 @@ void TitleUpdateDialog::StartDownload(
   download_finished_ = false;
   download_succeeded_ = false;
   downloading_version_ = update.version;
+  downloading_name_ = CatalogueTitle(update);
   download_status_.clear();
 
   download_path_ = std::filesystem::temp_directory_path() /
@@ -302,6 +303,15 @@ void TitleUpdateDialog::StartDownload(
   });
 
   worker.detach();
+}
+
+// How an update is labelled everywhere: in the selector, while downloading,
+// and as the name it is installed under. The catalogue's "Name" field is the
+// game's title, identical for every update of a title, so it is no use for
+// telling them apart - the update number is.
+std::string TitleUpdateDialog::CatalogueTitle(
+    const kernel::util::RemoteTitleUpdate& update) {
+  return fmt::format("TU-{}", update.version);
 }
 
 void TitleUpdateDialog::DrawDownloadSection() {
@@ -332,9 +342,12 @@ void TitleUpdateDialog::DrawDownloadSection() {
   if (download_finished_.exchange(false)) {
     if (download_succeeded_) {
       download_status_ = "Installing...";
-      emulator_window_->InstallContentPackages({download_path_});
+      // Installed under the name shown in the selector, so the row the user
+      // clicked and the entry they end up with read the same.
+      emulator_window_->InstallContentPackages({download_path_},
+                                               downloading_name_);
       Reload();
-      download_status_ = fmt::format("Installed TU {}", downloading_version_);
+      download_status_ = fmt::format("Installed {}", downloading_name_);
     } else {
       download_status_ = download_cancel_ ? "Cancelled" : "Download failed";
     }
@@ -361,9 +374,9 @@ void TitleUpdateDialog::DrawDownloadSection() {
               : 0.0f;
 
     ImGui::ProgressBar(fraction, ImVec2(480.0f, 0),
-                       fmt::format("TU {} - {:.1f} / {:.1f} MiB",
-                                   downloading_version_,
-                                   received / 1048576.0, total / 1048576.0)
+                       fmt::format("{} - {:.1f} / {:.1f} MiB",
+                                   downloading_name_, received / 1048576.0,
+                                   total / 1048576.0)
                            .c_str());
 
     if (ImGui::Button("Cancel Download")) {
@@ -383,8 +396,8 @@ void TitleUpdateDialog::DrawDownloadSection() {
     ImGui::PushID(static_cast<int>(update.id));
 
     // Size is published in KiB.
-    ImGui::Text("TU %s      %.1f MiB      %s", update.version.c_str(),
-                update.listed_size / 1024.0,
+    ImGui::Text("%s      %.1f MiB      %s",
+                CatalogueTitle(update).c_str(), update.listed_size / 1024.0,
                 update.upload_date.substr(0, 10).c_str());
 
     ImGui::SameLine(360.0f);

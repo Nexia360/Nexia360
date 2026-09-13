@@ -8,6 +8,7 @@
  */
 
 #include "xenia/gpu/d3d12/d3d12_command_processor.h"
+#include <bit>
 #include <cstring>
 #include "xenia/apu/audio_system.h"
 #include "xenia/base/assert.h"
@@ -47,6 +48,7 @@ DEFINE_bool(d3d12_submit_on_primary_buffer_end, true,
             "D3D12");
 
 DECLARE_bool(clear_memory_page_state);
+DECLARE_bool(d3d12_debug);
 
 namespace xe {
 namespace gpu {
@@ -2529,6 +2531,53 @@ Shader* D3D12CommandProcessor::LoadShader(xenos::ShaderType shader_type,
   return pipeline_cache_->LoadShader(shader_type, host_address, dword_count);
 }
 
+// A hosted title has no PM4 stream, so IM_LOAD_IMMEDIATE and DRAW_INDX never
+// run for it. These do what those two packets do once the ring has unpacked
+// them, for a caller that already holds the microcode and the draw arguments.
+Shader* D3D12CommandProcessor::HostedLoadShader(xenos::ShaderType shader_type,
+                                                const uint32_t* microcode,
+                                                uint32_t dword_count) {
+  if (!microcode || !dword_count) {
+    return nullptr;
+  }
+  // Host order, not console order. The effect container this came from was
+  // byte-swapped whole when it was loaded, so the microcode inside it is
+  // already native - and the guest default of big-endian would swap it back,
+  // handing the translator instructions that are byte-reversed but still parse.
+  Shader* shader = pipeline_cache_->LoadShader(shader_type, microcode,
+                                               dword_count, std::endian::native);
+  switch (shader_type) {
+    case xenos::ShaderType::kVertex:
+      active_vertex_shader_ = shader;
+      break;
+    case xenos::ShaderType::kPixel:
+      active_pixel_shader_ = shader;
+      break;
+    default:
+      break;
+  }
+  return shader;
+}
+
+bool D3D12CommandProcessor::HostedIssueDraw(xenos::PrimitiveType primitive_type,
+                                            uint32_t index_count, bool indexed,
+                                            uint32_t index_guest_base,
+                                            bool index_32bit,
+                                            uint32_t index_endian,
+                                            uint32_t index_length) {
+  IndexBufferInfo info;
+  if (indexed) {
+    info.format = index_32bit ? xenos::IndexFormat::kInt32
+                              : xenos::IndexFormat::kInt16;
+    info.endianness = static_cast<xenos::Endian>(index_endian);
+    info.count = index_count;
+    info.guest_base = index_guest_base;
+    info.length = index_length;
+  }
+  return IssueDraw(primitive_type, index_count, indexed ? &info : nullptr,
+                   false);
+}
+
 bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
                                       uint32_t index_count,
                                       IndexBufferInfo* index_buffer_info,
@@ -2550,6 +2599,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
     // Doesn't actually draw.
     // TODO(Triang3l): Do something so memexport still works in this case maybe?
     // Unlikely that zero would even really be legal though.
+    XELOGD("IssueDraw discarded: surface pitch is zero");
     return true;
   }
 
@@ -2557,6 +2607,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   auto vertex_shader = static_cast<D3D12Shader*>(active_vertex_shader());
   if (!vertex_shader) {
     // Always need a vertex shader.
+    XELOGD("IssueDraw refused: no vertex shader");
     return false;
   }
   pipeline_cache_->AnalyzeShaderUcode(*vertex_shader);
@@ -2586,6 +2637,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
     // cache.
     if (!memexport_used_vertex) {
       // This draw has no effect.
+      XELOGD("IssueDraw discarded: rasterization is not potentially done");
       return true;
     }
   }
@@ -2595,16 +2647,19 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   const bool memexport_used = memexport_used_vertex || memexport_used_pixel;
 
   if (!BeginSubmission(true)) {
+    XELOGD("IssueDraw refused: could not begin a submission");
     return false;
   }
 
   // Process primitives.
   PrimitiveProcessor::ProcessingResult primitive_processing_result;
   if (!primitive_processor_->Process(primitive_processing_result)) {
+    XELOGD("IssueDraw refused: primitive processing failed");
     return false;
   }
   if (!primitive_processing_result.host_draw_vertex_count) {
     // Nothing to draw.
+    XELOGD("IssueDraw discarded: primitive processing produced no vertices");
     return true;
   }
 
@@ -2637,6 +2692,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
   if (!render_target_cache_->Update(is_rasterization_done,
                                     normalized_depth_control,
                                     normalized_color_mask, *vertex_shader)) {
+    XELOGD("IssueDraw refused: render target cache update failed");
     return false;
   }
 
@@ -2672,6 +2728,7 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
           normalized_color_mask, bound_depth_and_color_render_target_bits,
           bound_depth_and_color_render_target_formats, &pipeline_handle,
           &root_signature)) {
+    XELOGD("IssueDraw refused: pipeline configuration failed");
     return false;
   }
 
@@ -3359,6 +3416,59 @@ void D3D12CommandProcessor::RegisterResolveContract(uint32_t guest_base,
   }
 }
 
+D3D12CommandProcessor::ResolveCount D3D12CommandProcessor::CountResolvedPixels(
+    uint32_t physical_base, uint32_t length, uint32_t* coloured_out,
+    uint32_t* non_zero_out, uint32_t* first_out) {
+  if (!length) {
+    return ResolveCount::kNoContract;
+  }
+  std::lock_guard<std::mutex> lock(resolve_contracts_mutex_);
+  for (auto& contract_pair : resolve_contracts_) {
+    ResolveContract& contract = contract_pair.second;
+    if (!contract.readback_buffer || contract.guest_base != physical_base ||
+        contract.length < length) {
+      continue;
+    }
+    if (!IsSubmissionComplete(contract.submission)) {
+      return ResolveCount::kNotReady;
+    }
+    D3D12_RANGE readback_range;
+    readback_range.Begin = 0;
+    readback_range.End = contract.length;
+    void* mapping;
+    if (FAILED(contract.readback_buffer->Map(0, &readback_range, &mapping))) {
+      return ResolveCount::kNoContract;
+    }
+    const auto* bytes = reinterpret_cast<const uint8_t*>(mapping);
+    uint32_t coloured = 0;
+    uint32_t non_zero = 0;
+    uint32_t examined = 0;
+    for (const auto& run : contract.valid_runs) {
+      const uint32_t run_end = std::min(run.first + run.second, length);
+      for (uint32_t at = run.first; at + 4 <= run_end; at += 4) {
+        ++examined;
+        coloured += bytes[at] || bytes[at + 1] || bytes[at + 2] ? 1 : 0;
+        non_zero += bytes[at] || bytes[at + 1] || bytes[at + 2] || bytes[at + 3]
+                        ? 1
+                        : 0;
+      }
+    }
+    XELOGD(
+        "[xna]    resolve {:08X}: {} run(s), {} of {} pixel(s) examined",
+        physical_base, uint32_t(contract.valid_runs.size()), examined,
+        length / 4);
+    uint32_t first = 0;
+    std::memcpy(&first, bytes, sizeof(first));
+    D3D12_RANGE written = {};
+    contract.readback_buffer->Unmap(0, &written);
+    *coloured_out = coloured;
+    *non_zero_out = non_zero;
+    *first_out = first;
+    return ResolveCount::kCounted;
+  }
+  return ResolveCount::kNoContract;
+}
+
 bool D3D12CommandProcessor::ResolveContractFaultCallbackThunk(
     void* context_ptr, uint32_t physical_address) {
   return reinterpret_cast<D3D12CommandProcessor*>(context_ptr)
@@ -3375,7 +3485,47 @@ void D3D12CommandProcessor::AwaitSubmissionFromAnyThread(uint64_t submission) {
     return;
   }
   if (SUCCEEDED(fence->SetEventOnCompletion(submission, event))) {
-    WaitForSingleObject(event, INFINITE);
+    // Wait in slices rather than INFINITE. A fence that will never be
+    // signalled - the device died, or a submission failed to signal - used to
+    // park this thread permanently with nothing in the log to say so.
+    constexpr DWORD kWaitSliceMilliseconds = 1000;
+    constexpr uint32_t kMaxWaitSlices = 10;
+    // The fence keeps the event registered until it reaches the value. On the
+    // give-up paths it never will, and closing a handle the runtime still
+    // holds risks it signalling a recycled one later - so leak it instead.
+    bool abandoned = false;
+    for (uint32_t slice = 0;; ++slice) {
+      if (WaitForSingleObject(event, kWaitSliceMilliseconds) != WAIT_TIMEOUT) {
+        break;
+      }
+      if (fence->GetCompletedValue() >= submission) {
+        break;
+      }
+      if (CheckDeviceRemoved()) {
+        XELOGE(
+            "Gave up waiting for submission {} - the device was lost, so the "
+            "fence will never reach it",
+            submission);
+        abandoned = true;
+        break;
+      }
+      if (slice + 1 >= kMaxWaitSlices) {
+        // The device still reports itself as fine, so this is our bug rather
+        // than a lost device. Returning is not safe - the caller will treat
+        // the submission as complete - but it is better than hanging with no
+        // explanation, and the log now says which submission stalled.
+        XELOGE(
+            "Waited {} seconds for submission {} (fence at {}) without it "
+            "completing, and the device is not reporting a loss - giving up",
+            (kWaitSliceMilliseconds * kMaxWaitSlices) / 1000, submission,
+            fence->GetCompletedValue());
+        abandoned = true;
+        break;
+      }
+    }
+    if (abandoned) {
+      return;
+    }
   }
   CloseHandle(event);
 }
@@ -3405,6 +3555,13 @@ bool D3D12CommandProcessor::MaterializeResolveContractForGuest(
     contract->materialized = true;
   }
 
+  if (submission >= GetCurrentSubmission()) {
+    CallInThread([this, submission]() {
+      if (submission_open_ && submission >= GetCurrentSubmission()) {
+        EndSubmission(false);
+      }
+    });
+  }
   AwaitSubmissionFromAnyThread(submission);
 
   std::lock_guard<std::mutex> lock(resolve_contracts_mutex_);
@@ -3650,6 +3807,60 @@ void D3D12CommandProcessor::ReportDeviceRemovedExtendedData() {
   dred->Release();
 }
 
+// Reports a lost device once and tells the graphics system about it. Returns
+// true when the device is gone, in which case the caller must not make any
+// further Direct3D calls - the runtime is not safe to keep driving, and
+// EndSubmission crashing inside D3D12Core is what that looks like.
+bool D3D12CommandProcessor::CheckDeviceRemoved() {
+  if (device_removed_.load(std::memory_order_acquire)) {
+    return true;
+  }
+  HRESULT device_removed_reason =
+      GetD3D12Provider().GetDevice()->GetDeviceRemovedReason();
+  if (SUCCEEDED(device_removed_reason)) {
+    return false;
+  }
+  if (device_removed_.exchange(true, std::memory_order_acq_rel)) {
+    // Another thread got here first and is reporting it.
+    return true;
+  }
+  // The reason used to be reduced to a bool and thrown away, so a lost device
+  // said nothing about why. These are very different problems - a hang is our
+  // command stream taking too long, a removal is usually a bad access, an
+  // internal error is the driver's own fault - and the log is the only place
+  // the difference is ever visible.
+  const char* reason_name;
+  switch (device_removed_reason) {
+    case DXGI_ERROR_DEVICE_HUNG:
+      reason_name = "DXGI_ERROR_DEVICE_HUNG (the GPU timed out on our work)";
+      break;
+    case DXGI_ERROR_DEVICE_REMOVED:
+      reason_name =
+          "DXGI_ERROR_DEVICE_REMOVED (invalid GPU access, or the adapter was "
+          "physically removed or reset)";
+      break;
+    case DXGI_ERROR_DEVICE_RESET:
+      reason_name = "DXGI_ERROR_DEVICE_RESET";
+      break;
+    case DXGI_ERROR_DRIVER_INTERNAL_ERROR:
+      reason_name = "DXGI_ERROR_DRIVER_INTERNAL_ERROR (a driver bug)";
+      break;
+    case DXGI_ERROR_INVALID_CALL:
+      reason_name = "DXGI_ERROR_INVALID_CALL (we asked for something illegal)";
+      break;
+    default:
+      reason_name = "unrecognized";
+      break;
+  }
+  XELOGE("Direct3D 12 device lost: {} (0x{:08X})", reason_name,
+         uint32_t(device_removed_reason));
+  ReportDeviceRemovedExtendedData();
+  xe::FlushLog();
+  graphics_system_->OnHostGpuLossFromAnyThread(device_removed_reason !=
+                                               DXGI_ERROR_DEVICE_REMOVED);
+  return true;
+}
+
 bool D3D12CommandProcessor::BeginSubmission(bool is_guest_command) {
 #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
@@ -3665,43 +3876,7 @@ bool D3D12CommandProcessor::BeginSubmission(bool is_guest_command) {
   }
 
   // Check if the device is still available.
-  ID3D12Device* device = GetD3D12Provider().GetDevice();
-  HRESULT device_removed_reason = device->GetDeviceRemovedReason();
-  if (FAILED(device_removed_reason)) {
-    device_removed_ = true;
-    // The reason used to be reduced to a bool and thrown away, so a lost
-    // device said nothing about why. These four are very different problems -
-    // a hang is our command stream taking too long, a removal is usually a
-    // bad access, an internal error is the driver's own fault - and the log
-    // is the only place the difference is ever visible.
-    const char* reason_name;
-    switch (device_removed_reason) {
-      case DXGI_ERROR_DEVICE_HUNG:
-        reason_name = "DXGI_ERROR_DEVICE_HUNG (the GPU timed out on our work)";
-        break;
-      case DXGI_ERROR_DEVICE_REMOVED:
-        reason_name = "DXGI_ERROR_DEVICE_REMOVED (invalid GPU access, or the "
-                      "adapter was physically removed or reset)";
-        break;
-      case DXGI_ERROR_DEVICE_RESET:
-        reason_name = "DXGI_ERROR_DEVICE_RESET";
-        break;
-      case DXGI_ERROR_DRIVER_INTERNAL_ERROR:
-        reason_name = "DXGI_ERROR_DRIVER_INTERNAL_ERROR (a driver bug)";
-        break;
-      case DXGI_ERROR_INVALID_CALL:
-        reason_name = "DXGI_ERROR_INVALID_CALL (we asked for something illegal)";
-        break;
-      default:
-        reason_name = "unrecognized";
-        break;
-    }
-    XELOGE("Direct3D 12 device lost: {} (0x{:08X})", reason_name,
-           uint32_t(device_removed_reason));
-    ReportDeviceRemovedExtendedData();
-    xe::FlushLog();
-    graphics_system_->OnHostGpuLossFromAnyThread(device_removed_reason !=
-                                                 DXGI_ERROR_DEVICE_REMOVED);
+  if (CheckDeviceRemoved()) {
     return false;
   }
 
@@ -3824,7 +3999,24 @@ bool D3D12CommandProcessor::BeginSubmission(bool is_guest_command) {
 }
 
 bool D3D12CommandProcessor::EndSubmission(bool is_swap) {
+  // The device can be lost between BeginSubmission and here, and everything
+  // below drives the runtime - resetting the allocator, closing and executing
+  // the command list, signalling the fence. None of that is safe on a removed
+  // device, and doing it anyway is how this ends up faulting inside
+  // D3D12Core rather than reporting a lost device.
+  if (CheckDeviceRemoved()) {
+    return false;
+  }
+
   const ui::d3d12::D3D12Provider& provider = GetD3D12Provider();
+
+  // Drain the validation queue before anything is submitted. The debug layer
+  // reports an invalid call where it was recorded, but nothing was draining
+  // the queue outside pipeline creation, so those messages never reached the
+  // log. Costs nothing unless the debug layer is actually on.
+  if (cvars::d3d12_debug) {
+    provider.LogD3D12DebugMessages();
+  }
 
   // Make sure there is a command allocator to write commands to.
   if (submission_open_ && !command_allocator_writable_first_) {
@@ -3886,6 +4078,14 @@ bool D3D12CommandProcessor::EndSubmission(bool is_swap) {
     deferred_command_list_.Execute(command_list_, command_list_1_,
                                    command_list_2_);
     command_list_->Close();
+    if (cvars::d3d12_debug) {
+      // Drain here, not just at the top of the next EndSubmission. The debug
+      // layer records a bad call where it was recorded, and ExecuteCommandLists
+      // is where it validates the whole list - if that faults, anything already
+      // queued would otherwise be lost with the process.
+      provider.LogD3D12DebugMessages();
+      xe::FlushLog();
+    }
     ID3D12CommandList* execute_command_lists[] = {command_list_};
     direct_queue->ExecuteCommandLists(1, execute_command_lists);
     command_allocator_writable_first_->last_usage_submission =
@@ -3902,7 +4102,21 @@ bool D3D12CommandProcessor::EndSubmission(bool is_swap) {
     if (!command_allocator_writable_first_) {
       command_allocator_writable_last_ = nullptr;
     }
-    completion_timeline_->SignalAndAdvance(direct_queue);
+    if (FAILED(completion_timeline_->SignalAndAdvance(direct_queue))) {
+      // SignalAndAdvance logs the failure and leaves the timeline where it
+      // was. The fence will never reach this submission, so anything waiting
+      // on it would wait forever - report the loss and stop driving the
+      // device rather than continuing as if this had been submitted.
+      CheckDeviceRemoved();
+      submission_open_ = false;
+      return false;
+    }
+
+    if (cvars::d3d12_debug) {
+      // Again after submitting, for anything ExecuteCommandLists itself
+      // complains about.
+      provider.LogD3D12DebugMessages();
+    }
 
     submission_open_ = false;
 

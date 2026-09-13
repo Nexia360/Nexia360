@@ -294,6 +294,12 @@ class Emulator {
     // which is correct only for installers.
     std::string target_update_id_{};
 
+    // What to call this title update once it is in the library. Set when the
+    // package came from the download selector, so the installed entry reads
+    // exactly as the row the user clicked. Empty for a package picked off
+    // disk, where the .xexp version is still the best available name.
+    std::string title_update_name_{};
+
     InstallState installation_state_{};
     X_STATUS installation_result_{};
     std::string installation_error_message_{};

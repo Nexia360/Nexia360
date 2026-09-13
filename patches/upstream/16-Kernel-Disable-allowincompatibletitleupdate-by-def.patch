@@ -1,0 +1,50 @@
+From 0da2a161349a3b8582b5a3309fbb2bc47807339e Mon Sep 17 00:00:00 2001
+From: Shazzaam <78475878+shazzaam7@users.noreply.github.com>
+Date: Mon, 24 Aug 2026 13:16:59 +0200
+Subject: [PATCH] [Kernel] Disable allow_incompatible_title_update by default
+ and log when applied
+
+---
+ src/xenia/kernel/kernel_state.cc | 14 +++++++++++++-
+ 1 file changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/src/xenia/kernel/kernel_state.cc b/src/xenia/kernel/kernel_state.cc
+index eca1cb557..90001e202 100644
+--- a/src/xenia/kernel/kernel_state.cc
++++ b/src/xenia/kernel/kernel_state.cc
+@@ -31,7 +31,7 @@
+ #include "third_party/crypto/TinySHA1.hpp"
+ 
+ DEFINE_bool(apply_title_update, true, "Apply title updates.", "Kernel");
+-DEFINE_bool(allow_incompatible_title_update, true,
++DEFINE_bool(allow_incompatible_title_update, false,
+             "Allow title updates with mismatched signatures to be applied.",
+             "Kernel");
+ 
+@@ -701,11 +701,23 @@ X_RESULT KernelState::ApplyTitleUpdate(
+       XELOGW(
+           "Skipping incompatible title update for {} due to signature mismatch",
+           title_module->name());
++      if (!GetExecutableModule()) {
++        emulator_->display_window()->app_context().CallInUIThread([&]() {
++          new xe::ui::HostNotificationWindow(
++              emulator_->imgui_drawer(), "Warning!",
++              "Title Update signature doesn't match. Skipping its application!",
++              0);
++        });
++      }
+       return X_STATUS_SUCCESS;
+     }
+ 
+     // First module that is loaded is always main executable. That way we can
+     // prevent random message spam in case of loading/unloading.
++    XELOGW(
++        "Applying incompatible title update for {} due to enabled "
++        "allow_incompatible_title_update config option!",
++        title_module->name());
+     if (!GetExecutableModule()) {
+       emulator_->display_window()->app_context().CallInUIThread([&]() {
+         new xe::ui::HostNotificationWindow(
+-- 
+2.49.0.windows.1
+

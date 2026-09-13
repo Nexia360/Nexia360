@@ -107,6 +107,14 @@ KernelState::~KernelState() {
 KernelState* KernelState::shared() { return shared_kernel_state_; }
 
 uint32_t KernelState::title_id() const {
+  // A HOSTED TITLE HAS NO EXECUTABLE MODULE. An XNA title runs its own IL on
+  // the host CLR and never loads a XEX, so there is nothing here to read a
+  // title id out of - and everything keyed on the title, content and profile
+  // storage included, would look up title 0 instead of the real one. The
+  // launcher knows it from the package's content header and sets it here.
+  if (hosted_title_id_) {
+    return hosted_title_id_;
+  }
   if (!executable_module_) {
     return 0;
   }

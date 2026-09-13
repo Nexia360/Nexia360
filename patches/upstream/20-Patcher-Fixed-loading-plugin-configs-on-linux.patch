@@ -1,0 +1,25 @@
+From 9d08d64b5deb1167cfdbc383bdd3dc9945c655dc Mon Sep 17 00:00:00 2001
+From: Adrian <78108584+AdrianCassar@users.noreply.github.com>
+Date: Wed, 26 Aug 2026 18:25:56 +0100
+Subject: [PATCH] [Patcher] Fixed loading plugin configs on linux
+
+---
+ src/xenia/patcher/plugin_loader.cc | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/xenia/patcher/plugin_loader.cc b/src/xenia/patcher/plugin_loader.cc
+index 307d43109..0ad49a77c 100644
+--- a/src/xenia/patcher/plugin_loader.cc
++++ b/src/xenia/patcher/plugin_loader.cc
+@@ -57,7 +57,7 @@ void PluginLoader::LoadConfigs() {
+ 
+ void PluginLoader::LoadTitleConfig(const uint32_t title_id) {
+   const std::filesystem::path title_plugins_config =
+-      plugins_root_ / fmt::format("{:08X}\\plugins.toml", title_id);
++      plugins_root_ / fmt::format("{:08X}", title_id) / "plugins.toml";
+ 
+   if (!std::filesystem::exists(title_plugins_config)) {
+     return;
+-- 
+2.49.0.windows.1
+

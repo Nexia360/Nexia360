@@ -1,0 +1,210 @@
+From 22267491503840047354c7256797e46919f01e86 Mon Sep 17 00:00:00 2001
+From: Gliniak <153369+Gliniak@users.noreply.github.com>
+Date: Mon, 31 Aug 2026 20:12:50 +0200
+Subject: [PATCH] [Content] Fixed applying multi-disc TUs from packages
+
+---
+ src/xenia/kernel/kernel_state.cc              | 12 ++++-----
+ src/xenia/kernel/xam/content_manager.cc       | 27 ++++++++++++-------
+ src/xenia/kernel/xam/content_manager.h        |  9 ++++---
+ .../kernel/xam/xcontent/xcontent_package.cc   |  6 +++--
+ .../kernel/xam/xcontent/xcontent_package.h    |  3 ++-
+ src/xenia/vfs/virtual_file_system.cc          |  2 +-
+ 6 files changed, 35 insertions(+), 24 deletions(-)
+
+diff --git a/src/xenia/kernel/kernel_state.cc b/src/xenia/kernel/kernel_state.cc
+index f7fdcbb5b..e50200848 100644
+--- a/src/xenia/kernel/kernel_state.cc
++++ b/src/xenia/kernel/kernel_state.cc
+@@ -748,7 +748,8 @@ const object_ref<UserModule> KernelState::LoadTitleUpdate(
+     const object_ref<UserModule> module) {
+   uint32_t content_license = 0;
+   X_RESULT open_status = content_manager()->OpenContent(
+-      "UPDATE", 0, *title_update, content_license);
++      "UPDATE", 0, *title_update, content_license,
++      module->is_multi_disc_title() ? module->disc_number() : -1);
+ 
+   std::string mount_path = "";
+   if (!file_system()->FindSymbolicLink(kDefaultGameSymbolicLink, mount_path)) {
+@@ -765,18 +766,15 @@ const object_ref<UserModule> KernelState::LoadTitleUpdate(
+     return nullptr;
+   }
+ 
+-  std::string disc_dir = "";
+-  if (module->is_multi_disc_title()) {
+-    disc_dir = fmt::format("disc{:03}", module->disc_number());
+-  }
+-
+   const std::string relative_path =
+       module->path().substr(mount_path.size()) + 'p';
+ 
+   xe::vfs::Entry* patch_entry = kernel_state()->file_system()->ResolvePath(
+-      resolved_path + disc_dir + relative_path);
++      xe::utf8::join_guest_paths(resolved_path, relative_path));
+ 
+   if (!patch_entry) {
++    XELOGI("Loading XEX patch failed. Path doesn't exist {}",
++           xe::utf8::join_guest_paths(resolved_path, relative_path));
+     return nullptr;
+   }
+ 
+diff --git a/src/xenia/kernel/xam/content_manager.cc b/src/xenia/kernel/xam/content_manager.cc
+index 86daf717f..1ffd64a27 100644
+--- a/src/xenia/kernel/xam/content_manager.cc
++++ b/src/xenia/kernel/xam/content_manager.cc
+@@ -71,14 +71,14 @@ X_STATUS ContentManager::ExtractContentHeader(
+ 
+ std::unique_ptr<ContentPackage> ContentManager::OpenPackage(
+     const std::filesystem::path host_path) {
++  const std::string device_path = GeneratePackageDevicePath(host_path);
++
+   if (std::filesystem::is_directory(host_path)) {
+     return std::make_unique<ContentPackageDirectory>(
+-        kernel_state_->file_system(), GeneratePackageDevicePath(host_path),
+-        host_path);
++        kernel_state_->file_system(), device_path, host_path);
+   } else {
+     auto package = std::make_unique<ContentPackageContainer>(
+-        kernel_state_->file_system(), GeneratePackageDevicePath(host_path),
+-        host_path);
++        kernel_state_->file_system(), device_path, host_path);
+ 
+     return package->IsValidPackage() ? std::move(package) : nullptr;
+   }
+@@ -110,9 +110,11 @@ std::unique_ptr<ContentPackage> ContentManager::CreatePackage(
+ }
+ 
+ ContentPackage* ContentManager::OpenAndMountPackage(
+-    const std::filesystem::path host_path, const std::string_view root_name) {
++    const std::filesystem::path host_path, const std::string_view root_name,
++    const std::string_view root_path) {
+   auto global_lock = global_critical_region_.Acquire();
+-  return MountPackage(root_name, OpenPackage(host_path));
++
++  return MountPackage(root_name, OpenPackage(host_path), root_path);
+ }
+ 
+ ContentPackage* ContentManager::CreateAndMountPackage(
+@@ -139,8 +141,9 @@ ContentPackage* ContentManager::FindPackage(
+ }
+ 
+ ContentPackage* ContentManager::MountPackage(
+-    const std::string_view root_name, std::unique_ptr<ContentPackage> package) {
+-  if (!package || !package->MountPackageAndRegister(root_name)) {
++    const std::string_view root_name, std::unique_ptr<ContentPackage> package,
++    const std::string_view root_path) {
++  if (!package || !package->MountPackageAndRegister(root_name, root_path)) {
+     return nullptr;
+   }
+ 
+@@ -435,7 +438,8 @@ X_RESULT ContentManager::CreateContent(const std::string_view root_name,
+ X_RESULT ContentManager::OpenContent(const std::string_view root_name,
+                                      const uint64_t xuid,
+                                      const XCONTENT_DATA_INTERNAL& data,
+-                                     uint32_t& content_license) {
++                                     uint32_t& content_license,
++                                     const uint32_t disc_number) {
+   auto global_lock = global_critical_region_.Acquire();
+ 
+   if (IsContentOpen(root_name)) {
+@@ -449,8 +453,11 @@ X_RESULT ContentManager::OpenContent(const std::string_view root_name,
+     return X_ERROR_FILE_NOT_FOUND;
+   }
+ 
++  const std::string root_path =
++      disc_number != -1 ? fmt::format("disc{:03}", disc_number) : "";
++
+   // Open package.
+-  auto package = OpenAndMountPackage(package_path, root_name);
++  auto package = OpenAndMountPackage(package_path, root_name, root_path);
+   if (!package) {
+     return X_ERROR_FILE_NOT_FOUND;
+   }
+diff --git a/src/xenia/kernel/xam/content_manager.h b/src/xenia/kernel/xam/content_manager.h
+index 159ecb549..751b646ad 100644
+--- a/src/xenia/kernel/xam/content_manager.h
++++ b/src/xenia/kernel/xam/content_manager.h
+@@ -61,7 +61,8 @@ class ContentManager {
+       const XCONTENT_DATA_INTERNAL& data);
+ 
+   ContentPackage* OpenAndMountPackage(const std::filesystem::path host_path,
+-                                      const std::string_view root_name);
++                                      const std::string_view root_name,
++                                      const std::string_view root_path = "");
+   ContentPackage* CreateAndMountPackage(const std::filesystem::path host_path,
+                                         const std::string_view root_name,
+                                         const XCONTENT_DATA_INTERNAL& data);
+@@ -88,7 +89,8 @@ class ContentManager {
+                          const XCONTENT_DATA_INTERNAL& data);
+   X_RESULT OpenContent(const std::string_view root_name, const uint64_t xuid,
+                        const XCONTENT_DATA_INTERNAL& data,
+-                       uint32_t& content_license);
++                       uint32_t& content_license,
++                       const uint32_t disc_number = -1);
+   X_RESULT CloseContent(const std::string_view root_name);
+   X_RESULT CloseContentByDeviceName(const std::string_view device_name);
+   X_RESULT GetContentThumbnail(const uint64_t xuid,
+@@ -118,7 +120,8 @@ class ContentManager {
+   // Used in case of mounting package on guest (via XAM). Package is
+   // autoregistered.
+   ContentPackage* MountPackage(const std::string_view root_name,
+-                               std::unique_ptr<ContentPackage> package);
++                               std::unique_ptr<ContentPackage> package,
++                               const std::string_view root_path = "");
+ 
+   std::filesystem::path ResolvePackageRoot(
+       const uint64_t xuid, const uint32_t title_id,
+diff --git a/src/xenia/kernel/xam/xcontent/xcontent_package.cc b/src/xenia/kernel/xam/xcontent/xcontent_package.cc
+index 771238c10..5854675ce 100644
+--- a/src/xenia/kernel/xam/xcontent/xcontent_package.cc
++++ b/src/xenia/kernel/xam/xcontent/xcontent_package.cc
+@@ -74,7 +74,8 @@ ContentPackage::~ContentPackage() {
+   }
+ }
+ 
+-bool ContentPackage::MountPackageAndRegister(const std::string_view root_name) {
++bool ContentPackage::MountPackageAndRegister(const std::string_view root_name,
++                                             const std::string_view root_path) {
+   auto device = MountPackage();
+ 
+   if (!device || !device->Initialize()) {
+@@ -87,7 +88,8 @@ bool ContentPackage::MountPackageAndRegister(const std::string_view root_name) {
+     if (!name.ends_with(":")) {
+       name.append(":");
+     }
+-    if (!file_system_->RegisterSymbolicLink(name, GetDevicePath())) {
++    if (!file_system_->RegisterSymbolicLink(
++            name, xe::utf8::join_guest_paths(GetDevicePath(), root_path))) {
+       XELOGE(
+           "{}: Cannot register package with mount path: {}. Mount path already "
+           "in-use.",
+diff --git a/src/xenia/kernel/xam/xcontent/xcontent_package.h b/src/xenia/kernel/xam/xcontent/xcontent_package.h
+index 21e9bdb91..4aefcc26b 100644
+--- a/src/xenia/kernel/xam/xcontent/xcontent_package.h
++++ b/src/xenia/kernel/xam/xcontent/xcontent_package.h
+@@ -47,7 +47,8 @@ class ContentPackage {
+ 
+   // Allows to read package content. Creates dedicated device.
+   virtual std::unique_ptr<vfs::Device> MountPackage() = 0;
+-  bool MountPackageAndRegister(const std::string_view root_name);
++  bool MountPackageAndRegister(const std::string_view root_name,
++                               const std::string_view root_path = "");
+ 
+   virtual X_RESULT SetThumbnail(std::span<const uint8_t> thumbnail) = 0;
+   virtual X_RESULT GetThumbnail(std::vector<uint8_t>& buffer) = 0;
+diff --git a/src/xenia/vfs/virtual_file_system.cc b/src/xenia/vfs/virtual_file_system.cc
+index 34ee9dedb..816a0d921 100644
+--- a/src/xenia/vfs/virtual_file_system.cc
++++ b/src/xenia/vfs/virtual_file_system.cc
+@@ -119,7 +119,7 @@ bool VirtualFileSystem::ResolveSymbolicLink(const std::string_view path,
+     // Found symlink!
+     auto target_path = (*it).second;
+     auto relative_path = result.substr((*it).first.size());
+-    result = target_path + relative_path;
++    result = xe::utf8::fix_guest_path_separators(target_path + relative_path);
+     was_resolved = true;
+   }
+   return was_resolved;
+-- 
+2.49.0.windows.1
+

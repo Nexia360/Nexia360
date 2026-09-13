@@ -1,0 +1,42 @@
+=== Nexia XNA probe ===
+adapter      : NVIDIA GeForce RTX 4070 Ti SUPER
+profile      : HiDef
+backbuffer   : 1280x720 Color
+depth format : Depth24
+tag scheme   : high nibble = role (0 red, 1 cyan, 2 green, 3 magenta, 4 yellow, 5 blue - complementary pairs),
+               low nibble of every channel = case + 1. F32323 is case 2 role 0, 23F3F3 is case 2 role 1.
+
+CASE 0 clear                 expect every sample 21F1F1FF
+  got            centre=21F1F1FF L=21F1F1FF R=21F1F1FF T=21F1F1FF B=21F1F1FF TL=21F1F1FF BR=21F1F1FF
+CASE 1 clip-space quad       expect L=F22222FF R=22F2F2FF (clear)
+  got            centre=22F2F2FF L=F22222FF R=22F2F2FF T=22F2F2FF B=22F2F2FF TL=22F2F2FF BR=22F2F2FF
+CASE 2 perspective quad      expect centre=F32323FF everything else 23F3F3FF (fov 0.8901 eye 7.3 half-height 1.741)
+  got            centre=F32323FF L=23F3F3FF R=23F3F3FF T=23F3F3FF B=23F3F3FF TL=23F3F3FF BR=23F3F3FF
+CASE 3 textured fullscreen   expect TL=F42424FF TR=24F4F4FF BL=24F424FF BR=F424F4FF
+  quadrants      TL=F42424FF TR=24F4F4FF BL=24F424FF BR=F424F4FF
+CASE 4 render target         200x120, expect inRT L=F52525FF R=25F5F5FF
+  in the target  L=F52525FF R=25F5F5FF
+  composited     expect L=F52525FF R=25F5F5FF, never 25F525FF (that clear means the quad drew nothing)
+  got            centre=25F5F5FF L=F52525FF R=25F5F5FF T=25F5F5FF B=25F5F5FF TL=25F5F5FF BR=25F5F5FF
+CASE 5 depth test            expect centre=F62626FF (near z=0.512 beats far z=0.524, clear 0.938); 26F6F6FF means inverted, 26F626FF means neither drew
+  got            centre=F62626FF L=26F626FF R=26F626FF T=26F626FF B=26F626FF TL=26F626FF BR=26F626FF
+CASE 6 alpha blend           expect centre=988585FF; 27F7F7FF means the source was ignored, 8615158B means it overwrote
+  got            centre=988585FF L=988585FF R=988585FF T=988585FF B=988585FF TL=988585FF BR=988585FF
+CASE 7 two render targets    176x144, expect rt0=F82828FF (the draw), rt1=28F8F8FF (the clear - one shader writes COLOR0 only)
+  rt0 centre=F82828FF corner=F82828FF
+  rt1 centre=28F8F8FF corner=28F8F8FF
+CASE 8 cull mode             L=F92929FF means CullCounterClockwise kept it; R=29F9F9FF means CullClockwise did; 29F929FF is the clear
+  got            centre=29F929FF L=F92929FF R=29F929FF T=29F929FF B=29F929FF TL=29F929FF BR=29F929FF
+CASE 9 layered frame         BG 2A2AFAFF (depth off), near FA2A2AFF, far 2AFAFAFF (depth on) in a 1280x720 target, composited, sprite FAFA2AFF on top; FA2AFAFF is the backbuffer clear (composite drew nothing)
+  sprite    expect FAFA2AFF got FAFA2AFF
+  overlap   expect FA2A2AFF got FA2A2AFF
+  near only expect FA2A2AFF got FA2A2AFF
+  far only  expect 2AFAFAFF got 2AFAFAFF
+  bg        expect 2A2AFAFF got 2A2AFAFF and 2A2AFAFF
+  got            centre=FAFA2AFF L=2A2AFAFF R=2A2AFAFF T=2A2AFAFF B=2A2AFAFF TL=2A2AFAFF BR=2A2AFAFF
+CASE 10 scene frame 600: sky=6F9ACAFF sky2=071D59FF cube(640,286)=3246E6FF clear-if-sky-missing=FB2BFBFF
+  hud border=FFFFFFFF H=FFC828FF health=3CD250FF energy=468CFAFF R=E62828FF G=28E628FF B=2828E6FF ramp0=000000FF ramp7=FFFFFFFF slot=DCB432FF panel=161A28FF
+CASE 10 scene frame 900: sky=6F9ACAFF sky2=071D59FF cube(640,286)=D232D2FF clear-if-sky-missing=FB2BFBFF
+  hud border=FFFFFFFF H=FFC828FF health=3CD250FF energy=468CFAFF R=E62828FF G=28E628FF B=2828E6FF ramp0=000000FF ramp7=FFFFFFFF slot=DCB432FF panel=161A28FF
+CASE 10 scene frame 1200: sky=6F9ACAFF sky2=071D59FF cube(640,286)=28C83CFF clear-if-sky-missing=FB2BFBFF
+  hud border=FFFFFFFF H=FFC828FF health=3CD250FF energy=468CFAFF R=E62828FF G=28E628FF B=2828E6FF ramp0=000000FF ramp7=FFFFFFFF slot=DCB432FF panel=161A28FF

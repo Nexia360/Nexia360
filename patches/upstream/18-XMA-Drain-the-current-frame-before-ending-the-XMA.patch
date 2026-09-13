@@ -1,0 +1,42 @@
+From 6bef1fbed17734b0c2d2039d20a15241e026045d Mon Sep 17 00:00:00 2001
+From: Herman S <429230+has207@users.noreply.github.com>
+Date: Tue, 25 Aug 2026 13:20:49 +0900
+Subject: [PATCH] [XMA] Drain the current frame before ending the XMA work loop
+
+Work() left its decode loop as soon as both input buffers went invalid,
+without checking whether the current frame had been fully handed to the
+output ring. Consume() transfers at most subframe_decode_count blocks per
+pass, so the pass that exhausts the input usually strands the remainder.
+
+Work() clears is_enabled_ on entry and only XMAEnableContext sets it
+again, so that leftover PCM can never be delivered, and a game polling
+for it never issues the kick that would deliver it.
+
+Fixes NBA Live 06's menu click sfx which deadlocked guest audio thread.
+---
+ src/xenia/apu/xma_context_new.cc | 9 ++++++++-
+ 1 file changed, 8 insertions(+), 1 deletion(-)
+
+diff --git a/src/xenia/apu/xma_context_new.cc b/src/xenia/apu/xma_context_new.cc
+index d199146d5..57135caa1 100644
+--- a/src/xenia/apu/xma_context_new.cc
++++ b/src/xenia/apu/xma_context_new.cc
+@@ -186,7 +186,14 @@ bool XmaContextNew::Work() {
+     Decode(&data);
+     Consume(&output_rb, &data);
+ 
+-    if (!data.IsAnyInputBufferValid() || data.error_status == 4) {
++    // Don't abandon a partially consumed frame. Consume() hands over at most
++    // subframe_decode_count blocks per pass so the pass that exhausts the
++    // input typically leaves the rest of the frame undelivered. Work() has
++    // already cleared is_enabled_ and only XMAEnableContext sets it again.
++    // Game polling for the remainder therefore never kicks and nothing
++    // else can ever deliver it so keep draining until the frame is out.
++    if ((!data.IsAnyInputBufferValid() || data.error_status == 4) &&
++        current_frame_remaining_subframes_ == 0) {
+       XELOGAPU(
+           "XmaContext {}: Work loop exit - buffers_valid={} error_status={}",
+           id(), data.IsAnyInputBufferValid(), data.error_status);
+-- 
+2.49.0.windows.1
+

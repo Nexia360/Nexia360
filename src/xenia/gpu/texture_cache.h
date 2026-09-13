@@ -605,7 +605,7 @@ class TextureCache {
   // post-guest-swizzle signedness.
   static void BindingInfoFromFetchConstant(
       const xenos::xe_gpu_texture_fetch_t& fetch, TextureKey& key_out,
-      uint8_t* swizzled_signs_out);
+      uint8_t* swizzled_signs_out, uint32_t fetch_index = UINT32_MAX);
 
   // Makes all texture bindings invalid. Also requesting textures after calling
   // this will cause another attempt to create a texture or to untile it if

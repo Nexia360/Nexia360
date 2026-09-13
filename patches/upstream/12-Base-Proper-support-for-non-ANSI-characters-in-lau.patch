@@ -1,0 +1,73 @@
+From 909008870f2941838e2b09f51ddccac1d06bab33 Mon Sep 17 00:00:00 2001
+From: Shazzaam <78475878+shazzaam7@users.noreply.github.com>
+Date: Sun, 23 Aug 2026 20:00:47 +0200
+Subject: [PATCH] [Base] Proper support for non ANSI characters in launch
+ argument
+
+---
+ src/xenia/base/cvar.h      | 10 +++++-----
+ src/xenia/base/main_win.cc | 10 +++++++---
+ 2 files changed, 12 insertions(+), 8 deletions(-)
+
+diff --git a/src/xenia/base/cvar.h b/src/xenia/base/cvar.h
+index 4d8f803ae..8d2617409 100644
+--- a/src/xenia/base/cvar.h
++++ b/src/xenia/base/cvar.h
+@@ -146,7 +146,7 @@ template <>
+ inline void CommandVar<std::filesystem::path>::LoadFromLaunchOptions(
+     cxxopts::ParseResult* result) {
+   std::string value = (*result)[name_].template as<std::string>();
+-  SetCommandLineValue(value);
++  SetCommandLineValue(xe::to_path(value));
+ }
+ template <class T>
+ void ConfigVar<T>::LoadConfigValue(const toml::node* result) {
+@@ -164,8 +164,8 @@ void ConfigVar<T>::LoadConfigValue(const toml::node* result) {
+ template <>
+ inline void ConfigVar<std::filesystem::path>::LoadConfigValue(
+     const toml::node* result) {
+-  SetConfigValue(
+-      xe::utf8::fix_path_separators(result->as_string()->value_or("")));
++  SetConfigValue(xe::to_path(
++      xe::utf8::fix_path_separators(result->as_string()->value_or(""))));
+ }
+ template <class T>
+ void ConfigVar<T>::LoadGameConfigValue(const toml::node* result) {
+@@ -183,8 +183,8 @@ void ConfigVar<T>::LoadGameConfigValue(const toml::node* result) {
+ template <>
+ inline void ConfigVar<std::filesystem::path>::LoadGameConfigValue(
+     const toml::node* result) {
+-  SetGameConfigValue(
+-      xe::utf8::fix_path_separators(result->as_string()->value_or("")));
++  SetGameConfigValue(xe::to_path(
++      xe::utf8::fix_path_separators(result->as_string()->value_or(""))));
+ }
+ template <class T>
+ CommandVar<T>::CommandVar(const char* name, T* default_value,
+diff --git a/src/xenia/base/main_win.cc b/src/xenia/base/main_win.cc
+index fff730373..752390bd9 100644
+--- a/src/xenia/base/main_win.cc
++++ b/src/xenia/base/main_win.cc
+@@ -90,12 +90,16 @@ bool ParseWin32LaunchArguments(
+   }
+ 
+   // Convert all args to narrow, as cxxopts doesn't support wchar.
++  // Use WideCharToMultiByte with CP_UTF8 to support non-ANSI characters
++  // (e.g. CJK paths), unlike locale-dependent wcstombs.
+   int argc = wargc;
+   char** argv = reinterpret_cast<char**>(alloca(sizeof(char*) * argc));
+   for (int n = 0; n < argc; n++) {
+-    size_t len = std::wcstombs(nullptr, wargv[n], 0);
+-    argv[n] = reinterpret_cast<char*>(alloca(sizeof(char) * (len + 1)));
+-    std::wcstombs(argv[n], wargv[n], len + 1);
++    int len = WideCharToMultiByte(CP_UTF8, 0, wargv[n], -1, nullptr, 0, nullptr,
++                                  nullptr);
++    argv[n] = reinterpret_cast<char*>(alloca(sizeof(char) * len));
++    WideCharToMultiByte(CP_UTF8, 0, wargv[n], -1, argv[n], len, nullptr,
++                        nullptr);
+   }
+ 
+   LocalFree(wargv);
+-- 
+2.49.0.windows.1
+

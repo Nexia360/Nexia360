@@ -1,0 +1,36 @@
+From ec5e0f40e750ff1e8c8634bc9fef2951747648c5 Mon Sep 17 00:00:00 2001
+From: goldislead <69987043+goldislead@users.noreply.github.com>
+Date: Thu, 27 Aug 2026 22:26:07 +0000
+Subject: [PATCH] =?UTF-8?q?[GPU]=20Don=E2=80=99t=20drop=20swizzles=20from?=
+ =?UTF-8?q?=20dummy=20texture=20headers?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+If the header only asks for literal 0s and 1s, the texture will be created anyway with the declared dimensions.
+---
+ src/xenia/gpu/texture_cache.cc | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/src/xenia/gpu/texture_cache.cc b/src/xenia/gpu/texture_cache.cc
+index f809c0dcf..3ec80ee04 100644
+--- a/src/xenia/gpu/texture_cache.cc
++++ b/src/xenia/gpu/texture_cache.cc
+@@ -999,8 +999,12 @@ void TextureCache::BindingInfoFromFetchConstant(
+   texture_util::GetSubresourcesFromFetchConstant(
+       fetch, &width_minus_1, &height_minus_1, &depth_or_array_size_minus_1,
+       &base_page, &mip_page, nullptr, &mip_max_level);
+-  if (base_page == 0 && mip_page == 0) {
+-    // No texture data at all.
++  if (base_page == 0 && mip_page == 0 &&
++      (fetch.swizzle & 0b110110110110) != 0b100100100100) {
++    // No texture data at all. Any header taking every swizzle component from
++    // literal 0s or 1s may still be valid. 4D530919 binds one as the dummy
++    // alpha plane of Bink movies. Such examples get a texture with their
++    // dimensions for LOD queries. Zero extents skip the upload and watches.
+     return;
+   }
+   uint32_t pitch = fetch.pitch;
+-- 
+2.49.0.windows.1
+

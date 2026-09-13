@@ -1,0 +1,18 @@
+# Implemented for real in Extra.cs against Nexia's OS table (XnaOs).
+# Everything else about a gamer is still a stub.
+Microsoft.Xna.Framework.GamerServices.Gamer::Gamertag
+Microsoft.Xna.Framework.GamerServices.Gamer::DisplayName
+Microsoft.Xna.Framework.GamerServices.Gamer::Tag
+Microsoft.Xna.Framework.GamerServices.Gamer::SignedInGamers
+Microsoft.Xna.Framework.GamerServices.Gamer::ToString
+Microsoft.Xna.Framework.GamerServices.SignedInGamer::PlayerIndex
+Microsoft.Xna.Framework.GamerServices.SignedInGamer::IsSignedInToLive
+Microsoft.Xna.Framework.GamerServices.SignedInGamer::IsGuest
+# The guide: Nexia's own XAM dialogs, via XnaOs.
+Microsoft.Xna.Framework.GamerServices.Guide::IsVisible
+Microsoft.Xna.Framework.GamerServices.Guide::IsTrialMode
+Microsoft.Xna.Framework.GamerServices.Guide::SimulateTrialMode
+Microsoft.Xna.Framework.GamerServices.Guide::BeginShowMessageBox
+Microsoft.Xna.Framework.GamerServices.Guide::EndShowMessageBox
+Microsoft.Xna.Framework.GamerServices.Guide::BeginShowKeyboardInput
+Microsoft.Xna.Framework.GamerServices.Guide::EndShowKeyboardInput

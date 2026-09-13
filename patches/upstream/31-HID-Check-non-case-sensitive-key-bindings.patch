@@ -1,0 +1,28 @@
+From f9ed4cd520642f316518394c1bbad33165447693 Mon Sep 17 00:00:00 2001
+From: Adrian <78108584+AdrianCassar@users.noreply.github.com>
+Date: Thu, 3 Sep 2026 15:11:33 +0100
+Subject: [PATCH] [HID] Check non-case sensitive key bindings
+
+---
+ src/xenia/hid/keyboard/keyboard_input_driver.cc | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/src/xenia/hid/keyboard/keyboard_input_driver.cc b/src/xenia/hid/keyboard/keyboard_input_driver.cc
+index 935702eaf..0277b0c1a 100644
+--- a/src/xenia/hid/keyboard/keyboard_input_driver.cc
++++ b/src/xenia/hid/keyboard/keyboard_input_driver.cc
+@@ -535,6 +535,11 @@ void KeyboardInputDriver::OnKey(ui::KeyEvent& e, bool is_down) {
+       key_binding.is_pressed = is_down;
+       break;
+     }
++
++    if (!key_binding.uppercase && !key_binding.lowercase) {
++      key_binding.is_pressed = is_down;
++      break;
++    }
+   }
+ }
+ 
+-- 
+2.49.0.windows.1
+

@@ -533,6 +533,7 @@ class Memory {
   // access to any of it makes the resolve contract materialize into guest
   // memory - until then the bytes only exist on the GPU.
   void ArmResolveReadWatch(uint32_t physical_address, uint32_t length);
+  void MaterializeResolveReadWatches(uint32_t virtual_address, uint32_t length);
   // Set by the GPU command processor. Called on a guest access to an armed
   // page, with the global critical region released.
   typedef bool (*ResolveContractFaultCallback)(void* context_ptr,

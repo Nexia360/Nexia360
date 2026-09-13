@@ -11,6 +11,7 @@
 #define XENIA_GPU_D3D12_PIPELINE_CACHE_H_
 
 #include <atomic>
+#include <bit>
 #include <condition_variable>
 #include <cstdio>
 #include <deque>
@@ -76,8 +77,15 @@ class PipelineCache {
   // racing pipeline compilation and then blocking work on incomplete state.
   void AwaitPipelineCompletion();
 
-  D3D12Shader* LoadShader(xenos::ShaderType shader_type,
-                          const uint32_t* host_address, uint32_t dword_count);
+  // ucode_source_endian is the byte order of host_address. A guest title's
+  // microcode is console order, which is why that is the default - but a hosted
+  // title's effect has already been swapped into host order when its container
+  // was, and swapping it again turns every instruction into garbage that still
+  // parses.
+  D3D12Shader* LoadShader(
+      xenos::ShaderType shader_type, const uint32_t* host_address,
+      uint32_t dword_count,
+      std::endian ucode_source_endian = std::endian::big);
   // Analyze shader microcode on the translator thread.
   void AnalyzeShaderUcode(Shader& shader) {
     if (!shader.is_ucode_analyzed()) {
@@ -279,7 +287,8 @@ class PipelineCache {
 
   D3D12Shader* LoadShader(xenos::ShaderType shader_type,
                           const uint32_t* host_address, uint32_t dword_count,
-                          uint64_t data_hash);
+                          uint64_t data_hash,
+                          std::endian ucode_source_endian = std::endian::big);
 
   // Can be called from multiple threads.
   bool TranslateAnalyzedShader(DxbcShaderTranslator& translator,

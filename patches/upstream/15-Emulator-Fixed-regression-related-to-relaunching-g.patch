@@ -1,0 +1,34 @@
+From 1e834f8a8c4033e9848f1a65c57edb8703990e09 Mon Sep 17 00:00:00 2001
+From: Gliniak <153369+Gliniak@users.noreply.github.com>
+Date: Mon, 24 Aug 2026 20:09:52 +0200
+Subject: [PATCH] [Emulator] Fixed regression related to relaunching games
+ introduced in XContent change
+
+---
+ src/xenia/emulator.cc | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/src/xenia/emulator.cc b/src/xenia/emulator.cc
+index 737646b57..cf1856972 100644
+--- a/src/xenia/emulator.cc
++++ b/src/xenia/emulator.cc
+@@ -1518,12 +1518,13 @@ std::string Emulator::FindLaunchModule() {
+           kDefaultGameSymbolicLink);
+ 
+       file_path /= std::filesystem::path(xam->loader_data().launch_path);
++      const auto registered_path =
++          xe::path_to_utf8(file_path.parent_path()) + kGuestPathSeparator;
+ 
+       kernel_state_->file_system()->RegisterSymbolicLink(
+-          kDefaultPartitionSymbolicLink,
+-          xe::path_to_utf8(file_path.parent_path()));
++          kDefaultPartitionSymbolicLink, registered_path);
+       kernel_state_->file_system()->RegisterSymbolicLink(
+-          kDefaultGameSymbolicLink, xe::path_to_utf8(file_path.parent_path()));
++          kDefaultGameSymbolicLink, registered_path);
+ 
+       return xe::path_to_utf8(file_path);
+     }
+-- 
+2.49.0.windows.1
+

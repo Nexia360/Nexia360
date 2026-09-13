@@ -16,6 +16,7 @@
 #include "third_party/libcurl/include/curl/curl.h"
 // clang-format on
 
+#include <algorithm>
 #include <cctype>
 #include <cstring>
 #include <random>
@@ -36,6 +37,7 @@ extern "C" {
 #include "xenia/kernel/xam/xam_ui.h"
 #include "xenia/emulator.h"
 #include "xenia/kernel/XLiveAPI.h"
+#include "xenia/kernel/xna/xna_launcher.h"
 #include "xenia/kernel/user_module.h"
 #include "xenia/kernel/util/friends_util.h"
 #include "xenia/kernel/util/shim_utils.h"
@@ -1560,9 +1562,31 @@ std::vector<std::unique_ptr<SessionObjectJSON>> XLiveAPI::GetTitleSessions(
   const std::string& title_version = kernel_state()->emulator()->title_version();
 
   std::string route = fmt::format("title/{:08X}/sessions/search", title_id);
+  std::string separator = "?";
 
   if (!title_version.empty()) {
-    route += fmt::format("?version={}", title_version);
+    route += separator + "version=" + title_version;
+    separator = "&";
+  }
+
+  const bool hosted = kernel_state()->hosted_title_id() &&
+                      kernel_state()->hosted_title_id() == title_id;
+  const std::string& hosted_name = kernel_state()->emulator()->title_name();
+
+  if (hosted && !hosted_name.empty()) {
+    std::string encoded;
+
+    for (const unsigned char character : hosted_name) {
+      if (std::isalnum(character) || character == '-' || character == '_' ||
+          character == '.' || character == '~') {
+        encoded += static_cast<char>(character);
+      } else {
+        encoded += fmt::format("%{:02X}", character);
+      }
+    }
+
+    route += separator + "name=" + encoded;
+    separator = "&";
   }
 
   std::string endpoint = BuildEndpoint(route);
@@ -1593,6 +1617,18 @@ std::vector<std::unique_ptr<SessionObjectJSON>> XLiveAPI::GetTitleSessions(
     assert_true(valid);
 
     sessions.push_back(std::move(session));
+  }
+
+  if (hosted) {
+    const std::string& name = hosted_name;
+    sessions.erase(
+        std::remove_if(sessions.begin(), sessions.end(),
+                       [&name](const std::unique_ptr<SessionObjectJSON>& s) {
+                         return s->Title() != name;
+                       }),
+        sessions.end());
+    XELOGI("GetTitleSessions: {} session(s) of hosted title \"{}\"",
+           sessions.size(), name);
   }
 
   XELOGI("GetTitleSessions found {} sessions.", sessions.size());
@@ -2909,13 +2945,17 @@ void XLiveAPI::XSessionCreate(uint64_t sessionId, XGI_SESSION_CREATE* data) {
   std::string sessionId_str = fmt::format("{:016x}", sessionId);
   assert_true(sessionId_str.size() == 16);
 
-  const auto& media_id = kernel_state()
-                             ->GetExecutableModule()
-                             ->xex_module()
-                             ->opt_execution_info()
-                             ->media_id;
-
-  const std::string mediaId_str = fmt::format("{:08X}", media_id.get());
+  std::string mediaId_str = kernel_state()->emulator()->media_id();
+  const auto executable = kernel_state()->GetExecutableModule();
+  if (executable && executable->xex_module() &&
+      executable->xex_module()->opt_execution_info()) {
+    mediaId_str = fmt::format(
+        "{:08X}",
+        executable->xex_module()->opt_execution_info()->media_id.get());
+  }
+  if (mediaId_str.empty()) {
+    mediaId_str = "00000000";
+  }
 
   xe::be<uint64_t> xuid = 0;
 
@@ -2928,15 +2968,17 @@ void XLiveAPI::XSessionCreate(uint64_t sessionId, XGI_SESSION_CREATE* data) {
 
   const std::string xuid_str = fmt::format("{:016X}", xuid.get());
 
-  const auto xlast =
-      kernel_state()->emulator()->game_info_database()->GetXLast();
-
   // Technically we could just send the matchmaking query instead of complete
   // XLast source.
   std::optional<std::string> xlast_source_base64;
 
-  if (xlast) {
-    xlast_source_base64 = xlast->SerializeSourceToBase64();
+  const auto* game_info = kernel_state()->emulator()->game_info_database();
+  if (game_info && game_info->IsValid()) {
+    const auto xlast = game_info->GetXLast();
+
+    if (xlast) {
+      xlast_source_base64 = xlast->SerializeSourceToBase64();
+    }
   }
 
   SessionObjectJSON session;
@@ -2956,6 +2998,17 @@ void XLiveAPI::XSessionCreate(uint64_t sessionId, XGI_SESSION_CREATE* data) {
 
   if (xlast_source_base64.has_value()) {
     session.XLast(xlast_source_base64.value());
+  }
+
+  if (kernel_state()->hosted_title_id()) {
+    const std::vector<uint8_t> icon = xna::XnaTitleIcon();
+    if (!icon.empty()) {
+      std::vector<char> encoded(AV_BASE64_SIZE(icon.size()));
+      if (av_base64_encode(encoded.data(), static_cast<int>(encoded.size()),
+                           icon.data(), static_cast<int>(icon.size()))) {
+        session.Icon(std::string("data:image/png;base64,") + encoded.data());
+      }
+    }
   }
 
   std::string session_output;

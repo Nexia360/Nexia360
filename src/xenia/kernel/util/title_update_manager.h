@@ -89,9 +89,13 @@ class TitleUpdateManager {
   // content tree as source_dirname) into the library, names it from the .xexp
   // version, records it in the manifest, and (when auto_activate) links it
   // active. Returns the library id, or empty on failure.
+  // display_name is what the entry is called in the manifest. When empty the
+  // name falls back to the .xexp version, and then to source_dirname - which
+  // is only ever a sensible name for a package picked off disk.
   std::string ImportFromContent(uint32_t title_id,
                                 const std::string& source_dirname,
-                                bool auto_activate);
+                                bool auto_activate,
+                                const std::string& display_name = "");
 
   // One-time migration: move payloads stored at <Library>/<id>/ down into
   // <Library>/<id>/UPDATE/, leaving any per-update Content folder in place.

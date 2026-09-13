@@ -1,0 +1,149 @@
+From 577fb8ee17457af7493690a408492d800d53af58 Mon Sep 17 00:00:00 2001
+From: XeniOS <reality@xenios.jp>
+Date: Thu, 27 Aug 2026 12:55:41 +0900
+Subject: [PATCH] [CPU] Fix mcrf: copy the CR field instead of comparing it
+ against zero
+
+mcrf BF,BFA is a four-bit field copy, SO included. The emitter lowered
+it as LoadCR(BFA) -> StoreCR(BF) -> UpdateCR(BF). LoadCR and StoreCR
+place the field at the source and destination bit positions, so the
+store produced zeros whenever BF != BFA, and UpdateCR then rewrote
+lt/gt/eq from a signed compare of that word against zero and dropped
+so. A copied eq came out as gt and so was always lost; the result only
+matched when the source pattern happened to compare the same way.
+
+Lower it as four LoadCRField/StoreCRField bit copies, the way crand,
+cror and the other CR logical ops already do.
+
+Two fixtures in instr_mcrf.s encoded the old lowering rather than the
+ISA; their expectations are re-derived from the definition:
+  mcrf_3 / mcrf_3_constant  r12 0x40020000 -> 0x20020000 (cr0 = eq)
+  mcrf_5 / mcrf_5_constant  r12 0x00802040 -> 0x00802080 (cr6 = lt)
+
+Two cases cover what the existing fixtures could not. mcrf_6 copies a
+field onto itself. mcrf_7 seeds cr7 = lt|so through mtcrf and copies it
+to cr0, which is the only fixture that exercises the so bit, since no
+compare ever writes it; the old lowering returns 0x40000009 there
+against 0x90000009 for the copy.
+
+Evidence: correctness, from the ISA definition of mcrf. The
+xenia-cpu-ppc-tests corpus (169,044/169,044, the fourteen mcrf cases
+included) runs instr_mcrf.s with the updated expectations as the gate
+for this change.
+
+(cherry picked from commit 46e8fd8dccba4f62276d85a303f05afff1e1b7bf)
+---
+ src/xenia/cpu/ppc/ppc_emit_control.cc  | 10 +++--
+ src/xenia/cpu/ppc/testing/instr_mcrf.s | 56 ++++++++++++++++++++++++--
+ 2 files changed, 58 insertions(+), 8 deletions(-)
+
+diff --git a/src/xenia/cpu/ppc/ppc_emit_control.cc b/src/xenia/cpu/ppc/ppc_emit_control.cc
+index 0b81b79b7..4db43d324 100644
+--- a/src/xenia/cpu/ppc/ppc_emit_control.cc
++++ b/src/xenia/cpu/ppc/ppc_emit_control.cc
+@@ -422,11 +422,13 @@ int InstrEmit_crxor(PPCHIRBuilder& f, const InstrData& i) {
+ }
+ 
+ int InstrEmit_mcrf(PPCHIRBuilder& f, const InstrData& i) {
++  // CR[4*bf:4*bf+3] <- CR[4*bfa:4*bfa+3]   bf=bo, bfa=bi
++  // LoadCR/StoreCR bake the field position into the word and cannot cross it.
+   uint32_t crfd = i.XL.BO >> 2;
+-  Value* bi = f.LoadCR(i.XL.BI >> 2);
+-
+-  f.StoreCR(crfd, bi);
+-  f.UpdateCR(crfd, bi);
++  uint32_t crfs = i.XL.BI >> 2;
++  for (uint32_t bit = 0; bit < 4; ++bit) {
++    f.StoreCRField(crfd, bit, f.LoadCRField(crfs, bit));
++  }
+   return 0;
+ }
+ 
+diff --git a/src/xenia/cpu/ppc/testing/instr_mcrf.s b/src/xenia/cpu/ppc/testing/instr_mcrf.s
+index 055acf924..25fd890bd 100644
+--- a/src/xenia/cpu/ppc/testing/instr_mcrf.s
++++ b/src/xenia/cpu/ppc/testing/instr_mcrf.s
+@@ -51,7 +51,8 @@ test_mcrf_3:
+   blr
+   #_ REGISTER_OUT r3 5
+   #_ REGISTER_OUT r4 5
+-  #_ REGISTER_OUT r12 0x40020000
++  # cr0 = eq, cr3 = eq
++  #_ REGISTER_OUT r12 0x20020000
+ 
+ test_mcrf_3_constant:
+   li r3, 5
+@@ -62,7 +63,8 @@ test_mcrf_3_constant:
+   blr
+   #_ REGISTER_OUT r3 5
+   #_ REGISTER_OUT r4 5
+-  #_ REGISTER_OUT r12 0x40020000
++  # cr0 = eq, cr3 = eq
++  #_ REGISTER_OUT r12 0x20020000
+ 
+ test_mcrf_4:
+   #_ REGISTER_IN r3 100
+@@ -100,7 +102,8 @@ test_mcrf_5:
+   #_ REGISTER_OUT r4 20
+   #_ REGISTER_OUT r5 30
+   #_ REGISTER_OUT r6 30
+-  #_ REGISTER_OUT r12 0x00802040
++  # cr2 = lt, cr4 = eq, cr6 = lt
++  #_ REGISTER_OUT r12 0x00802080
+ 
+ test_mcrf_5_constant:
+   li r3, 10
+@@ -116,4 +119,49 @@ test_mcrf_5_constant:
+   #_ REGISTER_OUT r4 20
+   #_ REGISTER_OUT r5 30
+   #_ REGISTER_OUT r6 30
+-  #_ REGISTER_OUT r12 0x00802040
++  # cr2 = lt, cr4 = eq, cr6 = lt
++  #_ REGISTER_OUT r12 0x00802080
++
++test_mcrf_6:
++  #_ REGISTER_IN r3 5
++  #_ REGISTER_IN r4 5
++  cmpw cr3, r3, r4
++  mcrf cr3, cr3
++  mfcr r12
++  blr
++  #_ REGISTER_OUT r3 5
++  #_ REGISTER_OUT r4 5
++  # cr3 = eq
++  #_ REGISTER_OUT r12 0x00020000
++
++test_mcrf_6_constant:
++  li r3, 5
++  li r4, 5
++  cmpw cr3, r3, r4
++  mcrf cr3, cr3
++  mfcr r12
++  blr
++  #_ REGISTER_OUT r3 5
++  #_ REGISTER_OUT r4 5
++  # cr3 = eq
++  #_ REGISTER_OUT r12 0x00020000
++
++test_mcrf_7:
++  #_ REGISTER_IN r3 9
++  mtcrf 0xFF, r3
++  mcrf cr0, cr7
++  mfcr r12
++  blr
++  #_ REGISTER_OUT r3 9
++  # cr7 = lt|so, copied to cr0
++  #_ REGISTER_OUT r12 0x90000009
++
++test_mcrf_7_constant:
++  li r3, 9
++  mtcrf 0xFF, r3
++  mcrf cr0, cr7
++  mfcr r12
++  blr
++  #_ REGISTER_OUT r3 9
++  # cr7 = lt|so, copied to cr0
++  #_ REGISTER_OUT r12 0x90000009
+-- 
+2.49.0.windows.1
+

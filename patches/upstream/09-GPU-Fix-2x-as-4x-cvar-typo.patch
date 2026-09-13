@@ -1,0 +1,67 @@
+From e87321b067f59a72676f8f881b425bb0e53b79c3 Mon Sep 17 00:00:00 2001
+From: goldislead <69987043+goldislead@users.noreply.github.com>
+Date: Sat, 22 Aug 2026 13:42:00 -0700
+Subject: [PATCH] [GPU] Fix 2x-as-4x cvar typo
+
+---
+ src/xenia/gpu/d3d12/d3d12_render_target_cache.cc   | 2 +-
+ src/xenia/gpu/render_target_cache.cc               | 2 +-
+ src/xenia/gpu/render_target_cache.h                | 2 +-
+ src/xenia/gpu/vulkan/vulkan_render_target_cache.cc | 2 +-
+ 4 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/src/xenia/gpu/d3d12/d3d12_render_target_cache.cc b/src/xenia/gpu/d3d12/d3d12_render_target_cache.cc
+index 14b12747b..4652e9b3e 100644
+--- a/src/xenia/gpu/d3d12/d3d12_render_target_cache.cc
++++ b/src/xenia/gpu/d3d12/d3d12_render_target_cache.cc
+@@ -483,7 +483,7 @@ bool D3D12RenderTargetCache::Initialize() {
+ 
+     // Check if 2x MSAA is supported or needs to be emulated with 4x MSAA
+     // instead.
+-    if (!cvars::debug_msaa_4x_as_2x) {
++    if (!cvars::debug_msaa_2x_as_4x) {
+       msaa_2x_supported_ = true;
+       static constexpr DXGI_FORMAT kRenderTargetDXGIFormats[] = {
+           DXGI_FORMAT_R16G16B16A16_FLOAT,
+diff --git a/src/xenia/gpu/render_target_cache.cc b/src/xenia/gpu/render_target_cache.cc
+index 5810c1ccf..8d5bc939f 100644
+--- a/src/xenia/gpu/render_target_cache.cc
++++ b/src/xenia/gpu/render_target_cache.cc
+@@ -22,7 +22,7 @@
+ #include "xenia/gpu/xenos.h"
+ 
+ DEFINE_bool(
+-    debug_msaa_4x_as_2x, false,
++    debug_msaa_2x_as_4x, false,
+     "Use 4x MSAA with 2 samples instead of native 2x MSAA when available. "
+     "For scalability testing on host GPU APIs where 2x is not mandatory. MSAA "
+     "will be of a similar or worse quality and use more memory.",
+diff --git a/src/xenia/gpu/render_target_cache.h b/src/xenia/gpu/render_target_cache.h
+index 018eff7ac..232b4f226 100644
+--- a/src/xenia/gpu/render_target_cache.h
++++ b/src/xenia/gpu/render_target_cache.h
+@@ -28,7 +28,7 @@
+ #include "xenia/gpu/shader.h"
+ #include "xenia/gpu/xenos.h"
+ 
+-DECLARE_bool(debug_msaa_4x_as_2x);
++DECLARE_bool(debug_msaa_2x_as_4x);
+ DECLARE_bool(depth_transfer_not_equal_test);
+ DECLARE_bool(depth_float24_round);
+ DECLARE_bool(depth_float24_convert_in_pixel_shader);
+diff --git a/src/xenia/gpu/vulkan/vulkan_render_target_cache.cc b/src/xenia/gpu/vulkan/vulkan_render_target_cache.cc
+index 153d90c0c..16c380daf 100644
+--- a/src/xenia/gpu/vulkan/vulkan_render_target_cache.cc
++++ b/src/xenia/gpu/vulkan/vulkan_render_target_cache.cc
+@@ -265,7 +265,7 @@ bool VulkanRenderTargetCache::Initialize(uint32_t shared_memory_binding_count) {
+   // 2x MSAA support.
+   // TODO(Triang3l): Handle sampledImageIntegerSampleCounts 4 not supported in
+   // transfers.
+-  if (!cvars::debug_msaa_4x_as_2x) {
++  if (!cvars::debug_msaa_2x_as_4x) {
+     // Multisampled integer sampled images are optional in Vulkan and in Xenia.
+     msaa_2x_attachments_supported_ =
+         (device_properties.framebufferColorSampleCounts &
+-- 
+2.49.0.windows.1
+

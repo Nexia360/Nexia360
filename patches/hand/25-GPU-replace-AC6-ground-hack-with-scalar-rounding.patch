@@ -1,0 +1,631 @@
+diff --git a/src/xenia/gpu/dxbc_shader_translator.h b/src/xenia/gpu/dxbc_shader_translator.h
+index 3b40a5e55..dac18a2e3 100644
+--- a/src/xenia/gpu/dxbc_shader_translator.h
++++ b/src/xenia/gpu/dxbc_shader_translator.h
+@@ -950,6 +950,10 @@ class DxbcShaderTranslator : public ShaderTranslator {
+       const ParsedAluInstruction& instr,
+       uint8_t memexport_eM_potentially_written_before, uint32_t& result_swizzle,
+       bool& predicate_written);
++  // Reduces finite host approximations to a chosen mantissa width.
++  // We still don't know the exact precision or rounding.
++  void ReduceFloatPrecision(const dxbc::Dest& dest, const dxbc::Src& value,
++                            uint32_t mantissa_bits);
+   void ProcessScalarAluOperation(
+       const ParsedAluInstruction& instr,
+       uint8_t memexport_eM_potentially_written_before, bool& predicate_written);
+diff --git a/src/xenia/gpu/dxbc_shader_translator_alu.cc b/src/xenia/gpu/dxbc_shader_translator_alu.cc
+index 407d345d8..592fc7989 100644
+--- a/src/xenia/gpu/dxbc_shader_translator_alu.cc
++++ b/src/xenia/gpu/dxbc_shader_translator_alu.cc
+@@ -650,6 +650,54 @@ void DxbcShaderTranslator::ProcessVectorAluOperation(
+   PopSystemTemp(operand_temps);
+ }
+ 
++void DxbcShaderTranslator::ReduceFloatPrecision(const dxbc::Dest& dest,
++                                                const dxbc::Src& value,
++                                                uint32_t mantissa_bits) {
++  // Round to nearest, with halfway values away from zero. We don't know the
++  // actual midpoint behavior, this is the one 4E4D07D1 needs. Signed zero stays
++  // signed. Denormals still follow the host float controls.
++  assert_true(mantissa_bits > 0 && mantissa_bits < 23);
++
++  uint32_t truncate_bits = 23 - mantissa_bits;
++  uint32_t discarded_mask = (uint32_t(1) << truncate_bits) - 1;
++  uint32_t truncate_mask = ~discarded_mask;
++  uint32_t round_bit = uint32_t(1) << (truncate_bits - 1);
++  uint32_t reduced_ulp = uint32_t(1) << truncate_bits;
++
++  // x keeps the original, y is truncated, z is rounded, and w is scratch.
++  uint32_t temp = PushSystemTemp();
++  dxbc::Dest temp_x_dest(dxbc::Dest::R(temp, 0b0001));
++  dxbc::Dest temp_y_dest(dxbc::Dest::R(temp, 0b0010));
++  dxbc::Dest temp_z_dest(dxbc::Dest::R(temp, 0b0100));
++  dxbc::Dest temp_w_dest(dxbc::Dest::R(temp, 0b1000));
++  dxbc::Src temp_x_src(dxbc::Src::R(temp, dxbc::Src::kXXXX));
++  dxbc::Src temp_y_src(dxbc::Src::R(temp, dxbc::Src::kYYYY));
++  dxbc::Src temp_z_src(dxbc::Src::R(temp, dxbc::Src::kZZZZ));
++  dxbc::Src temp_w_src(dxbc::Src::R(temp, dxbc::Src::kWWWW));
++
++  a_.OpMov(temp_x_dest, value);
++  a_.OpAnd(temp_y_dest, temp_x_src, dxbc::Src::LU(truncate_mask));
++  a_.OpIAdd(temp_z_dest, temp_y_src, dxbc::Src::LU(reduced_ulp));
++
++  // Don't let this rounding turn a finite host result into infinity.
++  // Keep the truncated value when it would.
++  a_.OpAnd(temp_w_dest, temp_z_src, dxbc::Src::LU(0x7F800000u));
++  a_.OpIEq(temp_w_dest, temp_w_src, dxbc::Src::LU(0x7F800000u));
++  a_.OpMovC(temp_z_dest, temp_w_src, temp_y_src, temp_z_src);
++
++  a_.OpAnd(temp_w_dest, temp_x_src, dxbc::Src::LU(discarded_mask));
++  a_.OpUGE(temp_w_dest, temp_w_src, dxbc::Src::LU(round_bit));
++  a_.OpMovC(temp_y_dest, temp_w_src, temp_z_src, temp_y_src);
++
++  // Keep Inf and NaN exactly as the host instruction gave them. This only
++  // reduces finite results and shouldn't make a nonfinite value look finite.
++  a_.OpAnd(temp_w_dest, temp_x_src, dxbc::Src::LU(0x7F800000u));
++  a_.OpIEq(temp_w_dest, temp_w_src, dxbc::Src::LU(0x7F800000u));
++  a_.OpMovC(dest, temp_w_src, temp_x_src, temp_y_src);
++
++  PopSystemTemp();
++}
++
+ void DxbcShaderTranslator::ProcessScalarAluOperation(
+     const ParsedAluInstruction& instr,
+     uint8_t memexport_eM_potentially_written_before, bool& predicate_written) {
+@@ -797,9 +845,11 @@ void DxbcShaderTranslator::ProcessScalarAluOperation(
+ 
+     case AluScalarOpcode::kExp:
+       a_.OpExp(ps_dest, operand_0_a);
++      ReduceFloatPrecision(ps_dest, ps_src, 21);
+       break;
+     case AluScalarOpcode::kLogc: {
+       a_.OpLog(ps_dest, operand_0_a);
++      ReduceFloatPrecision(ps_dest, ps_src, 21);
+       uint32_t is_neg_infinity_temp = PushSystemTemp();
+       a_.OpEq(dxbc::Dest::R(is_neg_infinity_temp, 0b0001), ps_src,
+               dxbc::Src::LF(-INFINITY));
+@@ -810,14 +860,17 @@ void DxbcShaderTranslator::ProcessScalarAluOperation(
+     } break;
+     case AluScalarOpcode::kLog:
+       a_.OpLog(ps_dest, operand_0_a);
++      ReduceFloatPrecision(ps_dest, ps_src, 21);
+       break;
+     case AluScalarOpcode::kRcpc:
+     case AluScalarOpcode::kRsqc: {
+       if (instr.scalar_opcode == AluScalarOpcode::kRsqc) {
+-        a_.OpRSq(ps_dest, operand_0_a);
++        a_.OpSqRt(ps_dest, operand_0_a);
++        a_.OpDiv(ps_dest, dxbc::Src::LF(1.0f), ps_src);
+       } else {
+-        a_.OpRcp(ps_dest, operand_0_a);
++        a_.OpDiv(ps_dest, dxbc::Src::LF(1.0f), operand_0_a);
+       }
++      ReduceFloatPrecision(ps_dest, ps_src, 21);
+       uint32_t is_infinity_temp = PushSystemTemp();
+       a_.OpEq(dxbc::Dest::R(is_infinity_temp, 0b0001), ps_src.Abs(),
+               dxbc::Src::LF(INFINITY));
+@@ -831,10 +884,12 @@ void DxbcShaderTranslator::ProcessScalarAluOperation(
+     case AluScalarOpcode::kRcpf:
+     case AluScalarOpcode::kRsqf: {
+       if (instr.scalar_opcode == AluScalarOpcode::kRsqf) {
+-        a_.OpRSq(ps_dest, operand_0_a);
++        a_.OpSqRt(ps_dest, operand_0_a);
++        a_.OpDiv(ps_dest, dxbc::Src::LF(1.0f), ps_src);
+       } else {
+-        a_.OpRcp(ps_dest, operand_0_a);
++        a_.OpDiv(ps_dest, dxbc::Src::LF(1.0f), operand_0_a);
+       }
++      ReduceFloatPrecision(ps_dest, ps_src, 21);
+       uint32_t is_not_infinity_temp = PushSystemTemp();
+       a_.OpNE(dxbc::Dest::R(is_not_infinity_temp, 0b0001), ps_src.Abs(),
+               dxbc::Src::LF(INFINITY));
+@@ -848,10 +903,13 @@ void DxbcShaderTranslator::ProcessScalarAluOperation(
+       PopSystemTemp();
+     } break;
+     case AluScalarOpcode::kRcp:
+-      a_.OpRcp(ps_dest, operand_0_a);
++      a_.OpDiv(ps_dest, dxbc::Src::LF(1.0f), operand_0_a);
++      ReduceFloatPrecision(ps_dest, ps_src, 21);
+       break;
+     case AluScalarOpcode::kRsq:
+-      a_.OpRSq(ps_dest, operand_0_a);
++      a_.OpSqRt(ps_dest, operand_0_a);
++      a_.OpDiv(ps_dest, dxbc::Src::LF(1.0f), ps_src);
++      ReduceFloatPrecision(ps_dest, ps_src, 21);
+       break;
+ 
+     case AluScalarOpcode::kMaxAs:
+@@ -988,6 +1046,7 @@ void DxbcShaderTranslator::ProcessScalarAluOperation(
+ 
+     case AluScalarOpcode::kSqrt:
+       a_.OpSqRt(ps_dest, operand_0_a);
++      ReduceFloatPrecision(ps_dest, ps_src, 21);
+       break;
+ 
+     case AluScalarOpcode::kMulsc0:
+diff --git a/src/xenia/gpu/dxbc_shader_translator_fetch.cc b/src/xenia/gpu/dxbc_shader_translator_fetch.cc
+index 3d0736369..eb9567025 100644
+--- a/src/xenia/gpu/dxbc_shader_translator_fetch.cc
++++ b/src/xenia/gpu/dxbc_shader_translator_fetch.cc
+@@ -83,14 +83,7 @@ void DxbcShaderTranslator::ProcessVertexFetchInstruction(
+           a_.OpAdd(address_dest, index_operand, dxbc::Src::LF(0.5f));
+           a_.OpRoundNI(address_dest, address_src);
+         } else {
+-          // UGLY HACK. Remove ASAP.
+-          // Proper fix requires accurate RCP implementation.
+-          if (cvars::ac6_ground_fix) {
+-            a_.OpAdd(address_dest, index_operand, dxbc::Src::LF(0.00025f));
+-            a_.OpRoundNI(address_dest, address_src);
+-          } else {
+-            a_.OpRoundNI(address_dest, index_operand);
+-          }
++          a_.OpRoundNI(address_dest, index_operand);
+         }
+         if (index_operand_temp_pushed) {
+           PopSystemTemp();
+diff --git a/src/xenia/gpu/gpu_flags.cc b/src/xenia/gpu/gpu_flags.cc
+index 032a1fc3c..3080db355 100644
+--- a/src/xenia/gpu/gpu_flags.cc
++++ b/src/xenia/gpu/gpu_flags.cc
+@@ -131,9 +131,3 @@ DEFINE_bool(
+     "artifacts while pipelines are being created. When disabled, pipelines are "
+     "created synchronously which causes stutter but no visual artifacts.",
+     "GPU");
+-
+-DEFINE_bool(
+-    ac6_ground_fix, false,
+-    "This fixes(hide) issues with black ground in AC6. Use only in AC6. "
+-    "Might cause issues in other titles.",
+-    "HACKS");
+diff --git a/src/xenia/gpu/gpu_flags.h b/src/xenia/gpu/gpu_flags.h
+index 2798ab028..965452bdd 100644
+--- a/src/xenia/gpu/gpu_flags.h
++++ b/src/xenia/gpu/gpu_flags.h
+@@ -47,8 +47,6 @@ DECLARE_bool(async_shader_compilation);
+ 
+ DECLARE_bool(gpu_3d_to_2d_texture);
+ 
+-DECLARE_bool(ac6_ground_fix);
+-
+ #define XE_GPU_FINE_GRAINED_DRAW_SCOPES 1
+ 
+ #endif  // XENIA_GPU_GPU_FLAGS_H_
+diff --git a/src/xenia/gpu/shader_interpreter.cc b/src/xenia/gpu/shader_interpreter.cc
+index f49369f7b..4d269f66f 100644
+--- a/src/xenia/gpu/shader_interpreter.cc
++++ b/src/xenia/gpu/shader_interpreter.cc
+@@ -277,6 +277,36 @@ const std::array<float, 4> ShaderInterpreter::GetFloatConstant(
+   return value;
+ }
+ 
++float ShaderInterpreter::ReduceFloatPrecision(float value,
++                                              uint32_t mantissa_bits) {
++  assert_true(mantissa_bits > 0 && mantissa_bits < 23);
++
++  uint32_t value_bits;
++  std::memcpy(&value_bits, &value, sizeof(value_bits));
++
++  if ((value_bits & UINT32_C(0x7F800000)) == UINT32_C(0x7F800000)) {
++    return value;
++  }
++
++  uint32_t truncate_bits = 23 - mantissa_bits;
++  uint32_t discarded_mask = (uint32_t(1) << truncate_bits) - 1;
++  uint32_t truncated_bits = value_bits & ~discarded_mask;
++  uint32_t rounded_bits = truncated_bits + (uint32_t(1) << truncate_bits);
++
++  // Don't let this rounding turn a finite host result into infinity.
++  if ((rounded_bits & UINT32_C(0x7F800000)) == UINT32_C(0x7F800000)) {
++    rounded_bits = truncated_bits;
++  }
++
++  uint32_t round_bit = uint32_t(1) << (truncate_bits - 1);
++  uint32_t result_bits = (value_bits & discarded_mask) >= round_bit
++                             ? rounded_bits
++                             : truncated_bits;
++  float result;
++  std::memcpy(&result, &result_bits, sizeof(result));
++  return result;
++}
++
+ void ShaderInterpreter::ExecuteAluInstruction(ucode::AluInstruction instr) {
+   // Vector operation.
+   float vector_result[4] = {};
+@@ -749,19 +779,23 @@ void ShaderInterpreter::ExecuteAluInstruction(ucode::AluInstruction instr) {
+       state_.previous_scalar = std::floor(scalar_operands[0]);
+     } break;
+     case ucode::AluScalarOpcode::kExp: {
+-      state_.previous_scalar = std::exp2(scalar_operands[0]);
++      state_.previous_scalar =
++          ReduceFloatPrecision(std::exp2(scalar_operands[0]), 21);
+     } break;
+     case ucode::AluScalarOpcode::kLogc: {
+-      state_.previous_scalar = std::log2(scalar_operands[0]);
++      state_.previous_scalar =
++          ReduceFloatPrecision(std::log2(scalar_operands[0]), 21);
+       if (state_.previous_scalar == -INFINITY) {
+         state_.previous_scalar = -FLT_MAX;
+       }
+     } break;
+     case ucode::AluScalarOpcode::kLog: {
+-      state_.previous_scalar = std::log2(scalar_operands[0]);
++      state_.previous_scalar =
++          ReduceFloatPrecision(std::log2(scalar_operands[0]), 21);
+     } break;
+     case ucode::AluScalarOpcode::kRcpc: {
+-      state_.previous_scalar = 1.0f / scalar_operands[0];
++      state_.previous_scalar =
++          ReduceFloatPrecision(1.0f / scalar_operands[0], 21);
+       if (state_.previous_scalar == -INFINITY) {
+         state_.previous_scalar = -FLT_MAX;
+       } else if (state_.previous_scalar == INFINITY) {
+@@ -769,7 +803,8 @@ void ShaderInterpreter::ExecuteAluInstruction(ucode::AluInstruction instr) {
+       }
+     } break;
+     case ucode::AluScalarOpcode::kRcpf: {
+-      state_.previous_scalar = 1.0f / scalar_operands[0];
++      state_.previous_scalar =
++          ReduceFloatPrecision(1.0f / scalar_operands[0], 21);
+       if (state_.previous_scalar == -INFINITY) {
+         state_.previous_scalar = -0.0f;
+       } else if (state_.previous_scalar == INFINITY) {
+@@ -777,10 +812,12 @@ void ShaderInterpreter::ExecuteAluInstruction(ucode::AluInstruction instr) {
+       }
+     } break;
+     case ucode::AluScalarOpcode::kRcp: {
+-      state_.previous_scalar = 1.0f / scalar_operands[0];
++      state_.previous_scalar =
++          ReduceFloatPrecision(1.0f / scalar_operands[0], 21);
+     } break;
+     case ucode::AluScalarOpcode::kRsqc: {
+-      state_.previous_scalar = 1.0f / std::sqrt(scalar_operands[0]);
++      state_.previous_scalar =
++          ReduceFloatPrecision(1.0f / std::sqrt(scalar_operands[0]), 21);
+       if (state_.previous_scalar == -INFINITY) {
+         state_.previous_scalar = -FLT_MAX;
+       } else if (state_.previous_scalar == INFINITY) {
+@@ -788,7 +825,8 @@ void ShaderInterpreter::ExecuteAluInstruction(ucode::AluInstruction instr) {
+       }
+     } break;
+     case ucode::AluScalarOpcode::kRsqf: {
+-      state_.previous_scalar = 1.0f / std::sqrt(scalar_operands[0]);
++      state_.previous_scalar =
++          ReduceFloatPrecision(1.0f / std::sqrt(scalar_operands[0]), 21);
+       if (state_.previous_scalar == -INFINITY) {
+         state_.previous_scalar = -0.0f;
+       } else if (state_.previous_scalar == INFINITY) {
+@@ -796,7 +834,8 @@ void ShaderInterpreter::ExecuteAluInstruction(ucode::AluInstruction instr) {
+       }
+     } break;
+     case ucode::AluScalarOpcode::kRsq: {
+-      state_.previous_scalar = 1.0f / std::sqrt(scalar_operands[0]);
++      state_.previous_scalar =
++          ReduceFloatPrecision(1.0f / std::sqrt(scalar_operands[0]), 21);
+     } break;
+     case ucode::AluScalarOpcode::kMaxAs: {
+       state_.address_register = int32_t(std::floor(
+@@ -877,7 +916,8 @@ void ShaderInterpreter::ExecuteAluInstruction(ucode::AluInstruction instr) {
+       state_.previous_scalar = float(scalar_operands[0] == 1.0f);
+     } break;
+     case ucode::AluScalarOpcode::kSqrt: {
+-      state_.previous_scalar = std::sqrt(scalar_operands[0]);
++      state_.previous_scalar =
++          ReduceFloatPrecision(std::sqrt(scalar_operands[0]), 21);
+     } break;
+     case ucode::AluScalarOpcode::kSin: {
+       state_.previous_scalar = std::sin(scalar_operands[0]);
+diff --git a/src/xenia/gpu/shader_interpreter.h b/src/xenia/gpu/shader_interpreter.h
+index 46808562e..46a189161 100644
+--- a/src/xenia/gpu/shader_interpreter.h
++++ b/src/xenia/gpu/shader_interpreter.h
+@@ -121,6 +121,7 @@ class ShaderInterpreter {
+   const std::array<float, 4> GetFloatConstant(
+       uint32_t address, bool is_relative, bool relative_address_is_a0) const;
+ 
++  static float ReduceFloatPrecision(float value, uint32_t mantissa_bits);
+   void ExecuteAluInstruction(ucode::AluInstruction instr);
+   void StoreFetchResult(uint32_t dest, bool is_dest_relative, uint32_t swizzle,
+                         const float* value);
+diff --git a/src/xenia/gpu/spirv_shader_translator.h b/src/xenia/gpu/spirv_shader_translator.h
+index 77a081544..46f1f795b 100644
+--- a/src/xenia/gpu/spirv_shader_translator.h
++++ b/src/xenia/gpu/spirv_shader_translator.h
+@@ -656,6 +656,9 @@ class SpirvShaderTranslator : public ShaderTranslator {
+   spv::Id ProcessVectorAluOperation(
+       const ParsedAluInstruction& instr,
+       uint8_t memexport_eM_potentially_written_before, bool& predicate_written);
++  // Reduces finite host approximations to a chosen mantissa width.
++  // We still don't know the exact precision or rounding.
++  spv::Id ReduceFloatPrecision(spv::Id value, uint32_t mantissa_bits);
+   // Returns a float value to write to the previous scalar register and to the
+   // destination. If the return value is ps itself (in the retain_prev case),
+   // returns spv::NoResult (handled as a special case, so if it's retain_prev,
+diff --git a/src/xenia/gpu/spirv_shader_translator_alu.cc b/src/xenia/gpu/spirv_shader_translator_alu.cc
+index 83975dde5..9464e81a5 100644
+--- a/src/xenia/gpu/spirv_shader_translator_alu.cc
++++ b/src/xenia/gpu/spirv_shader_translator_alu.cc
+@@ -25,18 +25,17 @@ spv::Id SpirvShaderTranslator::ZeroIfAnyOperandIsZero(spv::Id value,
+                                                       spv::Id operand_0_abs,
+                                                       spv::Id operand_1_abs) {
+   EnsureBuildPointAvailable();
+-  int num_components = builder_->getNumComponents(value);
+-  assert_true(builder_->getNumComponents(operand_0_abs) == num_components);
+-  assert_true(builder_->getNumComponents(operand_1_abs) == num_components);
++  assert_true(builder_->getNumComponents(value) == 1);
++  assert_true(builder_->getNumComponents(operand_0_abs) == 1);
++  assert_true(builder_->getNumComponents(operand_1_abs) == 1);
+   return builder_->createTriOp(
+       spv::OpSelect, type_float_,
+-      builder_->createBinOp(
+-          spv::OpFOrdEqual, type_bool_vectors_[num_components - 1],
+-          builder_->createBinBuiltinCall(
+-              type_float_vectors_[num_components - 1], ext_inst_glsl_std_450_,
+-              GLSLstd450NMin, operand_0_abs, operand_1_abs),
+-          const_float_vectors_0_[num_components - 1]),
+-      const_float_vectors_0_[num_components - 1], value);
++      builder_->createBinOp(spv::OpFOrdEqual, type_bool_,
++                            builder_->createBinBuiltinCall(
++                                type_float_, ext_inst_glsl_std_450_,
++                                GLSLstd450NMin, operand_0_abs, operand_1_abs),
++                            const_float_0_),
++      const_float_0_, value);
+ }
+ 
+ void SpirvShaderTranslator::KillPixel(
+@@ -868,6 +867,74 @@ spv::Id SpirvShaderTranslator::ProcessVectorAluOperation(
+   return spv::NoResult;
+ }
+ 
++spv::Id SpirvShaderTranslator::ReduceFloatPrecision(spv::Id value,
++                                                    uint32_t mantissa_bits) {
++  // Round to nearest, with halfway values away from zero. We don't know the
++  // actual midpoint behavior, this is the one 4E4D07D1 needs. Signed zero stays
++  // signed. Denormals still follow the host float controls.
++  assert_true(mantissa_bits > 0 && mantissa_bits < 23);
++
++  EnsureBuildPointAvailable();
++
++  spv::Id value_bits =
++      builder_->createUnaryOp(spv::OpBitcast, type_uint_, value);
++
++  uint32_t truncate_bits = 23 - mantissa_bits;
++
++  // Keep the sign, exponent and the requested mantissa bits.
++  uint32_t truncate_mask = ~((1u << truncate_bits) - 1);
++  uint32_t round_bit = 1u << (truncate_bits - 1);
++
++  spv::Id truncated_bits =
++      builder_->createBinOp(spv::OpBitwiseAnd, type_uint_, value_bits,
++                            builder_->makeUintConstant(truncate_mask));
++
++  // The discarded bits decide if the truncated value rounds up.
++  spv::Id discarded_bits =
++      builder_->createBinOp(spv::OpBitwiseAnd, type_uint_, value_bits,
++                            builder_->makeUintConstant(~truncate_mask));
++
++  spv::Id should_round_up = builder_->createBinOp(
++      spv::OpUGreaterThanEqual, type_bool_, discarded_bits,
++      builder_->makeUintConstant(round_bit));
++
++  spv::Id ulp = builder_->makeUintConstant(1u << truncate_bits);
++  spv::Id rounded_up_bits =
++      builder_->createBinOp(spv::OpIAdd, type_uint_, truncated_bits, ulp);
++
++  spv::Id original_exp =
++      builder_->createBinOp(spv::OpBitwiseAnd, type_uint_, value_bits,
++                            builder_->makeUintConstant(0x7F800000u));
++  spv::Id rounded_exp =
++      builder_->createBinOp(spv::OpBitwiseAnd, type_uint_, rounded_up_bits,
++                            builder_->makeUintConstant(0x7F800000u));
++
++  // Don't let this rounding turn a finite host result into infinity. Keep the
++  // truncated value when it would.
++  spv::Id original_finite =
++      builder_->createBinOp(spv::OpINotEqual, type_bool_, original_exp,
++                            builder_->makeUintConstant(0x7F800000u));
++  spv::Id rounded_inf =
++      builder_->createBinOp(spv::OpIEqual, type_bool_, rounded_exp,
++                            builder_->makeUintConstant(0x7F800000u));
++  spv::Id would_overflow = builder_->createBinOp(spv::OpLogicalAnd, type_bool_,
++                                                 original_finite, rounded_inf);
++
++  spv::Id safe_rounded =
++      builder_->createTriOp(spv::OpSelect, type_uint_, would_overflow,
++                            truncated_bits, rounded_up_bits);
++
++  spv::Id result_bits = builder_->createTriOp(
++      spv::OpSelect, type_uint_, should_round_up, safe_rounded, truncated_bits);
++
++  // Keep Inf and NaN exactly as the host instruction gave them. This only
++  // reduces finite results and shouldn't make a nonfinite value look finite.
++  result_bits = builder_->createTriOp(spv::OpSelect, type_uint_,
++                                      original_finite, result_bits, value_bits);
++
++  return builder_->createUnaryOp(spv::OpBitcast, type_float_, result_bits);
++}
++
+ spv::Id SpirvShaderTranslator::ProcessScalarAluOperation(
+     const ParsedAluInstruction& instr,
+     uint8_t memexport_eM_potentially_written_before, bool& predicate_written) {
+@@ -1101,9 +1168,6 @@ spv::Id SpirvShaderTranslator::ProcessScalarAluOperation(
+     case ucode::AluScalarOpcode::kFrcs:
+     case ucode::AluScalarOpcode::kTruncs:
+     case ucode::AluScalarOpcode::kFloors:
+-    case ucode::AluScalarOpcode::kExp:
+-    case ucode::AluScalarOpcode::kLog:
+-    case ucode::AluScalarOpcode::kSqrt:
+     case ucode::AluScalarOpcode::kSin:
+     case ucode::AluScalarOpcode::kCos:
+       return builder_->createUnaryBuiltinCall(
+@@ -1111,11 +1175,33 @@ spv::Id SpirvShaderTranslator::ProcessScalarAluOperation(
+           GLSLstd450(kOps[size_t(instr.scalar_opcode)]),
+           GetOperandComponents(operand_storage[0], instr.scalar_operands[0],
+                                0b0001));
++    case ucode::AluScalarOpcode::kExp: {
++      spv::Id result = builder_->createUnaryBuiltinCall(
++          type_float_, ext_inst_glsl_std_450_, GLSLstd450Exp2,
++          GetOperandComponents(operand_storage[0], instr.scalar_operands[0],
++                               0b0001));
++      return ReduceFloatPrecision(result, 21);
++    }
++    case ucode::AluScalarOpcode::kLog: {
++      spv::Id result = builder_->createUnaryBuiltinCall(
++          type_float_, ext_inst_glsl_std_450_, GLSLstd450Log2,
++          GetOperandComponents(operand_storage[0], instr.scalar_operands[0],
++                               0b0001));
++      return ReduceFloatPrecision(result, 21);
++    }
++    case ucode::AluScalarOpcode::kSqrt: {
++      spv::Id result = builder_->createUnaryBuiltinCall(
++          type_float_, ext_inst_glsl_std_450_, GLSLstd450Sqrt,
++          GetOperandComponents(operand_storage[0], instr.scalar_operands[0],
++                               0b0001));
++      return ReduceFloatPrecision(result, 21);
++    }
+     case ucode::AluScalarOpcode::kLogc: {
+       spv::Id result = builder_->createUnaryBuiltinCall(
+           type_float_, ext_inst_glsl_std_450_, GLSLstd450Log2,
+           GetOperandComponents(operand_storage[0], instr.scalar_operands[0],
+                                0b0001));
++      result = ReduceFloatPrecision(result, 21);
+       return builder_->createTriOp(
+           spv::OpSelect, type_float_,
+           builder_->createBinOp(spv::OpFOrdEqual, type_bool_, result,
+@@ -1126,14 +1212,17 @@ spv::Id SpirvShaderTranslator::ProcessScalarAluOperation(
+       spv::Id operand = GetOperandComponents(operand_storage[0],
+                                              instr.scalar_operands[0], 0b0001);
+       // Defined +Infinity for 0, otherwise the substitutions below can't
+-      // recognize the case they exist to handle.
++      // recognize the case they exist to handle. Only the approximation is
++      // rounded to the scalar unit's mantissa width - the infinity is exact.
++      spv::Id approximation = ReduceFloatPrecision(
++          builder_->createNoContractionBinOp(spv::OpFDiv, type_float_,
++                                             const_float_1_, operand),
++          21);
+       spv::Id result = builder_->createTriOp(
+           spv::OpSelect, type_float_,
+           builder_->createBinOp(spv::OpFOrdEqual, type_bool_, operand,
+                                 const_float_0_),
+-          builder_->makeFloatConstant(INFINITY),
+-          builder_->createNoContractionBinOp(spv::OpFDiv, type_float_,
+-                                             const_float_1_, operand));
++          builder_->makeFloatConstant(INFINITY), approximation);
+       result = builder_->createTriOp(
+           spv::OpSelect, type_float_,
+           builder_->createBinOp(spv::OpFOrdEqual, type_bool_, result,
+@@ -1149,14 +1238,17 @@ spv::Id SpirvShaderTranslator::ProcessScalarAluOperation(
+       spv::Id operand = GetOperandComponents(operand_storage[0],
+                                              instr.scalar_operands[0], 0b0001);
+       // Defined +Infinity for 0, otherwise the substitutions below can't
+-      // recognize the case they exist to handle.
++      // recognize the case they exist to handle. Only the approximation is
++      // rounded to the scalar unit's mantissa width - the infinity is exact.
++      spv::Id approximation = ReduceFloatPrecision(
++          builder_->createNoContractionBinOp(spv::OpFDiv, type_float_,
++                                             const_float_1_, operand),
++          21);
+       spv::Id result = builder_->createTriOp(
+           spv::OpSelect, type_float_,
+           builder_->createBinOp(spv::OpFOrdEqual, type_bool_, operand,
+                                 const_float_0_),
+-          builder_->makeFloatConstant(INFINITY),
+-          builder_->createNoContractionBinOp(spv::OpFDiv, type_float_,
+-                                             const_float_1_, operand));
++          builder_->makeFloatConstant(INFINITY), approximation);
+       result = builder_->createTriOp(
+           spv::OpSelect, type_float_,
+           builder_->createBinOp(spv::OpFOrdEqual, type_bool_, result,
+@@ -1183,37 +1275,44 @@ spv::Id SpirvShaderTranslator::ProcessScalarAluOperation(
+     case ucode::AluScalarOpcode::kRsq: {
+       spv::Id operand = GetOperandComponents(operand_storage[0],
+                                              instr.scalar_operands[0], 0b0001);
++      spv::Id approximation = ReduceFloatPrecision(
++          builder_->createUnaryBuiltinCall(type_float_, ext_inst_glsl_std_450_,
++                                           GLSLstd450InverseSqrt, operand),
++          21);
+       return builder_->createTriOp(
+           spv::OpSelect, type_float_,
+           builder_->createBinOp(spv::OpFOrdEqual, type_bool_, operand,
+                                 const_float_0_),
+-          builder_->makeFloatConstant(INFINITY),
+-          builder_->createUnaryBuiltinCall(type_float_, ext_inst_glsl_std_450_,
+-                                           GLSLstd450InverseSqrt, operand));
++          builder_->makeFloatConstant(INFINITY), approximation);
+     }
+     case ucode::AluScalarOpcode::kRcp: {
+       spv::Id operand = GetOperandComponents(operand_storage[0],
+                                              instr.scalar_operands[0], 0b0001);
++      spv::Id approximation = ReduceFloatPrecision(
++          builder_->createNoContractionBinOp(spv::OpFDiv, type_float_,
++                                             const_float_1_, operand),
++          21);
+       return builder_->createTriOp(
+           spv::OpSelect, type_float_,
+           builder_->createBinOp(spv::OpFOrdEqual, type_bool_, operand,
+                                 const_float_0_),
+-          builder_->makeFloatConstant(INFINITY),
+-          builder_->createNoContractionBinOp(spv::OpFDiv, type_float_,
+-                                             const_float_1_, operand));
++          builder_->makeFloatConstant(INFINITY), approximation);
+     }
+     case ucode::AluScalarOpcode::kRsqc: {
+       spv::Id operand = GetOperandComponents(operand_storage[0],
+                                              instr.scalar_operands[0], 0b0001);
+       // Defined +Infinity for 0, otherwise the substitutions below can't
+-      // recognize the case they exist to handle.
++      // recognize the case they exist to handle. Only the approximation is
++      // rounded to the scalar unit's mantissa width - the infinity is exact.
++      spv::Id approximation = ReduceFloatPrecision(
++          builder_->createUnaryBuiltinCall(type_float_, ext_inst_glsl_std_450_,
++                                           GLSLstd450InverseSqrt, operand),
++          21);
+       spv::Id result = builder_->createTriOp(
+           spv::OpSelect, type_float_,
+           builder_->createBinOp(spv::OpFOrdEqual, type_bool_, operand,
+                                 const_float_0_),
+-          builder_->makeFloatConstant(INFINITY),
+-          builder_->createUnaryBuiltinCall(type_float_, ext_inst_glsl_std_450_,
+-                                           GLSLstd450InverseSqrt, operand));
++          builder_->makeFloatConstant(INFINITY), approximation);
+       result = builder_->createTriOp(
+           spv::OpSelect, type_float_,
+           builder_->createBinOp(spv::OpFOrdEqual, type_bool_, result,
+@@ -1229,14 +1328,17 @@ spv::Id SpirvShaderTranslator::ProcessScalarAluOperation(
+       spv::Id operand = GetOperandComponents(operand_storage[0],
+                                              instr.scalar_operands[0], 0b0001);
+       // Defined +Infinity for 0, otherwise the substitutions below can't
+-      // recognize the case they exist to handle.
++      // recognize the case they exist to handle. Only the approximation is
++      // rounded to the scalar unit's mantissa width - the infinity is exact.
++      spv::Id approximation = ReduceFloatPrecision(
++          builder_->createUnaryBuiltinCall(type_float_, ext_inst_glsl_std_450_,
++                                           GLSLstd450InverseSqrt, operand),
++          21);
+       spv::Id result = builder_->createTriOp(
+           spv::OpSelect, type_float_,
+           builder_->createBinOp(spv::OpFOrdEqual, type_bool_, operand,
+                                 const_float_0_),
+-          builder_->makeFloatConstant(INFINITY),
+-          builder_->createUnaryBuiltinCall(type_float_, ext_inst_glsl_std_450_,
+-                                           GLSLstd450InverseSqrt, operand));
++          builder_->makeFloatConstant(INFINITY), approximation);
+       result = builder_->createTriOp(
+           spv::OpSelect, type_float_,
+           builder_->createBinOp(spv::OpFOrdEqual, type_bool_, result,
+diff --git a/src/xenia/gpu/spirv_shader_translator_fetch.cc b/src/xenia/gpu/spirv_shader_translator_fetch.cc
+index 60ab8e9c3..0250d40a6 100644
+--- a/src/xenia/gpu/spirv_shader_translator_fetch.cc
++++ b/src/xenia/gpu/spirv_shader_translator_fetch.cc
+@@ -87,12 +87,6 @@ void SpirvShaderTranslator::ProcessVertexFetchInstruction(
+       if (instr.attributes.is_index_rounded) {
+         index = builder_->createNoContractionBinOp(
+             spv::OpFAdd, type_float_, index, builder_->makeFloatConstant(0.5f));
+-      } else if (cvars::ac6_ground_fix) {
+-        // UGLY HACK for AC6 copied from the DXBC translator.
+-        // Proper fix requires accurate RCP implementation.
+-        index = builder_->createNoContractionBinOp(
+-            spv::OpFAdd, type_float_, index,
+-            builder_->makeFloatConstant(0.00025f));
+       }
+       index = builder_->createUnaryOp(
+           spv::OpConvertFToS, type_int_,

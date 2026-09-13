@@ -1,0 +1,48 @@
+From 63ea6e2725085f048dbce5c8e716c3a5e3aa00e4 Mon Sep 17 00:00:00 2001
+From: "Herman S." <429230+has207@users.noreply.github.com>
+Date: Wed, 19 Aug 2026 23:50:30 +0900
+Subject: [PATCH] [CPU/HIR] Select the same vperm half as the backend in the
+ int16 fold
+
+Value::Permute's INT16 path and x64's PERMUTE_V128::EmitByInt16 build the
+same 8-bit blend mask and then read it inverted. vpblendw takes its second
+source where a mask bit is set, so a set bit selects the second table, but
+the fold used it to select the first. The fold site passes (src2, src3), so
+this picked the wrong half for every lane of every input, and the folded
+constant came out the exact complement of what the emitted code computes.
+
+Nothing reached it until VEC128 context promotion. The fold needs the
+control and both tables constant, and the tables used to be opaque
+load_context dests, so the emitter always ran.
+
+AC4 Black Flag decodes packed vertex normals through a permute that
+supplies the per-lane shift counts for the following vector_shr. The wrong
+half produced garbage normals, which this now fixes.
+---
+ src/xenia/cpu/hir/value.cc | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/src/xenia/cpu/hir/value.cc b/src/xenia/cpu/hir/value.cc
+index 1255510a9..deb1fbf68 100644
+--- a/src/xenia/cpu/hir/value.cc
++++ b/src/xenia/cpu/hir/value.cc
+@@ -890,12 +890,13 @@ void Value::Permute(Value* src1, Value* src2, TypeName type) {
+       }
+     }
+ 
+-    // Blend: select from shuf1 where mask bit is set, shuf2 otherwise
++    // Blend the same way the backends do: vpblendw takes its *second* source
++    // where the mask bit is set, so a set bit selects shuf2.
+     for (int i = 0; i < 8; i++) {
+       if (mask & (1 << i)) {
+-        constant.v128.u16[i] = shuf1.u16[i];
+-      } else {
+         constant.v128.u16[i] = shuf2.u16[i];
++      } else {
++        constant.v128.u16[i] = shuf1.u16[i];
+       }
+     }
+ 
+-- 
+2.49.0.windows.1
+

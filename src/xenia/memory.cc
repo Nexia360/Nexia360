@@ -687,6 +687,42 @@ void Memory::ArmResolveReadWatch(uint32_t physical_address, uint32_t length) {
   }
 }
 
+void Memory::MaterializeResolveReadWatches(uint32_t virtual_address,
+                                           uint32_t length) {
+  if (!length) {
+    return;
+  }
+  BaseHeap* heap = LookupHeap(virtual_address);
+  if (!heap || heap->heap_type() != HeapType::kGuestPhysical) {
+    return;
+  }
+  auto physical_heap = static_cast<PhysicalHeap*>(heap);
+  uint32_t page_size = uint32_t(xe::memory::page_size());
+  uint32_t first = virtual_address & ~(page_size - 1);
+  uint32_t last = (virtual_address + length - 1) & ~(page_size - 1);
+  auto global_lock = global_critical_region_.Acquire();
+  for (uint32_t page = first;; page += page_size) {
+    auto it = resolve_read_watch_pages_.find(page);
+    if (it != resolve_read_watch_pages_.end()) {
+      resolve_read_watch_pages_.erase(it);
+      if (resolve_contract_fault_callback_) {
+        ResolveContractFaultCallback callback =
+            resolve_contract_fault_callback_;
+        void* callback_context = resolve_contract_fault_context_;
+        uint32_t physical_address = physical_heap->GetPhysicalAddress(page);
+        global_lock.unlock();
+        callback(callback_context, physical_address);
+        global_lock.lock();
+      }
+      bool invalidation_watched = false;
+      physical_heap->DisarmReadWatch(page, &invalidation_watched);
+    }
+    if (page == last) {
+      break;
+    }
+  }
+}
+
 bool Memory::AccessViolationCallbackThunk(
     global_unique_lock_type global_lock_locked_once, void* context,
     void* host_address, bool is_write) {

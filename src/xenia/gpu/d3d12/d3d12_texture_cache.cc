@@ -1189,7 +1189,7 @@ ID3D12Resource* D3D12TextureCache::RequestSwapTexture(
   const auto& regs = register_file();
   xenos::xe_gpu_texture_fetch_t fetch = regs.GetTextureFetch(0);
   TextureKey key;
-  BindingInfoFromFetchConstant(fetch, key, nullptr);
+  BindingInfoFromFetchConstant(fetch, key, nullptr, 0);
   if (!key.is_valid || key.base_page == 0 ||
       key.dimension != xenos::DataDimension::k2DOrStacked) {
     return nullptr;

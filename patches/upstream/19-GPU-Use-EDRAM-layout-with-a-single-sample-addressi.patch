@@ -1,0 +1,3306 @@
+From 437a7280cf95310d518a2f68087aab61403956ac Mon Sep 17 00:00:00 2001
+From: goldislead <69987043+goldislead@users.noreply.github.com>
+Date: Fri, 7 Aug 2026 03:46:04 +0000
+Subject: [PATCH] [GPU] Use EDRAM layout with a single sample addressing scheme
+
+1x, 2x, and 4x views now have same samples, rotated in 4x4 blocks:
+
+4x: u = ((x & ~1) << 1) | (x & 1) | ((s & 1) << 1)
+    v = ((y & ~1) << 1) | (y & 1) | (s & 2)
+2x: u = (x & ~2) | (s << 1)
+    v = ((y & ~1) << 1) | (y & 1) | (x & 2)
+
+Sample bit 0 is horizontal, bit 1 is vertical, and 2x sample 0 is top.
+
+Titles rendering half-resolution 4x passes on full resolution scene use swizzle shaders that are based on 0, 2, 1, 3 remap, while downscale resolve uses sample grouping.
+
+The old 2x2 subdivision decodes intentionally aliased views into shuffled images. Individually changing componenets would just shuffle mismatched layouts, so we change everything at once:
+- XeEdramOffsetBytes now does granular guest pixel remapping for resolves, clears, and host depth storage.
+- Resolve loaders fetch per-pixel, because neighbors in multisampled buffer no longer share common stride (fast paths for 1x sources are still available).
+- Dump generators convert coordinates back to host pixels and samples.
+- Transfers create all six possible pairs of direction (1x/2x/4x) + host depth remapping using canonical coordinates, not special-casing particular pairs.
+- In 64bpp, the two halves go to the same sample in two adjacent pixels for any sample count.
+- Interlock canonicalizes sample 0 address, offsetting +2 columns for horizontal sample bits and +2 rows for vertical.
+- 4x coverage passes through.
+---
+ .../gpu/d3d12/d3d12_render_target_cache.cc    | 762 +++++++---------
+ src/xenia/gpu/dxbc_shader_translator.h        |   2 +-
+ src/xenia/gpu/dxbc_shader_translator_om.cc    | 242 +++--
+ src/xenia/gpu/shaders/edram.xesli             |  51 +-
+ src/xenia/gpu/shaders/resolve.xesli           | 328 +++----
+ .../shaders/resolve_fast_32bpp_1x2xmsaa.xesli |  61 +-
+ .../shaders/resolve_fast_32bpp_4xmsaa.xesli   |  73 +-
+ .../shaders/resolve_fast_64bpp_1x2xmsaa.xesli |  45 +-
+ .../shaders/resolve_fast_64bpp_4xmsaa.xesli   |  35 +-
+ .../gpu/shaders/resolve_full_128bpp.xesli     |   8 +-
+ .../gpu/shaders/resolve_full_16bpp.xesli      |   5 +-
+ .../gpu/shaders/resolve_full_32bpp.xesli      |   5 +-
+ .../gpu/shaders/resolve_full_64bpp.xesli      |   5 +-
+ src/xenia/gpu/shaders/resolve_full_8bpp.xesli |   5 +-
+ src/xenia/gpu/spirv_shader_translator_rb.cc   | 170 ++--
+ .../gpu/vulkan/vulkan_render_target_cache.cc  | 831 ++++++++----------
+ 16 files changed, 1290 insertions(+), 1338 deletions(-)
+
+diff --git a/src/xenia/gpu/d3d12/d3d12_render_target_cache.cc b/src/xenia/gpu/d3d12/d3d12_render_target_cache.cc
+index 4652e9b3e..72c92a5a9 100644
+--- a/src/xenia/gpu/d3d12/d3d12_render_target_cache.cc
++++ b/src/xenia/gpu/d3d12/d3d12_render_target_cache.cc
+@@ -2116,6 +2116,162 @@ void D3D12RenderTargetCache::CommitEdramBufferUAVWrites(
+   PixelShaderInterlockFullEdramBarrierPlaced();
+ }
+ 
++// Indices of host samples that transfer sample remap helpers use:
++// - First sample bit of 4x in Direct3D 10.1+ - horizontal sample.
++// - Second sample bit of 4x in Direct3D 10.1+ - vertical sample.
++// - 2x:
++//   - Native 2x - top sample is 1 in Direct3D 10.1+, bottom sample is 0.
++//   - 2x as 4x - top sample is 0, bottom sample is 3.
++
++// Converts the view pixel coordinates in r0.xy and host sample index to
++// canonical guest sample coordinates, u into r1.x and v into r1.y for a
++// multisampled or resolution scaled view. The guest pixel goes through r1.xy
++// and the subpixel offset via r2.xy in case of scaling, with r2.zw being
++// scratch. r0.w and r1.zw remain untouched.
++static void CanonicalizeSample(dxbc::Assembler& a,
++                               xenos::MsaaSamples msaa_samples,
++                               dxbc::Src host_sample, bool msaa_2x_supported,
++                               uint32_t scale_x, uint32_t scale_y,
++                               dxbc::Src& u_out, dxbc::Src& v_out,
++                               bool& scaled_out) {
++  bool scaled = scale_x > 1 || scale_y > 1;
++  scaled_out = scaled;
++  dxbc::Src guest_x(dxbc::Src::R(0, dxbc::Src::kXXXX));
++  dxbc::Src guest_y(dxbc::Src::R(0, dxbc::Src::kYYYY));
++  if (scaled) {
++    // r1.xy = guest pixel, r2.xy = host subpixel offset
++    a.OpUDiv(dxbc::Dest::R(1, 0b0011), dxbc::Dest::R(2, 0b0011),
++             dxbc::Src::R(0, dxbc::Src::kXYXY),
++             dxbc::Src::LU(scale_x, scale_y, scale_x, scale_y));
++    guest_x = dxbc::Src::R(1, dxbc::Src::kXXXX);
++    guest_y = dxbc::Src::R(1, dxbc::Src::kYYYY);
++  }
++  u_out = guest_x;
++  v_out = guest_y;
++  if (msaa_samples >= xenos::MsaaSamples::k4X) {
++    // The guest sample index is the host sample index, bit 0 horizontal
++    // and bit 1 vertical for both.
++    // r2.z = x with bit 1 = sample bit 0
++    a.OpBFI(dxbc::Dest::R(2, 0b0100), dxbc::Src::LU(1), dxbc::Src::LU(1),
++            host_sample, guest_x);
++    // r2.w = x >> 1
++    a.OpUShR(dxbc::Dest::R(2, 0b1000), guest_x, dxbc::Src::LU(1));
++    // r1.x = u = ((x >> 1) << 2) | ((sample & 1) << 1) | (x & 1)
++    a.OpBFI(dxbc::Dest::R(1, 0b0001), dxbc::Src::LU(30), dxbc::Src::LU(2),
++            dxbc::Src::R(2, dxbc::Src::kWWWW),
++            dxbc::Src::R(2, dxbc::Src::kZZZZ));
++    // r2.z = sample >> 1
++    a.OpUShR(dxbc::Dest::R(2, 0b0100), host_sample, dxbc::Src::LU(1));
++    // r2.z = y with bit 1 = sample bit 1
++    a.OpBFI(dxbc::Dest::R(2, 0b0100), dxbc::Src::LU(1), dxbc::Src::LU(1),
++            dxbc::Src::R(2, dxbc::Src::kZZZZ), guest_y);
++    // r2.w = y >> 1
++    a.OpUShR(dxbc::Dest::R(2, 0b1000), guest_y, dxbc::Src::LU(1));
++    // r1.y = v = ((y >> 1) << 2) | ((sample >> 1) << 1) | (y & 1)
++    a.OpBFI(dxbc::Dest::R(1, 0b0010), dxbc::Src::LU(30), dxbc::Src::LU(2),
++            dxbc::Src::R(2, dxbc::Src::kWWWW),
++            dxbc::Src::R(2, dxbc::Src::kZZZZ));
++    u_out = dxbc::Src::R(1, dxbc::Src::kXXXX);
++    v_out = dxbc::Src::R(1, dxbc::Src::kYYYY);
++  } else if (msaa_samples == xenos::MsaaSamples::k2X) {
++    // r2.z = guest sample index (0 = top, 1 = bottom)
++    if (msaa_2x_supported) {
++      a.OpXOr(dxbc::Dest::R(2, 0b0100), host_sample, dxbc::Src::LU(1));
++    } else {
++      a.OpUShR(dxbc::Dest::R(2, 0b0100), host_sample, dxbc::Src::LU(1));
++    }
++    // r2.w = x >> 1
++    a.OpUShR(dxbc::Dest::R(2, 0b1000), guest_x, dxbc::Src::LU(1));
++    // r2.w = y with bit 1 = x bit 1
++    a.OpBFI(dxbc::Dest::R(2, 0b1000), dxbc::Src::LU(1), dxbc::Src::LU(1),
++            dxbc::Src::R(2, dxbc::Src::kWWWW), guest_y);
++    // r1.x = u = (x & ~2) | (sample << 1)
++    a.OpBFI(dxbc::Dest::R(1, 0b0001), dxbc::Src::LU(1), dxbc::Src::LU(1),
++            dxbc::Src::R(2, dxbc::Src::kZZZZ), guest_x);
++    // r2.z = y >> 1
++    a.OpUShR(dxbc::Dest::R(2, 0b0100), guest_y, dxbc::Src::LU(1));
++    // r1.y = v = ((y >> 1) << 2) | (x & 2) | (y & 1)
++    a.OpBFI(dxbc::Dest::R(1, 0b0010), dxbc::Src::LU(30), dxbc::Src::LU(2),
++            dxbc::Src::R(2, dxbc::Src::kZZZZ),
++            dxbc::Src::R(2, dxbc::Src::kWWWW));
++    u_out = dxbc::Src::R(1, dxbc::Src::kXXXX);
++    v_out = dxbc::Src::R(1, dxbc::Src::kYYYY);
++  }
++}
++
++// Converts the canonical guest sample coordinates back to view pixels,
++// r1.xy for a multisampled or resolution scaled view and scaled by the subpixel
++// offset in r2.xy, along with host sample index in r1.z. sample_out is
++// unaffected for a single sampled view.
++// Uses r2.zw as scratch and leaves r0.w and r1.w unchanged.
++static void DecanonicalizeSample(dxbc::Assembler& a,
++                                 xenos::MsaaSamples msaa_samples, dxbc::Src u,
++                                 dxbc::Src v, bool scaled,
++                                 bool msaa_2x_supported, uint32_t scale_x,
++                                 uint32_t scale_y, dxbc::Src& x_out,
++                                 dxbc::Src& y_out, dxbc::Src& sample_out) {
++  x_out = u;
++  y_out = v;
++  if (msaa_samples >= xenos::MsaaSamples::k4X) {
++    // The host sample index is the guest sample index.
++    // r2.z = (u >> 1) & 1
++    a.OpUBFE(dxbc::Dest::R(2, 0b0100), dxbc::Src::LU(1), dxbc::Src::LU(1), u);
++    // r2.w = v & 2
++    a.OpAnd(dxbc::Dest::R(2, 0b1000), v, dxbc::Src::LU(2));
++    // r1.z = sample = ((u >> 1) & 1) | (v & 2)
++    a.OpOr(dxbc::Dest::R(1, 0b0100), dxbc::Src::R(2, dxbc::Src::kZZZZ),
++           dxbc::Src::R(2, dxbc::Src::kWWWW));
++    sample_out = dxbc::Src::R(1, dxbc::Src::kZZZZ);
++    // r2.z = u >> 2
++    a.OpUShR(dxbc::Dest::R(2, 0b0100), u, dxbc::Src::LU(2));
++    // r1.x = x = ((u >> 2) << 1) | (u & 1)
++    a.OpBFI(dxbc::Dest::R(1, 0b0001), dxbc::Src::LU(31), dxbc::Src::LU(1),
++            dxbc::Src::R(2, dxbc::Src::kZZZZ), u);
++    // r2.w = v >> 2
++    a.OpUShR(dxbc::Dest::R(2, 0b1000), v, dxbc::Src::LU(2));
++    // r1.y = y = ((v >> 2) << 1) | (v & 1)
++    a.OpBFI(dxbc::Dest::R(1, 0b0010), dxbc::Src::LU(31), dxbc::Src::LU(1),
++            dxbc::Src::R(2, dxbc::Src::kWWWW), v);
++    x_out = dxbc::Src::R(1, dxbc::Src::kXXXX);
++    y_out = dxbc::Src::R(1, dxbc::Src::kYYYY);
++  } else if (msaa_samples == xenos::MsaaSamples::k2X) {
++    // r2.z = guest sample = (u >> 1) & 1 (0 = top, 1 = bottom)
++    a.OpUBFE(dxbc::Dest::R(2, 0b0100), dxbc::Src::LU(1), dxbc::Src::LU(1), u);
++    // r1.z = host sample index
++    if (msaa_2x_supported) {
++      a.OpXOr(dxbc::Dest::R(1, 0b0100), dxbc::Src::R(2, dxbc::Src::kZZZZ),
++              dxbc::Src::LU(1));
++    } else {
++      // The guest sample 1 is the host sample 3 when 2x is emulated as
++      // 4x.
++      a.OpBFI(dxbc::Dest::R(1, 0b0100), dxbc::Src::LU(1), dxbc::Src::LU(1),
++              dxbc::Src::R(2, dxbc::Src::kZZZZ),
++              dxbc::Src::R(2, dxbc::Src::kZZZZ));
++    }
++    sample_out = dxbc::Src::R(1, dxbc::Src::kZZZZ);
++    // r2.w = v >> 1
++    a.OpUShR(dxbc::Dest::R(2, 0b1000), v, dxbc::Src::LU(1));
++    // r1.x = x = (u & ~3) | (v & 2) | (u & 1)
++    a.OpBFI(dxbc::Dest::R(1, 0b0001), dxbc::Src::LU(1), dxbc::Src::LU(1),
++            dxbc::Src::R(2, dxbc::Src::kWWWW), u);
++    // r2.w = v >> 2
++    a.OpUShR(dxbc::Dest::R(2, 0b1000), v, dxbc::Src::LU(2));
++    // r1.y = y = ((v >> 2) << 1) | (v & 1)
++    a.OpBFI(dxbc::Dest::R(1, 0b0010), dxbc::Src::LU(31), dxbc::Src::LU(1),
++            dxbc::Src::R(2, dxbc::Src::kWWWW), v);
++    x_out = dxbc::Src::R(1, dxbc::Src::kXXXX);
++    y_out = dxbc::Src::R(1, dxbc::Src::kYYYY);
++  }
++  if (scaled) {
++    // Every scaled composition has the guest pixel in r1.xy at this point.
++    // Restore the host pixel from it and the subpixel offset.
++    a.OpUMAd(dxbc::Dest::R(1, 0b0011), dxbc::Src::R(1),
++             dxbc::Src::LU(scale_x, scale_y, 1, 1), dxbc::Src::R(2));
++    x_out = dxbc::Src::R(1, dxbc::Src::kXXXX);
++    y_out = dxbc::Src::R(1, dxbc::Src::kYYYY);
++  }
++}
++
+ ID3D12PipelineState* const*
+ D3D12RenderTargetCache::GetOrCreateTransferPipelines(TransferShaderKey key) {
+   const TransferModeInfo& mode = kTransferModes[size_t(key.mode)];
+@@ -2992,281 +3148,48 @@ D3D12RenderTargetCache::GetOrCreateTransferPipelines(TransferShaderKey key) {
+   dxbc::Src source_sample(dest_sample);
+   uint32_t source_tile_pixel_x_reg = 0;
+   uint32_t source_tile_pixel_y_reg = 0;
+-
+-  // First sample bit at 4x in Direct3D 10.1+ - horizontal sample.
+-  // Second sample bit at 4x in Direct3D 10.1+ - vertical sample.
+-  // At 2x:
+-  // - Native 2x: top is 1 in Direct3D 10.1+, bottom is 0.
+-  // - 2x as 4x: top is 0, bottom is 3.
+-
+-  if (!source_is_64bpp && dest_is_64bpp) {
+-    // 32bpp -> 64bpp, need two samples of the source.
+-    if (key.source_msaa_samples >= xenos::MsaaSamples::k4X) {
+-      // 32bpp -> 64bpp, 4x ->.
+-      // Source has 32bpp halves in two adjacent samples.
+-      if (key.dest_msaa_samples >= xenos::MsaaSamples::k4X) {
+-        // 32bpp -> 64bpp, 4x -> 4x.
+-        // 1 destination horizontal sample = 2 source horizontal samples.
+-        // D p0,0 s0,0 = S p0,0 s0,0 | S p0,0 s1,0
+-        // D p0,0 s1,0 = S p1,0 s0,0 | S p1,0 s1,0
+-        // D p0,0 s0,1 = S p0,0 s0,1 | S p0,0 s1,1
+-        // D p0,0 s1,1 = S p1,0 s0,1 | S p1,0 s1,1
+-        // Thus destination horizontal sample -> source horizontal pixel,
+-        // vertical samples are 1:1.
+-        a.OpAnd(dxbc::Dest::R(1, 0b0100), dest_sample, dxbc::Src::LU(0b10));
+-        source_sample = dxbc::Src::R(1, dxbc::Src::kZZZZ);
+-        a.OpBFI(dxbc::Dest::R(1, 0b0001), dxbc::Src::LU(31), dxbc::Src::LU(1),
+-                dxbc::Src::R(0, dxbc::Src::kXXXX),
+-                dxbc::Src::V1D(kInputRegisterSampleIndex, dxbc::Src::kXXXX));
+-        source_tile_pixel_x_reg = 1;
+-      } else if (key.dest_msaa_samples == xenos::MsaaSamples::k2X) {
+-        // 32bpp -> 64bpp, 4x -> 2x.
+-        // 1 destination horizontal pixel = 2 source horizontal samples.
+-        // D p0,0 s0 = S p0,0 s0,0 | S p0,0 s1,0
+-        // D p0,0 s1 = S p0,0 s0,1 | S p0,0 s1,1
+-        // D p1,0 s0 = S p1,0 s0,0 | S p1,0 s1,0
+-        // D p1,0 s1 = S p1,0 s0,1 | S p1,0 s1,1
+-        // Pixel index can be reused. Sample 1 (for native 2x) or 0 (for 2x as
+-        // 4x) should become samples 01, sample 0 or 3 should become samples 23.
+-        source_sample = dxbc::Src::R(1, dxbc::Src::kZZZZ);
+-        if (msaa_2x_supported_) {
+-          a.OpXOr(dxbc::Dest::R(1, 0b0100), dest_sample, dxbc::Src::LU(1));
+-          a.OpIShL(dxbc::Dest::R(1, 0b0100), source_sample, dxbc::Src::LU(1));
+-        } else {
+-          a.OpAnd(dxbc::Dest::R(1, 0b0100), dest_sample, dxbc::Src::LU(0b10));
+-        }
+-      } else {
+-        // 32bpp -> 64bpp, 4x -> 1x.
+-        // 1 destination horizontal pixel = 2 source horizontal samples.
+-        // D p0,0 = S p0,0 s0,0 | S p0,0 s1,0
+-        // D p0,1 = S p0,0 s0,1 | S p0,0 s1,1
+-        // Horizontal pixel index can be reused. Vertical pixel 1 should
+-        // become sample 2.
+-        a.OpBFI(dxbc::Dest::R(1, 0b0100), dxbc::Src::LU(1), dxbc::Src::LU(1),
+-                dxbc::Src::R(0, dxbc::Src::kYYYY), dxbc::Src::LU(0));
+-        source_sample = dxbc::Src::R(1, dxbc::Src::kZZZZ);
+-        a.OpUShR(dxbc::Dest::R(1, 0b0010), dxbc::Src::R(0, dxbc::Src::kYYYY),
+-                 dxbc::Src::LU(1));
+-        source_tile_pixel_y_reg = 1;
+-      }
+-    } else {
+-      // 32bpp -> 64bpp, 1x/2x ->.
+-      // Source has 32bpp halves in two adjacent pixels.
+-      if (key.dest_msaa_samples >= xenos::MsaaSamples::k4X) {
+-        // 32bpp -> 64bpp, 1x/2x -> 4x.
+-        // The X part.
+-        // 1 destination horizontal sample = 2 source horizontal pixels.
+-        a.OpIShL(dxbc::Dest::R(1, 0b0001), dxbc::Src::R(0, dxbc::Src::kXXXX),
+-                 dxbc::Src::LU(2));
+-        a.OpBFI(dxbc::Dest::R(1, 0b0001), dxbc::Src::LU(1), dxbc::Src::LU(1),
+-                dxbc::Src::V1D(kInputRegisterSampleIndex, dxbc::Src::kXXXX),
+-                dxbc::Src::R(1, dxbc::Src::kXXXX));
+-        source_tile_pixel_x_reg = 1;
+-        // Y is handled by common code.
+-      } else {
+-        // 32bpp -> 64bpp, 1x/2x -> 1x/2x.
+-        // The X part.
+-        // 1 destination horizontal pixel = 2 source horizontal pixels.
+-        a.OpIShL(dxbc::Dest::R(1, 0b0001), dxbc::Src::R(0, dxbc::Src::kXXXX),
+-                 dxbc::Src::LU(1));
+-        source_tile_pixel_x_reg = 1;
+-        // Y is handled by common code.
+-      }
+-    }
+-  } else if (source_is_64bpp && !dest_is_64bpp) {
+-    // 64bpp -> 32bpp, also the half to r0.w.
+-    if (key.dest_msaa_samples >= xenos::MsaaSamples::k4X) {
+-      // 64bpp -> 32bpp, -> 4x.
+-      // The needed half is in the destination horizontal sample index.
+-      if (key.source_msaa_samples >= xenos::MsaaSamples::k4X) {
+-        // 64bpp -> 32bpp, 4x -> 4x.
+-        // D p0,0 s0,0 = S s0,0 low
+-        // D p0,0 s1,0 = S s0,0 high
+-        // D p1,0 s0,0 = S s1,0 low
+-        // D p1,0 s1,0 = S s1,0 high
+-        // Vertical pixel and sample (second bit) addressing is the same.
+-        // However, 1 horizontal destination pixel = 1 horizontal source sample.
+-        a.OpBFI(dxbc::Dest::R(1, 0b0100), dxbc::Src::LU(1), dxbc::Src::LU(0),
+-                dxbc::Src::R(0, dxbc::Src::kXXXX), dest_sample);
+-        source_sample = dxbc::Src::R(1, dxbc::Src::kZZZZ);
+-        // 2 destination horizontal samples = 1 source horizontal sample, thus
+-        // 2 destination horizontal pixels = 1 source horizontal pixel.
+-        a.OpUShR(dxbc::Dest::R(1, 0b0001), dxbc::Src::R(0, dxbc::Src::kXXXX),
+-                 dxbc::Src::LU(1));
+-        source_tile_pixel_x_reg = 1;
+-      } else {
+-        // 64bpp -> 32bpp, 1x/2x -> 4x.
+-        // 2 destination horizontal samples = 1 source horizontal pixel, thus
+-        // 1 destination horizontal pixel = 1 source horizontal pixel. Can reuse
+-        // horizontal pixel index.
+-        // Y is handled by common code.
+-      }
+-      // Half in r0.w from the destination horizontal sample index.
+-      a.OpAnd(dxbc::Dest::R(0, 0b1000), dest_sample, dxbc::Src::LU(1));
+-    } else {
+-      // 64bpp -> 32bpp, -> 1x/2x.
+-      // The needed half is in the destination horizontal pixel index.
+-      if (key.source_msaa_samples >= xenos::MsaaSamples::k4X) {
+-        // 64bpp -> 32bpp, 4x -> 1x/2x.
+-        // (Destination horizontal pixel >> 1) & 1 = source horizontal sample
+-        // (first bit).
+-        a.OpUBFE(dxbc::Dest::R(1, 0b0100), dxbc::Src::LU(1), dxbc::Src::LU(1),
+-                 dxbc::Src::R(0, dxbc::Src::kXXXX));
+-        source_sample = dxbc::Src::R(1, dxbc::Src::kZZZZ);
+-        if (key.dest_msaa_samples == xenos::MsaaSamples::k2X) {
+-          // 64bpp -> 32bpp, 4x -> 2x.
+-          // Destination vertical samples (1/0 in the first bit for native 2x or
+-          // 0/1 in the second bit for 2x as 4x) = source vertical samples
+-          // (second bit).
+-          if (msaa_2x_supported_) {
+-            a.OpBFI(dxbc::Dest::R(1, 0b0100), dxbc::Src::LU(1),
+-                    dxbc::Src::LU(1), dest_sample, source_sample);
+-            a.OpXOr(dxbc::Dest::R(1, 0b0100), source_sample,
+-                    dxbc::Src::LU(1 << 1));
+-          } else {
+-            a.OpBFI(dxbc::Dest::R(1, 0b0100), dxbc::Src::LU(1),
+-                    dxbc::Src::LU(0), source_sample, dest_sample);
+-          }
+-        } else {
+-          // 64bpp -> 32bpp, 4x -> 1x.
+-          // 1 destination vertical pixel = 1 source vertical sample.
+-          a.OpBFI(dxbc::Dest::R(1, 0b0100), dxbc::Src::LU(1), dxbc::Src::LU(1),
+-                  dxbc::Src::R(0, dxbc::Src::kYYYY), source_sample);
+-          a.OpUShR(dxbc::Dest::R(1, 0b0010), dxbc::Src::R(0, dxbc::Src::kYYYY),
+-                   dxbc::Src::LU(1));
+-          source_tile_pixel_y_reg = 1;
+-        }
+-        // 2 destination horizontal pixels = 1 source horizontal sample.
+-        // 4 destination horizontal pixels = 1 source horizontal pixel.
+-        a.OpUShR(dxbc::Dest::R(1, 0b0001), dxbc::Src::R(0, dxbc::Src::kXXXX),
+-                 dxbc::Src::LU(2));
+-        source_tile_pixel_x_reg = 1;
+-      } else {
+-        // 64bpp -> 32bpp, 1x/2x -> 1x/2x.
+-        // The X part.
+-        // 2 destination horizontal pixels = 1 destination source pixel.
+-        a.OpUShR(dxbc::Dest::R(1, 0b0001), dxbc::Src::R(0, dxbc::Src::kXXXX),
+-                 dxbc::Src::LU(1));
+-        source_tile_pixel_x_reg = 1;
+-        // Y is handled by common code.
+-      }
+-      // Half in r0.w from the destination horizontal pixel index.
+-      a.OpAnd(dxbc::Dest::R(0, 0b1000), dxbc::Src::R(0, dxbc::Src::kXXXX),
+-              dxbc::Src::LU(1));
+-    }
+-  } else {
+-    // Same bit count.
+-    if (key.source_msaa_samples != key.dest_msaa_samples) {
+-      if (key.source_msaa_samples >= xenos::MsaaSamples::k4X) {
+-        // Same BPP, 4x -> 1x/2x.
+-        if (key.dest_msaa_samples == xenos::MsaaSamples::k2X) {
+-          // Same BPP, 4x -> 2x.
+-          // Horizontal pixels to samples. Vertical sample (1/0 in the first bit
+-          // for native 2x or 0/1 in the second bit for 2x as 4x) to second
+-          // sample bit.
+-          source_sample = dxbc::Src::R(1, dxbc::Src::kZZZZ);
+-          if (msaa_2x_supported_) {
+-            a.OpBFI(dxbc::Dest::R(1, 0b0100), dxbc::Src::LU(31),
+-                    dxbc::Src::LU(1), dest_sample,
+-                    dxbc::Src::R(0, dxbc::Src::kXXXX));
+-            a.OpXOr(dxbc::Dest::R(1, 0b0100), source_sample,
+-                    dxbc::Src::LU(1 << 1));
+-          } else {
+-            a.OpBFI(dxbc::Dest::R(1, 0b0100), dxbc::Src::LU(1),
+-                    dxbc::Src::LU(0), dxbc::Src::R(0, dxbc::Src::kXXXX),
+-                    dest_sample);
+-          }
+-          a.OpUShR(dxbc::Dest::R(1, 0b0001), dxbc::Src::R(0, dxbc::Src::kXXXX),
+-                   dxbc::Src::LU(1));
+-          source_tile_pixel_x_reg = 1;
+-        } else {
+-          // Same BPP, 4x -> 1x.
+-          // Pixels to samples.
+-          a.OpAnd(dxbc::Dest::R(1, 0b0100), dxbc::Src::R(0, dxbc::Src::kXXXX),
+-                  dxbc::Src::LU(1));
+-          source_sample = dxbc::Src::R(1, dxbc::Src::kZZZZ);
+-          a.OpBFI(dxbc::Dest::R(1, 0b0100), dxbc::Src::LU(1), dxbc::Src::LU(1),
+-                  dxbc::Src::R(0, dxbc::Src::kYYYY), source_sample);
+-          a.OpUShR(dxbc::Dest::R(1, 0b0011), dxbc::Src::R(0), dxbc::Src::LU(1));
+-          source_tile_pixel_x_reg = 1;
+-          source_tile_pixel_y_reg = 1;
+-        }
+-      } else {
+-        // Same BPP, 1x/2x -> 1x/2x/4x (as long as they're different).
+-        // Only the X part - Y is handled by common code.
+-        if (key.dest_msaa_samples >= xenos::MsaaSamples::k4X) {
+-          // Horizontal samples to pixels.
+-          a.OpBFI(dxbc::Dest::R(1, 0b0001), dxbc::Src::LU(31), dxbc::Src::LU(1),
+-                  dxbc::Src::R(0, dxbc::Src::kXXXX), dest_sample);
+-          source_tile_pixel_x_reg = 1;
+-        }
+-      }
+-    }
+-  }
+-  // Common source Y and sample index for 1x/2x AA sources, independent of bits
+-  // per sample.
+-  if (key.source_msaa_samples < xenos::MsaaSamples::k4X &&
+-      key.source_msaa_samples != key.dest_msaa_samples) {
+-    if (key.dest_msaa_samples >= xenos::MsaaSamples::k4X) {
+-      // 1x/2x -> 4x.
+-      if (key.source_msaa_samples == xenos::MsaaSamples::k2X) {
+-        // 2x -> 4x.
+-        // Vertical samples (second bit) of 4x destination to vertical sample
+-        // (1, 0 for native 2x, or 0, 3 for 2x as 4x) of 2x source.
+-        a.OpUShR(dxbc::Dest::R(1, 0b0100), dest_sample, dxbc::Src::LU(1));
+-        source_sample = dxbc::Src::R(1, dxbc::Src::kZZZZ);
+-        if (msaa_2x_supported_) {
+-          a.OpXOr(dxbc::Dest::R(1, 0b0100), source_sample, dxbc::Src::LU(1));
+-        } else {
+-          a.OpBFI(dxbc::Dest::R(1, 0b0100), dxbc::Src::LU(1), dxbc::Src::LU(1),
+-                  source_sample, source_sample);
+-        }
+-      } else {
+-        // 1x -> 4x.
+-        // Vertical samples (second bit) to Y pixels.
+-        a.OpUShR(dxbc::Dest::R(1, 0b0010), dest_sample, dxbc::Src::LU(1));
+-        a.OpBFI(dxbc::Dest::R(1, 0b0010), dxbc::Src::LU(31), dxbc::Src::LU(1),
+-                dxbc::Src::R(0, dxbc::Src::kYYYY),
+-                dxbc::Src::R(1, dxbc::Src::kYYYY));
+-        source_tile_pixel_y_reg = 1;
+-      }
+-    } else {
+-      // 1x/2x -> different 1x/2x.
+-      if (key.source_msaa_samples == xenos::MsaaSamples::k2X) {
+-        // 2x -> 1x.
+-        // Vertical pixels of 2x destination to vertical samples (1, 0 for
+-        // native 2x, or 0, 3 for 2x as 4x) of 1x source.
+-        a.OpAnd(dxbc::Dest::R(1, 0b0100), dxbc::Src::R(0, dxbc::Src::kYYYY),
+-                dxbc::Src::LU(1));
+-        source_sample = dxbc::Src::R(1, dxbc::Src::kZZZZ);
+-        if (msaa_2x_supported_) {
+-          a.OpXOr(dxbc::Dest::R(1, 0b0100), source_sample, dxbc::Src::LU(1));
+-        } else {
+-          a.OpBFI(dxbc::Dest::R(1, 0b0100), dxbc::Src::LU(1), dxbc::Src::LU(1),
+-                  source_sample, source_sample);
+-        }
+-        a.OpUShR(dxbc::Dest::R(1, 0b0010), dxbc::Src::R(0, dxbc::Src::kYYYY),
+-                 dxbc::Src::LU(1));
+-        source_tile_pixel_y_reg = 1;
+-      } else {
+-        // 1x -> 2x.
+-        // Vertical samples (1/0 in the first bit for native 2x or 0/1 in the
+-        // second bit for 2x as 4x) of 2x destination to vertical pixels of 1x
+-        // source.
+-        if (msaa_2x_supported_) {
+-          a.OpBFI(dxbc::Dest::R(1, 0b0010), dxbc::Src::LU(31), dxbc::Src::LU(1),
+-                  dxbc::Src::R(0, dxbc::Src::kYYYY), dest_sample);
+-          a.OpXOr(dxbc::Dest::R(1, 0b0010), dxbc::Src::R(1, dxbc::Src::kYYYY),
+-                  dxbc::Src::LU(1));
+-        } else {
+-          a.OpUShR(dxbc::Dest::R(1, 0b0010), dest_sample, dxbc::Src::LU(1));
+-          a.OpBFI(dxbc::Dest::R(1, 0b0010), dxbc::Src::LU(31), dxbc::Src::LU(1),
+-                  dxbc::Src::R(0, dxbc::Src::kYYYY),
+-                  dxbc::Src::R(1, dxbc::Src::kYYYY));
+-        }
+-        source_tile_pixel_y_reg = 1;
+-      }
++  // The transfer remaps the destination sample to the source sample through
++  // the canonical sample coordinates, the layout is described in
++  // XeEdramOffsetBytes in edram.xesli.
++  if (key.source_msaa_samples != key.dest_msaa_samples ||
++      source_is_64bpp != dest_is_64bpp) {
++    // Remap the destination view sample to the source view using the canonical
++    // coordinates (both views are in the source scale space here).
++    dxbc::Src canonical_u(dxbc::Src::R(0, dxbc::Src::kXXXX));
++    dxbc::Src canonical_v(dxbc::Src::R(0, dxbc::Src::kYYYY));
++    bool canonical_scaled;
++    CanonicalizeSample(a, key.dest_msaa_samples, dest_sample,
++                       msaa_2x_supported_, source_scale_x, source_scale_y,
++                       canonical_u, canonical_v, canonical_scaled);
++    if (dest_is_64bpp && !source_is_64bpp) {
++      // The low 32bpp half of the 64bpp destination sample is obtained from the
++      // source pixel at u = 2 * u_64bpp, and the high half comes from the
++      // horizontally adjacent source pixel later.
++      a.OpIShL(dxbc::Dest::R(1, 0b0001), canonical_u, dxbc::Src::LU(1));
++      canonical_u = dxbc::Src::R(1, dxbc::Src::kXXXX);
++    } else if (!dest_is_64bpp && source_is_64bpp) {
++      // The 32bpp destination sample is one half (r0.w) of the 64bpp
++      // source sample at u = u_32bpp >> 1.
++      a.OpAnd(dxbc::Dest::R(0, 0b1000), canonical_u, dxbc::Src::LU(1));
++      a.OpUShR(dxbc::Dest::R(1, 0b0001), canonical_u, dxbc::Src::LU(1));
++      canonical_u = dxbc::Src::R(1, dxbc::Src::kXXXX);
+     }
++    dxbc::Src source_pixel_x(canonical_u);
++    dxbc::Src source_pixel_y(canonical_v);
++    DecanonicalizeSample(a, key.source_msaa_samples, canonical_u, canonical_v,
++                         canonical_scaled, msaa_2x_supported_, source_scale_x,
++                         source_scale_y, source_pixel_x, source_pixel_y,
++                         source_sample);
++    // Each of the compositions routes u (and along with that the X result)
++    // through r1.x. The Y result lands in r1.y, except when there is a single
++    // sampled unscaled transfer between bit depths. In that case, v goes into
++    // r0.y.
++    source_tile_pixel_x_reg = 1;
++    source_tile_pixel_y_reg =
++        (key.source_msaa_samples == xenos::MsaaSamples::k1X &&
++         key.dest_msaa_samples == xenos::MsaaSamples::k1X && !canonical_scaled)
++            ? 0
++            : 1;
+   }
+ 
+   uint32_t source_pixel_width_dwords_log2 =
+@@ -3371,14 +3294,12 @@ D3D12RenderTargetCache::GetOrCreateTransferPipelines(TransferShaderKey key) {
+                  source_sample);
+       }
+       if (source_load_is_two_dwords && !i) {
+-        // Go to the next sample or pixel along X if need to load two dwords.
+-        if (key.source_msaa_samples >= xenos::MsaaSamples::k4X) {
+-          a.OpOr(dxbc::Dest::R(1, 0b0100), source_sample, dxbc::Src::LU(1));
+-          source_sample = dxbc::Src::R(1, dxbc::Src::kZZZZ);
+-        } else {
+-          a.OpOr(dxbc::Dest::R(1, 0b0001), dxbc::Src::R(1, dxbc::Src::kXXXX),
+-                 dxbc::Src::LU(1));
+-        }
++        // The high 32bpp half of a 64bpp destination sample is identical to the
++        // sample of the horizontally adjacent source pixel since each canonical
++        // sample column of a single 64bpp value decodes to the same sample of
++        // two horizontally adjacent pixels, regardless of sample count.
++        a.OpIAdd(dxbc::Dest::R(1, 0b0001), dxbc::Src::R(1, dxbc::Src::kXXXX),
++                 dxbc::Src::LU(source_scale_x));
+       }
+     }
+   } else {
+@@ -3405,9 +3326,9 @@ D3D12RenderTargetCache::GetOrCreateTransferPipelines(TransferShaderKey key) {
+                dxbc::Src::T(srv_index_color, kTransferSRVRegisterColor));
+       }
+       if (source_load_is_two_dwords && !i) {
+-        // Go to the next pixel along X if need to load two dwords.
+-        a.OpOr(dxbc::Dest::R(1, 0b0001), dxbc::Src::R(1, dxbc::Src::kXXXX),
+-               dxbc::Src::LU(1));
++        // The high half, same as in the multisampled case above.
++        a.OpIAdd(dxbc::Dest::R(1, 0b0001), dxbc::Src::R(1, dxbc::Src::kXXXX),
++                 dxbc::Src::LU(source_scale_x));
+       }
+     }
+   }
+@@ -4099,141 +4020,32 @@ D3D12RenderTargetCache::GetOrCreateTransferPipelines(TransferShaderKey key) {
+                       dxbc::Src::R(0, dxbc::Src::kZZZZ),
+                       dxbc::Src::LU(xenos::kEdramTileCount - 1));
+               // Convert position and sample index from within the destination
+-              // tile to within the host depth source tile, like for the guest
+-              // render target, but for 32bpp -> 32bpp only.
++              // tile to within the host depth source tile by remapping
++              // through the canonical coordinates. Both views are 32bpp and
++              // use the destination scale.
+               dxbc::Src host_depth_source_sample(dest_sample);
+               if (key.host_depth_source_msaa_samples != key.dest_msaa_samples) {
+-                if (key.host_depth_source_msaa_samples >=
+-                    xenos::MsaaSamples::k4X) {
+-                  // 4x -> 1x/2x.
+-                  if (key.dest_msaa_samples == xenos::MsaaSamples::k2X) {
+-                    // 4x -> 2x.
+-                    // Horizontal pixels to samples. Vertical sample (1, 0 in
+-                    // the first bit for native 2x or 0, 1 in the second bit for
+-                    // 2x as 4x) to second sample bit.
+-                    host_depth_source_sample =
+-                        dxbc::Src::R(0, dxbc::Src::kWWWW);
+-                    if (msaa_2x_supported_) {
+-                      a.OpBFI(dxbc::Dest::R(0, 0b1000), dxbc::Src::LU(31),
+-                              dxbc::Src::LU(1), dest_sample,
+-                              dxbc::Src::R(0, dxbc::Src::kXXXX));
+-                      a.OpXOr(dxbc::Dest::R(0, 0b1000),
+-                              host_depth_source_sample, dxbc::Src::LU(1 << 1));
+-                    } else {
+-                      a.OpBFI(dxbc::Dest::R(0, 0b1000), dxbc::Src::LU(1),
+-                              dxbc::Src::LU(0),
+-                              dxbc::Src::R(0, dxbc::Src::kXXXX), dest_sample);
+-                    }
+-                    a.OpUShR(dxbc::Dest::R(0, 0b0001),
+-                             dxbc::Src::R(0, dxbc::Src::kXXXX),
+-                             dxbc::Src::LU(1));
+-                  } else {
+-                    // 4x -> 1x.
+-                    // Pixels to samples.
+-                    a.OpAnd(dxbc::Dest::R(0, 0b1000),
+-                            dxbc::Src::R(0, dxbc::Src::kXXXX),
+-                            dxbc::Src::LU(1));
+-                    host_depth_source_sample =
+-                        dxbc::Src::R(0, dxbc::Src::kWWWW);
+-                    a.OpBFI(dxbc::Dest::R(0, 0b1000), dxbc::Src::LU(1),
+-                            dxbc::Src::LU(1), dxbc::Src::R(0, dxbc::Src::kYYYY),
+-                            host_depth_source_sample);
+-                    a.OpUShR(dxbc::Dest::R(0, 0b0011), dxbc::Src::R(0),
+-                             dxbc::Src::LU(1));
+-                  }
+-                } else {
+-                  // 1x/2x -> 1x/2x/4x (as long as they're different).
+-                  // Only the X part - Y is handled by common code.
+-                  if (key.dest_msaa_samples >= xenos::MsaaSamples::k4X) {
+-                    // Horizontal samples to pixels.
+-                    a.OpBFI(dxbc::Dest::R(0, 0b0001), dxbc::Src::LU(31),
+-                            dxbc::Src::LU(1), dxbc::Src::R(0, dxbc::Src::kXXXX),
+-                            dest_sample);
+-                  }
+-                }
+-                // Host depth source Y and sample index for 1x/2x AA sources.
+-                if (key.host_depth_source_msaa_samples <
+-                    xenos::MsaaSamples::k4X) {
+-                  if (key.dest_msaa_samples >= xenos::MsaaSamples::k4X) {
+-                    // 1x/2x -> 4x.
+-                    if (key.host_depth_source_msaa_samples ==
+-                        xenos::MsaaSamples::k2X) {
+-                      // 2x -> 4x.
+-                      // Vertical samples (second bit) of 4x destination to
+-                      // vertical sample (1, 0 for native 2x, or 0, 3 for 2x as
+-                      // 4x) of 2x source.
+-                      a.OpUShR(dxbc::Dest::R(0, 0b1000), dest_sample,
+-                               dxbc::Src::LU(1));
+-                      host_depth_source_sample =
+-                          dxbc::Src::R(0, dxbc::Src::kWWWW);
+-                      if (msaa_2x_supported_) {
+-                        a.OpXOr(dxbc::Dest::R(0, 0b1000),
+-                                host_depth_source_sample, dxbc::Src::LU(1));
+-                      } else {
+-                        a.OpBFI(dxbc::Dest::R(0, 0b1000), dxbc::Src::LU(1),
+-                                dxbc::Src::LU(1), host_depth_source_sample,
+-                                host_depth_source_sample);
+-                      }
+-                    } else {
+-                      // 1x -> 4x.
+-                      // Vertical samples (second bit) to Y pixels, using r0.w
+-                      // (not needed without source MSAA) as a temporary.
+-                      a.OpUShR(dxbc::Dest::R(0, 0b1000), dest_sample,
+-                               dxbc::Src::LU(1));
+-                      a.OpBFI(dxbc::Dest::R(0, 0b0010), dxbc::Src::LU(31),
+-                              dxbc::Src::LU(1),
+-                              dxbc::Src::R(0, dxbc::Src::kYYYY),
+-                              dxbc::Src::R(0, dxbc::Src::kWWWW));
+-                    }
+-                  } else {
+-                    // 1x/2x -> different 1x/2x.
+-                    if (key.host_depth_source_msaa_samples ==
+-                        xenos::MsaaSamples::k2X) {
+-                      // 2x -> 1x.
+-                      // Vertical pixels of 2x destination to vertical samples
+-                      // (1, 0 for native 2x, or 0, 3 for 2x as 4x) of 1x
+-                      // source.
+-                      a.OpAnd(dxbc::Dest::R(0, 0b1000),
+-                              dxbc::Src::R(0, dxbc::Src::kYYYY),
+-                              dxbc::Src::LU(1));
+-                      host_depth_source_sample =
+-                          dxbc::Src::R(0, dxbc::Src::kWWWW);
+-                      if (msaa_2x_supported_) {
+-                        a.OpXOr(dxbc::Dest::R(0, 0b1000),
+-                                host_depth_source_sample, dxbc::Src::LU(1));
+-                      } else {
+-                        a.OpBFI(dxbc::Dest::R(0, 0b1000), dxbc::Src::LU(1),
+-                                dxbc::Src::LU(1), host_depth_source_sample,
+-                                host_depth_source_sample);
+-                      }
+-                      a.OpUShR(dxbc::Dest::R(0, 0b0010),
+-                               dxbc::Src::R(0, dxbc::Src::kYYYY),
+-                               dxbc::Src::LU(1));
+-                    } else {
+-                      // 1x -> 2x.
+-                      // Vertical samples (1, 0 in the first bit for native 2x
+-                      // or 0, 1 in the second bit for 2x as 4x) of 2x
+-                      // destination to vertical pixels of 1x source.
+-                      // Using r0.w (not needed without source MSAA) as a
+-                      // temporary.
+-                      if (msaa_2x_supported_) {
+-                        a.OpBFI(dxbc::Dest::R(0, 0b0010), dxbc::Src::LU(31),
+-                                dxbc::Src::LU(1),
+-                                dxbc::Src::R(0, dxbc::Src::kYYYY), dest_sample);
+-                        a.OpXOr(dxbc::Dest::R(0, 0b0010),
+-                                dxbc::Src::R(0, dxbc::Src::kYYYY),
+-                                dxbc::Src::LU(1));
+-                      } else {
+-                        a.OpUShR(dxbc::Dest::R(0, 0b1000), dest_sample,
+-                                 dxbc::Src::LU(1));
+-                        a.OpBFI(dxbc::Dest::R(0, 0b0010), dxbc::Src::LU(31),
+-                                dxbc::Src::LU(1),
+-                                dxbc::Src::R(0, dxbc::Src::kYYYY),
+-                                dxbc::Src::R(0, dxbc::Src::kWWWW));
+-                      }
+-                    }
+-                  }
+-                }
++                dxbc::Src host_depth_u(dxbc::Src::R(0, dxbc::Src::kXXXX));
++                dxbc::Src host_depth_v(dxbc::Src::R(0, dxbc::Src::kYYYY));
++                bool host_depth_scaled;
++                CanonicalizeSample(a, key.dest_msaa_samples, dest_sample,
++                                   msaa_2x_supported_, dest_scale_x,
++                                   dest_scale_y, host_depth_u, host_depth_v,
++                                   host_depth_scaled);
++                dxbc::Src host_depth_x(host_depth_u);
++                dxbc::Src host_depth_y(host_depth_v);
++                DecanonicalizeSample(a, key.host_depth_source_msaa_samples,
++                                     host_depth_u, host_depth_v,
++                                     host_depth_scaled, msaa_2x_supported_,
++                                     dest_scale_x, dest_scale_y, host_depth_x,
++                                     host_depth_y, host_depth_source_sample);
++                // With varying sample counts, the remapped coordinates will
++                // always be stored in r1.xy here. The remapping helpers keep
++                // the value of r1.w as the guest depth value, while r1.z, the
++                // host sample index, is read before the pitch takes up r1.x.
++                // Move the coordinates to r0.xy for the common host depth
++                // source addressing.
++                a.OpMov(dxbc::Dest::R(0, 0b0011), dxbc::Src::R(1));
+               }
+               // r1.x = host depth source pitch in tiles
+               a.OpUBFE(dxbc::Dest::R(1, 0b0001),
+@@ -6269,66 +6081,100 @@ ID3D12PipelineState* D3D12RenderTargetCache::GetOrCreateDumpPipeline(
+   // single-sampled source, LOD from r0.w.
+   dxbc::Src source_address_src(dxbc::Src::R(0, 0b11000100));
+   if (key.msaa_samples >= xenos::MsaaSamples::k2X) {
++    // r0.xy holds the canonical sample coordinates within the EDRAM layout.
++    // Convert them into the pixel and the sample of the multisampled view
++    // using the canonical layout formulas, at guest pixel granularity when the
++    // layout is scaled.
++    uint32_t layout_scale_x =
++        key.native_layout ? 1 : this->draw_resolution_scale_x();
++    uint32_t layout_scale_y =
++        key.native_layout ? 1 : this->draw_resolution_scale_y();
++    bool layout_scaled = layout_scale_x > 1 || layout_scale_y > 1;
++    if (layout_scaled) {
++      // r0.xy = guest canonical sample coordinates
++      // r1.xy = subpixel within the guest sample
++      a.OpUDiv(dxbc::Dest::R(0, 0b0011), dxbc::Dest::R(1, 0b0011),
++               dxbc::Src::R(0),
++               dxbc::Src::LU(layout_scale_x, layout_scale_y, 1, 1));
++    }
+     if (key.msaa_samples >= xenos::MsaaSamples::k4X) {
+-      // 4x MSAA source texture sample index - bit 0 for horizontal, bit 1 for
+-      // vertical.
+-      // Extract the horizontal sample index to r0.w.
+-      // r0.x = X sample position within the source texture
+-      // r0.y = Y sample position within the source texture
+-      // r0.z = sample offset in the EDRAM
+-      // r0.w = horizontal sample index within the source pixel
+-      a.OpAnd(dxbc::Dest::R(0, 0b1000), dxbc::Src::R(0, dxbc::Src::kXXXX),
+-              dxbc::Src::LU(1));
+-      // Insert the vertical sample index to r0.w.
+-      // r0.x = X sample position within the source texture
+-      // r0.y = Y sample position within the source texture
+-      // r0.z = sample offset in the EDRAM
++      // The 4x sample index has bit 0 horizontal and bit 1 vertical, same as
++      // the canonical layout.
++      // r0.w = horizontal sample index = (u >> 1) & 1
++      a.OpUBFE(dxbc::Dest::R(0, 0b1000), dxbc::Src::LU(1), dxbc::Src::LU(1),
++               dxbc::Src::R(0, dxbc::Src::kXXXX));
++      // r1.z = vertical sample index = (v >> 1) & 1
++      a.OpUBFE(dxbc::Dest::R(1, 0b0100), dxbc::Src::LU(1), dxbc::Src::LU(1),
++               dxbc::Src::R(0, dxbc::Src::kYYYY));
+       // r0.w = sample index within the source pixel
+       a.OpBFI(dxbc::Dest::R(0, 0b1000), dxbc::Src::LU(1), dxbc::Src::LU(1),
+-              dxbc::Src::R(0, dxbc::Src::kYYYY),
++              dxbc::Src::R(1, dxbc::Src::kZZZZ),
+               dxbc::Src::R(0, dxbc::Src::kWWWW));
+-      // Convert sample to pixel coordinates in the source texture to r0.xy.
+-      // r0.x = X pixel position within the source texture
+-      // r0.y = Y pixel position within the source texture
+-      // r0.z = sample offset in the EDRAM
+-      // r0.w = sample index within the source pixel
+-      a.OpUShR(dxbc::Dest::R(0, 0b0011), dxbc::Src::R(0), dxbc::Src::LU(1));
++      // Guest pixel per axis = ((c >> 2) << 1) | (c & 1).
++      // r1.z = u >> 2
++      a.OpUShR(dxbc::Dest::R(1, 0b0100), dxbc::Src::R(0, dxbc::Src::kXXXX),
++               dxbc::Src::LU(2));
++      // r0.x = X guest pixel position
++      a.OpBFI(dxbc::Dest::R(0, 0b0001), dxbc::Src::LU(31), dxbc::Src::LU(1),
++              dxbc::Src::R(1, dxbc::Src::kZZZZ),
++              dxbc::Src::R(0, dxbc::Src::kXXXX));
++      // r1.z = v >> 2
++      a.OpUShR(dxbc::Dest::R(1, 0b0100), dxbc::Src::R(0, dxbc::Src::kYYYY),
++               dxbc::Src::LU(2));
++      // r0.y = Y guest pixel position
++      a.OpBFI(dxbc::Dest::R(0, 0b0010), dxbc::Src::LU(31), dxbc::Src::LU(1),
++              dxbc::Src::R(1, dxbc::Src::kZZZZ),
++              dxbc::Src::R(0, dxbc::Src::kYYYY));
+     } else {
+       // 2x MSAA source texture sample index.
+       // Extract the vertical sample index to r0.w.
+       // r0.x = X pixel position within the source texture
+       // r0.y = Y sample position within the source texture
+       // r0.z = sample offset in the EDRAM
+-      // r0.w = vertical sample index within the destination pixel
+-      a.OpAnd(dxbc::Dest::R(0, 0b1000), dxbc::Src::R(0, dxbc::Src::kYYYY),
++      // r0.w = guest vertical sample index = (u >> 1) & 1
++      a.OpUBFE(dxbc::Dest::R(0, 0b1000), dxbc::Src::LU(1), dxbc::Src::LU(1),
++               dxbc::Src::R(0, dxbc::Src::kXXXX));
++      // Guest pixel X = (u & ~2) | (v & 2).
++      // r1.z = v & 2
++      a.OpAnd(dxbc::Dest::R(1, 0b0100), dxbc::Src::R(0, dxbc::Src::kYYYY),
++              dxbc::Src::LU(2));
++      // r0.x = (u & ~2)
++      a.OpAnd(dxbc::Dest::R(0, 0b0001), dxbc::Src::R(0, dxbc::Src::kXXXX),
++              dxbc::Src::LU(~uint32_t(2)));
++      // r0.x = X guest pixel position
++      a.OpOr(dxbc::Dest::R(0, 0b0001), dxbc::Src::R(0, dxbc::Src::kXXXX),
++             dxbc::Src::R(1, dxbc::Src::kZZZZ));
++      // Guest pixel Y = ((v & ~3) >> 1) | (v & 1).
++      // r1.z = v & 1
++      a.OpAnd(dxbc::Dest::R(1, 0b0100), dxbc::Src::R(0, dxbc::Src::kYYYY),
+               dxbc::Src::LU(1));
++      // r0.y = v & ~3
++      a.OpAnd(dxbc::Dest::R(0, 0b0010), dxbc::Src::R(0, dxbc::Src::kYYYY),
++              dxbc::Src::LU(~uint32_t(3)));
++      // r0.y = (v & ~3) >> 1
++      a.OpUShR(dxbc::Dest::R(0, 0b0010), dxbc::Src::R(0, dxbc::Src::kYYYY),
++               dxbc::Src::LU(1));
++      // r0.y = Y guest pixel position
++      a.OpOr(dxbc::Dest::R(0, 0b0010), dxbc::Src::R(0, dxbc::Src::kYYYY),
++             dxbc::Src::R(1, dxbc::Src::kZZZZ));
+       // Convert the 2x MSAA sample index from the guest to Direct3D 10.1+.
+-      // r0.x = X pixel position within the source texture
+-      // r0.y = Y sample position within the source texture
+-      // r0.z = sample offset in the EDRAM
+       // r0.w = sample index within the source pixel
+       a.OpMovC(dxbc::Dest::R(0, 0b1000), dxbc::Src::R(0, dxbc::Src::kWWWW),
+                dxbc::Src::LU(draw_util::GetD3D10SampleIndexForGuest2xMSAA(
+                    1, msaa_2x_supported_)),
+                dxbc::Src::LU(draw_util::GetD3D10SampleIndexForGuest2xMSAA(
+                    0, msaa_2x_supported_)));
+-      // Convert sample Y to pixel Y in the source texture to r0.y.
+-      // r0.x = X pixel position within the source texture
+-      // r0.y = Y pixel position within the source texture
+-      // r0.z = sample offset in the EDRAM
+-      // r0.w = sample index within the source pixel
+-      a.OpUShR(dxbc::Dest::R(0, 0b0010), dxbc::Src::R(0, dxbc::Src::kYYYY),
+-               dxbc::Src::LU(1));
+     }
+-    if (key.source_scale_native && !key.native_layout &&
+-        IsDrawResolutionScaled()) {
+-      // Native source dumped to the scaled EDRAM layout. Duplicate the
+-      // guest pixels into all the scaled sample slots covering it. Done after
+-      // the sample index is extracted since MSAA isn't affected by the scale.
+-      a.OpUDiv(dxbc::Dest::R(0, 0b0011), dxbc::Dest::Null(), dxbc::Src::R(0),
+-               dxbc::Src::LU(this->draw_resolution_scale_x(),
+-                             this->draw_resolution_scale_y(), 1, 1));
++    if (!key.source_scale_native && layout_scaled) {
++      // Scaled source in the scaled layout. Restore the subpixel position.
++      // r0.xy = XY pixel position within the source texture
++      a.OpUMAd(dxbc::Dest::R(0, 0b0011), dxbc::Src::R(0),
++               dxbc::Src::LU(layout_scale_x, layout_scale_y, 1, 1),
++               dxbc::Src::R(1));
+     }
++    // With a native source and a scaled layout, the guest pixel position comes
++    // directly from the source texture position, and all the scaled sample
++    // slots covering one guest sample receive its value.
+     // Load the source to r1.
+     // r0.x = X pixel position within the source texture if stencil is needed
+     // r0.y = Y pixel position within the source texture if stencil is needed
+diff --git a/src/xenia/gpu/dxbc_shader_translator.h b/src/xenia/gpu/dxbc_shader_translator.h
+index ce70d3402..00d5207fa 100644
+--- a/src/xenia/gpu/dxbc_shader_translator.h
++++ b/src/xenia/gpu/dxbc_shader_translator.h
+@@ -114,7 +114,7 @@ class DxbcShaderTranslator : public ShaderTranslator {
+     // If anything in this is structure is changed in a way not compatible with
+     // the previous layout, invalidate the pipeline storages by increasing this
+     // version number (0xYYYYMMDD)!
+-    static constexpr uint32_t kVersion = 0x20260803;
++    static constexpr uint32_t kVersion = 0x20260819;
+ 
+     enum class DepthStencilMode : uint32_t {
+       kNoModifiers,
+diff --git a/src/xenia/gpu/dxbc_shader_translator_om.cc b/src/xenia/gpu/dxbc_shader_translator_om.cc
+index 3216ba9cf..6b05a1057 100644
+--- a/src/xenia/gpu/dxbc_shader_translator_om.cc
++++ b/src/xenia/gpu/dxbc_shader_translator_om.cc
+@@ -54,14 +54,119 @@ void DxbcShaderTranslator::StartPixelShader_LoadROVParameters() {
+   in_position_used_ |= 0b0011;
+   a_.OpFToU(dxbc::Dest::R(system_temp_rov_params_, 0b0011),
+             dxbc::Src::V1D(in_reg_ps_position_));
+-  // Convert the position from pixels to samples.
++  // Convert the position from pixels to canonical sample 0 coordinates,
++  // meaning the coordinates of the pixel's sample 0 in the single sampled
++  // view of the EDRAM data. The layout is described in XeEdramOffsetBytes
++  // (see edram.xesli). What matters here is that the offsets of the other
++  // samples from sample 0 are constant, so the sample loops just add them, and
++  // that with resolution scaling the rearrangement happens at guest pixel
++  // granularity.
+   // system_temp_rov_params_.x = X sample 0 position
+   // system_temp_rov_params_.y = Y sample 0 position
+-  a_.OpIShL(
+-      dxbc::Dest::R(system_temp_rov_params_, 0b0011),
+-      dxbc::Src::R(system_temp_rov_params_),
+-      LoadSystemConstant(SystemConstants::Index::kSampleCountLog2,
+-                         offsetof(SystemConstants, sample_count_log2), 0b0100));
++  {
++    uint32_t scale_x = draw_resolution_scale_x_;
++    uint32_t scale_y = draw_resolution_scale_y_;
++    bool resolution_scaled = scale_x > 1 || scale_y > 1;
++    uint32_t guest_pixel_temp = UINT32_MAX;
++    if (resolution_scaled) {
++      guest_pixel_temp = PushSystemTemp();
++    }
++    dxbc::Src guest_x(
++        resolution_scaled
++            ? dxbc::Src::R(guest_pixel_temp, dxbc::Src::kXXXX)
++            : dxbc::Src::R(system_temp_rov_params_, dxbc::Src::kXXXX));
++    dxbc::Src guest_y(
++        resolution_scaled
++            ? dxbc::Src::R(guest_pixel_temp, dxbc::Src::kYYYY)
++            : dxbc::Src::R(system_temp_rov_params_, dxbc::Src::kYYYY));
++    auto emit_guest_pixel_split = [&]() {
++      if (!resolution_scaled) {
++        return;
++      }
++      // guest_pixel_temp.xy = guest pixel
++      // guest_pixel_temp.zw = host subpixel offset
++      a_.OpUDiv(dxbc::Dest::R(guest_pixel_temp, 0b0011),
++                dxbc::Dest::R(guest_pixel_temp, 0b1100),
++                dxbc::Src::R(system_temp_rov_params_, dxbc::Src::kXYXY),
++                dxbc::Src::LU(scale_x, scale_y, scale_x, scale_y));
++    };
++    auto emit_host_pixel_restore = [&]() {
++      if (!resolution_scaled) {
++        return;
++      }
++      a_.OpUMAd(dxbc::Dest::R(system_temp_rov_params_, 0b0011),
++                dxbc::Src::R(system_temp_rov_params_),
++                dxbc::Src::LU(scale_x, scale_y, 1, 1),
++                dxbc::Src::R(guest_pixel_temp, 0b1110));
++    };
++    // Check if 4x MSAA is enabled.
++    a_.OpIf(true,
++            LoadSystemConstant(SystemConstants::Index::kSampleCountLog2,
++                               offsetof(SystemConstants, sample_count_log2),
++                               dxbc::Src::kXXXX));
++    {
++      emit_guest_pixel_split();
++      // system_temp_rov_params_.z = X >> 1
++      a_.OpUShR(dxbc::Dest::R(system_temp_rov_params_, 0b0100), guest_x,
++                dxbc::Src::LU(1));
++      // system_temp_rov_params_.w = X & 1
++      a_.OpAnd(dxbc::Dest::R(system_temp_rov_params_, 0b1000), guest_x,
++               dxbc::Src::LU(1));
++      // system_temp_rov_params_.x = ((X >> 1) << 2) | (X & 1)
++      a_.OpBFI(dxbc::Dest::R(system_temp_rov_params_, 0b0001),
++               dxbc::Src::LU(30), dxbc::Src::LU(2),
++               dxbc::Src::R(system_temp_rov_params_, dxbc::Src::kZZZZ),
++               dxbc::Src::R(system_temp_rov_params_, dxbc::Src::kWWWW));
++      // system_temp_rov_params_.z = Y >> 1
++      a_.OpUShR(dxbc::Dest::R(system_temp_rov_params_, 0b0100), guest_y,
++                dxbc::Src::LU(1));
++      // system_temp_rov_params_.w = Y & 1
++      a_.OpAnd(dxbc::Dest::R(system_temp_rov_params_, 0b1000), guest_y,
++               dxbc::Src::LU(1));
++      // system_temp_rov_params_.y = ((Y >> 1) << 2) | (Y & 1)
++      a_.OpBFI(dxbc::Dest::R(system_temp_rov_params_, 0b0010),
++               dxbc::Src::LU(30), dxbc::Src::LU(2),
++               dxbc::Src::R(system_temp_rov_params_, dxbc::Src::kZZZZ),
++               dxbc::Src::R(system_temp_rov_params_, dxbc::Src::kWWWW));
++      emit_host_pixel_restore();
++    }
++    a_.OpElse();
++    {
++      // Check if 2x MSAA is enabled.
++      a_.OpIf(true,
++              LoadSystemConstant(SystemConstants::Index::kSampleCountLog2,
++                                 offsetof(SystemConstants, sample_count_log2),
++                                 dxbc::Src::kYYYY));
++      {
++        emit_guest_pixel_split();
++        // system_temp_rov_params_.z = X >> 1
++        a_.OpUShR(dxbc::Dest::R(system_temp_rov_params_, 0b0100), guest_x,
++                  dxbc::Src::LU(1));
++        // system_temp_rov_params_.z = Y with bit 1 = X bit 1
++        a_.OpBFI(dxbc::Dest::R(system_temp_rov_params_, 0b0100),
++                 dxbc::Src::LU(1), dxbc::Src::LU(1),
++                 dxbc::Src::R(system_temp_rov_params_, dxbc::Src::kZZZZ),
++                 guest_y);
++        // system_temp_rov_params_.w = Y >> 1
++        a_.OpUShR(dxbc::Dest::R(system_temp_rov_params_, 0b1000), guest_y,
++                  dxbc::Src::LU(1));
++        // system_temp_rov_params_.y = ((Y >> 1) << 2) | (X & 2) | (Y & 1)
++        a_.OpBFI(dxbc::Dest::R(system_temp_rov_params_, 0b0010),
++                 dxbc::Src::LU(30), dxbc::Src::LU(2),
++                 dxbc::Src::R(system_temp_rov_params_, dxbc::Src::kWWWW),
++                 dxbc::Src::R(system_temp_rov_params_, dxbc::Src::kZZZZ));
++        // system_temp_rov_params_.x = X & ~2
++        a_.OpAnd(dxbc::Dest::R(system_temp_rov_params_, 0b0001), guest_x,
++                 dxbc::Src::LU(~uint32_t(2)));
++        emit_host_pixel_restore();
++      }
++      a_.OpEndIf();
++    }
++    a_.OpEndIf();
++    if (resolution_scaled) {
++      PopSystemTemp();
++    }
++  }
+   // For cases of both color and depth:
+   //   Get 40 x 16 x resolution scale 32bpp half-tile or 40x16 64bpp tile index
+   //   to system_temp_rov_params_.zw, and put the sample index within such a
+@@ -362,19 +467,11 @@ void DxbcShaderTranslator::StartPixelShader_LoadROVParameters() {
+                                    offsetof(SystemConstants, sample_count_log2),
+                                    dxbc::Src::kXXXX));
+   {
+-    // Copy the 4x AA coverage to system_temp_rov_params_.x, making top-right
+-    // the sample [2] and bottom-left the sample [1] (the opposite of Direct3D
+-    // 12), because on the Xbox 360, 2x MSAA doubles the storage height, 4x MSAA
+-    // doubles the storage width.
+-    // Flip samples in bits 0:1 to bits 29:30.
+-    a_.OpBFRev(dxbc::Dest::R(system_temp_rov_params_, 0b0001),
+-               dxbc::Src::VCoverage());
+-    a_.OpUShR(dxbc::Dest::R(system_temp_rov_params_, 0b0001),
+-              dxbc::Src::R(system_temp_rov_params_, dxbc::Src::kXXXX),
+-              dxbc::Src::LU(29));
+-    a_.OpBFI(dxbc::Dest::R(system_temp_rov_params_, 0b0001), dxbc::Src::LU(2),
+-             dxbc::Src::LU(1),
+-             dxbc::Src::R(system_temp_rov_params_, dxbc::Src::kXXXX),
++    // Copy the 4x AA coverage to system_temp_rov_params_.x. The guest sample
++    // numbering matches Direct3D 10.1+, bit 0 horizontal and bit 1 vertical,
++    // just like the canonical layout where the horizontal sample bit of a 4x
++    // view selects the horizontally adjacent sample column pair.
++    a_.OpMov(dxbc::Dest::R(system_temp_rov_params_, 0b0001),
+              dxbc::Src::VCoverage());
+   }
+   // Handle 1 or 2 samples.
+@@ -592,7 +689,8 @@ void DxbcShaderTranslator::ROV_DepthStencilTest() {
+         case 1:
+           // - 2x MSAA: Bottom sample -> bottom-right (3) with Direct3D 11's
+           //   ForcedSampleCount 4.
+-          // - 4x MSAA: Bottom-left Xenia sample -> Direct3D 11 sample 2.
++          // - 4x MSAA: Top-right guest sample (the horizontal sample bit is
++          //   bit 0) -> Direct3D 11 sample 1.
+           // Check if 4x MSAA is used.
+           a_.OpIf(true, LoadSystemConstant(
+                             SystemConstants::Index::kSampleCountLog2,
+@@ -605,12 +703,12 @@ void DxbcShaderTranslator::ROV_DepthStencilTest() {
+           // temp.w if late = saturated sample 1 depth at 4x MSAA
+           a_.OpMAd(
+               sample_depth_stencil_dest, z_ddx_src,
+-              dxbc::Src::LF(draw_util::kD3D10StandardSamplePositions4x[2][0] *
++              dxbc::Src::LF(draw_util::kD3D10StandardSamplePositions4x[1][0] *
+                             (1.0f / 16.0f)),
+               temp_z_src);
+           a_.OpMAd(
+               sample_depth_stencil_dest, z_ddy_src,
+-              dxbc::Src::LF(draw_util::kD3D10StandardSamplePositions4x[2][1] *
++              dxbc::Src::LF(draw_util::kD3D10StandardSamplePositions4x[1][1] *
+                             (1.0f / 16.0f)),
+               sample_depth_stencil_src, true);
+           a_.OpElse();
+@@ -632,16 +730,15 @@ void DxbcShaderTranslator::ROV_DepthStencilTest() {
+           a_.OpEndIf();
+           break;
+         default: {
+-          // Xenia samples 2 and 3 (top-right and bottom-right) -> Direct3D 11
+-          // samples 1 and 3.
++          // Guest samples 2 and 3, bottom left and bottom right with the
++          // vertical sample bit being bit 1, map to Direct3D 11 samples 2
++          // and 3.
+           // temp.x if early = ddx(z)
+           // temp.y if early = ddy(z)
+           // temp.z = biased depth in the center
+           // temp.w if late = saturated sample 2 or 3 depth
+           const int8_t* sample_position =
+-              draw_util::kD3D10StandardSamplePositions4x[i ^
+-                                                         (((i & 1) ^ (i >> 1)) *
+-                                                          0b11)];
++              draw_util::kD3D10StandardSamplePositions4x[i];
+           a_.OpMAd(sample_depth_stencil_dest, z_ddx_src,
+                    dxbc::Src::LF(sample_position[0] * (1.0f / 16.0f)),
+                    temp_z_src);
+@@ -1096,15 +1193,30 @@ void DxbcShaderTranslator::ROV_DepthStencilTest() {
+     // Close the sample conditional.
+     a_.OpEndIf();
+ 
+-    // Go to the next sample (samples are at +0, +(80*scale_x), +1,
+-    // +(80*scale_x+1), so need to do +(80*scale_x), -(80*scale_x-1),
+-    // +(80*scale_x) and -(80*scale_x+1) after each sample).
+-    uint32_t tile_width =
+-        xenos::kEdramTileWidthSamples * draw_resolution_scale_x_;
+-    a_.OpIAdd(dxbc::Dest::R(system_temp_rov_params_, 0b0010),
+-              dxbc::Src::R(system_temp_rov_params_, dxbc::Src::kYYYY),
+-              dxbc::Src::LI((i & 1) ? -int32_t(tile_width) + 2 - i
+-                                    : int32_t(tile_width)));
++    // Go to the next sample. The canonical layout puts the samples of a
++    // pixel at +0, +(2*scale_x), +(2*scale_y rows) and +(2*scale_x +
++    // 2*scale_y rows) dwords. So the deltas after each sample are
++    // +(2*scale_x), +(2*scale_y rows - 2*scale_x), +(2*scale_x), and after
++    // the last sample -(2*scale_x + 2*scale_y rows) to restore the sample 0
++    // address.
++    {
++      uint32_t tile_width =
++          xenos::kEdramTileWidthSamples * draw_resolution_scale_x_;
++      int32_t sample_column_delta = int32_t(2 * draw_resolution_scale_x_);
++      int32_t sample_row_delta =
++          int32_t(2 * draw_resolution_scale_y_ * tile_width);
++      int32_t sample_delta;
++      if (!(i & 1)) {
++        sample_delta = sample_column_delta;
++      } else if (i == 1) {
++        sample_delta = sample_row_delta - sample_column_delta;
++      } else {
++        sample_delta = -(sample_row_delta + sample_column_delta);
++      }
++      a_.OpIAdd(dxbc::Dest::R(system_temp_rov_params_, 0b0010),
++                dxbc::Src::R(system_temp_rov_params_, dxbc::Src::kYYYY),
++                dxbc::Src::LI(sample_delta));
++    }
+   }
+ 
+   if (ROV_IsDepthStencilEarly()) {
+@@ -2266,14 +2378,16 @@ void DxbcShaderTranslator::CompletePixelShader_WriteToROV() {
+       }
+       // Close the write check.
+       a_.OpEndIf();
+-      // Go to the next sample (samples are at +0, +(80*scale_x), +1,
+-      // +(80*scale_x+1), so need to do +(80*scale_x), -(80*scale_x-1),
+-      // +(80*scale_x) and -(80*scale_x+1) after each sample).
++      // Go to the next sample, with the same deltas as in the depth sample
++      // loop above, just without restoring the sample 0 address at the end.
+       if (i < 3) {
++        int32_t sample_column_delta = int32_t(2 * draw_resolution_scale_x_);
++        int32_t sample_row_delta =
++            int32_t(2 * draw_resolution_scale_y_ * tile_width);
+         a_.OpIAdd(dxbc::Dest::R(system_temp_rov_params_, 0b0010),
+                   dxbc::Src::R(system_temp_rov_params_, dxbc::Src::kYYYY),
+-                  dxbc::Src::LI((i & 1) ? -int32_t(tile_width) + 2 - i
+-                                        : int32_t(tile_width)));
++                  dxbc::Src::LI((i & 1) ? sample_row_delta - sample_column_delta
++                                        : sample_column_delta));
+       }
+     }
+   } else {
+@@ -3265,29 +3379,31 @@ void DxbcShaderTranslator::CompletePixelShader_WriteToROV() {
+       // Close the sample covered check.
+       a_.OpEndIf();
+ 
+-      // Go to the next sample (samples are at +0, +(80*scale_x), +dwpp,
+-      // +(80*scale_x+dwpp), so need to do +(80*scale_x), -(80*scale_x-dwpp),
+-      // +(80*scale_x) and -(80*scale_x+dwpp) after each sample).
+-      // Though no need to do this for the last sample as for the next render
+-      // target, the address will be recalculated.
++      // Go to the next sample, the same walk as in the depth sample loop,
++      // except the deltas are in sample columns here and a 64bpp sample
++      // column is 2 dwords wide, while a row is 80*scale_x dwords either way.
++      // No need to do this for the last sample as for the next render target,
++      // the address will be recalculated.
+       if (j < 3) {
+-        if (j & 1) {
+-          // temp.z = whether the render target is 64bpp.
+-          a_.OpAnd(temp_z_dest, rt_format_flags_src,
+-                   dxbc::Src::LU(RenderTargetCache::kPSIColorFormatFlag_64bpp));
+-          // temp.z = offset from the current sample to the next.
+-          a_.OpMovC(temp_z_dest, temp_z_src,
+-                    dxbc::Src::LI(-int32_t(tile_width) + 2 * (2 - int32_t(j))),
+-                    dxbc::Src::LI(-int32_t(tile_width) + (2 - int32_t(j))));
+-          // temp.z = free.
+-          a_.OpIAdd(dxbc::Dest::R(system_temp_rov_params_, 0b0010),
+-                    dxbc::Src::R(system_temp_rov_params_, dxbc::Src::kYYYY),
+-                    temp_z_src);
+-        } else {
+-          a_.OpIAdd(dxbc::Dest::R(system_temp_rov_params_, 0b0010),
+-                    dxbc::Src::R(system_temp_rov_params_, dxbc::Src::kYYYY),
+-                    dxbc::Src::LU(tile_width));
+-        }
++        int32_t sample_row_delta =
++            int32_t(2 * draw_resolution_scale_y_ * tile_width);
++        int32_t sample_column_delta_32bpp =
++            int32_t(2 * draw_resolution_scale_x_);
++        int32_t sample_column_delta_64bpp = 2 * sample_column_delta_32bpp;
++        // temp.z = whether the render target is 64bpp.
++        a_.OpAnd(temp_z_dest, rt_format_flags_src,
++                 dxbc::Src::LU(RenderTargetCache::kPSIColorFormatFlag_64bpp));
++        // temp.z = offset from the current sample to the next.
++        a_.OpMovC(
++            temp_z_dest, temp_z_src,
++            dxbc::Src::LI((j & 1) ? sample_row_delta - sample_column_delta_64bpp
++                                  : sample_column_delta_64bpp),
++            dxbc::Src::LI((j & 1) ? sample_row_delta - sample_column_delta_32bpp
++                                  : sample_column_delta_32bpp));
++        // temp.z = free.
++        a_.OpIAdd(dxbc::Dest::R(system_temp_rov_params_, 0b0010),
++                  dxbc::Src::R(system_temp_rov_params_, dxbc::Src::kYYYY),
++                  temp_z_src);
+       }
+     }
+ 
+diff --git a/src/xenia/gpu/shaders/edram.xesli b/src/xenia/gpu/shaders/edram.xesli
+index a306c45fa..bc76ba113 100644
+--- a/src/xenia/gpu/shaders/edram.xesli
++++ b/src/xenia/gpu/shaders/edram.xesli
+@@ -24,12 +24,51 @@ uint XeEdramOffsetBytes(uint2_xe pixel_index, uint base_tiles, bool wrap,
+                         uint pitch_tiles, uint msaa_samples, bool is_depth,
+                         uint format_ints_log2, uint pixel_sample_index,
+                         uint2_xe resolution_scale) {
+-  uint2_xe rt_sample_index =
+-      pixel_index <<
+-      uint2_xe(greater_than_equal_xe(
+-          uint_x2_xe(msaa_samples),
+-          uint2_xe(kXenosMsaaSamples_4X, kXenosMsaaSamples_2X)));
+-  rt_sample_index += (uint_x2_xe(pixel_sample_index) >> uint2_xe(1u, 0u)) & 1u;
++  // Map the pixel and its sample index to canonical sample coordinates.
++  // Views with 1x/2x/4x samples of a single EDRAM allocation have the same
++  // physical samples, just arranged differently in 4x4 sample blocks. This
++  // function, ownership transfer shaders, render target dumping shaders, and
++  // the interlock output code use the following equations.
++  //
++  // u and v as the sample coordinates in the single sampled view:
++  // 4x: u = ((x & ~1) << 1) | (x & 1) | ((s & 1) << 1)
++  //     v = ((y & ~1) << 1) | (y & 1) | (s & 2)
++  // 2x: u = (x & ~2) | (s << 1)
++  //     v = ((y & ~1) << 1) | (y & 1) | (x & 2)
++  //
++  // The bit 0 of 4x sample index is horizontal, and bit 1 is vertical, and
++  // 2x sample 0 is the top one. Some properties of the above equations used by
++  // the layout's users include:
++  // - The offsets of the other samples of a pixel from its sample 0 are
++  //   constant, +2 sample columns for the horizontal (or the only 2x) sample
++  //   bit and +2 sample rows for the vertical one.
++  // - A 64bpp sample is two horizontally adjacent 32bpp sample columns, so a
++  //   32bpp view of a 64bpp allocation has u = 2 * u_64bpp + half, and both
++  //   halves decode to the same sample of two horizontally adjacent pixels in a
++  //   view of any sample count.
++  // - Horizontally adjacent pixels of a multisampled view have no constant
++  //   address stride, the pixel and sample bits are interleaved.
++  //
++  // Titles use the layout when purposedly aliasing memory, such as 5841125E
++  // drawing half-res 4x particles over full-res scenes with swizzle shaders
++  // designed around it and resolve downscaling relying on this sample grouping.
++  //
++  // With resolution scaling, the rearrangement is carried out at guest pixel
++  // granularity, while the host subpixel offset is carried along unchanged.
++  uint2_xe pixel = pixel_index / resolution_scale;
++  uint2_xe subpixel = pixel_index - pixel * resolution_scale;
++  uint2_xe guest_sample;
++  if (msaa_samples >= kXenosMsaaSamples_4X) {
++    uint2_xe sample_offset =
++        (uint_x2_xe(pixel_sample_index) >> uint2_xe(0u, 1u)) & 1u;
++    guest_sample = ((pixel & ~1u) << 1u) | (pixel & 1u) | (sample_offset << 1u);
++  } else if (msaa_samples == kXenosMsaaSamples_2X) {
++    guest_sample.x = (pixel.x & ~2u) | ((pixel_sample_index & 1u) << 1u);
++    guest_sample.y = ((pixel.y & ~1u) << 1u) | (pixel.y & 1u) | (pixel.x & 2u);
++  } else {
++    guest_sample = pixel;
++  }
++  uint2_xe rt_sample_index = guest_sample * resolution_scale + subpixel;
+   // For now, while the actual storage of 64bpp render targets in comparison to
+   // 32bpp is not known, storing 40x16 64bpp samples per tile for simplicity of
+   // addressing in different scenarios.
+diff --git a/src/xenia/gpu/shaders/resolve.xesli b/src/xenia/gpu/shaders/resolve.xesli
+index 5a2e0f22a..9df55f2ff 100644
+--- a/src/xenia/gpu/shaders/resolve.xesli
++++ b/src/xenia/gpu/shaders/resolve.xesli
+@@ -161,10 +161,6 @@ XeResolveInfo XeResolveGetInfo(param_push_consts_xe) {
+   return resolve_info;
+ }
+ 
+-uint XeResolveEdramPixelStrideBytes(XeResolveInfo resolve_info) {
+-  return 4u << (resolve_info.edram_format_ints_log2 +
+-                uint(resolve_info.edram_msaa_samples >= kXenosMsaaSamples_4X));
+-}
+ 
+ #ifndef XE_RESOLVE_CLEAR
+   uint XeResolveDestPixelAddress(const XeResolveInfo resolve_info,
+@@ -237,22 +233,39 @@ uint XeResolveEdramPixelStrideBytes(XeResolveInfo resolve_info) {
+     return sample_index;
+   }
+ 
+-  // Offset to the first sample to participate in averaging (or the sample to be
+-  // copied if not averaging).
+-  uint XeResolveColorCopySourcePixelAddressBytesYHalfPixelOffsetFilling(
+-      XeResolveInfo resolve_info, uint2_xe pixel_index) {
++  // Byte address of the first needed sample for non-averaging copies.
++  // Horizontally adjacent pixels of a multisampled source don't have a fixed
++  // address stride in the sample layout (see XeEdramOffsetBytes), thus each
++  // pixel computes its own address.
++  uint XeResolveCopySourceFirstSampleAddressBytes(XeResolveInfo resolve_info,
++                                                  uint2_xe pixel_index) {
+     return XeEdramOffsetBytes(
+         uint2_xe(pixel_index.x,
+                  max(pixel_index.y,
+                      resolve_info.half_pixel_offset_fill_source.y)) +
+             resolve_info.edram_offset_scaled,
+         resolve_info.edram_base_tiles, true, resolve_info.edram_pitch_tiles,
+-        resolve_info.edram_msaa_samples, false,
++        resolve_info.edram_msaa_samples, resolve_info.edram_is_depth,
+         resolve_info.edram_format_ints_log2,
+         XeResolveFirstSampleIndex(resolve_info.sample_select),
+         resolve_info.resolution_scale);
+   }
+ 
++  // Byte address for a given pixel and sample pair, per pixel for the same
++  // reason as above.
++  uint XeResolveColorCopySourceSampleAddressBytes(
++      XeResolveInfo resolve_info, uint2_xe pixel_index, uint sample_index) {
++    return XeEdramOffsetBytes(
++        uint2_xe(pixel_index.x,
++                 max(pixel_index.y,
++                     resolve_info.half_pixel_offset_fill_source.y)) +
++            resolve_info.edram_offset_scaled,
++        resolve_info.edram_base_tiles, true, resolve_info.edram_pitch_tiles,
++        resolve_info.edram_msaa_samples, false,
++        resolve_info.edram_format_ints_log2, sample_index,
++        resolve_info.resolution_scale);
++  }
++
+   // Not using arrays for multi-pixel function arguments because indexable temps
+   // are generated for them by FXC, that may be compiled unoptimally by the host
+   // GPU driver.
+@@ -529,112 +542,83 @@ uint XeResolveEdramPixelStrideBytes(XeResolveInfo resolve_info) {
+   #if XE_RESOLVE_COPY_EDRAM_BYTE_BUFFER_ALIGNMENT == 4
+     void XeResolveLoad2RGBAUnswappedPixelSamplesFromRaw(
+         param_byte_buffer_xe(xe_resolve_edram) param_next_after_byte_buffer_xe
+-        uint sample_address_bytes, uint pixel_stride_bytes,
+-        uint format_ints_log2, uint format, out_param_xe(float4_xe, pixel_0),
+-        out_param_xe(float4_xe, pixel_1)) {
++        uint2_xe sample_addresses_bytes, uint format_ints_log2, uint format,
++        out_param_xe(float4_xe, pixel_0), out_param_xe(float4_xe, pixel_1)) {
+       dont_flatten_xe if (format_ints_log2 != 0u) {
+         uint4_xe packed;
+-        dont_flatten_xe if (pixel_stride_bytes == 8u) {
+-          packed = byte_buffer_align4_load16u_xe(
+-              xe_resolve_edram, sample_address_bytes);
+-        } else {
+-          packed.xy = byte_buffer_align4_load8u_xe(
+-              xe_resolve_edram, sample_address_bytes);
+-          packed.zw = byte_buffer_align4_load8u_xe(
+-              xe_resolve_edram, sample_address_bytes + pixel_stride_bytes);
+-        }
++        packed.xy = byte_buffer_align4_load8u_xe(xe_resolve_edram,
++                                                 sample_addresses_bytes.x);
++        packed.zw = byte_buffer_align4_load8u_xe(xe_resolve_edram,
++                                                 sample_addresses_bytes.y);
+         XeResolveUnpack64bpp2Samples(packed, format, pixel_0, pixel_1);
+       } else {
+         uint2_xe packed;
+-        dont_flatten_xe if (pixel_stride_bytes == 4u) {
+-          packed = byte_buffer_align4_load8u_xe(
+-              xe_resolve_edram, sample_address_bytes);
+-        } else {
+-          packed.x = byte_buffer_align4_load4_xe(
+-              xe_resolve_edram, sample_address_bytes);
+-          packed.y = byte_buffer_align4_load4_xe(
+-              xe_resolve_edram, sample_address_bytes + pixel_stride_bytes);
+-        }
++        packed.x = byte_buffer_align4_load4_xe(xe_resolve_edram,
++                                               sample_addresses_bytes.x);
++        packed.y = byte_buffer_align4_load4_xe(xe_resolve_edram,
++                                               sample_addresses_bytes.y);
+         XeResolveUnpack32bpp2Samples(packed, format, pixel_0, pixel_1);
+       }
+     }
+ 
+     void XeResolveLoad4RGBAUnswappedPixelSamplesFromRaw(
+         param_byte_buffer_xe(xe_resolve_edram) param_next_after_byte_buffer_xe
+-        uint sample_address_bytes, uint pixel_stride_bytes,
+-        uint format_ints_log2, uint format, out_param_xe(float4_xe, pixel_0),
+-        out_param_xe(float4_xe, pixel_1), out_param_xe(float4_xe, pixel_2),
+-        out_param_xe(float4_xe, pixel_3)) {
++        uint4_xe sample_addresses_bytes, uint format_ints_log2, uint format,
++        out_param_xe(float4_xe, pixel_0), out_param_xe(float4_xe, pixel_1),
++        out_param_xe(float4_xe, pixel_2), out_param_xe(float4_xe, pixel_3)) {
+       dont_flatten_xe if (format_ints_log2 != 0u) {
+         uint4_xe packed_01, packed_23;
+-        dont_flatten_xe if (pixel_stride_bytes == 8u) {
+-          packed_01 = byte_buffer_align4_load16u_xe(
+-              xe_resolve_edram, sample_address_bytes);
+-          packed_23 = byte_buffer_align4_load16u_xe(
+-              xe_resolve_edram, sample_address_bytes + 16u);
+-        } else {
+-          packed_01.xy = byte_buffer_align4_load8u_xe(
+-              xe_resolve_edram, sample_address_bytes);
+-          packed_01.zw = byte_buffer_align4_load8u_xe(
+-              xe_resolve_edram, sample_address_bytes + pixel_stride_bytes);
+-          packed_23.xy = byte_buffer_align4_load8u_xe(
+-              xe_resolve_edram, sample_address_bytes + 2u * pixel_stride_bytes);
+-          packed_23.zw = byte_buffer_align4_load8u_xe(
+-              xe_resolve_edram, sample_address_bytes + 3u * pixel_stride_bytes);
+-        }
++        packed_01.xy = byte_buffer_align4_load8u_xe(xe_resolve_edram,
++                                                    sample_addresses_bytes.x);
++        packed_01.zw = byte_buffer_align4_load8u_xe(xe_resolve_edram,
++                                                    sample_addresses_bytes.y);
++        packed_23.xy = byte_buffer_align4_load8u_xe(xe_resolve_edram,
++                                                    sample_addresses_bytes.z);
++        packed_23.zw = byte_buffer_align4_load8u_xe(xe_resolve_edram,
++                                                    sample_addresses_bytes.w);
+         XeResolveUnpack64bpp4Samples(packed_01, packed_23, format, pixel_0,
+                                      pixel_1, pixel_2, pixel_3);
+       } else {
+         uint4_xe packed;
+-        dont_flatten_xe if (pixel_stride_bytes == 4u) {
+-          packed = byte_buffer_align4_load16u_xe(
+-              xe_resolve_edram, sample_address_bytes);
+-        } else {
+-          packed.x = byte_buffer_align4_load4_xe(
+-              xe_resolve_edram, sample_address_bytes);
+-          packed.y = byte_buffer_align4_load4_xe(
+-              xe_resolve_edram, sample_address_bytes + pixel_stride_bytes);
+-          packed.z = byte_buffer_align4_load4_xe(
+-              xe_resolve_edram, sample_address_bytes + 2u * pixel_stride_bytes);
+-          packed.w = byte_buffer_align4_load4_xe(
+-              xe_resolve_edram, sample_address_bytes + 3u * pixel_stride_bytes);
+-        }
++        packed.x = byte_buffer_align4_load4_xe(xe_resolve_edram,
++                                               sample_addresses_bytes.x);
++        packed.y = byte_buffer_align4_load4_xe(xe_resolve_edram,
++                                               sample_addresses_bytes.y);
++        packed.z = byte_buffer_align4_load4_xe(xe_resolve_edram,
++                                               sample_addresses_bytes.z);
++        packed.w = byte_buffer_align4_load4_xe(xe_resolve_edram,
++                                               sample_addresses_bytes.w);
+         XeResolveUnpack32bpp4Samples(packed, format, pixel_0, pixel_1, pixel_2,
+                                      pixel_3);
+       }
+     }
+ 
++    // For 64bpp blue/alpha channels, offsets address by 4 bytes to reach
++    // the high dword.
+     void XeResolveLoad8ScalarPixelSamplesFromRaw(
+         param_byte_buffer_xe(xe_resolve_edram) param_next_after_byte_buffer_xe
+-        uint sample_address_bytes, uint pixel_stride_bytes,
+-        uint format_ints_log2, uint format, bool source_blue,
+-        bool source_alpha,
++        uint4_xe sample_addresses_0123_bytes,
++        uint4_xe sample_addresses_4567_bytes, uint format_ints_log2,
++        uint format, bool source_blue, bool source_alpha,
+         out_param_xe(float4_xe, pixels_0123),
+         out_param_xe(float4_xe, pixels_4567)) {
+       uint4_xe packed_0123, packed_4567;
+-      dont_flatten_xe if (pixel_stride_bytes == 4u) {
+-        packed_0123 = byte_buffer_align4_load16u_xe(
+-            xe_resolve_edram, sample_address_bytes);
+-        packed_4567 = byte_buffer_align4_load16u_xe(
+-            xe_resolve_edram, sample_address_bytes + 16u);
+-      } else {
+-        packed_0123.x = byte_buffer_align4_load4_xe(
+-            xe_resolve_edram, sample_address_bytes);
+-        packed_0123.y = byte_buffer_align4_load4_xe(
+-            xe_resolve_edram, sample_address_bytes + pixel_stride_bytes);
+-        packed_0123.z = byte_buffer_align4_load4_xe(
+-            xe_resolve_edram, sample_address_bytes + 2u * pixel_stride_bytes);
+-        packed_0123.w = byte_buffer_align4_load4_xe(
+-            xe_resolve_edram, sample_address_bytes + 3u * pixel_stride_bytes);
+-        packed_4567.x = byte_buffer_align4_load4_xe(
+-            xe_resolve_edram, sample_address_bytes + 4u * pixel_stride_bytes);
+-        packed_4567.y = byte_buffer_align4_load4_xe(
+-            xe_resolve_edram, sample_address_bytes + 5u * pixel_stride_bytes);
+-        packed_4567.z = byte_buffer_align4_load4_xe(
+-            xe_resolve_edram, sample_address_bytes + 6u * pixel_stride_bytes);
+-        packed_4567.w = byte_buffer_align4_load4_xe(
+-            xe_resolve_edram, sample_address_bytes + 7u * pixel_stride_bytes);
+-      }
++      packed_0123.x = byte_buffer_align4_load4_xe(
++          xe_resolve_edram, sample_addresses_0123_bytes.x);
++      packed_0123.y = byte_buffer_align4_load4_xe(
++          xe_resolve_edram, sample_addresses_0123_bytes.y);
++      packed_0123.z = byte_buffer_align4_load4_xe(
++          xe_resolve_edram, sample_addresses_0123_bytes.z);
++      packed_0123.w = byte_buffer_align4_load4_xe(
++          xe_resolve_edram, sample_addresses_0123_bytes.w);
++      packed_4567.x = byte_buffer_align4_load4_xe(
++          xe_resolve_edram, sample_addresses_4567_bytes.x);
++      packed_4567.y = byte_buffer_align4_load4_xe(
++          xe_resolve_edram, sample_addresses_4567_bytes.y);
++      packed_4567.z = byte_buffer_align4_load4_xe(
++          xe_resolve_edram, sample_addresses_4567_bytes.z);
++      packed_4567.w = byte_buffer_align4_load4_xe(
++          xe_resolve_edram, sample_addresses_4567_bytes.w);
+       dont_flatten_xe if (format_ints_log2 != 0u) {
+         XeResolveUnpack64bpp8ScalarSamples(packed_0123, packed_4567, format,
+                                            source_alpha, pixels_0123,
+@@ -741,27 +725,37 @@ uint XeResolveEdramPixelStrideBytes(XeResolveInfo resolve_info) {
+       }
+     }
+ 
++    uint2_xe XeResolveColorCopySource2SampleAddressesBytes(
++        XeResolveInfo resolve_info, uint2_xe pixel_index, uint sample_index) {
++      return uint2_xe(
++          XeResolveColorCopySourceSampleAddressBytes(
++              resolve_info, pixel_index, sample_index),
++          XeResolveColorCopySourceSampleAddressBytes(
++              resolve_info, pixel_index + uint2_xe(1u, 0u), sample_index));
++    }
++
+     void XeResolveLoad2RGBAColors(
+         param_byte_buffer_xe(xe_resolve_edram) param_next_after_byte_buffer_xe
+-        XeResolveInfo resolve_info, uint address_bytes,
++        XeResolveInfo resolve_info, uint2_xe pixel_index,
+         out_param_xe(float4_xe, pixel_0), out_param_xe(float4_xe, pixel_1)) {
+-      uint pixel_stride_bytes = XeResolveEdramPixelStrideBytes(resolve_info);
++      uint first_sample = XeResolveFirstSampleIndex(resolve_info.sample_select);
+       XeResolveLoad2RGBAUnswappedPixelSamplesFromRaw(
+           pass_byte_buffer_xe(xe_resolve_edram) pass_next_after_byte_buffer_xe
+-          address_bytes, pixel_stride_bytes,
+-          resolve_info.edram_format_ints_log2, resolve_info.edram_format,
+-          pixel_0, pixel_1);
++          XeResolveColorCopySource2SampleAddressesBytes(
++              resolve_info, pixel_index, first_sample),
++              resolve_info.edram_format_ints_log2, resolve_info.edram_format,
++              pixel_0, pixel_1);
+       XeResolveDecodePWLGammaSource(resolve_info, pixel_0);
+       XeResolveDecodePWLGammaSource(resolve_info, pixel_1);
+       float exp_bias = resolve_info.dest_exp_bias_factor;
+       dont_flatten_xe
+       if (resolve_info.sample_select >= kXenosCopySampleSelect_01) {
+-        uint tile_row_stride_bytes = 4u * 80u * resolve_info.resolution_scale.x;
+         exp_bias *= 0.5f;
+         float4_xe msaa_resolve_pixel_0, msaa_resolve_pixel_1;
+         XeResolveLoad2RGBAUnswappedPixelSamplesFromRaw(
+             pass_byte_buffer_xe(xe_resolve_edram) pass_next_after_byte_buffer_xe
+-            address_bytes + tile_row_stride_bytes, pixel_stride_bytes,
++            XeResolveColorCopySource2SampleAddressesBytes(
++                resolve_info, pixel_index, first_sample | 1u),
+             resolve_info.edram_format_ints_log2, resolve_info.edram_format,
+             msaa_resolve_pixel_0, msaa_resolve_pixel_1);
+         XeResolveDecodePWLGammaSource(resolve_info, msaa_resolve_pixel_0);
+@@ -770,14 +764,15 @@ uint XeResolveEdramPixelStrideBytes(XeResolveInfo resolve_info) {
+         pixel_1 += msaa_resolve_pixel_1;
+         dont_flatten_xe
+         if (resolve_info.sample_select >= kXenosCopySampleSelect_0123) {
+-          uint sample_stride_bytes = 4u << resolve_info.edram_format_ints_log2;
+           exp_bias *= 0.5f;
+           XeResolveLoad2RGBAUnswappedPixelSamplesFromRaw(
+               pass_byte_buffer_xe(xe_resolve_edram)
+               pass_next_after_byte_buffer_xe
+-              address_bytes + sample_stride_bytes, pixel_stride_bytes,
+-              resolve_info.edram_format_ints_log2, resolve_info.edram_format,
+-              msaa_resolve_pixel_0, msaa_resolve_pixel_1);
++              XeResolveColorCopySource2SampleAddressesBytes(
++                  resolve_info, pixel_index, 2u),
++                  resolve_info.edram_format_ints_log2,
++                  resolve_info.edram_format, msaa_resolve_pixel_0,
++                  msaa_resolve_pixel_1);
+           XeResolveDecodePWLGammaSource(resolve_info, msaa_resolve_pixel_0);
+           XeResolveDecodePWLGammaSource(resolve_info, msaa_resolve_pixel_1);
+           pixel_0 += msaa_resolve_pixel_0;
+@@ -785,10 +780,11 @@ uint XeResolveEdramPixelStrideBytes(XeResolveInfo resolve_info) {
+           XeResolveLoad2RGBAUnswappedPixelSamplesFromRaw(
+               pass_byte_buffer_xe(xe_resolve_edram)
+               pass_next_after_byte_buffer_xe
+-              address_bytes + tile_row_stride_bytes + sample_stride_bytes,
+-              pixel_stride_bytes, resolve_info.edram_format_ints_log2,
+-              resolve_info.edram_format, msaa_resolve_pixel_0,
+-              msaa_resolve_pixel_1);
++              XeResolveColorCopySource2SampleAddressesBytes(
++                  resolve_info, pixel_index, 3u),
++                  resolve_info.edram_format_ints_log2,
++                  resolve_info.edram_format, msaa_resolve_pixel_0,
++                  msaa_resolve_pixel_1);
+           XeResolveDecodePWLGammaSource(resolve_info, msaa_resolve_pixel_0);
+           XeResolveDecodePWLGammaSource(resolve_info, msaa_resolve_pixel_1);
+           pixel_0 += msaa_resolve_pixel_0;
+@@ -803,15 +799,29 @@ uint XeResolveEdramPixelStrideBytes(XeResolveInfo resolve_info) {
+       }
+     }
+ 
++    uint4_xe XeResolveColorCopySource4SampleAddressesBytes(
++        XeResolveInfo resolve_info, uint2_xe pixel_index, uint sample_index) {
++      return uint4_xe(
++          XeResolveColorCopySourceSampleAddressBytes(resolve_info, pixel_index,
++                                                     sample_index),
++          XeResolveColorCopySourceSampleAddressBytes(
++              resolve_info, pixel_index + uint2_xe(1u, 0u), sample_index),
++          XeResolveColorCopySourceSampleAddressBytes(
++              resolve_info, pixel_index + uint2_xe(2u, 0u), sample_index),
++          XeResolveColorCopySourceSampleAddressBytes(
++              resolve_info, pixel_index + uint2_xe(3u, 0u), sample_index));
++    }
++
+     void XeResolveLoad4RGBAColors(
+         param_byte_buffer_xe(xe_resolve_edram) param_next_after_byte_buffer_xe
+-        XeResolveInfo resolve_info, uint address_bytes,
++        XeResolveInfo resolve_info, uint2_xe pixel_index,
+         out_param_xe(float4_xe, pixel_0), out_param_xe(float4_xe, pixel_1),
+         out_param_xe(float4_xe, pixel_2), out_param_xe(float4_xe, pixel_3)) {
+-      uint pixel_stride_bytes = XeResolveEdramPixelStrideBytes(resolve_info);
++      uint first_sample = XeResolveFirstSampleIndex(resolve_info.sample_select);
+       XeResolveLoad4RGBAUnswappedPixelSamplesFromRaw(
+           pass_byte_buffer_xe(xe_resolve_edram) pass_next_after_byte_buffer_xe
+-          address_bytes, pixel_stride_bytes,
++          XeResolveColorCopySource4SampleAddressesBytes(
++              resolve_info, pixel_index, first_sample),
+           resolve_info.edram_format_ints_log2, resolve_info.edram_format,
+           pixel_0, pixel_1, pixel_2, pixel_3);
+       XeResolveDecodePWLGammaSource(resolve_info, pixel_0);
+@@ -821,7 +831,6 @@ uint XeResolveEdramPixelStrideBytes(XeResolveInfo resolve_info) {
+       float exp_bias = resolve_info.dest_exp_bias_factor;
+       dont_flatten_xe
+       if (resolve_info.sample_select >= kXenosCopySampleSelect_01) {
+-        uint tile_row_stride_bytes = 4u * 80u * resolve_info.resolution_scale.x;
+         exp_bias *= 0.5f;
+         float4_xe msaa_resolve_pixel_0;
+         float4_xe msaa_resolve_pixel_1;
+@@ -829,7 +838,8 @@ uint XeResolveEdramPixelStrideBytes(XeResolveInfo resolve_info) {
+         float4_xe msaa_resolve_pixel_3;
+         XeResolveLoad4RGBAUnswappedPixelSamplesFromRaw(
+             pass_byte_buffer_xe(xe_resolve_edram) pass_next_after_byte_buffer_xe
+-            address_bytes + tile_row_stride_bytes, pixel_stride_bytes,
++            XeResolveColorCopySource4SampleAddressesBytes(
++                resolve_info, pixel_index, first_sample | 1u),
+             resolve_info.edram_format_ints_log2, resolve_info.edram_format,
+             msaa_resolve_pixel_0, msaa_resolve_pixel_1, msaa_resolve_pixel_2,
+             msaa_resolve_pixel_3);
+@@ -843,12 +853,12 @@ uint XeResolveEdramPixelStrideBytes(XeResolveInfo resolve_info) {
+         pixel_3 += msaa_resolve_pixel_3;
+         dont_flatten_xe
+         if (resolve_info.sample_select >= kXenosCopySampleSelect_0123) {
+-          uint sample_stride_bytes = 4u << resolve_info.edram_format_ints_log2;
+           exp_bias *= 0.5f;
+           XeResolveLoad4RGBAUnswappedPixelSamplesFromRaw(
+               pass_byte_buffer_xe(xe_resolve_edram)
+               pass_next_after_byte_buffer_xe
+-              address_bytes + sample_stride_bytes, pixel_stride_bytes,
++              XeResolveColorCopySource4SampleAddressesBytes(resolve_info,
++                                                            pixel_index, 2u),
+               resolve_info.edram_format_ints_log2, resolve_info.edram_format,
+               msaa_resolve_pixel_0, msaa_resolve_pixel_1, msaa_resolve_pixel_2,
+               msaa_resolve_pixel_3);
+@@ -863,10 +873,12 @@ uint XeResolveEdramPixelStrideBytes(XeResolveInfo resolve_info) {
+           XeResolveLoad4RGBAUnswappedPixelSamplesFromRaw(
+               pass_byte_buffer_xe(xe_resolve_edram)
+               pass_next_after_byte_buffer_xe
+-              address_bytes + tile_row_stride_bytes + sample_stride_bytes,
+-              pixel_stride_bytes, resolve_info.edram_format_ints_log2,
+-              resolve_info.edram_format, msaa_resolve_pixel_0,
+-              msaa_resolve_pixel_1, msaa_resolve_pixel_2, msaa_resolve_pixel_3);
++              XeResolveColorCopySource4SampleAddressesBytes(
++                  resolve_info, pixel_index, 3u),
++                  resolve_info.edram_format_ints_log2,
++                  resolve_info.edram_format, msaa_resolve_pixel_0,
++                  msaa_resolve_pixel_1, msaa_resolve_pixel_2,
++                  msaa_resolve_pixel_3);
+           XeResolveDecodePWLGammaSource(resolve_info, msaa_resolve_pixel_0);
+           XeResolveDecodePWLGammaSource(resolve_info, msaa_resolve_pixel_1);
+           XeResolveDecodePWLGammaSource(resolve_info, msaa_resolve_pixel_2);
+@@ -889,9 +901,34 @@ uint XeResolveEdramPixelStrideBytes(XeResolveInfo resolve_info) {
+       }
+     }
+ 
++    void XeResolveLoad8ScalarSamples(
++        param_byte_buffer_xe(xe_resolve_edram) param_next_after_byte_buffer_xe
++        XeResolveInfo resolve_info, uint2_xe pixel_index, uint sample_index,
++        uint address_adjustment_bytes, bool source_blue, bool source_alpha,
++        bool decode_pwl_gamma, out_param_xe(float4_xe, pixels_0123),
++        out_param_xe(float4_xe, pixels_4567)) {
++      uint4_xe addresses_0123 =
++          XeResolveColorCopySource4SampleAddressesBytes(
++              resolve_info, pixel_index, sample_index) +
++              address_adjustment_bytes;
++      uint4_xe addresses_4567 =
++          XeResolveColorCopySource4SampleAddressesBytes(
++              resolve_info, pixel_index + uint2_xe(4u, 0u), sample_index) +
++          address_adjustment_bytes;
++      XeResolveLoad8ScalarPixelSamplesFromRaw(
++          pass_byte_buffer_xe(xe_resolve_edram) pass_next_after_byte_buffer_xe
++          addresses_0123, addresses_4567,
++          resolve_info.edram_format_ints_log2, resolve_info.edram_format,
++          source_blue, source_alpha, pixels_0123, pixels_4567);
++      dont_flatten_xe if (decode_pwl_gamma) {
++        pixels_0123 = XePWLGammaToLinear4(pixels_0123);
++        pixels_4567 = XePWLGammaToLinear4(pixels_4567);
++      }
++    }
++
+     void XeResolveLoad8ScalarColors(
+         param_byte_buffer_xe(xe_resolve_edram) param_next_after_byte_buffer_xe
+-        XeResolveInfo resolve_info, uint address_bytes,
++        XeResolveInfo resolve_info, uint2_xe pixel_index,
+         out_param_xe(float4_xe, pixels_0123),
+         out_param_xe(float4_xe, pixels_4567)) {
+       // D3D maps A8 to k_8 with LOW_BLUE.
+@@ -899,77 +936,52 @@ uint XeResolveEdramPixelStrideBytes(XeResolveInfo resolve_info) {
+       bool source_alpha =
+           resolve_info.dest_swap && resolve_info.dest_format == kXenosFormat_8;
+       bool source_blue = resolve_info.dest_swap && !source_alpha;
+-      uint pixel_stride_bytes = XeResolveEdramPixelStrideBytes(resolve_info);
++      uint address_adjustment_bytes = 0u;
+       if ((source_blue || source_alpha) &&
+           resolve_info.edram_format_ints_log2 != 0u) {
+         // The second dword of each 64bpp pixel holds blue and alpha.
+-        address_bytes += 4u;
++        address_adjustment_bytes = 4u;
+       }
+       // PWL encoding of 8_8_8_8_GAMMA only covers RGB. Alpha is stored as fixed
+       // data, so it's not decoded.
+       bool decode_pwl_gamma =
+           XeResolveSourceUsesPWLGamma(resolve_info) && !source_alpha;
+-      XeResolveLoad8ScalarPixelSamplesFromRaw(
++      uint first_sample = XeResolveFirstSampleIndex(resolve_info.sample_select);
++      XeResolveLoad8ScalarSamples(
+           pass_byte_buffer_xe(xe_resolve_edram) pass_next_after_byte_buffer_xe
+-          address_bytes, pixel_stride_bytes,
+-          resolve_info.edram_format_ints_log2, resolve_info.edram_format,
+-          source_blue, source_alpha, pixels_0123, pixels_4567);
+-      dont_flatten_xe if (decode_pwl_gamma) {
+-        pixels_0123 = XePWLGammaToLinear4(pixels_0123);
+-        pixels_4567 = XePWLGammaToLinear4(pixels_4567);
+-      }
++          resolve_info, pixel_index, first_sample, address_adjustment_bytes,
++          source_blue, source_alpha, decode_pwl_gamma, pixels_0123,
++          pixels_4567);
+       float exp_bias = resolve_info.dest_exp_bias_factor;
+       dont_flatten_xe
+       if (resolve_info.sample_select >= kXenosCopySampleSelect_01) {
+-        uint tile_row_stride_bytes = 4u * 80u * resolve_info.resolution_scale.x;
+         exp_bias *= 0.5f;
+         float4_xe msaa_resolve_pixels_0123, msaa_resolve_pixels_4567;
+-        XeResolveLoad8ScalarPixelSamplesFromRaw(
++        XeResolveLoad8ScalarSamples(
+             pass_byte_buffer_xe(xe_resolve_edram) pass_next_after_byte_buffer_xe
+-            address_bytes + tile_row_stride_bytes, pixel_stride_bytes,
+-            resolve_info.edram_format_ints_log2, resolve_info.edram_format,
+-            source_blue, source_alpha, msaa_resolve_pixels_0123,
++            resolve_info, pixel_index, first_sample | 1u,
++            address_adjustment_bytes, source_blue, source_alpha,
++            decode_pwl_gamma, msaa_resolve_pixels_0123,
+             msaa_resolve_pixels_4567);
+-        dont_flatten_xe if (decode_pwl_gamma) {
+-          msaa_resolve_pixels_0123 =
+-              XePWLGammaToLinear4(msaa_resolve_pixels_0123);
+-          msaa_resolve_pixels_4567 =
+-              XePWLGammaToLinear4(msaa_resolve_pixels_4567);
+-        }
+         pixels_0123 += msaa_resolve_pixels_0123;
+         pixels_4567 += msaa_resolve_pixels_4567;
+         dont_flatten_xe
+         if (resolve_info.sample_select >= kXenosCopySampleSelect_0123) {
+-          uint sample_stride_bytes = 4u << resolve_info.edram_format_ints_log2;
+           exp_bias *= 0.5f;
+-          XeResolveLoad8ScalarPixelSamplesFromRaw(
++          XeResolveLoad8ScalarSamples(
+               pass_byte_buffer_xe(xe_resolve_edram)
+               pass_next_after_byte_buffer_xe
+-              address_bytes + sample_stride_bytes, pixel_stride_bytes,
+-              resolve_info.edram_format_ints_log2, resolve_info.edram_format,
+-              source_blue, source_alpha, msaa_resolve_pixels_0123,
+-              msaa_resolve_pixels_4567);
+-          dont_flatten_xe if (decode_pwl_gamma) {
+-            msaa_resolve_pixels_0123 =
+-                XePWLGammaToLinear4(msaa_resolve_pixels_0123);
+-            msaa_resolve_pixels_4567 =
+-                XePWLGammaToLinear4(msaa_resolve_pixels_4567);
+-          }
++              resolve_info, pixel_index, 2u, address_adjustment_bytes,
++              source_blue, source_alpha, decode_pwl_gamma,
++              msaa_resolve_pixels_0123, msaa_resolve_pixels_4567);
+           pixels_0123 += msaa_resolve_pixels_0123;
+           pixels_4567 += msaa_resolve_pixels_4567;
+-          XeResolveLoad8ScalarPixelSamplesFromRaw(
++          XeResolveLoad8ScalarSamples(
+               pass_byte_buffer_xe(xe_resolve_edram)
+               pass_next_after_byte_buffer_xe
+-              address_bytes + tile_row_stride_bytes + sample_stride_bytes,
+-              pixel_stride_bytes, resolve_info.edram_format_ints_log2,
+-              resolve_info.edram_format, source_blue, source_alpha,
++              resolve_info, pixel_index, 3u, address_adjustment_bytes,
++              source_blue, source_alpha, decode_pwl_gamma,
+               msaa_resolve_pixels_0123, msaa_resolve_pixels_4567);
+-          dont_flatten_xe if (decode_pwl_gamma) {
+-            msaa_resolve_pixels_0123 =
+-                XePWLGammaToLinear4(msaa_resolve_pixels_0123);
+-            msaa_resolve_pixels_4567 =
+-                XePWLGammaToLinear4(msaa_resolve_pixels_4567);
+-          }
+           pixels_0123 += msaa_resolve_pixels_0123;
+           pixels_4567 += msaa_resolve_pixels_4567;
+         }
+diff --git a/src/xenia/gpu/shaders/resolve_fast_32bpp_1x2xmsaa.xesli b/src/xenia/gpu/shaders/resolve_fast_32bpp_1x2xmsaa.xesli
+index 06a49a13e..df65ebdb6 100644
+--- a/src/xenia/gpu/shaders/resolve_fast_32bpp_1x2xmsaa.xesli
++++ b/src/xenia/gpu/shaders/resolve_fast_32bpp_1x2xmsaa.xesli
+@@ -8,7 +8,7 @@
+  */
+ 
+ #include "endian.xesli"
+-#define XE_RESOLVE_COPY_EDRAM_BYTE_BUFFER_ALIGNMENT 16
++#define XE_RESOLVE_COPY_EDRAM_BYTE_BUFFER_ALIGNMENT 4
+ #include "resolve.xesli"
+ 
+ byte_buffer_align16_wo_declare_xe(xe_resolve_dest, set=1, binding=0, u0, space0)
+@@ -33,19 +33,52 @@ entry_inputs_end_code_begin_compute_xe
+     return;
+   }
+   uint2_xe pixel_index = in_global_thread_id_xe.xy << uint2_xe(3u, 0u);
+-  uint source_address = XeEdramOffsetBytes(
+-      uint2_xe(pixel_index.x,
+-               max(pixel_index.y,
+-                   resolve_info.half_pixel_offset_fill_source.y)) +
+-          resolve_info.edram_offset_scaled,
+-      resolve_info.edram_base_tiles, true, resolve_info.edram_pitch_tiles,
+-      resolve_info.edram_msaa_samples, resolve_info.edram_is_depth, 0u,
+-      XeResolveFirstSampleIndex(resolve_info.sample_select),
+-      resolve_info.resolution_scale);
+-  uint4_xe pixels_0123 = byte_buffer_align16_load16_xe(xe_resolve_edram,
+-                                                       source_address);
+-  uint4_xe pixels_4567 = byte_buffer_align16_load16_xe(xe_resolve_edram,
+-                                                       source_address + 16u);
++  uint4_xe pixels_0123, pixels_4567;
++  dont_flatten_xe
++  if (resolve_info.edram_msaa_samples == kXenosMsaaSamples_1X) {
++    // With 1x MSAA the pixels are the canonical samples, thus the scanline is
++    // contiguous and a single vectorized load suffices.
++    uint source_address =
++        XeResolveCopySourceFirstSampleAddressBytes(resolve_info, pixel_index);
++    pixels_0123 = byte_buffer_align4_load16u_xe(xe_resolve_edram,
++                                                source_address);
++    pixels_4567 = byte_buffer_align4_load16u_xe(xe_resolve_edram,
++                                                source_address + 16u);
++  } else {
++    // With MSAA there's no fixed stride between horizontally adjacent pixels,
++    // load each pixel from its respective address.
++    pixels_0123.x = byte_buffer_align4_load4_xe(
++        xe_resolve_edram,
++        XeResolveCopySourceFirstSampleAddressBytes(resolve_info, pixel_index));
++    pixels_0123.y = byte_buffer_align4_load4_xe(
++        xe_resolve_edram,
++        XeResolveCopySourceFirstSampleAddressBytes(
++            resolve_info, pixel_index + uint2_xe(1u, 0u)));
++    pixels_0123.z = byte_buffer_align4_load4_xe(
++        xe_resolve_edram,
++        XeResolveCopySourceFirstSampleAddressBytes(
++            resolve_info, pixel_index + uint2_xe(2u, 0u)));
++    pixels_0123.w = byte_buffer_align4_load4_xe(
++        xe_resolve_edram,
++        XeResolveCopySourceFirstSampleAddressBytes(
++            resolve_info, pixel_index + uint2_xe(3u, 0u)));
++    pixels_4567.x = byte_buffer_align4_load4_xe(
++        xe_resolve_edram,
++        XeResolveCopySourceFirstSampleAddressBytes(
++            resolve_info, pixel_index + uint2_xe(4u, 0u)));
++    pixels_4567.y = byte_buffer_align4_load4_xe(
++        xe_resolve_edram,
++        XeResolveCopySourceFirstSampleAddressBytes(
++            resolve_info, pixel_index + uint2_xe(5u, 0u)));
++    pixels_4567.z = byte_buffer_align4_load4_xe(
++        xe_resolve_edram,
++        XeResolveCopySourceFirstSampleAddressBytes(
++            resolve_info, pixel_index + uint2_xe(6u, 0u)));
++    pixels_4567.w = byte_buffer_align4_load4_xe(
++        xe_resolve_edram,
++        XeResolveCopySourceFirstSampleAddressBytes(
++            resolve_info, pixel_index + uint2_xe(7u, 0u)));
++  }
+   dont_flatten_xe
+   if (pixel_index.x == 0u &&
+       resolve_info.half_pixel_offset_fill_source.x != 0u) {
+diff --git a/src/xenia/gpu/shaders/resolve_fast_32bpp_4xmsaa.xesli b/src/xenia/gpu/shaders/resolve_fast_32bpp_4xmsaa.xesli
+index 7901033e8..5a87bc22e 100644
+--- a/src/xenia/gpu/shaders/resolve_fast_32bpp_4xmsaa.xesli
++++ b/src/xenia/gpu/shaders/resolve_fast_32bpp_4xmsaa.xesli
+@@ -8,7 +8,7 @@
+  */
+ 
+ #include "endian.xesli"
+-#define XE_RESOLVE_COPY_EDRAM_BYTE_BUFFER_ALIGNMENT 16
++#define XE_RESOLVE_COPY_EDRAM_BYTE_BUFFER_ALIGNMENT 4
+ #include "resolve.xesli"
+ 
+ byte_buffer_align16_wo_declare_xe(xe_resolve_dest, set=1, binding=0, u0, space0)
+@@ -33,45 +33,40 @@ entry_inputs_end_code_begin_compute_xe
+     return;
+   }
+   uint2_xe pixel_index = in_global_thread_id_xe.xy << uint2_xe(3u, 0u);
+-  uint source_address = XeEdramOffsetBytes(
+-      uint2_xe(pixel_index.x,
+-               max(pixel_index.y,
+-                   resolve_info.half_pixel_offset_fill_source.y)) +
+-          resolve_info.edram_offset_scaled,
+-      resolve_info.edram_base_tiles, true, resolve_info.edram_pitch_tiles,
+-      kXenosMsaaSamples_4X, resolve_info.edram_is_depth, 0u,
+-      XeResolveFirstSampleIndex(resolve_info.sample_select),
+-      resolve_info.resolution_scale);
+-  // For 32bpp 4xMSAA, samples 0 and 1 are at consecutive int positions
+-  // (horizontally adjacent in the sample grid). Each Load4 reads 4 consecutive
+-  // samples spanning 2 pixels. Samples 0/1 (sample_select 0/1) produce a
+-  // 16-byte-aligned address, but samples 2/3 (sample_select 2/3) add a +4 byte
+-  // offset (the horizontal sample offset in the EDRAM tile). Align the load
+-  // address down to 16 bytes and select the correct pair via swizzle: .xz for
+-  // aligned (samples 0/1 at positions 0,2 within the uint4), .yw for
+-  // offset-by-4 (samples 2/3 at positions 1,3 within the uint4).
+-  uint source_address_aligned = source_address & ~15u;
++  // There's no fixed stride between horizontally adjacent pixels of a
++  // multisampled source, load each pixel from its respective address.
+   uint4_xe pixels_0123, pixels_4567;
+-  dont_flatten_xe
+-  if ((source_address & 15u) == 0u) {
+-    pixels_0123.xy = byte_buffer_align16_load16_xe(xe_resolve_edram,
+-                                                   source_address_aligned).xz;
+-    pixels_0123.zw = byte_buffer_align16_load16_xe(xe_resolve_edram,
+-                                                   source_address_aligned + 0x10u).xz;
+-    pixels_4567.xy = byte_buffer_align16_load16_xe(xe_resolve_edram,
+-                                                   source_address_aligned + 0x20u).xz;
+-    pixels_4567.zw = byte_buffer_align16_load16_xe(xe_resolve_edram,
+-                                                   source_address_aligned + 0x30u).xz;
+-  } else {
+-    pixels_0123.xy = byte_buffer_align16_load16_xe(xe_resolve_edram,
+-                                                   source_address_aligned).yw;
+-    pixels_0123.zw = byte_buffer_align16_load16_xe(xe_resolve_edram,
+-                                                   source_address_aligned + 0x10u).yw;
+-    pixels_4567.xy = byte_buffer_align16_load16_xe(xe_resolve_edram,
+-                                                   source_address_aligned + 0x20u).yw;
+-    pixels_4567.zw = byte_buffer_align16_load16_xe(xe_resolve_edram,
+-                                                   source_address_aligned + 0x30u).yw;
+-  }
++  pixels_0123.x = byte_buffer_align4_load4_xe(
++      xe_resolve_edram,
++      XeResolveCopySourceFirstSampleAddressBytes(resolve_info, pixel_index));
++  pixels_0123.y = byte_buffer_align4_load4_xe(
++      xe_resolve_edram,
++      XeResolveCopySourceFirstSampleAddressBytes(
++          resolve_info, pixel_index + uint2_xe(1u, 0u)));
++  pixels_0123.z = byte_buffer_align4_load4_xe(
++      xe_resolve_edram,
++      XeResolveCopySourceFirstSampleAddressBytes(
++          resolve_info, pixel_index + uint2_xe(2u, 0u)));
++  pixels_0123.w = byte_buffer_align4_load4_xe(
++      xe_resolve_edram,
++      XeResolveCopySourceFirstSampleAddressBytes(
++          resolve_info, pixel_index + uint2_xe(3u, 0u)));
++  pixels_4567.x = byte_buffer_align4_load4_xe(
++      xe_resolve_edram,
++      XeResolveCopySourceFirstSampleAddressBytes(
++          resolve_info, pixel_index + uint2_xe(4u, 0u)));
++  pixels_4567.y = byte_buffer_align4_load4_xe(
++      xe_resolve_edram,
++      XeResolveCopySourceFirstSampleAddressBytes(
++          resolve_info, pixel_index + uint2_xe(5u, 0u)));
++  pixels_4567.z = byte_buffer_align4_load4_xe(
++      xe_resolve_edram,
++      XeResolveCopySourceFirstSampleAddressBytes(
++          resolve_info, pixel_index + uint2_xe(6u, 0u)));
++  pixels_4567.w = byte_buffer_align4_load4_xe(
++      xe_resolve_edram,
++      XeResolveCopySourceFirstSampleAddressBytes(
++          resolve_info, pixel_index + uint2_xe(7u, 0u)));
+   dont_flatten_xe
+   if (pixel_index.x == 0u &&
+       resolve_info.half_pixel_offset_fill_source.x != 0u) {
+diff --git a/src/xenia/gpu/shaders/resolve_fast_64bpp_1x2xmsaa.xesli b/src/xenia/gpu/shaders/resolve_fast_64bpp_1x2xmsaa.xesli
+index a00280b32..699606c26 100644
+--- a/src/xenia/gpu/shaders/resolve_fast_64bpp_1x2xmsaa.xesli
++++ b/src/xenia/gpu/shaders/resolve_fast_64bpp_1x2xmsaa.xesli
+@@ -8,7 +8,7 @@
+  */
+ 
+ #include "endian.xesli"
+-#define XE_RESOLVE_COPY_EDRAM_BYTE_BUFFER_ALIGNMENT 16
++#define XE_RESOLVE_COPY_EDRAM_BYTE_BUFFER_ALIGNMENT 4
+ #include "resolve.xesli"
+ 
+ byte_buffer_align16_wo_declare_xe(xe_resolve_dest, set=1, binding=0, u0, space0)
+@@ -33,19 +33,36 @@ entry_inputs_end_code_begin_compute_xe
+   if (pixel_index.x >= resolve_info.width_div_8_scaled << 3u) {
+     return;
+   }
+-  uint source_address = XeEdramOffsetBytes(
+-      uint2_xe(pixel_index.x,
+-               max(pixel_index.y,
+-                   resolve_info.half_pixel_offset_fill_source.y)) +
+-          resolve_info.edram_offset_scaled,
+-      resolve_info.edram_base_tiles, true, resolve_info.edram_pitch_tiles,
+-      resolve_info.edram_msaa_samples, false, 1u,
+-      XeResolveFirstSampleIndex(resolve_info.sample_select),
+-      resolve_info.resolution_scale);
+-  uint4_xe pixels_01 = byte_buffer_align16_load16_xe(xe_resolve_edram,
+-                                                     source_address);
+-  uint4_xe pixels_23 = byte_buffer_align16_load16_xe(xe_resolve_edram,
+-                                                     source_address + 16u);
++  uint4_xe pixels_01, pixels_23;
++  dont_flatten_xe
++  if (resolve_info.edram_msaa_samples == kXenosMsaaSamples_1X) {
++    // With 1x MSAA the pixels are the canonical samples, thus the scanline is
++    // contiguous and a single vectorized load suffices.
++    uint source_address =
++        XeResolveCopySourceFirstSampleAddressBytes(resolve_info, pixel_index);
++    pixels_01 = byte_buffer_align4_load16u_xe(xe_resolve_edram,
++                                              source_address);
++    pixels_23 = byte_buffer_align4_load16u_xe(xe_resolve_edram,
++                                              source_address + 16u);
++  } else {
++    // With MSAA there's no fixed stride between horizontally adjacent pixels,
++    // load each pixel from its respective address.
++    pixels_01.xy = byte_buffer_align4_load8u_xe(
++        xe_resolve_edram,
++        XeResolveCopySourceFirstSampleAddressBytes(resolve_info, pixel_index));
++    pixels_01.zw = byte_buffer_align4_load8u_xe(
++        xe_resolve_edram,
++        XeResolveCopySourceFirstSampleAddressBytes(
++            resolve_info, pixel_index + uint2_xe(1u, 0u)));
++    pixels_23.xy = byte_buffer_align4_load8u_xe(
++        xe_resolve_edram,
++        XeResolveCopySourceFirstSampleAddressBytes(
++            resolve_info, pixel_index + uint2_xe(2u, 0u)));
++    pixels_23.zw = byte_buffer_align4_load8u_xe(
++        xe_resolve_edram,
++        XeResolveCopySourceFirstSampleAddressBytes(
++            resolve_info, pixel_index + uint2_xe(3u, 0u)));
++  }
+   dont_flatten_xe
+   if (pixel_index.x == 0u &&
+       resolve_info.half_pixel_offset_fill_source.x != 0u) {
+diff --git a/src/xenia/gpu/shaders/resolve_fast_64bpp_4xmsaa.xesli b/src/xenia/gpu/shaders/resolve_fast_64bpp_4xmsaa.xesli
+index 4a7ef067e..d4d594092 100644
+--- a/src/xenia/gpu/shaders/resolve_fast_64bpp_4xmsaa.xesli
++++ b/src/xenia/gpu/shaders/resolve_fast_64bpp_4xmsaa.xesli
+@@ -8,7 +8,7 @@
+  */
+ 
+ #include "endian.xesli"
+-#define XE_RESOLVE_COPY_EDRAM_BYTE_BUFFER_ALIGNMENT 8
++#define XE_RESOLVE_COPY_EDRAM_BYTE_BUFFER_ALIGNMENT 4
+ #include "resolve.xesli"
+ 
+ byte_buffer_align16_wo_declare_xe(xe_resolve_dest, set=1, binding=0, u0, space0)
+@@ -33,23 +33,24 @@ entry_inputs_end_code_begin_compute_xe
+   if (pixel_index.x >= resolve_info.width_div_8_scaled << 3u) {
+     return;
+   }
+-  uint source_address = XeEdramOffsetBytes(
+-      uint2_xe(pixel_index.x,
+-               max(pixel_index.y,
+-                   resolve_info.half_pixel_offset_fill_source.y)) +
+-          resolve_info.edram_offset_scaled,
+-      resolve_info.edram_base_tiles, true, resolve_info.edram_pitch_tiles,
+-      kXenosMsaaSamples_4X, false, 1u,
+-      XeResolveFirstSampleIndex(resolve_info.sample_select),
+-      resolve_info.resolution_scale);
++  // There's no fixed stride between horizontally adjacent pixels of a
++  // multisampled source, load each pixel from its respective address.
+   uint4_xe pixels_01, pixels_23;
+-  pixels_01.xy = byte_buffer_align8_load8_xe(xe_resolve_edram, source_address);
+-  pixels_01.zw = byte_buffer_align8_load8_xe(xe_resolve_edram,
+-                                             source_address + 0x10u);
+-  pixels_23.xy = byte_buffer_align8_load8_xe(xe_resolve_edram,
+-                                             source_address + 0x20u);
+-  pixels_23.zw = byte_buffer_align8_load8_xe(xe_resolve_edram,
+-                                             source_address + 0x30u);
++  pixels_01.xy = byte_buffer_align4_load8u_xe(
++      xe_resolve_edram,
++      XeResolveCopySourceFirstSampleAddressBytes(resolve_info, pixel_index));
++  pixels_01.zw = byte_buffer_align4_load8u_xe(
++      xe_resolve_edram,
++      XeResolveCopySourceFirstSampleAddressBytes(
++          resolve_info, pixel_index + uint2_xe(1u, 0u)));
++  pixels_23.xy = byte_buffer_align4_load8u_xe(
++      xe_resolve_edram,
++      XeResolveCopySourceFirstSampleAddressBytes(
++          resolve_info, pixel_index + uint2_xe(2u, 0u)));
++  pixels_23.zw = byte_buffer_align4_load8u_xe(
++      xe_resolve_edram,
++      XeResolveCopySourceFirstSampleAddressBytes(
++          resolve_info, pixel_index + uint2_xe(3u, 0u)));
+   dont_flatten_xe
+   if (pixel_index.x == 0u &&
+       resolve_info.half_pixel_offset_fill_source.x != 0u) {
+diff --git a/src/xenia/gpu/shaders/resolve_full_128bpp.xesli b/src/xenia/gpu/shaders/resolve_full_128bpp.xesli
+index 398aa0801..94e23139f 100644
+--- a/src/xenia/gpu/shaders/resolve_full_128bpp.xesli
++++ b/src/xenia/gpu/shaders/resolve_full_128bpp.xesli
+@@ -37,12 +37,8 @@ entry_inputs_end_code_begin_compute_xe
+   XeResolveLoad2RGBAColors(
+       pass_byte_buffer_xe(xe_resolve_edram) pass_next_after_byte_buffer_xe
+       resolve_info,
+-      XeResolveColorCopySourcePixelAddressBytesYHalfPixelOffsetFilling(
+-          resolve_info,
+-          uint2_xe(max(pixel_index.x,
+-                       resolve_info.half_pixel_offset_fill_source.x),
+-                   pixel_index.y)),
+-      pixel_0, pixel_1);
++      uint2_xe(max(pixel_index.x, resolve_info.half_pixel_offset_fill_source.x),
++               pixel_index.y), pixel_0, pixel_1);
+   // Inside the half-pixel offset filling columns, pixel_0 now contains the
+   // pixel to stretch, pixel_1 contains the pixel after it. However, this means
+   // that the pixel offset is not aligned to 2 anymore. If 1 is the pixel to
+diff --git a/src/xenia/gpu/shaders/resolve_full_16bpp.xesli b/src/xenia/gpu/shaders/resolve_full_16bpp.xesli
+index b31cfe229..9343525b2 100644
+--- a/src/xenia/gpu/shaders/resolve_full_16bpp.xesli
++++ b/src/xenia/gpu/shaders/resolve_full_16bpp.xesli
+@@ -37,10 +37,7 @@ entry_inputs_end_code_begin_compute_xe
+   float4_xe pixel_0, pixel_1, pixel_2, pixel_3;
+   XeResolveLoad4RGBAColors(
+       pass_byte_buffer_xe(xe_resolve_edram) pass_next_after_byte_buffer_xe
+-      resolve_info,
+-      XeResolveColorCopySourcePixelAddressBytesYHalfPixelOffsetFilling(
+-          resolve_info, pixel_index),
+-      pixel_0, pixel_1, pixel_2, pixel_3);
++      resolve_info, pixel_index, pixel_0, pixel_1, pixel_2, pixel_3);
+   uint2_xe packed = XePack16bpp4PixelsInUInt2(
+       pixel_0, pixel_1, pixel_2, pixel_3, resolve_info.dest_format,
+       resolve_info.dest_num_format);
+diff --git a/src/xenia/gpu/shaders/resolve_full_32bpp.xesli b/src/xenia/gpu/shaders/resolve_full_32bpp.xesli
+index 428255ab4..d6ac620f9 100644
+--- a/src/xenia/gpu/shaders/resolve_full_32bpp.xesli
++++ b/src/xenia/gpu/shaders/resolve_full_32bpp.xesli
+@@ -39,10 +39,7 @@ entry_inputs_end_code_begin_compute_xe
+   float4_xe pixel_0, pixel_1, pixel_2, pixel_3;
+   XeResolveLoad4RGBAColors(
+       pass_byte_buffer_xe(xe_resolve_edram) pass_next_after_byte_buffer_xe
+-      resolve_info,
+-      XeResolveColorCopySourcePixelAddressBytesYHalfPixelOffsetFilling(
+-          resolve_info, pixel_index),
+-      pixel_0, pixel_1, pixel_2, pixel_3);
++      resolve_info, pixel_index, pixel_0, pixel_1, pixel_2, pixel_3);
+   uint4_xe packed = XePack32bpp4Pixels(pixel_0, pixel_1, pixel_2, pixel_3,
+                                        resolve_info.dest_format,
+                                        resolve_info.dest_num_format);
+diff --git a/src/xenia/gpu/shaders/resolve_full_64bpp.xesli b/src/xenia/gpu/shaders/resolve_full_64bpp.xesli
+index fb0ce8440..da8eed09a 100644
+--- a/src/xenia/gpu/shaders/resolve_full_64bpp.xesli
++++ b/src/xenia/gpu/shaders/resolve_full_64bpp.xesli
+@@ -37,10 +37,7 @@ entry_inputs_end_code_begin_compute_xe
+   float4_xe pixel_0, pixel_1, pixel_2, pixel_3;
+   XeResolveLoad4RGBAColors(
+       pass_byte_buffer_xe(xe_resolve_edram) pass_next_after_byte_buffer_xe
+-      resolve_info,
+-      XeResolveColorCopySourcePixelAddressBytesYHalfPixelOffsetFilling(
+-          resolve_info, pixel_index),
+-      pixel_0, pixel_1, pixel_2, pixel_3);
++      resolve_info, pixel_index, pixel_0, pixel_1, pixel_2, pixel_3);
+   uint4_xe packed_01, packed_23;
+   XePack64bpp4Pixels(pixel_0, pixel_1, pixel_2, pixel_3,
+                      resolve_info.dest_format,
+diff --git a/src/xenia/gpu/shaders/resolve_full_8bpp.xesli b/src/xenia/gpu/shaders/resolve_full_8bpp.xesli
+index 471c2cef8..4e4121603 100644
+--- a/src/xenia/gpu/shaders/resolve_full_8bpp.xesli
++++ b/src/xenia/gpu/shaders/resolve_full_8bpp.xesli
+@@ -37,10 +37,7 @@ entry_inputs_end_code_begin_compute_xe
+   float4_xe pixels_0123, pixels_4567;
+   XeResolveLoad8ScalarColors(
+       pass_byte_buffer_xe(xe_resolve_edram) pass_next_after_byte_buffer_xe
+-      resolve_info,
+-      XeResolveColorCopySourcePixelAddressBytesYHalfPixelOffsetFilling(
+-          resolve_info, pixel_index),
+-      pixels_0123, pixels_4567);
++      resolve_info, pixel_index, pixels_0123, pixels_4567);
+   dont_flatten_xe
+   if (pixel_index.x == 0u &&
+       resolve_info.half_pixel_offset_fill_source.x != 0u) {
+diff --git a/src/xenia/gpu/spirv_shader_translator_rb.cc b/src/xenia/gpu/spirv_shader_translator_rb.cc
+index cba3403b1..e81a58846 100644
+--- a/src/xenia/gpu/spirv_shader_translator_rb.cc
++++ b/src/xenia/gpu/spirv_shader_translator_rb.cc
+@@ -1700,11 +1700,11 @@ spv::Id SpirvShaderTranslator::LoadMsaaSamplesFromFlags() {
+ void SpirvShaderTranslator::FSI_LoadSampleMask(spv::Id msaa_samples) {
+   // On the Xbox 360, 2x MSAA doubles the storage height, 4x MSAA doubles the
+   // storage width.
+-  // Vulkan standard 2x samples are bottom, top.
+-  // Vulkan standard 4x samples are TL, TR, BL, BR.
+-  // Remap to T, B for 2x, and to TL, BL, TR, BR for 4x.
+-  // 2x corresponds to 1, 0 with native 2x MSAA on Vulkan, 0, 3 with 2x as 4x.
+-  // 4x corresponds to 0, 2, 1, 3 on Vulkan.
++  // The guest 4x sample numbering is the Vulkan one, bit 0 horizontal and
++  // bit 1 vertical, so 4x coverage passes through as is. Guest 2x puts
++  // sample 0 at the top while Vulkan counts from the bottom, so the guest
++  // samples map to Vulkan 1, 0 with native 2x MSAA and to 0, 3 with 2x
++  // emulated as 4x.
+ 
+   spv::Id const_uint_1 = builder_->makeUintConstant(1);
+   spv::Id const_uint_2 = builder_->makeUintConstant(2);
+@@ -1767,18 +1767,10 @@ void SpirvShaderTranslator::FSI_LoadSampleMask(spv::Id msaa_samples) {
+   }
+   builder_->createBranch(&block_msaa_merge);
+ 
+-  // 4x MSAA.
++  // At 4x the guest and the Vulkan sample numbering match, so pass the
++  // coverage through.
+   builder_->setBuildPoint(&block_msaa_4x);
+-  // Flip samples in bits 0:1 by reversing the whole coverage mask and inserting
+-  // the reversing bits.
+-  spv::Id sample_mask_4x = builder_->createQuadOp(
+-      spv::OpBitFieldInsert, type_uint_, input_sample_mask_value,
+-      builder_->createBinOp(
+-          spv::OpShiftRightLogical, type_uint_,
+-          builder_->createUnaryOp(spv::OpBitReverse, type_uint_,
+-                                  input_sample_mask_value),
+-          builder_->makeUintConstant(32 - 1 - 2)),
+-      const_uint_1, const_uint_2);
++  spv::Id sample_mask_4x = input_sample_mask_value;
+   builder_->createBranch(&block_msaa_merge);
+ 
+   // Select the result depending on the MSAA sample count.
+@@ -1796,32 +1788,87 @@ void SpirvShaderTranslator::FSI_LoadSampleMask(spv::Id msaa_samples) {
+ }
+ 
+ void SpirvShaderTranslator::FSI_LoadEdramOffsets(spv::Id msaa_samples) {
+-  // Convert the floating-point pixel coordinates to integer sample 0
+-  // coordinates.
++  // Convert the floating-point pixel coordinates to the canonical sample 0
++  // coordinates, meaning the coordinates of the pixel's sample 0 in the
++  // single sampled view of the EDRAM data. The layout is described in
++  // XeEdramOffsetBytes (see edram.xesli). What matters here is that the offsets
++  // of the other samples from sample 0 are constant, FSI_AddSampleOffset
++  // adds them, and that with resolution scaling the rearrangement happens at
++  // guest pixel granularity.
+   assert_true(input_fragment_coordinates_ != spv::NoResult);
+-  spv::Id axes_have_two_msaa_samples[2];
+-  spv::Id sample_coordinates[2];
+   spv::Id const_uint_1 = builder_->makeUintConstant(1);
++  spv::Id const_uint_2 = builder_->makeUintConstant(2);
++  spv::Id msaa_is_4x = builder_->createBinOp(
++      spv::OpUGreaterThanEqual, type_bool_, msaa_samples,
++      builder_->makeUintConstant(uint32_t(xenos::MsaaSamples::k4X)));
++  spv::Id msaa_is_2x_or_4x = builder_->createBinOp(
++      spv::OpUGreaterThanEqual, type_bool_, msaa_samples,
++      builder_->makeUintConstant(uint32_t(xenos::MsaaSamples::k2X)));
++  const uint32_t resolution_scale[2] = {draw_resolution_scale_x_,
++                                        draw_resolution_scale_y_};
++  spv::Id guest_pixel[2], guest_subpixel[2];
+   for (uint32_t i = 0; i < 2; ++i) {
+-    spv::Id axis_has_two_msaa_samples = builder_->createBinOp(
+-        spv::OpUGreaterThanEqual, type_bool_, msaa_samples,
+-        builder_->makeUintConstant(
+-            uint32_t(i ? xenos::MsaaSamples::k2X : xenos::MsaaSamples::k4X)));
+-    axes_have_two_msaa_samples[i] = axis_has_two_msaa_samples;
+     id_vector_temp_.clear();
+     id_vector_temp_.push_back(builder_->makeIntConstant(int32_t(i)));
+-    sample_coordinates[i] = builder_->createBinOp(
+-        spv::OpShiftLeftLogical, type_uint_,
+-        builder_->createUnaryOp(
+-            spv::OpConvertFToU, type_uint_,
+-            builder_->createLoad(
+-                builder_->createAccessChain(spv::StorageClassInput,
+-                                            input_fragment_coordinates_,
+-                                            id_vector_temp_),
+-                spv::NoPrecision)),
+-        builder_->createTriOp(spv::OpSelect, type_uint_,
+-                              axis_has_two_msaa_samples, const_uint_1,
+-                              const_uint_0_));
++    spv::Id host_pixel = builder_->createUnaryOp(
++        spv::OpConvertFToU, type_uint_,
++        builder_->createLoad(builder_->createAccessChain(
++                                 spv::StorageClassInput,
++                                 input_fragment_coordinates_, id_vector_temp_),
++                             spv::NoPrecision));
++    if (resolution_scale[i] > 1) {
++      spv::Id const_scale = builder_->makeUintConstant(resolution_scale[i]);
++      guest_pixel[i] = builder_->createBinOp(spv::OpUDiv, type_uint_,
++                                             host_pixel, const_scale);
++      guest_subpixel[i] = builder_->createBinOp(spv::OpUMod, type_uint_,
++                                                host_pixel, const_scale);
++    } else {
++      guest_pixel[i] = host_pixel;
++      guest_subpixel[i] = spv::NoResult;
++    }
++  }
++  // (((x or y) >> 1) << 2) | ((x or y) & 1), the sample 0 part of the
++  // rearrangement shared by the 4x u and v and the 2x v.
++  auto expand_pixel_low_bit = [&](spv::Id pixel_x_or_y) {
++    return builder_->createQuadOp(
++        spv::OpBitFieldInsert, type_uint_,
++        builder_->createBinOp(spv::OpBitwiseAnd, type_uint_, pixel_x_or_y,
++                              const_uint_1),
++        builder_->createBinOp(spv::OpShiftRightLogical, type_uint_,
++                              pixel_x_or_y, const_uint_1),
++        const_uint_2, builder_->makeUintConstant(30));
++  };
++  // u0 is ((x >> 1) << 2) | (x & 1) at 4x, x & ~2 at 2x and plain x at 1x.
++  spv::Id sample_u = builder_->createTriOp(
++      spv::OpSelect, type_uint_, msaa_is_4x,
++      expand_pixel_low_bit(guest_pixel[0]),
++      builder_->createTriOp(
++          spv::OpSelect, type_uint_, msaa_is_2x_or_4x,
++          builder_->createBinOp(spv::OpBitwiseAnd, type_uint_, guest_pixel[0],
++                                builder_->makeUintConstant(~uint32_t(2))),
++          guest_pixel[0]));
++  // v0 is ((y >> 1) << 2) | (y & 1) at 2x and 4x, with x bit 1 in bit 1 at
++  // 2x only. At 1x it's plain y.
++  spv::Id sample_v = builder_->createTriOp(
++      spv::OpSelect, type_uint_, msaa_is_2x_or_4x,
++      builder_->createBinOp(
++          spv::OpBitwiseOr, type_uint_, expand_pixel_low_bit(guest_pixel[1]),
++          builder_->createTriOp(
++              spv::OpSelect, type_uint_, msaa_is_4x, const_uint_0_,
++              builder_->createBinOp(spv::OpBitwiseAnd, type_uint_,
++                                    guest_pixel[0], const_uint_2))),
++      guest_pixel[1]);
++  // Restore the host pixel granularity.
++  spv::Id sample_coordinates[2] = {sample_u, sample_v};
++  for (uint32_t i = 0; i < 2; ++i) {
++    if (resolution_scale[i] > 1) {
++      sample_coordinates[i] = builder_->createBinOp(
++          spv::OpIAdd, type_uint_,
++          builder_->createBinOp(
++              spv::OpIMul, type_uint_, sample_coordinates[i],
++              builder_->makeUintConstant(resolution_scale[i])),
++          guest_subpixel[i]);
++    }
+   }
+ 
+   // Get 40 x 16 x resolution scale 32bpp half-tile or 40x16 64bpp tile index.
+@@ -1944,24 +1991,26 @@ spv::Id SpirvShaderTranslator::FSI_AddSampleOffset(spv::Id sample_0_address,
+   if (!sample_index) {
+     return sample_0_address;
+   }
+-  spv::Id sample_offset;
+-  // Apply resolution scaling to tile width.
++  // In the canonical layout, the horizontal (or the only 2x) sample bit is
++  // +2 sample columns from sample 0, 2 dwords wide each for 64bpp, and the
++  // vertical sample bit is +2 sample rows, all at the guest scale.
+   uint32_t tile_width =
+       xenos::kEdramTileWidthSamples * draw_resolution_scale_x_;
+-  if (sample_index == 1) {
+-    sample_offset = builder_->makeIntConstant(tile_width);
++  uint32_t sample_row_offset =
++      2 * draw_resolution_scale_y_ * tile_width * (sample_index >> 1);
++  uint32_t sample_column_offset_32bpp =
++      2 * draw_resolution_scale_x_ * (sample_index & 1);
++  spv::Id sample_offset;
++  if ((sample_index & 1) && is_64bpp != spv::NoResult) {
++    sample_offset = builder_->createTriOp(
++        spv::OpSelect, type_int_, is_64bpp,
++        builder_->makeIntConstant(
++            int32_t(sample_row_offset + 2 * sample_column_offset_32bpp)),
++        builder_->makeIntConstant(
++            int32_t(sample_row_offset + sample_column_offset_32bpp)));
+   } else {
+-    spv::Id sample_offset_32bpp = builder_->makeIntConstant(
+-        tile_width * (sample_index & 1) + (sample_index >> 1));
+-    if (is_64bpp != spv::NoResult) {
+-      sample_offset = builder_->createTriOp(
+-          spv::OpSelect, type_int_, is_64bpp,
+-          builder_->makeIntConstant(tile_width * (sample_index & 1) +
+-                                    2 * (sample_index >> 1)),
+-          sample_offset_32bpp);
+-    } else {
+-      sample_offset = sample_offset_32bpp;
+-    }
++    sample_offset = builder_->makeIntConstant(
++        int32_t(sample_row_offset + sample_column_offset_32bpp));
+   }
+   return builder_->createBinOp(spv::OpIAdd, type_int_, sample_0_address,
+                                sample_offset);
+@@ -2327,14 +2376,15 @@ void SpirvShaderTranslator::FSI_DepthStencilTest(
+         }
+       } break;
+       case 1: {
+-        // For guest 2x: bottom-right sample (bottom - 0 in Vulkan - for native
+-        // 2x, bottom-right - 3 in Vulkan - for 2x as 4x).
+-        // For guest 4x: bottom-left sample (2 in Vulkan).
++        // For guest 2x this is the bottom sample, Vulkan 0 for native 2x and
++        // Vulkan 3 for 2x as 4x.
++        // For guest 4x this is the top-right sample since the horizontal
++        // sample bit is bit 0, Vulkan 1.
+         for (uint32_t j = 0; j < 2; ++j) {
+           sample_location[j] = builder_->createTriOp(
+               spv::OpSelect, type_float_, msaa_is_4x,
+               builder_->makeFloatConstant(
+-                  draw_util::kD3D10StandardSamplePositions4x[2][j] *
++                  draw_util::kD3D10StandardSamplePositions4x[1][j] *
+                   (1.0f / 16.0f)),
+               builder_->makeFloatConstant(
+                   (native_2x_msaa_no_attachments_
+@@ -2344,10 +2394,10 @@ void SpirvShaderTranslator::FSI_DepthStencilTest(
+         }
+       } break;
+       default: {
+-        // Xenia samples 2 and 3 (top-right and bottom-right) -> Vulkan samples
+-        // 1 and 3.
+-        const int8_t* sample_location_int = draw_util::
+-            kD3D10StandardSamplePositions4x[i ^ (((i & 1) ^ (i >> 1)) * 0b11)];
++        // Guest samples 2 and 3, bottom-left and bottom-right with the
++        // vertical sample bit being bit 1, map to Vulkan samples 2 and 3.
++        const int8_t* sample_location_int =
++            draw_util::kD3D10StandardSamplePositions4x[i];
+         for (uint32_t j = 0; j < 2; ++j) {
+           sample_location[j] = builder_->makeFloatConstant(
+               sample_location_int[j] * (1.0f / 16.0f));
+diff --git a/src/xenia/gpu/vulkan/vulkan_render_target_cache.cc b/src/xenia/gpu/vulkan/vulkan_render_target_cache.cc
+index 16c380daf..2a7c4229b 100644
+--- a/src/xenia/gpu/vulkan/vulkan_render_target_cache.cc
++++ b/src/xenia/gpu/vulkan/vulkan_render_target_cache.cc
+@@ -2398,6 +2398,194 @@ static spv::Id GammaByteToLinearMidpoint(SpirvBuilder& builder,
+       offset);
+ }
+ 
++struct CanonicalSampleCoords {
++  spv::Id u_guest;
++  spv::Id v_guest;
++  // Host subpixel offsets under resolution scaling, spv::NoResult when the
++  // axis isn't scaled.
++  spv::Id sub_x;
++  spv::Id sub_y;
++};
++
++// Indices of host samples that transfer sample remap helpers use:
++// - First sample bit of 4x - horizontal sample.
++// - Second sample bit of 4x - vertical sample.
++// - 2x:
++//   - Native 2x - top sample is 1 with the standard sample locations, bottom
++//     sample is 0.
++//   - 2x as 4x - top sample is 0, bottom sample is 3.
++
++// Converts the view pixel coordinates and host sample index to canonical
++// guest sample coordinates, with the host subpixel offsets carried along in
++// case of scaling.
++static CanonicalSampleCoords CanonicalizeSample(
++    SpirvBuilder& builder, spv::Id type_uint, xenos::MsaaSamples msaa_samples,
++    bool msaa_2x_attachments_supported, spv::Id pixel_x, spv::Id pixel_y,
++    spv::Id host_sample_id, uint32_t scale_x, uint32_t scale_y) {
++  CanonicalSampleCoords result;
++  result.sub_x = spv::NoResult;
++  result.sub_y = spv::NoResult;
++  spv::Id guest_x = pixel_x;
++  spv::Id guest_y = pixel_y;
++  if (scale_x > 1) {
++    spv::Id const_scale_x = builder.makeUintConstant(scale_x);
++    guest_x =
++        builder.createBinOp(spv::OpUDiv, type_uint, pixel_x, const_scale_x);
++    result.sub_x =
++        builder.createBinOp(spv::OpUMod, type_uint, pixel_x, const_scale_x);
++  }
++  if (scale_y > 1) {
++    spv::Id const_scale_y = builder.makeUintConstant(scale_y);
++    guest_y =
++        builder.createBinOp(spv::OpUDiv, type_uint, pixel_y, const_scale_y);
++    result.sub_y =
++        builder.createBinOp(spv::OpUMod, type_uint, pixel_y, const_scale_y);
++  }
++  spv::Id const_uint_1 = builder.makeUintConstant(1);
++  spv::Id const_uint_2 = builder.makeUintConstant(2);
++  spv::Id const_uint_30 = builder.makeUintConstant(30);
++  if (msaa_samples >= xenos::MsaaSamples::k4X) {
++    // The guest sample index is the host sample index, bit 0 horizontal
++    // and bit 1 vertical for both.
++    // u = ((x >> 1) << 2) | ((sample & 1) << 1) | (x & 1)
++    result.u_guest = builder.createQuadOp(
++        spv::OpBitFieldInsert, type_uint,
++        builder.createQuadOp(spv::OpBitFieldInsert, type_uint, guest_x,
++                             host_sample_id, const_uint_1, const_uint_1),
++        builder.createBinOp(spv::OpShiftRightLogical, type_uint, guest_x,
++                            const_uint_1),
++        const_uint_2, const_uint_30);
++    // v = ((y >> 1) << 2) | ((sample >> 1) << 1) | (y & 1)
++    result.v_guest = builder.createQuadOp(
++        spv::OpBitFieldInsert, type_uint,
++        builder.createQuadOp(
++            spv::OpBitFieldInsert, type_uint, guest_y,
++            builder.createBinOp(spv::OpShiftRightLogical, type_uint,
++                                host_sample_id, const_uint_1),
++            const_uint_1, const_uint_1),
++        builder.createBinOp(spv::OpShiftRightLogical, type_uint, guest_y,
++                            const_uint_1),
++        const_uint_2, const_uint_30);
++  } else if (msaa_samples == xenos::MsaaSamples::k2X) {
++    // Guest sample 0 is the top one. Native 2x has the top at host sample
++    // 1, and 2x emulated as 4x has it at host sample 0.
++    spv::Id guest_sample;
++    if (msaa_2x_attachments_supported) {
++      guest_sample = builder.createBinOp(spv::OpBitwiseXor, type_uint,
++                                         host_sample_id, const_uint_1);
++    } else {
++      guest_sample = builder.createBinOp(spv::OpShiftRightLogical, type_uint,
++                                         host_sample_id, const_uint_1);
++    }
++    // u = (x & ~2) | (sample << 1)
++    result.u_guest =
++        builder.createQuadOp(spv::OpBitFieldInsert, type_uint, guest_x,
++                             guest_sample, const_uint_1, const_uint_1);
++    // v = ((y >> 1) << 2) | (x & 2) | (y & 1)
++    result.v_guest = builder.createQuadOp(
++        spv::OpBitFieldInsert, type_uint,
++        builder.createQuadOp(
++            spv::OpBitFieldInsert, type_uint, guest_y,
++            builder.createBinOp(spv::OpShiftRightLogical, type_uint, guest_x,
++                                const_uint_1),
++            const_uint_1, const_uint_1),
++        builder.createBinOp(spv::OpShiftRightLogical, type_uint, guest_y,
++                            const_uint_1),
++        const_uint_2, const_uint_30);
++  } else {
++    result.u_guest = guest_x;
++    result.v_guest = guest_y;
++  }
++  return result;
++}
++
++// Converts the canonical guest sample coordinates, along with the subpixel
++// offsets in case of scaling, back to view pixels and host sample index.
++// host_sample_id_out remains spv::NoResult for a single sampled view.
++static void DecanonicalizeSample(SpirvBuilder& builder, spv::Id type_uint,
++                                 xenos::MsaaSamples msaa_samples,
++                                 bool msaa_2x_attachments_supported,
++                                 const CanonicalSampleCoords& coords,
++                                 uint32_t scale_x, uint32_t scale_y,
++                                 spv::Id& pixel_x_out, spv::Id& pixel_y_out,
++                                 spv::Id& host_sample_id_out) {
++  spv::Id const_uint_1 = builder.makeUintConstant(1);
++  spv::Id const_uint_2 = builder.makeUintConstant(2);
++  spv::Id const_uint_31 = builder.makeUintConstant(31);
++  spv::Id guest_x, guest_y;
++  host_sample_id_out = spv::NoResult;
++  if (msaa_samples >= xenos::MsaaSamples::k4X) {
++    // x = ((u >> 2) << 1) | (u & 1)
++    guest_x = builder.createQuadOp(
++        spv::OpBitFieldInsert, type_uint, coords.u_guest,
++        builder.createBinOp(spv::OpShiftRightLogical, type_uint, coords.u_guest,
++                            const_uint_2),
++        const_uint_1, const_uint_31);
++    // y = ((v >> 2) << 1) | (v & 1)
++    guest_y = builder.createQuadOp(
++        spv::OpBitFieldInsert, type_uint, coords.v_guest,
++        builder.createBinOp(spv::OpShiftRightLogical, type_uint, coords.v_guest,
++                            const_uint_2),
++        const_uint_1, const_uint_31);
++    // The host sample index is the guest sample index.
++    // sample = ((u >> 1) & 1) | (v & 2)
++    host_sample_id_out = builder.createBinOp(
++        spv::OpBitwiseOr, type_uint,
++        builder.createTriOp(spv::OpBitFieldUExtract, type_uint, coords.u_guest,
++                            const_uint_1, const_uint_1),
++        builder.createBinOp(spv::OpBitwiseAnd, type_uint, coords.v_guest,
++                            const_uint_2));
++  } else if (msaa_samples == xenos::MsaaSamples::k2X) {
++    // x = (u & ~3) | (v & 2) | (u & 1)
++    guest_x = builder.createQuadOp(
++        spv::OpBitFieldInsert, type_uint, coords.u_guest,
++        builder.createBinOp(spv::OpShiftRightLogical, type_uint, coords.v_guest,
++                            const_uint_1),
++        const_uint_1, const_uint_1);
++    // y = ((v >> 2) << 1) | (v & 1)
++    guest_y = builder.createQuadOp(
++        spv::OpBitFieldInsert, type_uint, coords.v_guest,
++        builder.createBinOp(spv::OpShiftRightLogical, type_uint, coords.v_guest,
++                            const_uint_2),
++        const_uint_1, const_uint_31);
++    // Guest sample 0 is the top one.
++    // sample = (u >> 1) & 1
++    spv::Id guest_sample =
++        builder.createTriOp(spv::OpBitFieldUExtract, type_uint, coords.u_guest,
++                            const_uint_1, const_uint_1);
++    if (msaa_2x_attachments_supported) {
++      host_sample_id_out = builder.createBinOp(spv::OpBitwiseXor, type_uint,
++                                               guest_sample, const_uint_1);
++    } else {
++      // The guest sample 1 is the host sample 3 when 2x is emulated as 4x.
++      host_sample_id_out =
++          builder.createQuadOp(spv::OpBitFieldInsert, type_uint, guest_sample,
++                               guest_sample, const_uint_1, const_uint_1);
++    }
++  } else {
++    guest_x = coords.u_guest;
++    guest_y = coords.v_guest;
++  }
++  pixel_x_out = guest_x;
++  if (scale_x > 1) {
++    assert_true(coords.sub_x != spv::NoResult);
++    pixel_x_out = builder.createBinOp(
++        spv::OpIAdd, type_uint,
++        builder.createBinOp(spv::OpIMul, type_uint, guest_x,
++                            builder.makeUintConstant(scale_x)),
++        coords.sub_x);
++  }
++  pixel_y_out = guest_y;
++  if (scale_y > 1) {
++    assert_true(coords.sub_y != spv::NoResult);
++    pixel_y_out = builder.createBinOp(
++        spv::OpIAdd, type_uint,
++        builder.createBinOp(spv::OpIMul, type_uint, guest_y,
++                            builder.makeUintConstant(scale_y)),
++        coords.sub_y);
++  }
++}
++
+ VkShaderModule VulkanRenderTargetCache::GetTransferShader(
+     TransferShaderKey key) {
+   auto shader_it = transfer_shaders_.find(key);
+@@ -2891,317 +3079,52 @@ VkShaderModule VulkanRenderTargetCache::GetTransferShader(
+     }
+   }
+ 
++  // The transfer remaps the destination sample to the source sample through
++  // the canonical sample coordinates, the layout is described in
++  // XeEdramOffsetBytes in edram.xesli.
+   spv::Id source_sample_id = dest_sample_id;
+   spv::Id source_tile_pixel_x = dest_tile_pixel_x;
+   spv::Id source_tile_pixel_y = dest_tile_pixel_y;
+   spv::Id source_color_half = spv::NoResult;
+-  if (!source_is_64bpp && dest_is_64bpp) {
+-    // 32bpp -> 64bpp, need two samples of the source.
+-    if (key.source_msaa_samples >= xenos::MsaaSamples::k4X) {
+-      // 32bpp -> 64bpp, 4x ->.
+-      // Source has 32bpp halves in two adjacent samples.
+-      if (key.dest_msaa_samples >= xenos::MsaaSamples::k4X) {
+-        // 32bpp -> 64bpp, 4x -> 4x.
+-        // 1 destination horizontal sample = 2 source horizontal samples.
+-        // D p0,0 s0,0 = S p0,0 s0,0 | S p0,0 s1,0
+-        // D p0,0 s1,0 = S p1,0 s0,0 | S p1,0 s1,0
+-        // D p0,0 s0,1 = S p0,0 s0,1 | S p0,0 s1,1
+-        // D p0,0 s1,1 = S p1,0 s0,1 | S p1,0 s1,1
+-        // Thus destination horizontal sample -> source horizontal pixel,
+-        // vertical samples are 1:1.
+-        source_sample_id =
+-            builder.createBinOp(spv::OpBitwiseAnd, type_uint, dest_sample_id,
+-                                builder.makeUintConstant(1 << 1));
+-        source_tile_pixel_x = builder.createQuadOp(
+-            spv::OpBitFieldInsert, type_uint, dest_sample_id, dest_tile_pixel_x,
+-            builder.makeUintConstant(1), builder.makeUintConstant(31));
+-      } else if (key.dest_msaa_samples == xenos::MsaaSamples::k2X) {
+-        // 32bpp -> 64bpp, 4x -> 2x.
+-        // 1 destination horizontal pixel = 2 source horizontal samples.
+-        // D p0,0 s0 = S p0,0 s0,0 | S p0,0 s1,0
+-        // D p0,0 s1 = S p0,0 s0,1 | S p0,0 s1,1
+-        // D p1,0 s0 = S p1,0 s0,0 | S p1,0 s1,0
+-        // D p1,0 s1 = S p1,0 s0,1 | S p1,0 s1,1
+-        // Pixel index can be reused. Sample 1 (for native 2x) or 0 (for 2x as
+-        // 4x) should become samples 01, sample 0 or 3 should become samples 23.
+-        if (msaa_2x_attachments_supported_) {
+-          source_sample_id = builder.createBinOp(
+-              spv::OpShiftLeftLogical, type_uint,
+-              builder.createBinOp(spv::OpBitwiseXor, type_uint, dest_sample_id,
+-                                  builder.makeUintConstant(1)),
+-              builder.makeUintConstant(1));
+-        } else {
+-          source_sample_id =
+-              builder.createBinOp(spv::OpBitwiseAnd, type_uint, dest_sample_id,
+-                                  builder.makeUintConstant(1 << 1));
+-        }
+-      } else {
+-        // 32bpp -> 64bpp, 4x -> 1x.
+-        // 1 destination horizontal pixel = 2 source horizontal samples.
+-        // D p0,0 = S p0,0 s0,0 | S p0,0 s1,0
+-        // D p0,1 = S p0,0 s0,1 | S p0,0 s1,1
+-        // Horizontal pixel index can be reused. Vertical pixel 1 should
+-        // become sample 2.
+-        source_sample_id = builder.createQuadOp(
+-            spv::OpBitFieldInsert, type_uint, builder.makeUintConstant(0),
+-            dest_tile_pixel_y, builder.makeUintConstant(1),
+-            builder.makeUintConstant(1));
+-        source_tile_pixel_y =
+-            builder.createBinOp(spv::OpShiftRightLogical, type_uint,
+-                                dest_tile_pixel_y, builder.makeUintConstant(1));
+-      }
+-    } else {
+-      // 32bpp -> 64bpp, 1x/2x ->.
+-      // Source has 32bpp halves in two adjacent pixels.
+-      if (key.dest_msaa_samples >= xenos::MsaaSamples::k4X) {
+-        // 32bpp -> 64bpp, 1x/2x -> 4x.
+-        // The X part.
+-        // 1 destination horizontal sample = 2 source horizontal pixels.
+-        source_tile_pixel_x = builder.createQuadOp(
+-            spv::OpBitFieldInsert, type_uint,
+-            builder.createBinOp(spv::OpShiftLeftLogical, type_uint,
+-                                dest_tile_pixel_x, builder.makeUintConstant(2)),
+-            dest_sample_id, builder.makeUintConstant(1),
+-            builder.makeUintConstant(1));
+-        // Y is handled by common code.
+-      } else {
+-        // 32bpp -> 64bpp, 1x/2x -> 1x/2x.
+-        // The X part.
+-        // 1 destination horizontal pixel = 2 source horizontal pixels.
+-        source_tile_pixel_x =
+-            builder.createBinOp(spv::OpShiftLeftLogical, type_uint,
+-                                dest_tile_pixel_x, builder.makeUintConstant(1));
+-        // Y is handled by common code.
+-      }
+-    }
+-  } else if (source_is_64bpp && !dest_is_64bpp) {
+-    // 64bpp -> 32bpp, also the half to load.
+-    if (key.dest_msaa_samples >= xenos::MsaaSamples::k4X) {
+-      // 64bpp -> 32bpp, -> 4x.
+-      // The needed half is in the destination horizontal sample index.
+-      if (key.source_msaa_samples >= xenos::MsaaSamples::k4X) {
+-        // 64bpp -> 32bpp, 4x -> 4x.
+-        // D p0,0 s0,0 = S s0,0 low
+-        // D p0,0 s1,0 = S s0,0 high
+-        // D p1,0 s0,0 = S s1,0 low
+-        // D p1,0 s1,0 = S s1,0 high
+-        // Vertical pixel and sample (second bit) addressing is the same.
+-        // However, 1 horizontal destination pixel = 1 horizontal source sample.
+-        source_sample_id = builder.createQuadOp(
+-            spv::OpBitFieldInsert, type_uint, dest_sample_id, dest_tile_pixel_x,
+-            builder.makeUintConstant(0), builder.makeUintConstant(1));
+-        // 2 destination horizontal samples = 1 source horizontal sample, thus
+-        // 2 destination horizontal pixels = 1 source horizontal pixel.
+-        source_tile_pixel_x =
+-            builder.createBinOp(spv::OpShiftRightLogical, type_uint,
+-                                dest_tile_pixel_x, builder.makeUintConstant(1));
+-      } else {
+-        // 64bpp -> 32bpp, 1x/2x -> 4x.
+-        // 2 destination horizontal samples = 1 source horizontal pixel, thus
+-        // 1 destination horizontal pixel = 1 source horizontal pixel. Can reuse
+-        // horizontal pixel index.
+-        // Y is handled by common code.
+-      }
+-      // Half from the destination horizontal sample index.
++  if (key.source_msaa_samples != key.dest_msaa_samples ||
++      source_is_64bpp != dest_is_64bpp) {
++    // Remap the destination view sample to the source view using the canonical
++    // coordinates (both views are in the source scale space here).
++    CanonicalSampleCoords canonical = CanonicalizeSample(
++        builder, type_uint, key.dest_msaa_samples,
++        msaa_2x_attachments_supported_, dest_tile_pixel_x, dest_tile_pixel_y,
++        dest_sample_id, source_scale_x, source_scale_y);
++    if (dest_is_64bpp && !source_is_64bpp) {
++      // The low 32bpp half of the 64bpp destination sample is obtained from
++      // the source pixel at u = 2 * u_64bpp, and the high half comes from the
++      // horizontally adjacent source pixel later.
++      canonical.u_guest =
++          builder.createBinOp(spv::OpShiftLeftLogical, type_uint,
++                              canonical.u_guest, builder.makeUintConstant(1));
++    } else if (!dest_is_64bpp && source_is_64bpp) {
++      // The 32bpp destination sample is one half of the 64bpp source sample
++      // at u = u_32bpp >> 1.
+       source_color_half =
+-          builder.createBinOp(spv::OpBitwiseAnd, type_uint, dest_sample_id,
++          builder.createBinOp(spv::OpBitwiseAnd, type_uint, canonical.u_guest,
+                               builder.makeUintConstant(1));
+-    } else {
+-      // 64bpp -> 32bpp, -> 1x/2x.
+-      // The needed half is in the destination horizontal pixel index.
+-      if (key.source_msaa_samples >= xenos::MsaaSamples::k4X) {
+-        // 64bpp -> 32bpp, 4x -> 1x/2x.
+-        // (Destination horizontal pixel >> 1) & 1 = source horizontal sample
+-        // (first bit).
+-        source_sample_id = builder.createTriOp(
+-            spv::OpBitFieldUExtract, type_uint, dest_tile_pixel_x,
+-            builder.makeUintConstant(1), builder.makeUintConstant(1));
+-        if (key.dest_msaa_samples == xenos::MsaaSamples::k2X) {
+-          // 64bpp -> 32bpp, 4x -> 2x.
+-          // Destination vertical samples (1/0 in the first bit for native 2x or
+-          // 0/1 in the second bit for 2x as 4x) = source vertical samples
+-          // (second bit).
+-          if (msaa_2x_attachments_supported_) {
+-            source_sample_id = builder.createQuadOp(
+-                spv::OpBitFieldInsert, type_uint, source_sample_id,
+-                builder.createBinOp(spv::OpBitwiseXor, type_uint,
+-                                    dest_sample_id,
+-                                    builder.makeUintConstant(1)),
+-                builder.makeUintConstant(1), builder.makeUintConstant(1));
+-          } else {
+-            source_sample_id = builder.createQuadOp(
+-                spv::OpBitFieldInsert, type_uint, dest_sample_id,
+-                source_sample_id, builder.makeUintConstant(0),
+-                builder.makeUintConstant(1));
+-          }
+-        } else {
+-          // 64bpp -> 32bpp, 4x -> 1x.
+-          // 1 destination vertical pixel = 1 source vertical sample.
+-          source_sample_id = builder.createQuadOp(
+-              spv::OpBitFieldInsert, type_uint, source_sample_id,
+-              source_tile_pixel_y, builder.makeUintConstant(1),
+-              builder.makeUintConstant(1));
+-          source_tile_pixel_y = builder.createBinOp(
+-              spv::OpShiftRightLogical, type_uint, dest_tile_pixel_y,
+-              builder.makeUintConstant(1));
+-        }
+-        // 2 destination horizontal pixels = 1 source horizontal sample.
+-        // 4 destination horizontal pixels = 1 source horizontal pixel.
+-        source_tile_pixel_x =
+-            builder.createBinOp(spv::OpShiftRightLogical, type_uint,
+-                                dest_tile_pixel_x, builder.makeUintConstant(2));
+-      } else {
+-        // 64bpp -> 32bpp, 1x/2x -> 1x/2x.
+-        // The X part.
+-        // 2 destination horizontal pixels = 1 destination source pixel.
+-        source_tile_pixel_x =
+-            builder.createBinOp(spv::OpShiftRightLogical, type_uint,
+-                                dest_tile_pixel_x, builder.makeUintConstant(1));
+-        // Y is handled by common code.
+-      }
+-      // Half from the destination horizontal pixel index.
+-      source_color_half =
+-          builder.createBinOp(spv::OpBitwiseAnd, type_uint, dest_tile_pixel_x,
+-                              builder.makeUintConstant(1));
+-    }
+-    assert_true(source_color_half != spv::NoResult);
+-  } else {
+-    // Same bit count.
+-    if (key.source_msaa_samples != key.dest_msaa_samples) {
+-      if (key.source_msaa_samples >= xenos::MsaaSamples::k4X) {
+-        // Same BPP, 4x -> 1x/2x.
+-        if (key.dest_msaa_samples == xenos::MsaaSamples::k2X) {
+-          // Same BPP, 4x -> 2x.
+-          // Horizontal pixels to samples. Vertical sample (1/0 in the first bit
+-          // for native 2x or 0/1 in the second bit for 2x as 4x) to second
+-          // sample bit.
+-          if (msaa_2x_attachments_supported_) {
+-            source_sample_id = builder.createQuadOp(
+-                spv::OpBitFieldInsert, type_uint, dest_tile_pixel_x,
+-                builder.createBinOp(spv::OpBitwiseXor, type_uint,
+-                                    dest_sample_id,
+-                                    builder.makeUintConstant(1)),
+-                builder.makeUintConstant(1), builder.makeUintConstant(31));
+-          } else {
+-            source_sample_id = builder.createQuadOp(
+-                spv::OpBitFieldInsert, type_uint, dest_sample_id,
+-                dest_tile_pixel_x, builder.makeUintConstant(0),
+-                builder.makeUintConstant(1));
+-          }
+-          source_tile_pixel_x = builder.createBinOp(
+-              spv::OpShiftRightLogical, type_uint, dest_tile_pixel_x,
+-              builder.makeUintConstant(1));
+-        } else {
+-          // Same BPP, 4x -> 1x.
+-          // Pixels to samples.
+-          source_sample_id = builder.createQuadOp(
+-              spv::OpBitFieldInsert, type_uint,
+-              builder.createBinOp(spv::OpBitwiseAnd, type_uint,
+-                                  dest_tile_pixel_x,
+-                                  builder.makeUintConstant(1)),
+-              dest_tile_pixel_y, builder.makeUintConstant(1),
+-              builder.makeUintConstant(1));
+-          source_tile_pixel_x = builder.createBinOp(
+-              spv::OpShiftRightLogical, type_uint, dest_tile_pixel_x,
+-              builder.makeUintConstant(1));
+-          source_tile_pixel_y = builder.createBinOp(
+-              spv::OpShiftRightLogical, type_uint, dest_tile_pixel_y,
+-              builder.makeUintConstant(1));
+-        }
+-      } else {
+-        // Same BPP, 1x/2x -> 1x/2x/4x (as long as they're different).
+-        // Only the X part - Y is handled by common code.
+-        if (key.dest_msaa_samples >= xenos::MsaaSamples::k4X) {
+-          // Horizontal samples to pixels.
+-          source_tile_pixel_x = builder.createQuadOp(
+-              spv::OpBitFieldInsert, type_uint, dest_sample_id,
+-              dest_tile_pixel_x, builder.makeUintConstant(1),
+-              builder.makeUintConstant(31));
+-        }
+-      }
++      canonical.u_guest =
++          builder.createBinOp(spv::OpShiftRightLogical, type_uint,
++                              canonical.u_guest, builder.makeUintConstant(1));
+     }
+-  }
+-  // Common source Y and sample index for 1x/2x AA sources, independent of bits
+-  // per sample.
+-  if (key.source_msaa_samples < xenos::MsaaSamples::k4X &&
+-      key.source_msaa_samples != key.dest_msaa_samples) {
+-    if (key.dest_msaa_samples >= xenos::MsaaSamples::k4X) {
+-      // 1x/2x -> 4x.
+-      if (key.source_msaa_samples == xenos::MsaaSamples::k2X) {
+-        // 2x -> 4x.
+-        // Vertical samples (second bit) of 4x destination to vertical sample
+-        // (1, 0 for native 2x, or 0, 3 for 2x as 4x) of 2x source.
+-        source_sample_id =
+-            builder.createBinOp(spv::OpShiftRightLogical, type_uint,
+-                                dest_sample_id, builder.makeUintConstant(1));
+-        if (msaa_2x_attachments_supported_) {
+-          source_sample_id = builder.createBinOp(spv::OpBitwiseXor, type_uint,
+-                                                 source_sample_id,
+-                                                 builder.makeUintConstant(1));
+-        } else {
+-          source_sample_id = builder.createQuadOp(
+-              spv::OpBitFieldInsert, type_uint, source_sample_id,
+-              source_sample_id, builder.makeUintConstant(1),
+-              builder.makeUintConstant(1));
+-        }
+-      } else {
+-        // 1x -> 4x.
+-        // Vertical samples (second bit) to Y pixels.
+-        source_tile_pixel_y = builder.createQuadOp(
+-            spv::OpBitFieldInsert, type_uint,
+-            builder.createBinOp(spv::OpShiftRightLogical, type_uint,
+-                                dest_sample_id, builder.makeUintConstant(1)),
+-            dest_tile_pixel_y, builder.makeUintConstant(1),
+-            builder.makeUintConstant(31));
+-      }
+-    } else {
+-      // 1x/2x -> different 1x/2x.
+-      if (key.source_msaa_samples == xenos::MsaaSamples::k2X) {
+-        // 2x -> 1x.
+-        // Vertical pixels of 2x destination to vertical samples (1, 0 for
+-        // native 2x, or 0, 3 for 2x as 4x) of 1x source.
+-        source_sample_id =
+-            builder.createBinOp(spv::OpBitwiseAnd, type_uint, dest_tile_pixel_y,
+-                                builder.makeUintConstant(1));
+-        if (msaa_2x_attachments_supported_) {
+-          source_sample_id = builder.createBinOp(spv::OpBitwiseXor, type_uint,
+-                                                 source_sample_id,
+-                                                 builder.makeUintConstant(1));
+-        } else {
+-          source_sample_id = builder.createQuadOp(
+-              spv::OpBitFieldInsert, type_uint, source_sample_id,
+-              source_sample_id, builder.makeUintConstant(1),
+-              builder.makeUintConstant(1));
+-        }
+-        source_tile_pixel_y =
+-            builder.createBinOp(spv::OpShiftRightLogical, type_uint,
+-                                dest_tile_pixel_y, builder.makeUintConstant(1));
+-      } else {
+-        // 1x -> 2x.
+-        // Vertical samples (1/0 in the first bit for native 2x or 0/1 in the
+-        // second bit for 2x as 4x) of 2x destination to vertical pixels of 1x
+-        // source.
+-        if (msaa_2x_attachments_supported_) {
+-          source_tile_pixel_y = builder.createQuadOp(
+-              spv::OpBitFieldInsert, type_uint,
+-              builder.createBinOp(spv::OpBitwiseXor, type_uint, dest_sample_id,
+-                                  builder.makeUintConstant(1)),
+-              dest_tile_pixel_y, builder.makeUintConstant(1),
+-              builder.makeUintConstant(31));
+-        } else {
+-          source_tile_pixel_y = builder.createQuadOp(
+-              spv::OpBitFieldInsert, type_uint,
+-              builder.createBinOp(spv::OpShiftRightLogical, type_uint,
+-                                  dest_sample_id, builder.makeUintConstant(1)),
+-              dest_tile_pixel_y, builder.makeUintConstant(1),
+-              builder.makeUintConstant(31));
+-        }
+-      }
++    spv::Id source_host_sample_id;
++    DecanonicalizeSample(builder, type_uint, key.source_msaa_samples,
++                         msaa_2x_attachments_supported_, canonical,
++                         source_scale_x, source_scale_y, source_tile_pixel_x,
++                         source_tile_pixel_y, source_host_sample_id);
++    if (source_host_sample_id != spv::NoResult) {
++      source_sample_id = source_host_sample_id;
+     }
+   }
++  assert_true((source_color_half != spv::NoResult) ==
++              (source_is_64bpp && !dest_is_64bpp));
+ 
+-  // Source coordinates are derived - the host depth source path below needs
+-  // the destination-space coordinates back.
++  // Source coordinates are done. The host depth path below needs the
++  // destination space coordinates back.
+   dest_tile_pixel_x = dest_space_tile_pixel_x;
+   dest_tile_pixel_y = dest_space_tile_pixel_y;
+ 
+@@ -3298,24 +3221,20 @@ VkShaderModule VulkanRenderTargetCache::GetTransferShader(
+   } else {
+     source_texture_parameters.lod = builder.makeIntConstant(0);
+   }
+-  // Go to the next sample or pixel along X if need to load two dwords.
+-  bool source_load_is_two_32bpp_samples = !source_is_64bpp && dest_is_64bpp;
+-  if (source_load_is_two_32bpp_samples) {
+-    if (key.source_msaa_samples >= xenos::MsaaSamples::k4X) {
+-      source_coordinates[1] = source_coordinates[0];
+-      source_sample_ids_int[1] = builder.createBinOp(
+-          spv::OpBitwiseOr, type_int, source_sample_ids_int[0],
+-          builder.makeIntConstant(1));
+-    } else {
+-      id_vector_temp.clear();
+-      id_vector_temp.push_back(builder.createBinOp(spv::OpBitwiseOr, type_int,
+-                                                   source_pixel_x_int,
+-                                                   builder.makeIntConstant(1)));
+-      id_vector_temp.push_back(source_pixel_y_int);
+-      source_coordinates[1] =
+-          builder.createCompositeConstruct(type_int2, id_vector_temp);
+-      source_sample_ids_int[1] = source_sample_ids_int[0];
+-    }
++  // The high 32bpp half of a 64bpp destination sample is identical to the
++  // sample of the horizontally adjacent source pixel since each canonical
++  // sample column of a single 64bpp value decodes to the same sample of two
++  // horizontally adjacent pixels, regardless of sample count.
++  bool source_load_is_two_32bpp_halves = !source_is_64bpp && dest_is_64bpp;
++  if (source_load_is_two_32bpp_halves) {
++    id_vector_temp.clear();
++    id_vector_temp.push_back(
++        builder.createBinOp(spv::OpIAdd, type_int, source_pixel_x_int,
++                            builder.makeIntConstant(int32_t(source_scale_x))));
++    id_vector_temp.push_back(source_pixel_y_int);
++    source_coordinates[1] =
++        builder.createCompositeConstruct(type_int2, id_vector_temp);
++    source_sample_ids_int[1] = source_sample_ids_int[0];
+   }
+   spv::Id source_color[2][4] = {};
+   if (source_color_texture != spv::NoResult) {
+@@ -3324,7 +3243,7 @@ VkShaderModule VulkanRenderTargetCache::GetTransferShader(
+     assert_true(source_color_component_type != spv::NoType);
+     spv::Id source_color_vec4_type =
+         builder.makeVectorType(source_color_component_type, 4);
+-    for (uint32_t i = 0; i <= uint32_t(source_load_is_two_32bpp_samples); ++i) {
++    for (uint32_t i = 0; i <= uint32_t(source_load_is_two_32bpp_halves); ++i) {
+       source_texture_parameters.coords = source_coordinates[i];
+       source_texture_parameters.sample = source_sample_ids_int[i];
+       spv::Id source_color_vec4 = builder.createTextureCall(
+@@ -3348,7 +3267,7 @@ VkShaderModule VulkanRenderTargetCache::GetTransferShader(
+   if (source_depth_texture != spv::NoResult) {
+     source_texture_parameters.sampler =
+         builder.createLoad(source_depth_texture, spv::NoPrecision);
+-    for (uint32_t i = 0; i <= uint32_t(source_load_is_two_32bpp_samples); ++i) {
++    for (uint32_t i = 0; i <= uint32_t(source_load_is_two_32bpp_halves); ++i) {
+       source_texture_parameters.coords = source_coordinates[i];
+       source_texture_parameters.sample = source_sample_ids_int[i];
+       source_depth_float[i] = builder.createCompositeExtract(
+@@ -3362,7 +3281,7 @@ VkShaderModule VulkanRenderTargetCache::GetTransferShader(
+   if (source_stencil_texture != spv::NoResult) {
+     source_texture_parameters.sampler =
+         builder.createLoad(source_stencil_texture, spv::NoPrecision);
+-    for (uint32_t i = 0; i <= uint32_t(source_load_is_two_32bpp_samples); ++i) {
++    for (uint32_t i = 0; i <= uint32_t(source_load_is_two_32bpp_halves); ++i) {
+       source_texture_parameters.coords = source_coordinates[i];
+       source_texture_parameters.sample = source_sample_ids_int[i];
+       source_stencil[i] = builder.createCompositeExtract(
+@@ -4097,153 +4016,27 @@ VkShaderModule VulkanRenderTargetCache::GetTransferShader(
+           spv::Id host_depth32 = spv::NoResult;
+           if (host_depth_source_texture != spv::NoResult) {
+             // Convert position and sample index from within the destination
+-            // tile to within the host depth source tile, like for the guest
+-            // render target, but for 32bpp -> 32bpp only.
++            // tile to within the host depth source tile by remapping through
++            // the canonical coordinates. Both views are 32bpp and use the
++            // destination scale.
+             spv::Id host_depth_source_sample_id = dest_sample_id;
+             spv::Id host_depth_source_tile_pixel_x = dest_tile_pixel_x;
+             spv::Id host_depth_source_tile_pixel_y = dest_tile_pixel_y;
+             if (key.host_depth_source_msaa_samples != key.dest_msaa_samples) {
+-              if (key.host_depth_source_msaa_samples >=
+-                  xenos::MsaaSamples::k4X) {
+-                // 4x -> 1x/2x.
+-                if (key.dest_msaa_samples == xenos::MsaaSamples::k2X) {
+-                  // 4x -> 2x.
+-                  // Horizontal pixels to samples. Vertical sample (1/0 in the
+-                  // first bit for native 2x or 0/1 in the second bit for 2x as
+-                  // 4x) to second sample bit.
+-                  if (msaa_2x_attachments_supported_) {
+-                    host_depth_source_sample_id = builder.createQuadOp(
+-                        spv::OpBitFieldInsert, type_uint, dest_tile_pixel_x,
+-                        builder.createBinOp(spv::OpBitwiseXor, type_uint,
+-                                            dest_sample_id,
+-                                            builder.makeUintConstant(1)),
+-                        builder.makeUintConstant(1),
+-                        builder.makeUintConstant(31));
+-                  } else {
+-                    host_depth_source_sample_id = builder.createQuadOp(
+-                        spv::OpBitFieldInsert, type_uint, dest_sample_id,
+-                        dest_tile_pixel_x, builder.makeUintConstant(0),
+-                        builder.makeUintConstant(1));
+-                  }
+-                  host_depth_source_tile_pixel_x = builder.createBinOp(
+-                      spv::OpShiftRightLogical, type_uint, dest_tile_pixel_x,
+-                      builder.makeUintConstant(1));
+-                } else {
+-                  // 4x -> 1x.
+-                  // Pixels to samples.
+-                  host_depth_source_sample_id = builder.createQuadOp(
+-                      spv::OpBitFieldInsert, type_uint,
+-                      builder.createBinOp(spv::OpBitwiseAnd, type_uint,
+-                                          dest_tile_pixel_x,
+-                                          builder.makeUintConstant(1)),
+-                      dest_tile_pixel_y, builder.makeUintConstant(1),
+-                      builder.makeUintConstant(1));
+-                  host_depth_source_tile_pixel_x = builder.createBinOp(
+-                      spv::OpShiftRightLogical, type_uint, dest_tile_pixel_x,
+-                      builder.makeUintConstant(1));
+-                  host_depth_source_tile_pixel_y = builder.createBinOp(
+-                      spv::OpShiftRightLogical, type_uint, dest_tile_pixel_y,
+-                      builder.makeUintConstant(1));
+-                }
+-              } else {
+-                // 1x/2x -> 1x/2x/4x (as long as they're different).
+-                // Only the X part - Y is handled by common code.
+-                if (key.dest_msaa_samples >= xenos::MsaaSamples::k4X) {
+-                  // Horizontal samples to pixels.
+-                  host_depth_source_tile_pixel_x = builder.createQuadOp(
+-                      spv::OpBitFieldInsert, type_uint, dest_sample_id,
+-                      dest_tile_pixel_x, builder.makeUintConstant(1),
+-                      builder.makeUintConstant(31));
+-                }
+-              }
+-              // Host depth source Y and sample index for 1x/2x AA sources.
+-              if (key.host_depth_source_msaa_samples <
+-                  xenos::MsaaSamples::k4X) {
+-                if (key.dest_msaa_samples >= xenos::MsaaSamples::k4X) {
+-                  // 1x/2x -> 4x.
+-                  if (key.host_depth_source_msaa_samples ==
+-                      xenos::MsaaSamples::k2X) {
+-                    // 2x -> 4x.
+-                    // Vertical samples (second bit) of 4x destination to
+-                    // vertical sample (1, 0 for native 2x, or 0, 3 for 2x as
+-                    // 4x) of 2x source.
+-                    host_depth_source_sample_id = builder.createBinOp(
+-                        spv::OpShiftRightLogical, type_uint, dest_sample_id,
+-                        builder.makeUintConstant(1));
+-                    if (msaa_2x_attachments_supported_) {
+-                      host_depth_source_sample_id =
+-                          builder.createBinOp(spv::OpBitwiseXor, type_uint,
+-                                              host_depth_source_sample_id,
+-                                              builder.makeUintConstant(1));
+-                    } else {
+-                      host_depth_source_sample_id =
+-                          builder.createQuadOp(spv::OpBitFieldInsert, type_uint,
+-                                               host_depth_source_sample_id,
+-                                               host_depth_source_sample_id,
+-                                               builder.makeUintConstant(1),
+-                                               builder.makeUintConstant(1));
+-                    }
+-                  } else {
+-                    // 1x -> 4x.
+-                    // Vertical samples (second bit) to Y pixels.
+-                    host_depth_source_tile_pixel_y = builder.createQuadOp(
+-                        spv::OpBitFieldInsert, type_uint,
+-                        builder.createBinOp(spv::OpShiftRightLogical, type_uint,
+-                                            dest_sample_id,
+-                                            builder.makeUintConstant(1)),
+-                        dest_tile_pixel_y, builder.makeUintConstant(1),
+-                        builder.makeUintConstant(31));
+-                  }
+-                } else {
+-                  // 1x/2x -> different 1x/2x.
+-                  if (key.host_depth_source_msaa_samples ==
+-                      xenos::MsaaSamples::k2X) {
+-                    // 2x -> 1x.
+-                    // Vertical pixels of 2x destination to vertical samples (1,
+-                    // 0 for native 2x, or 0, 3 for 2x as 4x) of 1x source.
+-                    host_depth_source_sample_id = builder.createBinOp(
+-                        spv::OpBitwiseAnd, type_uint, dest_tile_pixel_y,
+-                        builder.makeUintConstant(1));
+-                    if (msaa_2x_attachments_supported_) {
+-                      host_depth_source_sample_id =
+-                          builder.createBinOp(spv::OpBitwiseXor, type_uint,
+-                                              host_depth_source_sample_id,
+-                                              builder.makeUintConstant(1));
+-                    } else {
+-                      host_depth_source_sample_id =
+-                          builder.createQuadOp(spv::OpBitFieldInsert, type_uint,
+-                                               host_depth_source_sample_id,
+-                                               host_depth_source_sample_id,
+-                                               builder.makeUintConstant(1),
+-                                               builder.makeUintConstant(1));
+-                    }
+-                    host_depth_source_tile_pixel_y = builder.createBinOp(
+-                        spv::OpShiftRightLogical, type_uint, dest_tile_pixel_y,
+-                        builder.makeUintConstant(1));
+-                  } else {
+-                    // 1x -> 2x.
+-                    // Vertical samples (1/0 in the first bit for native 2x or
+-                    // 0/1 in the second bit for 2x as 4x) of 2x destination to
+-                    // vertical pixels of 1x source.
+-                    if (msaa_2x_attachments_supported_) {
+-                      host_depth_source_tile_pixel_y = builder.createQuadOp(
+-                          spv::OpBitFieldInsert, type_uint,
+-                          builder.createBinOp(spv::OpBitwiseXor, type_uint,
+-                                              dest_sample_id,
+-                                              builder.makeUintConstant(1)),
+-                          dest_tile_pixel_y, builder.makeUintConstant(1),
+-                          builder.makeUintConstant(31));
+-                    } else {
+-                      host_depth_source_tile_pixel_y = builder.createQuadOp(
+-                          spv::OpBitFieldInsert, type_uint,
+-                          builder.createBinOp(spv::OpShiftRightLogical,
+-                                              type_uint, dest_sample_id,
+-                                              builder.makeUintConstant(1)),
+-                          dest_tile_pixel_y, builder.makeUintConstant(1),
+-                          builder.makeUintConstant(31));
+-                    }
+-                  }
+-                }
++              CanonicalSampleCoords host_depth_canonical = CanonicalizeSample(
++                  builder, type_uint, key.dest_msaa_samples,
++                  msaa_2x_attachments_supported_, dest_tile_pixel_x,
++                  dest_tile_pixel_y, dest_sample_id, dest_scale_x,
++                  dest_scale_y);
++              spv::Id host_depth_remapped_sample_id;
++              DecanonicalizeSample(
++                  builder, type_uint, key.host_depth_source_msaa_samples,
++                  msaa_2x_attachments_supported_, host_depth_canonical,
++                  dest_scale_x, dest_scale_y, host_depth_source_tile_pixel_x,
++                  host_depth_source_tile_pixel_y,
++                  host_depth_remapped_sample_id);
++              if (host_depth_remapped_sample_id != spv::NoResult) {
++                host_depth_source_sample_id = host_depth_remapped_sample_id;
+               }
+             }
+             assert_true(push_constants_member_host_depth_address != UINT32_MAX);
+@@ -6052,40 +5845,106 @@ VkPipeline VulkanRenderTargetCache::GetDumpPipeline(DumpPipelineKey key) {
+   spv::Id source_pixel_x = source_sample_x, source_pixel_y = source_sample_y;
+   spv::Id source_sample_id = spv::NoResult;
+   if (source_is_multisampled) {
++    // source_sample_x/y hold the canonical sample coordinates within the
++    // EDRAM layout. Convert them into the pixel and the sample of the
++    // multisampled view using the canonical layout formulas, at guest pixel
++    // granularity when the layout is scaled.
++    uint32_t layout_scale_x = key.native_layout ? 1 : draw_resolution_scale_x();
++    uint32_t layout_scale_y = key.native_layout ? 1 : draw_resolution_scale_y();
++    bool layout_scaled = layout_scale_x > 1 || layout_scale_y > 1;
+     spv::Id const_uint_1 = builder.makeUintConstant(1);
+-    source_pixel_y = builder.createBinOp(spv::OpShiftRightLogical, type_uint,
+-                                         source_sample_y, const_uint_1);
++    spv::Id const_uint_2 = builder.makeUintConstant(2);
++    spv::Id canonical_u = source_sample_x;
++    spv::Id canonical_v = source_sample_y;
++    spv::Id subpixel_x = spv::NoResult, subpixel_y = spv::NoResult;
++    spv::Id const_layout_scale_x = spv::NoResult;
++    spv::Id const_layout_scale_y = spv::NoResult;
++    if (layout_scaled) {
++      const_layout_scale_x = builder.makeUintConstant(layout_scale_x);
++      const_layout_scale_y = builder.makeUintConstant(layout_scale_y);
++      canonical_u = builder.createBinOp(spv::OpUDiv, type_uint, source_sample_x,
++                                        const_layout_scale_x);
++      subpixel_x = builder.createBinOp(spv::OpUMod, type_uint, source_sample_x,
++                                       const_layout_scale_x);
++      canonical_v = builder.createBinOp(spv::OpUDiv, type_uint, source_sample_y,
++                                        const_layout_scale_y);
++      subpixel_y = builder.createBinOp(spv::OpUMod, type_uint, source_sample_y,
++                                       const_layout_scale_y);
++    }
+     if (key.msaa_samples >= xenos::MsaaSamples::k4X) {
+-      source_pixel_x = builder.createBinOp(spv::OpShiftRightLogical, type_uint,
+-                                           source_sample_x, const_uint_1);
+       // 4x MSAA source texture sample index - bit 0 for horizontal, bit 1 for
+-      // vertical.
++      // vertical, same as the canonical layout.
++      // sample = ((u >> 1) & 1) | (((v >> 1) & 1) << 1)
+       source_sample_id = builder.createQuadOp(
+           spv::OpBitFieldInsert, type_uint,
+-          builder.createBinOp(spv::OpBitwiseAnd, type_uint, source_sample_x,
+-                              const_uint_1),
+-          source_sample_y, const_uint_1, const_uint_1);
++          builder.createTriOp(spv::OpBitFieldUExtract, type_uint, canonical_u,
++                              const_uint_1, const_uint_1),
++          builder.createTriOp(spv::OpBitFieldUExtract, type_uint, canonical_v,
++                              const_uint_1, const_uint_1),
++          const_uint_1, const_uint_1);
++      // Guest pixel per axis = ((c >> 2) << 1) | (c & 1).
++      source_pixel_x = builder.createQuadOp(
++          spv::OpBitFieldInsert, type_uint, canonical_u,
++          builder.createBinOp(spv::OpShiftRightLogical, type_uint, canonical_u,
++                              const_uint_2),
++          const_uint_1, builder.makeUintConstant(31));
++      source_pixel_y = builder.createQuadOp(
++          spv::OpBitFieldInsert, type_uint, canonical_v,
++          builder.createBinOp(spv::OpShiftRightLogical, type_uint, canonical_v,
++                              const_uint_2),
++          const_uint_1, builder.makeUintConstant(31));
+     } else {
+-      // 2x MSAA source texture sample index - convert from the guest to
+-      // the Vulkan standard sample locations.
++      // At 2x the guest sample sits in canonical U bit 1 and one guest pixel
++      // X bit sits in canonical V bit 1. Convert the guest sample index to
++      // the Vulkan standard sample order.
+       source_sample_id = builder.createTriOp(
+           spv::OpSelect, type_uint,
+-          builder.createBinOp(
+-              spv::OpINotEqual, builder.makeBoolType(),
+-              builder.createBinOp(spv::OpBitwiseAnd, type_uint, source_sample_y,
+-                                  const_uint_1),
+-              const_uint_0),
++          builder.createBinOp(spv::OpINotEqual, builder.makeBoolType(),
++                              builder.createBinOp(spv::OpBitwiseAnd, type_uint,
++                                                  canonical_u, const_uint_2),
++                              const_uint_0),
+           builder.makeUintConstant(draw_util::GetD3D10SampleIndexForGuest2xMSAA(
+               1, msaa_2x_attachments_supported_)),
+           builder.makeUintConstant(draw_util::GetD3D10SampleIndexForGuest2xMSAA(
+               0, msaa_2x_attachments_supported_)));
++      // Guest pixel X = (u & ~2) | (v & 2).
++      source_pixel_x = builder.createBinOp(
++          spv::OpBitwiseOr, type_uint,
++          builder.createBinOp(spv::OpBitwiseAnd, type_uint, canonical_u,
++                              builder.makeUintConstant(~uint32_t(2))),
++          builder.createBinOp(spv::OpBitwiseAnd, type_uint, canonical_v,
++                              const_uint_2));
++      // Guest pixel Y = ((v & ~3) >> 1) | (v & 1).
++      source_pixel_y = builder.createBinOp(
++          spv::OpBitwiseOr, type_uint,
++          builder.createBinOp(
++              spv::OpShiftRightLogical, type_uint,
++              builder.createBinOp(spv::OpBitwiseAnd, type_uint, canonical_v,
++                                  builder.makeUintConstant(~uint32_t(3))),
++              const_uint_1),
++          builder.createBinOp(spv::OpBitwiseAnd, type_uint, canonical_v,
++                              const_uint_1));
+     }
+-  }
+-  if (key.source_scale_native && !key.native_layout &&
+-      IsDrawResolutionScaled()) {
+-    // Native source dumped to the scaled EDRAM layout. Duplicate each pixel
+-    // into all the scaled sample slots covering it. Done after the sample index
+-    // is extracted since MSAA isn't affected by scale.
++    if (!key.source_scale_native && layout_scaled) {
++      // Scaled source in the scaled layout. Restore the subpixel position.
++      source_pixel_x = builder.createBinOp(
++          spv::OpIAdd, type_uint,
++          builder.createBinOp(spv::OpIMul, type_uint, source_pixel_x,
++                              const_layout_scale_x),
++          subpixel_x);
++      source_pixel_y = builder.createBinOp(
++          spv::OpIAdd, type_uint,
++          builder.createBinOp(spv::OpIMul, type_uint, source_pixel_y,
++                              const_layout_scale_y),
++          subpixel_y);
++    }
++    // With a native source and a scaled layout, the guest pixel position comes
++    // directly from the source texture position, and all the scaled sample
++    // slots covering one guest sample receive its value.
++  } else if (key.source_scale_native && !key.native_layout &&
++             IsDrawResolutionScaled()) {
++    // Native single sampled source dumped to the scaled EDRAM layout.
++    // Duplicate each pixel into all the scaled sample slots covering it.
+     source_pixel_x = builder.createBinOp(
+         spv::OpUDiv, type_uint, source_pixel_x,
+         builder.makeUintConstant(draw_resolution_scale_x()));
+-- 
+2.49.0.windows.1
+

@@ -1,0 +1,28 @@
+# Implemented for real in Extra.cs.
+Microsoft.Xna.Framework.Storage.StorageContainer::DisplayName
+Microsoft.Xna.Framework.Storage.StorageContainer::StorageDevice
+Microsoft.Xna.Framework.Storage.StorageContainer::IsDisposed
+Microsoft.Xna.Framework.Storage.StorageContainer::DirectoryExists
+Microsoft.Xna.Framework.Storage.StorageContainer::FileExists
+Microsoft.Xna.Framework.Storage.StorageContainer::CreateDirectory
+Microsoft.Xna.Framework.Storage.StorageContainer::CreateFile
+Microsoft.Xna.Framework.Storage.StorageContainer::DeleteDirectory
+Microsoft.Xna.Framework.Storage.StorageContainer::OpenFile
+Microsoft.Xna.Framework.Storage.StorageContainer::DeleteFile
+Microsoft.Xna.Framework.Storage.StorageContainer::GetDirectoryNames
+Microsoft.Xna.Framework.Storage.StorageContainer::GetFileNames
+Microsoft.Xna.Framework.Storage.StorageContainer::Dispose
+# A generated event has empty accessors, so it silently drops every
+# handler and can never be raised.
+Microsoft.Xna.Framework.Storage.StorageContainer::Disposing
+# A generated Finalize() is a CS0465 trap, not a destructor.
+Microsoft.Xna.Framework.Storage.StorageContainer::Finalize
+Microsoft.Xna.Framework.Storage.StorageDevice::FreeSpace
+Microsoft.Xna.Framework.Storage.StorageDevice::TotalSpace
+Microsoft.Xna.Framework.Storage.StorageDevice::IsConnected
+Microsoft.Xna.Framework.Storage.StorageDevice::DeleteContainer
+Microsoft.Xna.Framework.Storage.StorageDevice::BeginShowSelector
+Microsoft.Xna.Framework.Storage.StorageDevice::EndShowSelector
+Microsoft.Xna.Framework.Storage.StorageDevice::BeginOpenContainer
+Microsoft.Xna.Framework.Storage.StorageDevice::EndOpenContainer
+Microsoft.Xna.Framework.Storage.StorageDeviceNotConnectedException::.ctor

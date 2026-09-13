@@ -197,8 +197,17 @@ void XmaDecoder::WorkerThreadMain() {
     // Okay, let's loop through XMA contexts to find ones we need to decode!
     bool did_work = false;
     for (uint32_t n = 0; n < kContextCount; n++) {
+      // A KICKED CONTEXT MUST ALWAYS BE SIGNALLED.
+      //
+      // WriteRegister blocks in WaitForWorkDone() after a kick. Work() returns
+      // false when the context is no longer enabled or allocated, so signalling
+      // only on a successful pass leaves the kicking thread waiting for an
+      // event that will never be set - a permanent hang, not a dropped frame.
+      // Signalling whenever the context was enabled coming into this pass keeps
+      // one kick paired with one signal even when the pass does nothing.
+      const bool was_enabled = contexts_[n]->is_enabled();
       bool worked = contexts_[n]->Work();
-      if (worked) {
+      if (worked || was_enabled) {
         contexts_[n]->SignalWorkDone();
       }
       did_work = did_work || worked;

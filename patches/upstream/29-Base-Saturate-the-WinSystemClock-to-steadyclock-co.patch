@@ -1,0 +1,77 @@
+From 3494b56a0b8b60efbcc66e46afa67977787b2c6d Mon Sep 17 00:00:00 2001
+From: Tim <peerloomllc@proton.me>
+Date: Mon, 31 Aug 2026 19:42:08 -0500
+Subject: [PATCH] [Base] Saturate the WinSystemClock to steady_clock conversion
+
+A timer armed with an absolute due time already in the past waited about two
+centuries instead of firing at once, so a title that sets its audio tick
+with a due time of 0 got no tick at all and ran silent on Linux.
+
+The cause is in the conversion rather than in the caller. It computes
+steady_now + (t - nt_now), and the NT epoch is 1601, so a time point near it
+is about four centuries away: ~1.3e19 ns, more than an int64 of nanoseconds
+holds. The wrapped result landed arbitrarily far in the future rather than
+in the past.
+
+Clamp the delta to what the steady clock can represent and clamp the sum,
+so an out-of-range conversion saturates instead of wrapping. A saturated-low
+time point is already due, which the timer queue fires immediately. Fixing
+it here rather than at the one call site covers every caller, as asked in
+the review of #1193.
+---
+ src/xenia/base/chrono_steady_cast.h | 30 +++++++++++++++++++++++++++--
+ 1 file changed, 28 insertions(+), 2 deletions(-)
+
+diff --git a/src/xenia/base/chrono_steady_cast.h b/src/xenia/base/chrono_steady_cast.h
+index 044780787..a99fc4dd8 100644
+--- a/src/xenia/base/chrono_steady_cast.h
++++ b/src/xenia/base/chrono_steady_cast.h
+@@ -11,8 +11,10 @@
+ #define XENIA_BASE_CHRONO_STEADY_CAST_H_
+ 
+ #include <atomic>
++#include <limits>
+ 
+ #include "xenia/base/chrono.h"
++#include "xenia/base/math.h"
+ 
+ // This is in a separate header because casting to and from steady time points
+ // usually doesn't make sense and is imprecise. However, NT uses the FileTime
+@@ -66,8 +68,32 @@ struct clock_time_conversion<std::chrono::steady_clock,
+     auto nt_now = WinSystemClock_::now();
+     std::atomic_thread_fence(std::memory_order_acq_rel);
+ 
+-    auto delta = t - nt_now;
+-    return steady_now + delta;
++    // Saturate rather than overflow. The NT epoch is 1601, so a time point
++    // near it is about four centuries from now: ~1.3e19 ns, more than an
++    // int64 of nanoseconds holds, and the wrapped result lands arbitrarily
++    // far in the future instead of in the past. Guests do pass such values
++    // (a due time of 0 means "already elapsed").
++    using steady_duration = steady_clock_::duration;
++    using steady_rep = steady_duration::rep;
++    constexpr auto kMin = std::numeric_limits<steady_rep>::min();
++    constexpr auto kMax = std::numeric_limits<steady_rep>::max();
++
++    // t - nt_now is safe in the source period; it is the cast down to the
++    // steady clock's period that can overflow, so test the range in double
++    // first and only cast when it fits.
++    const auto raw = t - nt_now;
++    const auto raw_ns =
++        std::chrono::duration_cast<
++            std::chrono::duration<double, steady_duration::period>>(raw)
++            .count();
++    const steady_duration delta =
++        (raw_ns > static_cast<double>(kMin) &&
++         raw_ns < static_cast<double>(kMax))
++            ? std::chrono::duration_cast<steady_duration>(raw)
++            : steady_duration(raw_ns < 0 ? kMin : kMax);
++
++    return steady_clock_::time_point(steady_duration(
++        xe::sat_add(steady_now.time_since_epoch().count(), delta.count())));
+   }
+ };
+ 
+-- 
+2.49.0.windows.1
+

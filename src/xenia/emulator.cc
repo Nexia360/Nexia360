@@ -45,6 +45,9 @@
 #include "xenia/kernel/user_module.h"
 #include "xenia/kernel/xam/achievement_manager.h"
 #include "xenia/kernel/xam/xam_module.h"
+#include "xenia/kernel/xna/xna_bridge.h"
+#include "xenia/kernel/xna/xna_host.h"
+#include "xenia/kernel/xna/xna_launcher.h"
 #include "xenia/kernel/xam/xdbf/spa_info.h"
 #include "xenia/kernel/xbdm/xbdm_module.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_module.h"
@@ -79,6 +82,11 @@ DEFINE_string(
     "or the module specified by the game. Leave blank to launch the default "
     "module.",
     "General");
+
+DEFINE_bool(xna_bridge_selftest, false,
+            "Call a kernel export from host code at launch to verify the "
+            "XNA host bridge, and log what came back.",
+            "XNA");
 
 DEFINE_bool(allow_game_relative_writes, false,
             "Not useful to non-developers. Allows code to write to paths "
@@ -606,9 +614,23 @@ X_STATUS Emulator::LaunchPath(const std::filesystem::path& path) {
     } break;
     case FileSignatureType::EXE:
     case FileSignatureType::Unknown:
-    default:
+    default: {
+      // AN XNA TITLE THAT WAS BUILT RATHER THAN DOWNLOADED.
+      //
+      // It arrives as a directory, or as the managed exe itself, and neither
+      // carries a container signature - so every case above declines it and
+      // this one used to return NOT_SUPPORTED before the XNA check inside
+      // CompleteLaunch was ever reached. There is no module path to find and
+      // nothing to mount here: a hosted title's files are answered from the
+      // package the XNA launcher mounts for itself.
+      kernel::xna::XnaPackageInfo xna_info;
+      if (kernel::xna::IsXnaPackage(path, &xna_info)) {
+        X_STATUS result = CompleteLaunch(path, "");
+        kernel_state_->deployment_type_ = XDeploymentType::kDownload;
+        return result;
+      }
       return X_STATUS_NOT_SUPPORTED;
-      break;
+    } break;
   }
 }
 
@@ -957,6 +979,7 @@ X_STATUS Emulator::InstallContentPackage(
 
   if (!installation_info.target_update_id_.empty() &&
       installation_info.content_type_ != XContentType::kInstaller &&
+      installation_info.content_type_ != XContentType::kSUStoragePack &&
       title_update_manager_) {
     // Marketplace content is shared across profiles, so it is keyed under
     // xuid 0 - match ContentManager::ResolvePackagePath exactly or the
@@ -1042,7 +1065,7 @@ X_STATUS Emulator::InstallContentPackage(
     title_update_manager_->ImportFromContent(
         installation_info.title_id_,
         xe::path_to_utf8(installation_info.data_installation_path_.filename()),
-        /*auto_activate=*/true);
+        /*auto_activate=*/true, installation_info.title_update_name_);
   }
 
   return error_code;
@@ -1472,6 +1495,16 @@ void Emulator::WaitUntilExit() {
   while (true) {
     if (main_thread_) {
       xe::threading::Wait(main_thread_->thread(), false);
+    } else if (kernel::xna::XnaHost::Instance().running()) {
+      // A HOSTED TITLE HAS NO GUEST MAIN THREAD TO WAIT ON.
+      //
+      // With main_thread_ null this loop fell straight through and reported the
+      // title as exited the instant it launched, while the title was in fact
+      // running on the CLR. The host's own lifetime is the thing to wait on
+      // here; it has no waitable handle, so this polls it.
+      while (kernel::xna::XnaHost::Instance().running()) {
+        xe::threading::Sleep(std::chrono::milliseconds(100));
+      }
     }
 
     if (restoring_) {
@@ -1604,6 +1637,68 @@ X_STATUS Emulator::CompleteLaunch(const std::filesystem::path& path,
 
   // Allow xam to request module loads.
   auto xam = kernel_state()->GetKernelModule<kernel::xam::XamModule>("xam.xex");
+
+  // An XNA title has no guest module to load - its IL runs on the host CLR.
+  // The check belongs exactly here: late enough that the kernel and xam exist,
+  // because the OS table those titles call reads kernel_state() for profiles,
+  // content and the imgui drawer; early enough that no default.xex is demanded,
+  // because an XBLIG package has none. Detection needs a managed PE inside the
+  // package, which an ordinary 360 title never has.
+  {
+    kernel::xna::XnaPackageInfo xna_info;
+    if (kernel::xna::IsXnaPackage(path, &xna_info)) {
+      title_id_ = xna_info.title_id;
+      // The kernel derives the title from the executable module, and a hosted
+      // title has none - so without this everything keyed on the title, content
+      // and profile storage included, works against title 0 rather than the
+      // real one. The package's content header is where it actually comes from.
+      kernel_state_->SetHostedTitleId(xna_info.title_id);
+      title_name_ = xna_info.display_name;
+      const size_t dot = title_name_.find_last_of('.');
+      if (dot != std::string::npos) {
+        title_name_ = title_name_.substr(0, dot);
+      }
+      XELOGI("Launching XNA title {} on the host CLR", title_name_);
+      if (!kernel::xna::LaunchXnaPackage(path)) {
+        return X_STATUS_UNSUCCESSFUL;
+      }
+
+      // ANNOUNCE THE LAUNCH. THE REST OF THE EMULATOR IS WAITING FOR IT.
+      //
+      // Returning success here without the announcement below left the emulator
+      // with no idea a title was running: on_launch is what sets
+      // emulator_thread_event_, and the emulator thread parks on that event
+      // forever, so the window title, Discord presence and everything else
+      // keyed on a running title stayed in the pre-launch state while the title
+      // itself ran perfectly on the CLR. The tail of the normal path does all
+      // of this; a hosted title needs the same, minus the parts that only exist
+      // for a guest module.
+      config::LoadGameConfig(fmt::format("{:08X}", title_id_.value()));
+      assert_true(game_config_load_callback_loop_next_index_ == SIZE_MAX);
+      game_config_load_callback_loop_next_index_ = 0;
+      while (game_config_load_callback_loop_next_index_ <
+             game_config_load_callbacks_.size()) {
+        game_config_load_callbacks_
+            [game_config_load_callback_loop_next_index_++]
+                ->PostGameConfigLoad();
+      }
+      game_config_load_callback_loop_next_index_ = SIZE_MAX;
+
+      kernel_state_->xam_state()->user_tracker()->AddTitleToPlayedList();
+      kernel_state_->xam_state()->user_tracker()->AddDefaultProperties();
+      kernel_state_->xam_state()->user_tracker()->AddDefaultContexts();
+
+      on_launch(title_id_.value(), title_name_);
+
+      kernel_state()->GetXboxLiveAPI()->Init();
+      kernel_state()->xam_state()->StartPeriodicMaintenance();
+
+      // No guest main thread exists to resume - the title runs on its own
+      // managed thread from here. WaitUntilExit knows to wait on the host
+      // instead of on main_thread_.
+      return X_STATUS_SUCCESS;
+    }
+  }
 
   XELOGI("Loading module {}", module_path);
   auto module = kernel_state_->LoadUserModule(module_path);
@@ -1865,6 +1960,12 @@ X_STATUS Emulator::CompleteLaunch(const std::filesystem::path& path,
   kernel_state()->GetXboxLiveAPI()->Init();
 
   kernel_state()->xam_state()->StartPeriodicMaintenance();
+
+  // Proves the host-to-kernel-export bridge that hosted XNA titles will use.
+  // It calls real exports, so it stays behind a switch.
+  if (cvars::xna_bridge_selftest) {
+    kernel::xna::XnaBridge::Instance().RunSelfTest();
+  }
 
   // Resume the main thread now.
   // If the debugger has requested a suspend this will just decrement the

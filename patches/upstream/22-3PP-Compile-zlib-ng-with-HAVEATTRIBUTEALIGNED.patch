@@ -1,0 +1,34 @@
+From ec664e0f0c26a001b2287d2dc7123c976ce37373 Mon Sep 17 00:00:00 2001
+From: Adrian <78108584+AdrianCassar@users.noreply.github.com>
+Date: Fri, 28 Aug 2026 19:14:31 +0100
+Subject: [PATCH] [3PP] Compile zlib-ng with HAVE_ATTRIBUTE_ALIGNED
+
+---
+ third_party/CMakeLists.txt | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/third_party/CMakeLists.txt b/third_party/CMakeLists.txt
+index fcdca8bbf..808f0ee9f 100644
+--- a/third_party/CMakeLists.txt
++++ b/third_party/CMakeLists.txt
+@@ -312,7 +312,7 @@ if(XE_TARGET_AARCH64)
+     WITH_GZFILEOP
+   )
+   if(NOT MSVC)
+-    target_compile_definitions(zlib-ng PRIVATE HAVE_BUILTIN_CTZ HAVE_BUILTIN_CTZLL)
++    target_compile_definitions(zlib-ng PRIVATE HAVE_BUILTIN_CTZ HAVE_BUILTIN_CTZLL HAVE_ATTRIBUTE_ALIGNED)
+   endif()
+ else()
+   file(GLOB _zlibng_x86 "zlib-ng/arch/x86/*.c")
+@@ -336,7 +336,7 @@ else()
+     # GCC/Clang have native __builtin_ctz/__builtin_ctzll (MSVC gets these
+     # from fallback_builtins.h). Defining these enables optimized compare256
+     # and longest_match codepaths.
+-    target_compile_definitions(zlib-ng PRIVATE HAVE_BUILTIN_CTZ HAVE_BUILTIN_CTZLL)
++    target_compile_definitions(zlib-ng PRIVATE HAVE_BUILTIN_CTZ HAVE_BUILTIN_CTZLL HAVE_ATTRIBUTE_ALIGNED)
+     # GCC/Clang need per-file ISA flags; MSVC handles this via runtime dispatch
+     set_source_files_properties(
+       zlib-ng/arch/x86/adler32_avx2.c
+-- 
+2.49.0.windows.1
+

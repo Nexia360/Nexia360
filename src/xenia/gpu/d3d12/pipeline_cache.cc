@@ -589,16 +589,19 @@ ID3D12PipelineState* PipelineCache::AwaitD3D12PipelineByHandle(void* handle) {
 
 D3D12Shader* PipelineCache::LoadShader(xenos::ShaderType shader_type,
                                        const uint32_t* host_address,
-                                       uint32_t dword_count) {
+                                       uint32_t dword_count,
+                                       std::endian ucode_source_endian) {
   // Hash the input memory and lookup the shader.
   return LoadShader(shader_type, host_address, dword_count,
-                    XXH3_64bits(host_address, dword_count * sizeof(uint32_t)));
+                    XXH3_64bits(host_address, dword_count * sizeof(uint32_t)),
+                    ucode_source_endian);
 }
 
 D3D12Shader* PipelineCache::LoadShader(xenos::ShaderType shader_type,
                                        const uint32_t* host_address,
                                        uint32_t dword_count,
-                                       uint64_t data_hash) {
+                                       uint64_t data_hash,
+                                       std::endian ucode_source_endian) {
   auto it = shaders_.find(data_hash);
   if (it != shaders_.end()) {
     // Shader has been previously loaded.
@@ -607,8 +610,8 @@ D3D12Shader* PipelineCache::LoadShader(xenos::ShaderType shader_type,
   // Always create the shader and stash it away.
   // We need to track it even if it fails translation so we know not to try
   // again.
-  D3D12Shader* shader =
-      new D3D12Shader(shader_type, data_hash, host_address, dword_count);
+  D3D12Shader* shader = new D3D12Shader(
+      shader_type, data_hash, host_address, dword_count, ucode_source_endian);
   shaders_.emplace(data_hash, shader);
   return shader;
 }

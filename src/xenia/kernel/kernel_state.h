@@ -178,6 +178,12 @@ class KernelState {
   vfs::VirtualFileSystem* file_system() const { return file_system_; }
 
   uint32_t title_id() const;
+
+  // Names the running title when there is no executable module to read it
+  // from, which is how a hosted XNA title runs. Zero restores the normal
+  // behaviour.
+  void SetHostedTitleId(uint32_t title_id) { hosted_title_id_ = title_id; }
+  uint32_t hosted_title_id() const { return hosted_title_id_; }
   bool is_title_open() const;
   static bool is_title_system_type(uint32_t title_id);
   XNKEY* title_lan_key() const;
@@ -385,6 +391,8 @@ class KernelState {
   bool has_notified_live_startup_ = false;
 
   object_ref<UserModule> executable_module_;
+  // Set for a hosted title, which has no executable module - see title_id().
+  uint32_t hosted_title_id_ = 0;
   std::vector<object_ref<KernelModule>> kernel_modules_;
   std::vector<object_ref<UserModule>> user_modules_;
   std::vector<TerminateNotification> terminate_notifications_;

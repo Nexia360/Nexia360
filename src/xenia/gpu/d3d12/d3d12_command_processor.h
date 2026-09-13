@@ -101,6 +101,24 @@ class D3D12CommandProcessor final : public CommandProcessor {
     return completion_timeline_->GetCompletedSubmissionFromLastUpdate();
   }
 
+  // Counts a resolve's pixels out of its readback buffer, never touching guest
+  // memory - so it raises no page fault and cannot block. kNotReady means the
+  // submission is still open and the caller should ask again; kNoContract means
+  // nothing covers this PHYSICAL address and it never will.
+  enum class ResolveCount { kCounted, kNotReady, kNoContract };
+  ResolveCount CountResolvedPixels(uint32_t physical_base, uint32_t length,
+                                   uint32_t* coloured_out,
+                                   uint32_t* non_zero_out, uint32_t* first_out);
+
+  bool IsSubmissionComplete(uint64_t submission) const {
+    ID3D12Fence* fence = completion_timeline_->GetFence();
+    if (!fence) {
+      return false;
+    }
+    const uint64_t completed = fence->GetCompletedValue();
+    return completed != UINT64_MAX && completed >= submission;
+  }
+
   // Must be called when a subsystem does something like UpdateTileMappings so
   // it can be awaited in CheckSubmissionCompletion(GetCurrentSubmission()) if
   // it was done after the latest ExecuteCommandLists + Signal.
@@ -322,6 +340,66 @@ class D3D12CommandProcessor final : public CommandProcessor {
   bool IssueCopy() override;
   void InitializeTrace() override;
 
+ public:
+  Shader* HostedLoadShader(xenos::ShaderType shader_type,
+                           const uint32_t* microcode, uint32_t dword_count);
+  bool HostedIssueDraw(xenos::PrimitiveType primitive_type,
+                       uint32_t index_count, bool indexed,
+                       uint32_t index_guest_base, bool index_32bit,
+                       uint32_t index_endian, uint32_t index_length);
+  bool HostedIssueCopy() { return IssueCopy(); }
+  void HostedWriteRegister(uint32_t index, uint32_t value) {
+    WriteRegister(index, value);
+  }
+  void HostedTextureFetchWritten(uint32_t slot) {
+    cbuffer_binding_fetch_.up_to_date = false;
+    if (texture_cache_) {
+      texture_cache_->TextureFetchConstantWritten(slot);
+    }
+  }
+  // HostedLoadShader runs on the title's thread, while the draw it belongs to
+  // runs later on the GPU thread. The title applies more effects in between, so
+  // by the time a draw executes the active shaders are a later effect's. The
+  // draw carries its own pair and restores them here, the same way it restores
+  // the registers it was queued with.
+  void HostedSetActiveShaders(Shader* vertex_shader, Shader* pixel_shader) {
+    active_vertex_shader_ = vertex_shader;
+    active_pixel_shader_ = pixel_shader;
+  }
+  // The resolved front buffer as a texture, for a hosted title that composites
+  // it itself instead of swapping it. Comes back in
+  // NON_PIXEL_SHADER_RESOURCE, and the caller must leave it in that state.
+  //
+  // RequestSwapTexture only queues that transition into this processor's
+  // deferred barrier list. A compositor recording on its own command list has
+  // no way to wait for it, and its own barrier - which declares the texture is
+  // already readable - is rejected because the resource is still the resolve's
+  // COPY_DEST when that list runs. Flushing here puts the transition on this
+  // processor's list first, where submission order makes it true.
+  ID3D12Resource* HostedRequestSwapTexture(
+      D3D12_SHADER_RESOURCE_VIEW_DESC& srv_desc_out) {
+    if (!texture_cache_) {
+      return nullptr;
+    }
+    xenos::TextureFormat format;
+    ID3D12Resource* resource =
+        texture_cache_->RequestSwapTexture(srv_desc_out, format);
+    if (resource) {
+      // Flushing the barrier onto this processor's list is not enough - that
+      // list is not handed to the queue until this processor's own cadence,
+      // which can be after the compositor's list has already run. Closing the
+      // submission puts the transition on the queue first, which is the only
+      // thing that makes the state true for a list recorded elsewhere.
+      SubmitBarriers();
+      EndSubmission(false);
+    }
+    return resource;
+  }
+  void HostedIssueSwap(uint32_t frontbuffer_ptr, uint32_t width,
+                       uint32_t height) {
+    IssueSwap(frontbuffer_ptr, width, height);
+  }
+
  private:
   static constexpr uint32_t kQueueFrames = 3;
 
@@ -428,6 +506,10 @@ class D3D12CommandProcessor final : public CommandProcessor {
   // clearing and stopping capturing. Returns whether the submission was done
   // successfully, if it has failed, leaves it open.
   bool EndSubmission(bool is_swap);
+
+  // True when the device has been lost, reporting the reason the first time.
+  // No Direct3D call may follow a true result.
+  bool CheckDeviceRemoved();
   // Checks if ending a submission right now would not cause potentially more
   // delay than it would reduce by making the GPU start working earlier - such
   // as when there are unfinished graphics pipeline creation requests that would
@@ -536,7 +618,9 @@ class D3D12CommandProcessor final : public CommandProcessor {
 
   void RecordZPDResolveBatch();
 
-  bool device_removed_ = false;
+  // Read from threads other than the GPU command thread - the resolve
+  // contract path waits on the fence from whichever thread faulted.
+  std::atomic<bool> device_removed_{false};
 
   bool cache_clear_requested_ = false;
 

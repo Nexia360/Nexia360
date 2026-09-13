@@ -642,7 +642,8 @@ bool TitleUpdateManager::Remove(uint32_t title_id, const std::string& id) {
 }
 
 std::string TitleUpdateManager::ImportFromContent(
-    uint32_t title_id, const std::string& source_dirname, bool auto_activate) {
+    uint32_t title_id, const std::string& source_dirname, bool auto_activate,
+    const std::string& display_name) {
   auto src_dir = content_update_dir(title_id) / source_dirname;
   auto src_header = content_header_dir(title_id) / (source_dirname + ".header");
   if (!std::filesystem::exists(src_dir)) {
@@ -727,7 +728,7 @@ std::string TitleUpdateManager::ImportFromContent(
 
   TitleUpdateEntry entry;
   entry.id = id;
-  entry.name = version;
+  entry.name = display_name.empty() ? version : display_name;
   entry.version = version;
   entry.version_value = version_value;
   entry.size_bytes = size_bytes;

@@ -504,6 +504,13 @@ class CommandProcessor {
   std::atomic<bool> worker_running_;
   kernel::object_ref<kernel::XHostThread> worker_thread_;
 
+  // Pushed from other threads and drained by the worker, so it needs a lock -
+  // a concurrent push and pop on the underlying deque is undefined behaviour,
+  // and a caller that queues work per draw rather than once at startup hits it
+  // almost at once. The count is separate so the idle spin can test for work
+  // without taking the lock on every iteration.
+  std::mutex pending_fns_mutex_;
+  std::atomic<uint32_t> pending_fns_count_{0};
   std::queue<std::function<void()>> pending_fns_;
 
   // MicroEngine binary from PM4_ME_INIT

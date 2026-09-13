@@ -1,0 +1,73 @@
+From 01dc16a6048e0917ef418e4b46f9d0d200558166 Mon Sep 17 00:00:00 2001
+From: Tim <peerloomllc@proton.me>
+Date: Wed, 2 Sep 2026 22:49:16 -0500
+Subject: [PATCH] [CPU] Promote VEC128 context values again
+
+a74fe21f7 (#860) kept vectors out of context promotion and dead store
+removal, so a vector loaded from the context was never reused, even twice in
+a row in the same block. It was working around the int16 vperm fold reading
+the vpblendw mask the wrong way round, which #1198 fixed, so the exclusion
+has nothing left to cover.
+
+In the guest function that is 36.5% of all time in generated code for Lost
+Odyssey, vector context loads and stores fall from 509 to 244 and the
+function from 37965 to 35525 bytes; the CPU-bound scene goes from 30.8-31.4
+to 36.4-38.2 fps.
+---
+ .../compiler/passes/context_promotion_pass.cc | 29 +++++++------------
+ 1 file changed, 11 insertions(+), 18 deletions(-)
+
+diff --git a/src/xenia/cpu/compiler/passes/context_promotion_pass.cc b/src/xenia/cpu/compiler/passes/context_promotion_pass.cc
+index 969c1a03a..603f79600 100644
+--- a/src/xenia/cpu/compiler/passes/context_promotion_pass.cc
++++ b/src/xenia/cpu/compiler/passes/context_promotion_pass.cc
+@@ -113,19 +113,15 @@ void ContextPromotionPass::PromoteBlock(Block* block) {
+         i->set_src1(previous_value);
+       } else {
+         // Store the loaded value into the table.
+-        if (i->dest->type != TypeName::VEC128_TYPE) {
+-          context_values_[offset] = i->dest;
+-          validity.set(static_cast<uint32_t>(offset));
+-        }
++        context_values_[offset] = i->dest;
++        validity.set(static_cast<uint32_t>(offset));
+       }
+     } else if (i->opcode == &OPCODE_STORE_CONTEXT_info) {
+       const size_t offset = i->src1.offset;
+       Value* value = i->src2.value;
+-      if (value->type != TypeName::VEC128_TYPE) {
+-        // Store value into the table for later.
+-        context_values_[offset] = value;
+-        validity.set(static_cast<uint32_t>(offset));
+-      }
++      // Store value into the table for later.
++      context_values_[offset] = value;
++      validity.set(static_cast<uint32_t>(offset));
+     }
+     i = next;
+   }
+@@ -145,15 +141,12 @@ void ContextPromotionPass::RemoveDeadStoresBlock(Block* block) {
+       validity.reset();
+     } else if (i->opcode == &OPCODE_STORE_CONTEXT_info) {
+       const size_t offset = i->src1.offset;
+-      const Value* value = i->src2.value;
+-      if (value->type != TypeName::VEC128_TYPE) {
+-        if (!validity.test(static_cast<uint32_t>(offset))) {
+-          // Offset not yet written, mark and continue.
+-          validity.set(static_cast<uint32_t>(offset));
+-        } else {
+-          // Already written to. Remove this store.
+-          i->UnlinkAndNOP();
+-        }
++      if (!validity.test(static_cast<uint32_t>(offset))) {
++        // Offset not yet written, mark and continue.
++        validity.set(static_cast<uint32_t>(offset));
++      } else {
++        // Already written to. Remove this store.
++        i->UnlinkAndNOP();
+       }
+     }
+     i = prev;
+-- 
+2.49.0.windows.1
+

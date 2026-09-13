@@ -33,6 +33,7 @@ DEFINE_bool(
 // about the host swap chain. Presenting with sync interval 0 and tearing
 // allowed means the display is never waited on, so enabling VSYNC still tore.
 DECLARE_bool(vsync);
+DECLARE_bool(d3d12_debug);
 
 namespace xe {
 namespace ui {
@@ -1074,6 +1075,14 @@ Presenter::PaintResult D3D12Presenter::PaintAndPresentImpl(
   // TODO(Triang3l): Error checking.
   command_list->Close();
   ID3D12CommandQueue* const direct_queue = provider_.GetDirectQueue();
+  if (cvars::d3d12_debug) {
+    // The presenter submits to the same queue as the command processor, but
+    // nothing drained the validation queue on this side - so anything the
+    // debug layer objected to here was only ever seen by the next
+    // EndSubmission, which never runs if this call is the one that faults.
+    provider_.LogD3D12DebugMessages();
+    xe::FlushLog();
+  }
   ID3D12CommandList* execute_command_list = command_list;
   direct_queue->ExecuteCommandLists(1, &execute_command_list);
   if (execute_ui_drawers) {

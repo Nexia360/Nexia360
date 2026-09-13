@@ -1,0 +1,44 @@
+From 7015473a777156bc92e251986a1f61d15cb3952d Mon Sep 17 00:00:00 2001
+From: Herman S <429230+has207@users.noreply.github.com>
+Date: Mon, 24 Aug 2026 21:36:38 +0900
+Subject: [PATCH] Follow the sub-stream skip chain past frameless packets
+
+GetNextPacketReadOffset() scanned sequentially for the next packet
+containing a frame start. In a buffer interleaving several sub-streams
+the next sequential packet belongs to a different stream, so a context
+stepping onto it merged the two packet chains permanently and decoded
+the wrong stream's frames for the rest of the buffer.
+
+Follow the skipped packet's own skip count instead, keeping the walk
+within one sub-stream.
+
+Fixes LEGO games that froze up during opening cutscenes (Star Wars 3,
+LotR, Batman 2)
+---
+ src/xenia/apu/xma_context_new.cc | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/src/xenia/apu/xma_context_new.cc b/src/xenia/apu/xma_context_new.cc
+index a154c8a87..d199146d5 100644
+--- a/src/xenia/apu/xma_context_new.cc
++++ b/src/xenia/apu/xma_context_new.cc
+@@ -772,7 +772,15 @@ const uint32_t XmaContextNew::GetNextPacketReadOffset(
+                next_packet_index, current_input_packet_count);
+       return new_input_buffer_offset;
+     }
+-    next_packet_index++;
++
++    // No frame *starts* in this packet, it is entirely the continuation of
++    // a frame split across the packet boundary.  Follow this packet's own
++    // skip count to the next packet of the same sub-stream.
++    const uint8_t next_skip = xma::GetPacketSkipCount(next_packet);
++    if (next_skip == 0xFF) {
++      break;
++    }
++    next_packet_index += next_skip + 1;
+   }
+ 
+   return kBitsPerPacketHeader;
+-- 
+2.49.0.windows.1
+

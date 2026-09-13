@@ -170,6 +170,11 @@ bool SessionObjectJSON::Serialize(
   writer->String("xlast_src");
   writer->String(xlast_src_);
 
+  if (!icon_.empty()) {
+    writer->String("icon");
+    writer->String(icon_);
+  }
+
   writer->EndObject();
 
   return true;

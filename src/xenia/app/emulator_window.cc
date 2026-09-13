@@ -42,11 +42,14 @@
 #include "xenia/hid/input_system.h"
 #include "xenia/hid/mousehook_config.h"
 #include "xenia/kernel/XLiveAPI.h"
+#include "xenia/kernel/title_id_utils.h"
 #include "xenia/kernel/util/title_update_manager.h"
 #include "xenia/kernel/xam/profile_manager.h"
 #include "xenia/kernel/xam/xam_module.h"
 #include "xenia/kernel/xam/xam_state.h"
 #include "xenia/kernel/xconfig.h"
+#include "xenia/kernel/xna/xna_dependencies.h"
+#include "xenia/kernel/xna/xna_launcher.h"
 #include "xenia/ui/file_picker.h"
 #include "xenia/ui/graphics_provider.h"
 #include "xenia/ui/imgui_dialog.h"
@@ -971,6 +974,7 @@ bool EmulatorWindow::Initialize() {
   auto recent_with_tu_menu =
       MenuItem::Create(MenuItem::Type::kPopup, "Open Recent with &TU");
   auto zar_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Zar Package");
+  auto xna_menu = MenuItem::Create(MenuItem::Type::kPopup, "&XNA Titles");
   FillRecentlyLaunchedTitlesMenu(recent_menu.get());
   FillRecentlyLaunchedTitlesWithTUMenu(recent_with_tu_menu.get());
   {
@@ -990,6 +994,22 @@ bool EmulatorWindow::Initialize() {
         MenuItem::Create(MenuItem::Type::kString, "Extract",
                          std::bind(&EmulatorWindow::ExtractZarchive, this)));
     file_menu->AddChild(std::move(zar_menu));
+
+    xna_menu->AddChild(MenuItem::Create(
+        MenuItem::Type::kString, "Install XNA Package...",
+        std::bind(&EmulatorWindow::InstallXnaPackage, this)));
+    xna_menu->AddChild(MenuItem::Create(
+        MenuItem::Type::kString, "Install Dependency Package...",
+        std::bind(&EmulatorWindow::InstallXnaDependencyPackage, this)));
+    xna_menu->AddChild(MenuItem::Create(
+        MenuItem::Type::kString, "Install Dependencies from Folder...",
+        std::bind(&EmulatorWindow::InstallXnaDependencies, this)));
+    xna_menu->AddChild(MenuItem::Create(
+        MenuItem::Type::kString, "Check Dependencies",
+        std::bind(&EmulatorWindow::ShowXnaDependencies, this)));
+    xna_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
+    FillXnaTitlesMenu(xna_menu.get());
+    file_menu->AddChild(std::move(xna_menu));
 #ifdef DEBUG
     file_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
     file_menu->AddChild(
@@ -1610,6 +1630,7 @@ void EmulatorWindow::InstallContent() {
   file_picker->set_title("Select Content Package");
   file_picker->set_extensions({
       {"All Files (*.*)", "*.*"},
+      {"Content Archive (*.zip)", "*.zip"},
   });
   if (file_picker->Show(window_.get())) {
     paths = file_picker->selected_files();
@@ -1622,8 +1643,79 @@ void EmulatorWindow::InstallContent() {
 // obtained some other way - a downloaded title update - goes through exactly
 // the same path: header scan, DLC/TU targeting, then the install dialog.
 void EmulatorWindow::InstallContentPackages(
-    const std::vector<std::filesystem::path>& paths) {
+    const std::vector<std::filesystem::path>& paths,
+    const std::string& title_update_name) {
   if (paths.empty()) {
+    return;
+  }
+
+  std::vector<std::filesystem::path> packages;
+  auto staging_dirs = std::make_shared<std::vector<std::filesystem::path>>();
+  std::string archive_report;
+
+  for (const auto& path : paths) {
+    if (CanonicalizeFileExtension(path) != ".zip") {
+      packages.push_back(path);
+      continue;
+    }
+
+    std::error_code ec;
+    const auto staging = std::filesystem::temp_directory_path(ec) /
+                         ("nexia-content-" + xe::path_to_utf8(path.stem()));
+    std::filesystem::remove_all(staging, ec);
+    std::filesystem::create_directories(staging, ec);
+    if (ec || !kernel::xna::ExtractZipArchive(path, staging)) {
+      XELOGE("InstallContent: could not extract {}", xe::path_to_utf8(path));
+      archive_report += "Could not extract " + xe::path_to_utf8(path) + "\n";
+      std::filesystem::remove_all(staging, ec);
+      continue;
+    }
+    staging_dirs->push_back(staging);
+
+    size_t found = 0;
+    for (const auto& file : std::filesystem::recursive_directory_iterator(
+             staging, std::filesystem::directory_options::skip_permission_denied,
+             ec)) {
+      if (!file.is_regular_file(ec)) {
+        continue;
+      }
+      const auto header =
+          vfs::XContentContainerDevice::ReadContainerHeader(file.path());
+      if (!header || !header->content_header.is_magic_valid()) {
+        continue;
+      }
+      if (header->content_metadata.content_type == XContentType::kInstaller &&
+          header->content_metadata.execution_info.title_id.get() ==
+              kernel::kDashboardID) {
+        XELOGI("InstallContent: skipping system update {}",
+               xe::path_to_utf8(file.path().filename()));
+        continue;
+      }
+      XELOGI("InstallContent: {} holds {} (title {:08X}, type {:08X})",
+             xe::path_to_utf8(path.filename()),
+             xe::path_to_utf8(file.path().filename()),
+             header->content_metadata.execution_info.title_id.get(),
+             static_cast<uint32_t>(
+                 header->content_metadata.content_type.get()));
+      packages.push_back(file.path());
+      ++found;
+    }
+    if (!found) {
+      archive_report +=
+          "No content packages in " + xe::path_to_utf8(path) + "\n";
+    }
+  }
+
+  if (!archive_report.empty()) {
+    new xe::ui::HostNotificationWindow(imgui_drawer(), "Install Content",
+                                       archive_report, 0);
+  }
+
+  if (packages.empty()) {
+    std::error_code ec;
+    for (const auto& staging : *staging_dirs) {
+      std::filesystem::remove_all(staging, ec);
+    }
     return;
   }
 
@@ -1631,8 +1723,9 @@ void EmulatorWindow::InstallContentPackages(
       content_installation_status =
           std::make_shared<std::vector<Emulator::ContentInstallEntry>>();
 
-  for (const auto& path : paths) {
+  for (const auto& path : packages) {
     content_installation_status->push_back({path});
+    content_installation_status->back().title_update_name_ = title_update_name;
   }
 
   for (auto& entry : *content_installation_status) {
@@ -1653,10 +1746,15 @@ void EmulatorWindow::InstallContentPackages(
     }
   }
 
-  auto start_install = [this, content_installation_status]() {
-    auto installationThread = std::thread([this, content_installation_status] {
+  auto start_install = [this, content_installation_status, staging_dirs]() {
+    auto installationThread = std::thread([this, content_installation_status,
+                                           staging_dirs] {
       for (auto& entry : *content_installation_status) {
         emulator_->InstallContentPackage(entry.path_, entry);
+      }
+      std::error_code ec;
+      for (const auto& staging : *staging_dirs) {
+        std::filesystem::remove_all(staging, ec);
       }
     });
     installationThread.detach();
@@ -2935,6 +3033,158 @@ void EmulatorWindow::OpenTitleUpdateSelector(const std::filesystem::path& path,
 void EmulatorWindow::RunPreviouslyPlayedTitle() {
   if (recently_launched_titles_.size() >= 1) {
     RunTitle(recently_launched_titles_[0].path_to_file);
+  }
+}
+
+std::filesystem::path EmulatorWindow::GetXnaLibraryPath() const {
+  return emulator_->storage_root() / "xna_library";
+}
+
+void EmulatorWindow::InstallXnaPackage() {
+  auto file_picker = xe::ui::FilePicker::Create();
+  file_picker->set_mode(ui::FilePicker::Mode::kOpen);
+  file_picker->set_type(ui::FilePicker::Type::kFile);
+  file_picker->set_multi_selection(false);
+  file_picker->set_title("Select an XNA Package");
+  file_picker->set_extensions({
+      {"XNA Package", "*.*"},
+  });
+  if (!file_picker->Show(window_.get())) {
+    return;
+  }
+  const auto selected_files = file_picker->selected_files();
+  if (selected_files.empty()) {
+    return;
+  }
+  const auto& source = selected_files[0];
+
+  // Checked before copying, so a package that could never launch is refused
+  // where the user can still see what they picked.
+  kernel::xna::XnaPackageInfo info;
+  if (!kernel::xna::IsXnaPackage(source, &info)) {
+    new xe::ui::HostNotificationWindow(
+        imgui_drawer(), "Not an XNA title",
+        "That package holds no managed XNA assembly.", 0);
+    return;
+  }
+
+  std::error_code ec;
+  const auto library = GetXnaLibraryPath();
+  std::filesystem::create_directories(library, ec);
+  const auto destination = library / source.filename();
+  std::filesystem::copy_file(
+      source, destination, std::filesystem::copy_options::overwrite_existing,
+      ec);
+  if (ec) {
+    XELOGE("Could not install XNA package: {}", ec.message());
+    new xe::ui::HostNotificationWindow(imgui_drawer(), "Install failed",
+                                       ec.message(), 0);
+    return;
+  }
+
+  XELOGI("Installed XNA title {} to {}", info.display_name,
+         xe::path_to_utf8(destination));
+  // The menu is built once at startup, so a freshly installed title only
+  // appears next time - say so rather than leaving the user hunting for it.
+  new xe::ui::HostNotificationWindow(
+      imgui_drawer(), "XNA title installed",
+      info.display_name + " will appear in the XNA Titles menu after a "
+                          "restart.",
+      0);
+}
+
+void EmulatorWindow::ShowXnaDependencies() {
+  // To the log as well as the dialog: the list is long enough to run off
+  // the bottom of the window, and the log copy can be read afterwards.
+  kernel::xna::LogXnaDependencies();
+  new xe::ui::HostNotificationWindow(imgui_drawer(), "XNA Dependencies",
+                                     kernel::xna::DescribeXnaDependencies(), 0);
+}
+
+void EmulatorWindow::InstallXnaDependencyPackage() {
+  auto file_picker = xe::ui::FilePicker::Create();
+  file_picker->set_mode(ui::FilePicker::Mode::kOpen);
+  file_picker->set_type(ui::FilePicker::Type::kFile);
+  file_picker->set_multi_selection(false);
+  file_picker->set_title("Select an XNA dependency package");
+  file_picker->set_extensions({
+      {"Dependency Package (*.zip)", "*.zip"},
+      {"All Files (*.*)", "*.*"},
+  });
+  if (!file_picker->Show(window_.get())) {
+    return;
+  }
+  const auto selected = file_picker->selected_files();
+  if (selected.empty()) {
+    return;
+  }
+
+  std::string message;
+  const bool installed =
+      kernel::xna::InstallXnaDependenciesFromArchive(selected[0], &message);
+  XELOGE("XNA dependency package {}:\n{}", xe::path_to_utf8(selected[0]),
+         message);
+  new xe::ui::HostNotificationWindow(
+      imgui_drawer(),
+      installed ? "XNA dependencies installed" : "XNA dependencies incomplete",
+      message, 0);
+}
+
+void EmulatorWindow::InstallXnaDependencies() {
+  auto file_picker = xe::ui::FilePicker::Create();
+  file_picker->set_mode(ui::FilePicker::Mode::kOpen);
+  // A folder, not a file: what is needed is MonoGame plus its native
+  // companions, which never live in one file.
+  file_picker->set_type(ui::FilePicker::Type::kDirectory);
+  file_picker->set_multi_selection(false);
+  file_picker->set_title("Select a folder containing MonoGame");
+  if (!file_picker->Show(window_.get())) {
+    return;
+  }
+  const auto selected = file_picker->selected_files();
+  if (selected.empty()) {
+    return;
+  }
+
+  std::string message;
+  const bool installed =
+      kernel::xna::InstallXnaDependenciesFrom(selected[0], &message);
+  XELOGE("XNA dependency install from {}:\n{}",
+         xe::path_to_utf8(selected[0]), message);
+  new xe::ui::HostNotificationWindow(
+      imgui_drawer(),
+      installed ? "XNA dependencies installed" : "XNA dependencies incomplete",
+      message, 0);
+}
+
+void EmulatorWindow::FillXnaTitlesMenu(xe::ui::MenuItem* xna_menu) {
+  std::error_code ec;
+  const auto library = GetXnaLibraryPath();
+  if (!std::filesystem::is_directory(library, ec)) {
+    return;
+  }
+
+  // Every candidate is opened to read its name, which is why this reads a
+  // dedicated folder rather than the whole content root - the check has to
+  // parse an STFS container per file.
+  for (const auto& item : std::filesystem::directory_iterator(library, ec)) {
+    // A directory counts: a title built locally has no STFS container to
+    // arrive in, and IsXnaPackage accepts either.
+    if (!item.is_regular_file() && !item.is_directory()) {
+      continue;
+    }
+    kernel::xna::XnaPackageInfo info;
+    if (!kernel::xna::IsXnaPackage(item.path(), &info)) {
+      continue;
+    }
+    std::string label = info.display_name;
+    const size_t dot = label.find_last_of('.');
+    if (dot != std::string::npos) {
+      label = label.substr(0, dot);
+    }
+    xna_menu->AddChild(MenuItem::Create(
+        MenuItem::Type::kString, label, "",
+        std::bind(&EmulatorWindow::RunTitle, this, item.path())));
   }
 }
 

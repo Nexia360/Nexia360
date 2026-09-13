@@ -1,0 +1,27 @@
+From 95545f8e76035d8b904e120a0bf379cbc300d86d Mon Sep 17 00:00:00 2001
+From: goldislead <69987043+goldislead@users.noreply.github.com>
+Date: Thu, 13 Aug 2026 00:58:38 -0700
+Subject: [PATCH] [D3D12] Fix over-invalidation of bulk fetch register writes
+
+Co-authored-by: Herman S. <429230+has207@users.noreply.github.com>
+---
+ src/xenia/gpu/d3d12/d3d12_command_processor.cc | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/src/xenia/gpu/d3d12/d3d12_command_processor.cc b/src/xenia/gpu/d3d12/d3d12_command_processor.cc
+index 037667f84..3a4c743ea 100644
+--- a/src/xenia/gpu/d3d12/d3d12_command_processor.cc
++++ b/src/xenia/gpu/d3d12/d3d12_command_processor.cc
+@@ -2079,7 +2079,8 @@ void D3D12CommandProcessor::WriteFetchFromMem(uint32_t start_index,
+       ((start_index - XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0) / 6);
+   uint32_t last_fetch =  // i think last_fetch should be inclusive if its modulo
+                          // is nz...
+-      (((start_index + num_registers) - XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0) /
++      (((start_index + num_registers - 1) -
++        XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0) /
+        6);
+   texture_cache_->TextureFetchConstantsWritten(first_fetch, last_fetch);
+ 
+-- 
+2.49.0.windows.1
+
