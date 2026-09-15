@@ -653,7 +653,8 @@ void RemoveMachine(Session& s, uint8_t machine) {
   XELOGI("[xna] network session {}: machine {} left", s.handle, machine);
   if (s.host && s.registered && !xuids.empty()) {
     const uint64_t id = s.wire_id;
-    HubAsync([id, xuids](XLiveAPI* api) { api->SessionLeaveRemote(id, xuids); });
+    HubAsync(
+        [id, xuids](XLiveAPI* api) { api->SessionLeaveRemote(id, xuids); });
   }
 }
 
@@ -726,7 +727,8 @@ void HostHandle(Session& s, Peer& peer, Wire kind, Reader& reader) {
       const uint32_t length = reader.Get<uint32_t>();
       const uint8_t* data = reader.Take(length);
       const int sender = IndexOfGamer(s, from);
-      if (!reader.ok || sender < 0 || s.gamers[sender].machine != peer.machine) {
+      if (!reader.ok || sender < 0 ||
+          s.gamers[sender].machine != peer.machine) {
         return;
       }
       DeliverLocally(s, from, to, data, length);
@@ -856,9 +858,9 @@ void Poll(Session& s) {
   for (int i = 0; i < 512; ++i) {
     XSOCKADDR_IN from = {};
     socklen_t from_len = static_cast<socklen_t>(sizeof(from));
-    const int got = s.socket->RecvFrom(
-        buffer.data(), static_cast<uint32_t>(buffer.size()), 0, &from,
-        &from_len);
+    const int got =
+        s.socket->RecvFrom(buffer.data(), static_cast<uint32_t>(buffer.size()),
+                           0, &from, &from_len);
     if (got <= 0) {
       break;
     }
@@ -904,8 +906,8 @@ void Poll(Session& s) {
       }
     }
     for (const uint8_t machine : silent) {
-      XELOGW("[xna] network session {}: machine {} stopped answering",
-             s.handle, machine);
+      XELOGW("[xna] network session {}: machine {} stopped answering", s.handle,
+             machine);
       RemoveMachine(s, machine);
     }
   } else if (!s.ended && !s.peers.empty() &&
@@ -1086,8 +1088,7 @@ void StartHosting(Session& s) {
     api->XSessionCreate(id, &data);
     api->SessionJoinRemote(id, members);
   });
-  XELOGI("[xna] network session: hosting {:016X} on port {}", id,
-         kSessionPort);
+  XELOGI("[xna] network session: hosting {:016X} on port {}", id, kSessionPort);
 }
 
 std::vector<uint32_t> EmptyProperties() {
@@ -1292,8 +1293,7 @@ uint32_t XnaSessionBeginFind(const XnaSessionRequest& request) {
         if (!host || host == XLiveAPI::local_online_xuid) {
           continue;
         }
-        if (TypeFromHubFlags(static_cast<uint32_t>(session->Flags())) !=
-            type) {
+        if (TypeFromHubFlags(static_cast<uint32_t>(session->Flags())) != type) {
           continue;
         }
         Found entry;
@@ -1384,8 +1384,7 @@ uint32_t XnaSessionBeginJoin(uint32_t finder, uint32_t index) {
     }
   }
   if (!have) {
-    XELOGW("[xna] network session: finder {} has no session {}", finder,
-           index);
+    XELOGW("[xna] network session: finder {} has no session {}", finder, index);
     XnaCompleteAsyncOperation(operation);
     return operation;
   }
@@ -1417,8 +1416,8 @@ uint32_t XnaSessionEndJoin(uint32_t operation, XnaSessionSummary* out) {
   out->private_slots = session->private_slots;
   out->properties = session->properties;
   sessions[handle] = std::move(session);
-  XELOGI("[xna] network session: operation {} joined as session {}",
-         operation, handle);
+  XELOGI("[xna] network session: operation {} joined as session {}", operation,
+         handle);
   return 0;
 }
 
@@ -1434,9 +1433,9 @@ bool XnaSessionPrepareUpdate(uint32_t handle, uint32_t current_size) {
          current_size > kRecordsOffset;
 }
 
-uint32_t XnaSessionUpdate(uint32_t handle, const uint8_t* records,
-                          size_t size, uint32_t buffer_total,
-                          std::vector<uint8_t>* events, uint32_t* needed) {
+uint32_t XnaSessionUpdate(uint32_t handle, const uint8_t* records, size_t size,
+                          uint32_t buffer_total, std::vector<uint8_t>* events,
+                          uint32_t* needed) {
   std::lock_guard<std::mutex> lock(sessions_mutex);
   auto found = sessions.find(handle);
   if (found == sessions.end()) {

@@ -1099,9 +1099,8 @@ bool xeDrawFriendContent(xe::ui::ImGuiDrawer* imgui_drawer,
   // A friend's row is Join / Remove / Block; anyone else's is Add / Block, so
   // the buttons divide the row into thirds or halves accordingly.
   const int row_buttons = are_friends ? 3 : 2;
-  const ImVec2 row_btn_size =
-      ImVec2((row_width - spacing * (row_buttons - 1)) / row_buttons,
-             btn_height);
+  const ImVec2 row_btn_size = ImVec2(
+      (row_width - spacing * (row_buttons - 1)) / row_buttons, btn_height);
 
   const std::string join_label =
       std::format("Join Session##{}", friend_xuid_str);
@@ -1440,8 +1439,8 @@ bool xeDrawAddFriend(xe::ui::ImGuiDrawer* imgui_drawer, UserProfile* profile,
 
     ImGui::BeginDisabled(!args.valid_xuid || args.are_friends || max_friends);
     if (ImGui::Button("Add", btn_size)) {
-      args.added_friend = xeRequestFriend(imgui_drawer, profile, xuid,
-                                          xuid_string);
+      args.added_friend =
+          xeRequestFriend(imgui_drawer, profile, xuid, xuid_string);
     }
     ImGui::EndDisabled();
 
@@ -1459,11 +1458,8 @@ bool xeRequestFriend(xe::ui::ImGuiDrawer* imgui_drawer, UserProfile* profile,
       profile->GetOnlineXUID(), target_xuid);
 
   if (outcome == XLiveAPI::FriendRequestOutcome::kPending) {
-    kernel_state()
-        ->emulator()
-        ->display_window()
-        ->app_context()
-        .CallInUIThread([imgui_drawer]() {
+    kernel_state()->emulator()->display_window()->app_context().CallInUIThread(
+        [imgui_drawer]() {
           new xe::ui::HostNotificationWindow(
               imgui_drawer, "Approval Required",
               "Your Friend Request has been sent, you will be notified if "
@@ -1475,17 +1471,13 @@ bool xeRequestFriend(xe::ui::ImGuiDrawer* imgui_drawer, UserProfile* profile,
     return false;
   }
 
-  const bool added =
-      kernel_state()->friends_manager()->AddFriend(profile->xuid(),
-                                                   target_xuid);
+  const bool added = kernel_state()->friends_manager()->AddFriend(
+      profile->xuid(), target_xuid);
 
   const std::string desc = added ? description : "Failed!";
 
-  kernel_state()
-      ->emulator()
-      ->display_window()
-      ->app_context()
-      .CallInUIThread([imgui_drawer, desc]() {
+  kernel_state()->emulator()->display_window()->app_context().CallInUIThread(
+      [imgui_drawer, desc]() {
         new xe::ui::HostNotificationWindow(imgui_drawer, "Added Friend", desc,
                                            0);
       });
@@ -1561,8 +1553,9 @@ bool xeDrawFriendsContent(
         const char* clipboard = ImGui::GetClipboardText();
 
         if (clipboard) {
-          xe::string_util::copy_truncating(ui_args.content_args.filter.InputBuf, clipboard,
-                                           sizeof(ui_args.content_args.filter.InputBuf));
+          xe::string_util::copy_truncating(
+              ui_args.content_args.filter.InputBuf, clipboard,
+              sizeof(ui_args.content_args.filter.InputBuf));
 
           ui_args.content_args.filter.Build();
         }
@@ -1571,7 +1564,8 @@ bool xeDrawFriendsContent(
       ImGui::Separator();
 
       if (ImGui::MenuItem("Clear")) {
-        memset(ui_args.content_args.filter.InputBuf, 0, sizeof(ui_args.content_args.filter.InputBuf));
+        memset(ui_args.content_args.filter.InputBuf, 0,
+               sizeof(ui_args.content_args.filter.InputBuf));
         ui_args.content_args.filter.Build();
       }
 
@@ -1658,11 +1652,11 @@ bool xeDrawFriendsContent(
 
     ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x);
 
-    static const char* privacy_modes[] = {
-        "Anyone", "Friends of friends", "Approval required"};
+    static const char* privacy_modes[] = {"Anyone", "Friends of friends",
+                                          "Approval required"};
 
-    if (ImGui::Combo("##FriendPrivacy", &ui_args.content_args.friend_privacy, privacy_modes,
-                     std::size(privacy_modes))) {
+    if (ImGui::Combo("##FriendPrivacy", &ui_args.content_args.friend_privacy,
+                     privacy_modes, std::size(privacy_modes))) {
       ui_args.content_args.publish_privacy = true;
     }
 
@@ -1686,7 +1680,8 @@ bool xeDrawFriendsContent(
     }
     ImGui::EndDisabled();
 
-    xeDrawAddFriend(imgui_drawer, profile, ui_args.content_args.add_friend_args);
+    xeDrawAddFriend(imgui_drawer, profile,
+                    ui_args.content_args.add_friend_args);
 
     if (ui_args.content_args.add_friend_args.added_friend) {
       ui_args.content_args.refresh_presence = true;
@@ -1698,7 +1693,8 @@ bool xeDrawFriendsContent(
     ImGui::Spacing();
 
     for (uint32_t index = 0; auto& presence : presences) {
-      bool filter_gamertags = ui_args.content_args.filter.PassFilter(presence.Gamertag);
+      bool filter_gamertags =
+          ui_args.content_args.filter.PassFilter(presence.Gamertag);
       bool filter_xuid = ui_args.content_args.filter.PassFilter(
           fmt::format("{:016X}", presence.xuid.get()).c_str());
 

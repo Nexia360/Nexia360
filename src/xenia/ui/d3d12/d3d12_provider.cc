@@ -253,7 +253,8 @@ bool D3D12Provider::Initialize() {
     ID3D12DeviceRemovedExtendedDataSettings* dred_settings;
     if (SUCCEEDED(
             pfn_d3d12_get_debug_interface_(IID_PPV_ARGS(&dred_settings)))) {
-      dred_settings->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+      dred_settings->SetAutoBreadcrumbsEnablement(
+          D3D12_DRED_ENABLEMENT_FORCED_ON);
       dred_settings->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
       dred_settings->Release();
       XELOGI("Direct3D 12 Device Removed Extended Data enabled");

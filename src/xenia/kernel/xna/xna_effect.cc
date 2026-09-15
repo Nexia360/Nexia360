@@ -41,15 +41,15 @@
 
 #include <algorithm>
 #include <cmath>
-#include <vector>
 #include <cstdio>
-#include <filesystem>
-#include <system_error>
 #include <cstring>
-#include <string>
+#include <filesystem>
 #include <memory>
 #include <mutex>
+#include <string>
+#include <system_error>
 #include <unordered_map>
+#include <vector>
 
 #include "xenia/base/byte_order.h"
 #include "xenia/base/cvar.h"
@@ -173,13 +173,12 @@ uint32_t MeasureControlFlow(const uint32_t* dwords, uint32_t available) {
                                        : pair[index].cond_exec.address();
         const uint32_t count =
             plain ? pair[index].exec.count() : pair[index].cond_exec.count();
-        const uint64_t end_dword =
-            (static_cast<uint64_t>(address) + count) * 3;
+        const uint64_t end_dword = (static_cast<uint64_t>(address) + count) * 3;
         if (end_dword > available) {
           return 0;
         }
-        highest_dword = std::max<uint32_t>(highest_dword,
-                                           static_cast<uint32_t>(end_dword));
+        highest_dword =
+            std::max<uint32_t>(highest_dword, static_cast<uint32_t>(end_dword));
         saw_exec = true;
         executes_instructions |= count != 0;
         if (first_exec_address == UINT32_MAX) {
@@ -200,8 +199,8 @@ uint32_t MeasureControlFlow(const uint32_t* dwords, uint32_t available) {
         if (target >= available) {
           return 0;
         }
-        highest_dword =
-            std::max<uint32_t>(highest_dword, static_cast<uint32_t>(target) + 3);
+        highest_dword = std::max<uint32_t>(highest_dword,
+                                           static_cast<uint32_t>(target) + 3);
       }
       if (gpu::ucode::DoesControlFlowOpcodeEndShader(opcode)) {
         const uint32_t used = offset + 3;
@@ -321,8 +320,8 @@ uint64_t ContentHash(const uint8_t* data, uint32_t size) {
 // the GPU builds for a guest draw.
 class EffectShader final : public gpu::Shader {
  public:
-  EffectShader(gpu::xenos::ShaderType type, uint64_t hash, const uint32_t* dwords,
-               size_t count)
+  EffectShader(gpu::xenos::ShaderType type, uint64_t hash,
+               const uint32_t* dwords, size_t count)
       // The container has already been swapped into host order by the time the
       // shaders are located in it, so the microcode is native here - saying
       // otherwise would swap it a second time.
@@ -430,8 +429,8 @@ void FindEffectShaders(const uint8_t* data, uint32_t size, EffectImage* image) {
          image->shaders.size());
 }
 
-
-// ---- the D3DX effect inside the container ------------------------------------
+// ---- the D3DX effect inside the container
+// ------------------------------------
 //
 // Effect..ctor reads the console container as two words - the magic, then an
 // offset - and hands what sits at that offset to CreateEffect, having first
@@ -533,8 +532,8 @@ bool ParseD3dxEffect(const uint8_t* data, uint32_t size, EffectImage* image) {
   return false;
 }
 
-
-// ---- the technique, pass and object tables -----------------------------------
+// ---- the technique, pass and object tables
+// -----------------------------------
 //
 // This is what replaces guessing. The scan in FindEffectShaders can only say
 // "these bytes decode as a control-flow program"; the tables say which shader a
@@ -677,9 +676,9 @@ std::string ReadName(const uint8_t* body, uint32_t size, uint32_t offset,
   std::string name;
   name.reserve(length);
   for (uint32_t i = 0; i < length; ++i) {
-    const uint32_t byte_at =
-        image_was_swapped ? (at + 4 + (i & ~3u) + (3u - (i & 3u)))
-                          : (at + 4 + i);
+    const uint32_t byte_at = image_was_swapped
+                                 ? (at + 4 + (i & ~3u) + (3u - (i & 3u)))
+                                 : (at + 4 + i);
     if (byte_at >= size) {
       break;
     }
@@ -723,9 +722,9 @@ bool WalkEffectTables(const uint8_t* body, uint32_t size, EffectImage* image) {
     EffectParameterInfo parameter;
     parameter.type = ReadWord(body, typedef_at);
     parameter.parameter_class = ReadWord(body, typedef_at + 4);
-    parameter.name = ReadName(body, size, ReadWord(body, typedef_at + 8),
-                                image->was_byte_swapped ||
-                                    image->was_already_swapped);
+    parameter.name =
+        ReadName(body, size, ReadWord(body, typedef_at + 8),
+                 image->was_byte_swapped || image->was_already_swapped);
     parameter.elements = ReadWord(body, typedef_at + 16);
     parameter.columns = ReadWord(body, typedef_at + 20);
     parameter.rows = ReadWord(body, typedef_at + 24);
@@ -824,10 +823,11 @@ bool WalkEffectTables(const uint8_t* body, uint32_t size, EffectImage* image) {
   image->objects_offset = reader.at();
   image->parameters = std::move(parameters);
   image->techniques = std::move(techniques);
-  XELOGI("[xna] effect tables: {} parameter(s), {} technique(s), {} pass(es), "
-         "{} shader binding(s)",
-         image->parameters.size(), image->techniques.size(),
-         TotalPasses(*image), bound);
+  XELOGI(
+      "[xna] effect tables: {} parameter(s), {} technique(s), {} pass(es), "
+      "{} shader binding(s)",
+      image->parameters.size(), image->techniques.size(), TotalPasses(*image),
+      bound);
   for (const auto& parameter : image->parameters) {
     XELOGD("[xna]    parameter \"{}\" type {} class {} {}x{} elements {}",
            parameter.name, parameter.type, parameter.parameter_class,
@@ -847,7 +847,6 @@ uint32_t TotalPasses(const EffectImage& image) {
   }
   return total;
 }
-
 
 // The object section, and resolving a pass to the microcode it binds.
 //
@@ -989,12 +988,14 @@ void ParseEffectObjects(const uint8_t* body, uint32_t size,
                                              : nullptr;
       if (selector && preshader_at < data + bytes) {
         selector->valid = true;
-        selector->array_name = ReadName(body, size, data - kOffsetBase, swapped);
+        selector->array_name =
+            ReadName(body, size, data - kOffsetBase, swapped);
         selector->preshader_offset = preshader_at;
         selector->preshader_size = data + bytes - preshader_at;
         ++selectors;
         XELOGD("[xna]    pass \"{}\" selects its {} shader from \"{}\"",
-               pass->name, state == pass->vertex_state_index ? "vertex" : "pixel",
+               pass->name,
+               state == pass->vertex_state_index ? "vertex" : "pixel",
                selector->array_name);
       }
     }
@@ -1109,8 +1110,8 @@ void BuildEffectShaderTables(const uint8_t* body, uint32_t size,
     }
     EffectNamedShader entry;
     entry.element = static_cast<uint32_t>(table.size());
-    entry.name = (is_vertex ? "vs[" : "ps[") + std::to_string(entry.element) +
-                 "]";
+    entry.name =
+        (is_vertex ? "vs[" : "ps[") + std::to_string(entry.element) + "]";
     entry.object_id = object.id;
     entry.object_index = i;
     entry.pointer = body + object.byte_offset;
@@ -1156,8 +1157,12 @@ void ResolvePassShaders(const uint8_t* body, uint32_t size,
   std::vector<uint32_t> referenced;
   for (const auto& technique : image->techniques) {
     for (const auto& pass : technique.passes) {
-      if (pass.has_vertex_shader) referenced.push_back(pass.vertex_object_id);
-      if (pass.has_pixel_shader) referenced.push_back(pass.pixel_object_id);
+      if (pass.has_vertex_shader) {
+        referenced.push_back(pass.vertex_object_id);
+      }
+      if (pass.has_pixel_shader) {
+        referenced.push_back(pass.pixel_object_id);
+      }
     }
   }
   std::sort(referenced.begin(), referenced.end());
@@ -1255,14 +1260,14 @@ void ResolvePassShaders(const uint8_t* body, uint32_t size,
         XELOGW("[xna]    pass \"{}\" takes {} for its vertex stage", pass.name,
                image->vertex_shader_table[0].name);
       }
-      if (pass.pixel_object_index == UINT32_MAX &&
-          !pass.pixel_selector.valid && !image->pixel_shader_table.empty()) {
+      if (pass.pixel_object_index == UINT32_MAX && !pass.pixel_selector.valid &&
+          !image->pixel_shader_table.empty()) {
         pass.pixel_object_index = image->pixel_shader_table[0].object_index;
         XELOGW("[xna]    pass \"{}\" takes {} for its pixel stage", pass.name,
                image->pixel_shader_table[0].name);
       }
-      pass.has_vertex_shader = pass.vertex_object_index != UINT32_MAX ||
-                               pass.vertex_selector.valid;
+      pass.has_vertex_shader =
+          pass.vertex_object_index != UINT32_MAX || pass.vertex_selector.valid;
       pass.has_pixel_shader =
           pass.pixel_object_index != UINT32_MAX || pass.pixel_selector.valid;
       if (!pass.has_vertex_shader || !pass.has_pixel_shader) {
@@ -1314,8 +1319,8 @@ constexpr uint32_t kShaderObjectMagic = 0x102A1100;
 // the same structure D3DXGetShaderConstantTable returns on the PC, big-endian,
 // with every offset relative to the table's own first byte:
 //
-//   +0  Size (always 28)    +4  Creator ("2.0.11626.0")   +8  Version (FFFE0300)
-//   +12 Constants           +16 ConstantInfo offset       +20 Flags
+//   +0  Size (always 28)    +4  Creator ("2.0.11626.0")   +8  Version
+//   (FFFE0300) +12 Constants           +16 ConstantInfo offset       +20 Flags
 //   +24 Target ("vs_3_0")
 //
 // followed by Constants x D3DXSHADER_CONSTANTINFO, twenty bytes each:
@@ -1354,8 +1359,7 @@ std::vector<ShaderConstantRecord> ReadShaderConstantTable(
   // vertex object examined starts at 71541 - so every field is assembled from
   // un-swapped bytes rather than read as a host word.
   const auto byte_at = [&](uint32_t p) -> uint8_t {
-    const uint32_t real =
-        image_was_swapped ? ((p & ~3u) + (3u - (p & 3u))) : p;
+    const uint32_t real = image_was_swapped ? ((p & ~3u) + (3u - (p & 3u))) : p;
     return real < body_size ? body[real] : 0;
   };
   const auto u32_at = [&](uint32_t p) -> uint32_t {
@@ -1446,11 +1450,12 @@ std::vector<ShaderConstantRecord> ReadShaderConstantTable(
 // THE SHADER IS NOT FINISHED. THE DECLARATION FINISHES IT.
 //
 // Every vfetch_full a compiled vertex shader carries is BLANK: fetch constant
-// 95, offset 0, stride 0, format undefined. On the console, SetVertexDeclaration
-// patches those three fields into the microcode from the vertex elements before
-// the draw - the shader alone does not know how its vertices are laid out. With
-// stride 0 every vertex reads the same bytes, so nothing has any extent and
-// nothing rasterizes, which is exactly what a hosted title does without this.
+// 95, offset 0, stride 0, format undefined. On the console,
+// SetVertexDeclaration patches those three fields into the microcode from the
+// vertex elements before the draw - the shader alone does not know how its
+// vertices are laid out. With stride 0 every vertex reads the same bytes, so
+// nothing has any extent and nothing rasterizes, which is exactly what a hosted
+// title does without this.
 //
 // What the shader does carry is which semantic each fetch is waiting for.
 // Header +24 is an offset from the constant table to a run of four-byte
@@ -1471,8 +1476,7 @@ std::vector<EffectFetchSemantic> ReadFetchSemantics(
     return semantics;
   }
   const auto byte_at = [&](uint32_t p) -> uint8_t {
-    const uint32_t real =
-        image_was_swapped ? ((p & ~3u) + (3u - (p & 3u))) : p;
+    const uint32_t real = image_was_swapped ? ((p & ~3u) + (3u - (p & 3u))) : p;
     return real < body_size ? body[real] : 0;
   };
   const auto u32_at = [&](uint32_t p) -> uint32_t {
@@ -1492,8 +1496,8 @@ std::vector<EffectFetchSemantic> ReadFetchSemantics(
         *reinterpret_cast<const gpu::ucode::VertexFetchInstruction*>(dwords +
                                                                      i * 3);
     if (op.opcode() != gpu::ucode::FetchOpcode::kVertexFetch ||
-        op.is_mini_fetch() || op.fetch_constant_index() != 95 ||
-        op.stride() || op.offset() ||
+        op.is_mini_fetch() || op.fetch_constant_index() != 95 || op.stride() ||
+        op.offset() ||
         op.data_format() != gpu::xenos::VertexFormat::kUndefined) {
       continue;
     }
@@ -1504,8 +1508,7 @@ std::vector<EffectFetchSemantic> ReadFetchSemantics(
   }
 
   const uint32_t table = object_begin + 40 + u32_at(object_begin + 24);
-  if (table < object_begin ||
-      table + uint32_t(blank.size()) * 4 > object_end) {
+  if (table < object_begin || table + uint32_t(blank.size()) * 4 > object_end) {
     return semantics;
   }
   // The table is only believed if it describes exactly these fetches, in this
@@ -1525,16 +1528,11 @@ std::vector<EffectFetchSemantic> ReadFetchSemantics(
   return semantics;
 }
 
-std::vector<std::string> ReadConstantNames(const uint8_t* body,
-                                           uint32_t body_size,
-                                           uint32_t object_begin,
-                                           uint32_t object_size,
-                                           uint32_t* microcode_begin_out,
-                                           uint32_t* microcode_bytes_out,
-                                           bool* is_vertex_out,
-                                           bool image_was_swapped,
-                                           std::vector<uint32_t>* registers_out,
-                                           std::vector<uint32_t>* counts_out) {
+std::vector<std::string> ReadConstantNames(
+    const uint8_t* body, uint32_t body_size, uint32_t object_begin,
+    uint32_t object_size, uint32_t* microcode_begin_out,
+    uint32_t* microcode_bytes_out, bool* is_vertex_out, bool image_was_swapped,
+    std::vector<uint32_t>* registers_out, std::vector<uint32_t>* counts_out) {
   *is_vertex_out = false;
   registers_out->clear();
   counts_out->clear();
@@ -1643,9 +1641,7 @@ std::vector<std::string> ReadConstantNames(const uint8_t* body,
   // parameter and not one constant was written. ReadName already un-swaps for
   // the parameter table; this reader did not.
   auto text_byte = [&](uint32_t p) -> uint8_t {
-    const uint32_t real = image_was_swapped
-                              ? ((p & ~3u) + (3u - (p & 3u)))
-                              : p;
+    const uint32_t real = image_was_swapped ? ((p & ~3u) + (3u - (p & 3u))) : p;
     return real < body_size ? body[real] : 0;
   };
 
@@ -1682,8 +1678,7 @@ std::vector<std::string> ReadConstantNames(const uint8_t* body,
     }
     --at;
   }
-  while (at < target_at &&
-         (text_byte(at) == 0x00 || text_byte(at) == 0xAB)) {
+  while (at < target_at && (text_byte(at) == 0x00 || text_byte(at) == 0xAB)) {
     ++at;
   }
   // Bounded by the target, not the object - everything past it is the creator
@@ -1708,8 +1703,7 @@ std::vector<std::string> ReadConstantNames(const uint8_t* body,
     names.push_back(std::move(name));
     // Names are packed one after another, but the record block sits among them
     // and is not printable - step over it.
-    while (at < target_at &&
-           (text_byte(at) == 0x00 || text_byte(at) == 0xAB)) {
+    while (at < target_at && (text_byte(at) == 0x00 || text_byte(at) == 0xAB)) {
       ++at;
     }
   }
@@ -1769,10 +1763,8 @@ std::vector<std::string> ReadConstantNames(const uint8_t* body,
       }
     }
     while (p + 4 <= object_end) {
-      const uint32_t count =
-          (uint32_t(text_byte(p)) << 8) | text_byte(p + 1);
-      const uint32_t reg =
-          (uint32_t(text_byte(p + 2)) << 8) | text_byte(p + 3);
+      const uint32_t count = (uint32_t(text_byte(p)) << 8) | text_byte(p + 1);
+      const uint32_t reg = (uint32_t(text_byte(p + 2)) << 8) | text_byte(p + 3);
       if (!count && !reg) {
         break;
       }
@@ -1887,15 +1879,14 @@ uint32_t AnalyzeObject(EffectImage* image, const EffectObjectInfo& object,
     // could not be located reads identically - which is a different problem
     // with a different fix.
     const bool has_header =
-        object.byte_size >= 4 &&
-        (ReadWord(body, object.byte_offset) & kXenosShaderHeaderMask) ==
-            kXenosShaderHeader;
-    XELOGW(
-        "[xna]    object {}: {} - treating all {} bytes as microcode",
-        object.id,
-        has_header ? "has a header but no control flow program was found in it"
-                   : "has no 0x102A11xx header",
-        object.byte_size);
+        object.byte_size >= 4 && (ReadWord(body, object.byte_offset) &
+                                  kXenosShaderHeaderMask) == kXenosShaderHeader;
+    XELOGW("[xna]    object {}: {} - treating all {} bytes as microcode",
+           object.id,
+           has_header
+               ? "has a header but no control flow program was found in it"
+               : "has no 0x102A11xx header",
+           object.byte_size);
     if (object.byte_offset > body_size ||
         object.byte_size > body_size - object.byte_offset) {
       XELOGW("[xna]    object {} is out of range of the {} byte container",
@@ -1986,9 +1977,8 @@ uint32_t AnalyzeObject(EffectImage* image, const EffectObjectInfo& object,
   // the ones that matter.
   const char* extension =
       type == gpu::xenos::ShaderType::kVertex ? "vert" : "frag";
-  const auto stem =
-      fmt::format("object_{:03d}_at_{}.{}", object.id, microcode_begin,
-                  extension);
+  const auto stem = fmt::format("object_{:03d}_at_{}.{}", object.id,
+                                microcode_begin, extension);
   if (!cvars::xna_dump_shaders.empty()) {
     std::error_code ec;
     std::filesystem::create_directories(cvars::xna_dump_shaders, ec);
@@ -2117,7 +2107,8 @@ uint32_t AnalyzeObject(EffectImage* image, const EffectObjectInfo& object,
     if (info.constant_registers.find(name) == info.constant_registers.end()) {
       // A named constant with nowhere to go is read from whatever the last
       // effect left in that register - the only case here worth a word.
-      XELOGW("[xna]    object {}: constant \"{}\" is unmapped", object.id, name);
+      XELOGW("[xna]    object {}: constant \"{}\" is unmapped", object.id,
+             name);
     }
   }
   info.shader = std::move(shader);
@@ -2164,8 +2155,7 @@ bool EvaluatePreshader(const EffectImage& image,
                        std::string* inputs_out) {
   const uint8_t* body = image.body;
   const uint32_t size = image.body_size;
-  if (!body || !selector.valid || !out ||
-      selector.preshader_offset >= size ||
+  if (!body || !selector.valid || !out || selector.preshader_offset >= size ||
       selector.preshader_size > size - selector.preshader_offset ||
       selector.preshader_size < 8) {
     return false;
@@ -2203,8 +2193,8 @@ bool EvaluatePreshader(const EffectImage& image,
           break;
         }
         PreshaderConstant constant;
-        constant.name =
-            PreshaderString(body, size, chunk + ReadWord(body, record), swapped);
+        constant.name = PreshaderString(
+            body, size, chunk + ReadWord(body, record), swapped);
         const uint32_t set_and_index = ReadWord(body, record + 4);
         const uint32_t count_and_reserved = ReadWord(body, record + 8);
         constant.register_index = set_and_index & 0xFFFF;
@@ -2262,7 +2252,8 @@ bool EvaluatePreshader(const EffectImage& image,
           const bool matrix =
               parameter.parameter_class == 2 || parameter.parameter_class == 3;
           const bool by_column = parameter.parameter_class == 3;
-          const uint32_t per_element = !matrix ? 1 : (by_column ? columns : rows);
+          const uint32_t per_element =
+              !matrix ? 1 : (by_column ? columns : rows);
           const uint32_t element = r / per_element;
           const uint32_t line = r % per_element;
           const uint32_t declared = parameter.elements ? parameter.elements : 1;
@@ -2368,10 +2359,10 @@ bool EvaluatePreshader(const EffectImage& image,
       const uint32_t width = operand.table == 1 ? 1u : 4u;
       const int32_t index = static_cast<int32_t>(
           std::lround(load(operand.index_table, operand.index_offset)));
-      offset = static_cast<uint32_t>(
-          (static_cast<int32_t>(offset / width) + index) *
-              static_cast<int32_t>(width) +
-          static_cast<int32_t>(offset % width));
+      offset =
+          static_cast<uint32_t>((static_cast<int32_t>(offset / width) + index) *
+                                    static_cast<int32_t>(width) +
+                                static_cast<int32_t>(offset % width));
     }
     return load(operand.table, offset);
   };
@@ -2429,31 +2420,75 @@ bool EvaluatePreshader(const EffectImage& image,
       const double d = input_count > 2 ? read(inputs[2], component) : 0.0;
       double result = 0.0;
       switch (opcode) {
-        case 0x000: continue;
-        case 0x100: result = a; break;
-        case 0x101: result = -a; break;
-        case 0x103: result = a != 0.0 ? 1.0 / a : 0.0; break;
-        case 0x104: result = a - std::floor(a); break;
-        case 0x105: result = std::exp2(a); break;
-        case 0x106: result = a > 0.0 ? std::log2(a) : 0.0; break;
-        case 0x107: result = a > 0.0 ? 1.0 / std::sqrt(a) : 0.0; break;
-        case 0x108: result = std::sin(a); break;
-        case 0x109: result = std::cos(a); break;
-        case 0x10a: result = std::asin(a); break;
-        case 0x10b: result = std::acos(a); break;
-        case 0x10c: result = std::atan(a); break;
-        case 0x200: result = std::min(a, b); break;
-        case 0x201: result = std::max(a, b); break;
-        case 0x202: result = a < b ? 1.0 : 0.0; break;
-        case 0x203: result = a >= b ? 1.0 : 0.0; break;
-        case 0x204: result = a + b; break;
-        case 0x205: result = a * b; break;
-        case 0x206: result = std::atan2(a, b); break;
-        case 0x208: result = b != 0.0 ? a / b : 0.0; break;
-        case 0x300: result = a >= 0.0 ? b : d; break;
+        case 0x000:
+          continue;
+        case 0x100:
+          result = a;
+          break;
+        case 0x101:
+          result = -a;
+          break;
+        case 0x103:
+          result = a != 0.0 ? 1.0 / a : 0.0;
+          break;
+        case 0x104:
+          result = a - std::floor(a);
+          break;
+        case 0x105:
+          result = std::exp2(a);
+          break;
+        case 0x106:
+          result = a > 0.0 ? std::log2(a) : 0.0;
+          break;
+        case 0x107:
+          result = a > 0.0 ? 1.0 / std::sqrt(a) : 0.0;
+          break;
+        case 0x108:
+          result = std::sin(a);
+          break;
+        case 0x109:
+          result = std::cos(a);
+          break;
+        case 0x10a:
+          result = std::asin(a);
+          break;
+        case 0x10b:
+          result = std::acos(a);
+          break;
+        case 0x10c:
+          result = std::atan(a);
+          break;
+        case 0x200:
+          result = std::min(a, b);
+          break;
+        case 0x201:
+          result = std::max(a, b);
+          break;
+        case 0x202:
+          result = a < b ? 1.0 : 0.0;
+          break;
+        case 0x203:
+          result = a >= b ? 1.0 : 0.0;
+          break;
+        case 0x204:
+          result = a + b;
+          break;
+        case 0x205:
+          result = a * b;
+          break;
+        case 0x206:
+          result = std::atan2(a, b);
+          break;
+        case 0x208:
+          result = b != 0.0 ? a / b : 0.0;
+          break;
+        case 0x300:
+          result = a >= 0.0 ? b : d;
+          break;
         default:
-          XELOGW("[xna] selector \"{}\": preshader opcode {:03X} is not handled",
-                 selector.array_name, opcode);
+          XELOGW(
+              "[xna] selector \"{}\": preshader opcode {:03X} is not handled",
+              selector.array_name, opcode);
           return false;
       }
       store(output, c, result);
@@ -2528,9 +2563,8 @@ void ResolvePassShadersOnUse(EffectImage* image, EffectPassInfo* pass,
     if (object_index >= image->objects.size()) {
       return;
     }
-    const uint64_t key =
-        (uint64_t(object_index) << 1) |
-        (stage == gpu::xenos::ShaderType::kPixel ? 1u : 0u);
+    const uint64_t key = (uint64_t(object_index) << 1) |
+                         (stage == gpu::xenos::ShaderType::kPixel ? 1u : 0u);
     auto found = image->analyzed_objects.find(key);
     if (found != image->analyzed_objects.end()) {
       *shader_index_out = found->second;
@@ -2630,11 +2664,11 @@ void NotePreparedOnThisThread(uint32_t handle) {
 //
 // XnaOs::Log cannot be used from anything injected into a console assembly.
 // It dispatches through a static function table bound once at bootstrap, and
-// statics are per-AssemblyLoadContext: MXF.Graphics runs in the title's context,
-// gets its own copy of that static, and never has it bound - so every Log call
-// from a rewritten method returns silently at the null check. A diagnostic that
-// cannot report is worse than none, because its silence reads as "the code did
-// not run" when the code ran fine.
+// statics are per-AssemblyLoadContext: MXF.Graphics runs in the title's
+// context, gets its own copy of that static, and never has it bound - so every
+// Log call from a rewritten method returns silently at the null check. A
+// diagnostic that cannot report is worse than none, because its silence reads
+// as "the code did not run" when the code ran fine.
 //
 // Resolving an export off the running program has no such problem: there is one
 // process, and NativeLibrary finds it from any load context.
@@ -2643,9 +2677,15 @@ extern "C" void Nexia_XnaLog(uint32_t level, const char* message) {
     return;
   }
   switch (level) {
-    case 2: XELOGW("[xna] {}", message); break;
-    case 3: XELOGE("[xna] {}", message); break;
-    default: XELOGI("[xna] {}", message); break;
+    case 2:
+      XELOGW("[xna] {}", message);
+      break;
+    case 3:
+      XELOGE("[xna] {}", message);
+      break;
+    default:
+      XELOGI("[xna] {}", message);
+      break;
   }
 }
 

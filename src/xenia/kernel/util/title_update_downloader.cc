@@ -26,6 +26,7 @@
 #include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/string_util.h"
+#include "xenia/base/utf8.h"
 #include "xenia/kernel/util/xex2_info.h"
 
 namespace xe {
@@ -341,6 +342,35 @@ bool TitleUpdateDownloader::Download(
     return false;
   }
 
+  if (!DownloadUrl(BuildDownloadUrl(update.id), dest_path, progress, cancel)) {
+    return false;
+  }
+
+  // Verify before anyone installs it.
+  //
+  // The catalogue's listed hash is NOT a checksum of the download - it is the
+  // package's own content hash, stored inside the STFS header at 0x32C, which
+  // is how the console identifies the update. Checking it against a hash of
+  // the file would reject every download. So verification is:
+  //
+  //   1. the package is an STFS container (LIVE / PIRS / CON )
+  //   2. the header carries the exact content hash the catalogue advertised
+  //   3. the length matches what was advertised - Size is listed in KiB
+  //
+  // Together those say "this is the package that was offered, complete".
+  if (!VerifyPackage(dest_path, update)) {
+    std::error_code ec;
+    std::filesystem::remove(dest_path, ec);
+    return false;
+  }
+
+  return true;
+}
+
+bool TitleUpdateDownloader::DownloadUrl(
+    const std::string& url, const std::filesystem::path& dest_path,
+    const std::function<void(uint64_t, uint64_t)>& progress,
+    const std::atomic<bool>* cancel) {
   CURL* curl = curl_easy_init();
 
   if (!curl) {
@@ -354,11 +384,9 @@ bool TitleUpdateDownloader::Download(
 
   if (!state.file) {
     curl_easy_cleanup(curl);
-    XELOGE("Cannot write title update to {}", dest_path.string());
+    XELOGE("Cannot write download to {}", xe::path_to_utf8(dest_path));
     return false;
   }
-
-  const std::string url = BuildDownloadUrl(update.id);
 
   curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
   curl_easy_setopt(curl, CURLOPT_USERAGENT, "nexia360");
@@ -384,28 +412,10 @@ bool TitleUpdateDownloader::Download(
     std::filesystem::remove(dest_path, ec);
 
     if (!cancelled) {
-      XELOGE("Title update download failed: curl {} http {}",
+      XELOGE("Download of {} failed: curl {} http {}", url,
              static_cast<int>(result), status);
     }
 
-    return false;
-  }
-
-  // Verify before anyone installs it.
-  //
-  // The catalogue's listed hash is NOT a checksum of the download - it is the
-  // package's own content hash, stored inside the STFS header at 0x32C, which
-  // is how the console identifies the update. Checking it against a hash of
-  // the file would reject every download. So verification is:
-  //
-  //   1. the package is an STFS container (LIVE / PIRS / CON )
-  //   2. the header carries the exact content hash the catalogue advertised
-  //   3. the length matches what was advertised - Size is listed in KiB
-  //
-  // Together those say "this is the package that was offered, complete".
-  if (!VerifyPackage(dest_path, update)) {
-    std::error_code ec;
-    std::filesystem::remove(dest_path, ec);
     return false;
   }
 

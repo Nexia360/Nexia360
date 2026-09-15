@@ -599,8 +599,7 @@ D3D12Shader* PipelineCache::LoadShader(xenos::ShaderType shader_type,
 
 D3D12Shader* PipelineCache::LoadShader(xenos::ShaderType shader_type,
                                        const uint32_t* host_address,
-                                       uint32_t dword_count,
-                                       uint64_t data_hash,
+                                       uint32_t dword_count, uint64_t data_hash,
                                        std::endian ucode_source_endian) {
   auto it = shaders_.find(data_hash);
   if (it != shaders_.end()) {
@@ -610,8 +609,8 @@ D3D12Shader* PipelineCache::LoadShader(xenos::ShaderType shader_type,
   // Always create the shader and stash it away.
   // We need to track it even if it fails translation so we know not to try
   // again.
-  D3D12Shader* shader = new D3D12Shader(
-      shader_type, data_hash, host_address, dword_count, ucode_source_endian);
+  D3D12Shader* shader = new D3D12Shader(shader_type, data_hash, host_address,
+                                        dword_count, ucode_source_endian);
   shaders_.emplace(data_hash, shader);
   return shader;
 }

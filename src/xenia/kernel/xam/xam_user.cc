@@ -1979,6 +1979,54 @@ dword_result_t XamUserGetUserIndexMask_entry(dword_t flags) {
 }
 DECLARE_XAM_EXPORT1(XamUserGetUserIndexMask, kUserProfiles, kImplemented);
 
+dword_result_t XamPngDecode_entry(lpvoid_t png_ptr, dword_t png_size,
+                                  lpvoid_t output_ptr, dword_t output_size,
+                                  dword_t unknown5, dword_t unknown6,
+                                  pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
+  if (unknown5 || unknown6) {
+    XELOGW("XamPngDecode: unhandled arguments {:08X} {:08X}",
+           uint32_t(unknown5), uint32_t(unknown6));
+  }
+  X_HRESULT result = X_E_INVALIDARG;
+  if (png_ptr && png_size && output_ptr && output_size) {
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    uint8_t* pixels = stbi_load_from_memory(
+        reinterpret_cast<const uint8_t*>(png_ptr.host_address()),
+        static_cast<int>(uint32_t(png_size)), &width, &height, &channels,
+        STBI_rgb_alpha);
+    if (!pixels) {
+      XELOGW("XamPngDecode: {} bytes did not decode ({})", uint32_t(png_size),
+             stbi_failure_reason());
+      result = X_E_FAIL;
+    } else {
+      const size_t count = size_t(width) * size_t(height);
+      if (count * 4 > output_size) {
+        XELOGW("XamPngDecode: {}x{} needs {} bytes, buffer is {}", width,
+               height, count * 4, uint32_t(output_size));
+        result = X_E_INSUFFICIENT_BUFFER;
+      } else {
+        uint8_t* out = reinterpret_cast<uint8_t*>(output_ptr.host_address());
+        for (size_t i = 0; i < count; ++i) {
+          out[i * 4 + 0] = pixels[i * 4 + 3];
+          out[i * 4 + 1] = pixels[i * 4 + 0];
+          out[i * 4 + 2] = pixels[i * 4 + 1];
+          out[i * 4 + 3] = pixels[i * 4 + 2];
+        }
+        result = X_E_SUCCESS;
+      }
+      stbi_image_free(pixels);
+    }
+  }
+  if (overlapped_ptr) {
+    kernel_state()->CompleteOverlappedImmediate(overlapped_ptr, result);
+    return X_ERROR_IO_PENDING;
+  }
+  return result;
+}
+DECLARE_XAM_EXPORT1(XamPngDecode, kNone, kImplemented);
+
 dword_result_t XamUserFlushLogonQueue_entry(
     pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
   if (overlapped_ptr) {

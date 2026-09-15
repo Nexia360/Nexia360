@@ -189,7 +189,6 @@ class UIFocusManager {
     return nodes_.find(name) != nodes_.cend();
   }
 
-
   /**
    * Get input for a dialog. Returns kNoInput if not focused.
    */

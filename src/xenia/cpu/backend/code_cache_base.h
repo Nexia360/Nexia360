@@ -289,12 +289,10 @@ class CodeCacheBase : public CodeCache {
     }
     const size_t flushed = generated_code_offset_ - reserved_code_offset_;
     if (indirection_table_base_) {
-      const uint64_t low =
-          uint64_t(uintptr_t(generated_code_execute_base_)) +
-          reserved_code_offset_;
-      const uint64_t high =
-          uint64_t(uintptr_t(generated_code_execute_base_)) +
-          kGeneratedCodeSize;
+      const uint64_t low = uint64_t(uintptr_t(generated_code_execute_base_)) +
+                           reserved_code_offset_;
+      const uint64_t high = uint64_t(uintptr_t(generated_code_execute_base_)) +
+                            kGeneratedCodeSize;
       for (const auto& range : committed_ranges_) {
         uint32_t* slots = reinterpret_cast<uint32_t*>(
             indirection_table_base_ + (range.first - kIndirectionTableBase));

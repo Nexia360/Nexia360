@@ -11,13 +11,13 @@
 // for the ones that are not. Everything else is a generated stub - see
 // xna_exports_generated.cc.
 
-#include "xenia/kernel/xna/xna_exports.h"
 #include "xenia/kernel/xna/xna_avatar.h"
+#include "xenia/kernel/xna/xna_exports.h"
+#include "xenia/kernel/xna/xna_gpu.h"
 #include "xenia/kernel/xna/xna_host.h"
 #include "xenia/kernel/xna/xna_launcher.h"
 #include "xenia/kernel/xna/xna_network_session.h"
 #include "xenia/kernel/xna/xna_os.h"
-#include "xenia/kernel/xna/xna_gpu.h"
 #include "xenia/kernel/xna/xna_present.h"
 #include "xenia/kernel/xna/xna_xact.h"
 #include "xenia/kernel/xna/xna_xact_player.h"
@@ -29,11 +29,11 @@
 #include <cstring>
 #include <filesystem>
 #include <map>
-#include <system_error>
 #include <memory>
 #include <mutex>
 #include <random>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -224,9 +224,8 @@ extern "C" uint32_t xna_D3D_D3D_GetSupportedDisplayMode(uint32_t adapter,
 
 // The second out parameter is WIDESCREEN, not a refresh rate - GraphicsAdapter
 // calls it `out var widescreen` and uses it for IsWideScreen. 1280x720 is 16:9.
-extern "C" uint32_t xna_D3D_D3D_GetCurrentDisplayMode(uint32_t adapter,
-                                                      void* out_mode,
-                                                      uint32_t* out_widescreen) {
+extern "C" uint32_t xna_D3D_D3D_GetCurrentDisplayMode(
+    uint32_t adapter, void* out_mode, uint32_t* out_widescreen) {
   xe::kernel::xna::WriteMode(
       reinterpret_cast<xe::kernel::xna::DisplayModeInfo*>(out_mode));
   if (out_widescreen) {
@@ -268,7 +267,6 @@ extern "C" uint32_t xna_D3D_D3D_QueryFormat(uint32_t adapter,
                                             uint32_t profile, void* info) {
   return 0;
 }
-
 
 // ---- device -----------------------------------------------------------------
 //
@@ -312,8 +310,6 @@ extern "C" uint32_t xna_D3D_D3D_Device_Present(uint32_t device) {
   xe::kernel::xna::XnaPresentFrame();
   return 0;
 }
-
-
 
 // ---- async dispatcher -------------------------------------------------------
 //
@@ -431,7 +427,8 @@ extern "C" uint32_t xna_SYSTEM_System_DispatcherUpdate(
   return 0;
 }
 
-// ---- Nexia's own -------------------------------------------------------------
+// ---- Nexia's own
+// -------------------------------------------------------------
 
 // Not a console entry point: the managed host reads this when a title returns
 // or dies, so the run ends with a list of what the title actually asked the
@@ -646,8 +643,7 @@ uint8_t* LocateSessionBuffer(const uint8_t* command_buffer, uint32_t low,
       continue;
     }
     auto* data = reinterpret_cast<uint8_t*>(static_cast<uintptr_t>(address));
-    if (!xe::kernel::xna::XnaHostWritable(data - kArrayHeader,
-                                          data + total)) {
+    if (!xe::kernel::xna::XnaHostWritable(data - kArrayHeader, data + total)) {
       *rejected += fmt::format(" {:X}:pages", address);
       continue;
     }
@@ -1003,8 +999,8 @@ extern "C" uint32_t xna_Net_GamerServices_DispatchCommand_Entrypoint(
     std::memcpy(bones.data(), request_bytes.data() + kAvatarDrawBones,
                 bones.size() * sizeof(float));
     xe::kernel::xna::XnaAvatarDraw(word_at(12), matrices[0], matrices[1],
-                                   matrices[2], lights, lights + 3,
-                                   lights + 6, expression, bones.data());
+                                   matrices[2], lights, lights + 3, lights + 6,
+                                   expression, bones.data());
     return 0;
   }
 
@@ -1061,8 +1057,8 @@ extern "C" uint32_t xna_Net_GamerServices_DispatchCommand_Entrypoint(
     }
     const uint32_t request =
         xe::kernel::xna::GetXnaOsTable()->GuideBeginMessageBox(
-            player < kGuideLocalSlots ? player : 0, title.c_str(),
-            text.c_str(), labels.empty() ? nullptr : labels.data(),
+            player < kGuideLocalSlots ? player : 0, title.c_str(), text.c_str(),
+            labels.empty() ? nullptr : labels.data(),
             static_cast<uint32_t>(labels.size()), focus);
     const uint32_t operation = xe::kernel::xna::XnaReserveAsyncOperation();
     WatchGuideRequest(operation, request);
@@ -1101,8 +1097,7 @@ extern "C" uint32_t xna_Net_GamerServices_DispatchCommand_Entrypoint(
     const bool password = word_at(at) != 0;
     const uint32_t request = xe::kernel::xna::XnaGuideBeginKeyboard(
         player < kGuideLocalSlots ? player : 0, title.c_str(),
-        description.c_str(), default_text.c_str(), kGuideTextLength,
-        password);
+        description.c_str(), default_text.c_str(), kGuideTextLength, password);
     const uint32_t operation = xe::kernel::xna::XnaReserveAsyncOperation();
     WatchGuideRequest(operation, request);
     reply.Word(operation);
@@ -1147,8 +1142,7 @@ extern "C" uint32_t xna_Net_GamerServices_DispatchCommand_Entrypoint(
     return 0;
   }
 
-  if (command == kNetworkSessionEndCreate ||
-      command == kSessionFinderEndJoin) {
+  if (command == kNetworkSessionEndCreate || command == kSessionFinderEndJoin) {
     xe::kernel::xna::XnaSessionSummary summary;
     const uint32_t result =
         command == kNetworkSessionEndCreate
@@ -1223,9 +1217,9 @@ extern "C" uint32_t xna_Net_GamerServices_DispatchCommand_Entrypoint(
     }
 
     std::string rejected;
-    uint8_t* target = LocateSessionBuffer(bytes, session_buffer_low,
-                                          session_buffer_total,
-                                          session_buffer_current, &rejected);
+    uint8_t* target =
+        LocateSessionBuffer(bytes, session_buffer_low, session_buffer_total,
+                            session_buffer_current, &rejected);
     if (!target) {
       XELOGW(
           "[xna] network session {}: session buffer {:08X} ({} bytes) not "
@@ -1432,8 +1426,8 @@ bool ParseWaveFormat(const uint8_t* bytes, uint32_t size,
            (uint32_t(bytes[at + 2]) << 8) | uint32_t(bytes[at + 3]);
   };
   const auto known = [](uint32_t tag) {
-    return tag == 0x0001 || tag == 0x0002 || tag == 0x0161 ||
-           tag == 0x0162 || tag == 0x0165 || tag == 0x0166;
+    return tag == 0x0001 || tag == 0x0002 || tag == 0x0161 || tag == 0x0162 ||
+           tag == 0x0165 || tag == 0x0166;
   };
   const bool big = !known(le16(0)) && known(be16(0));
   const auto read16 = [&](uint32_t at) { return big ? be16(at) : le16(at); };
@@ -1794,11 +1788,9 @@ uint16_t CategoryIndex(const std::string& name) {
   } else {
     // A name the settings file does not carry still needs a stable id, and it
     // must not collide with a real one.
-    index = static_cast<uint16_t>(
-        std::max<size_t>(categories.size(),
-                         global_settings
-                             ? global_settings->category_names().size()
-                             : 0));
+    index = static_cast<uint16_t>(std::max<size_t>(
+        categories.size(),
+        global_settings ? global_settings->category_names().size() : 0));
     if (categories.size() <= index) {
       categories.resize(static_cast<size_t>(index) + 1);
     }
@@ -1871,7 +1863,8 @@ extern "C" uint32_t xna_Audio_XActEngine_CreateAndInitEngine(
   // same table. Without it the numbering is invented here and cannot agree
   // with the banks.
   {
-    auto settings_file = std::make_unique<xe::kernel::xna::XactGlobalSettings>();
+    auto settings_file =
+        std::make_unique<xe::kernel::xna::XactGlobalSettings>();
     if (settings_file->Load(path)) {
       std::lock_guard<std::mutex> lock(xact_mutex);
       global_settings = std::move(settings_file);
@@ -2006,8 +1999,8 @@ const xe::kernel::xna::XactWaveRef& PickVariation(
   if (cue.variation_mode <= 1) {
     next = last == variation_last.end() ? 0 : (last->second + 1) % count;
   } else {
-    next = std::uniform_int_distribution<uint32_t>(0, count - 1)(
-        variation_random);
+    next =
+        std::uniform_int_distribution<uint32_t>(0, count - 1)(variation_random);
     if (last != variation_last.end() && next == last->second) {
       next = (next + 1) % count;
     }
@@ -2019,7 +2012,7 @@ const xe::kernel::xna::XactWaveRef& PickVariation(
 xe::kernel::xna::XnaAudioFormat WaveBankFormat(
     const xe::kernel::xna::XactWaveEntry& entry) {
   static constexpr uint32_t kWmaBlockAligns[] = {
-      929, 1487, 1280, 2230, 8917, 8192, 4459, 5945, 2304,
+      929,  1487, 1280, 2230, 8917, 8192, 4459, 5945, 2304,
       1536, 1485, 1008, 2731, 4096, 6827, 5462, 1280};
   static constexpr uint32_t kWmaAvgBytes[] = {12000, 24000, 4000, 6000,
                                               8000,  20000, 2500};
@@ -2075,8 +2068,8 @@ extern "C" uint32_t xna_Audio_XActCue_Play(uint32_t cue) {
     SetCueState(cue, &found->second, kCueStoppedState, "unresolved cue");
     return 0;
   }
-  const auto& ref = PickVariation(found->second.sound_bank,
-                                  found->second.cue_index, *entry);
+  const auto& ref =
+      PickVariation(found->second.sound_bank, found->second.cue_index, *entry);
   const xe::kernel::xna::XactWaveBank* wave = nullptr;
   const std::string& wanted = bank->second->wave_bank_name(ref.wave_bank);
   if (!wanted.empty()) {
@@ -2097,9 +2090,10 @@ extern "C" uint32_t xna_Audio_XActCue_Play(uint32_t cue) {
     }
   }
   if (!wave) {
-    XELOGW("[xna] XACT cue \"{}\" wants wave bank {} \"{}\", which is not "
-           "loaded",
-           entry->name, ref.wave_bank, wanted);
+    XELOGW(
+        "[xna] XACT cue \"{}\" wants wave bank {} \"{}\", which is not "
+        "loaded",
+        entry->name, ref.wave_bank, wanted);
     SetCueState(cue, &found->second, kCueStoppedState, "wave bank missing");
     return 0;
   }
@@ -2120,8 +2114,8 @@ extern "C" uint32_t xna_Audio_XActCue_Play(uint32_t cue) {
       "channel(s) at {} Hz, category {}",
       entry->name, wave->name(), ref.wave_entry, bytes, format.codec,
       format.channels, format.sample_rate, ref.category);
-  if (!xe::kernel::xna::XactPlayWave(cue, ref.category, samples, bytes,
-                                     format, 1.0f)) {
+  if (!xe::kernel::xna::XactPlayWave(cue, ref.category, samples, bytes, format,
+                                     1.0f)) {
     // Said out loud: a cue the title believes is playing but that produced no
     // samples is worth knowing about, and returning success here would hide it.
     XELOGW("[xna] XACT could not decode \"{}\"", entry->name);
@@ -2245,12 +2239,9 @@ float MusicVolume() { return media_muted ? 0.0f : media_volume; }
 
 }  // namespace
 
-extern "C" uint32_t xna_MEDIA_Media_Song_CreateHandle(const char* name,
-                                                      uint32_t name_length,
-                                                      const char* path,
-                                                      uint32_t path_length,
-                                                      int32_t duration,
-                                                      uint32_t* handle_out) {
+extern "C" uint32_t xna_MEDIA_Media_Song_CreateHandle(
+    const char* name, uint32_t name_length, const char* path,
+    uint32_t path_length, int32_t duration, uint32_t* handle_out) {
   if (!handle_out) {
     return 0x80070057;
   }
@@ -2580,8 +2571,8 @@ extern "C" uint32_t xna_MEDIA_Media_Library_GetMediaSourceCount(
 }
 
 extern "C" uint32_t xna_MEDIA_Media_Library_GetMediaSources(uint8_t* buffer,
-                                                           uint32_t byte_count,
-                                                           int32_t count) {
+                                                            uint32_t byte_count,
+                                                            int32_t count) {
   if (!buffer || count <= 0) {
     return 0;
   }
@@ -2807,7 +2798,8 @@ extern "C" uint32_t xna_MEDIA_Media_Player_CheckForEvents(uint32_t* a,
 extern "C" uint32_t xna_Audio_XActEngine_CreateStreamingWaveBank(
     uint32_t engine, const void* name, uint32_t length, uint32_t offset,
     int16_t packet_size) {
-  const std::string path = FromManagedString(name, static_cast<int32_t>(length));
+  const std::string path =
+      FromManagedString(name, static_cast<int32_t>(length));
   auto bank = std::make_unique<xe::kernel::xna::XactWaveBank>();
   if (!bank->Load(path)) {
     return UINT32_MAX;
@@ -2962,4 +2954,3 @@ extern "C" uint32_t xna_Audio_XActEngine_Apply3D(uint32_t engine, uint32_t cue,
   });
   return 0;
 }
-

@@ -106,7 +106,8 @@ bool CallXamInput(const char* name, uint32_t user_index, void* guest,
 
 }  // namespace
 
-extern "C" uint32_t xna_XINPUT_XInput_GetState(uint32_t player, void* out_state) {
+extern "C" uint32_t xna_XINPUT_XInput_GetState(uint32_t player,
+                                               void* out_state) {
   xe::hid::X_INPUT_STATE guest = {};
   uint64_t result = 0;
   if (!CallXamInput("XamInputGetState", player, &guest, sizeof(guest),

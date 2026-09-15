@@ -11,8 +11,8 @@
 #include "xenia/kernel/xna/xna_direct.h"
 #include "xenia/kernel/xna/xna_exports.h"
 #include "xenia/kernel/xna/xna_guest_heap.h"
-#include "xenia/kernel/xna/xna_runtimehost.h"
 #include "xenia/kernel/xna/xna_present.h"
+#include "xenia/kernel/xna/xna_runtimehost.h"
 
 #include <algorithm>
 #include <array>
@@ -26,12 +26,11 @@
 #include <string>
 #include <vector>
 #include "xenia/base/byte_order.h"
+#include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
-#include "xenia/memory.h"
 #include "xenia/emulator.h"
 #include "xenia/gpu/d3d12/d3d12_command_processor.h"
-#include "xenia/base/cvar.h"
 #include "xenia/gpu/draw_util.h"
 #include "xenia/gpu/graphics_system.h"
 #include "xenia/gpu/register_file.h"
@@ -40,6 +39,7 @@
 #include "xenia/gpu/xenos.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/shim_utils.h"
+#include "xenia/memory.h"
 
 namespace xe {
 namespace kernel {
@@ -128,8 +128,10 @@ float GetFloat(const RegisterFile& regs, uint32_t index) {
 xenos::PrimitiveType ToXenosPrimitive(uint32_t xna_primitive) {
   xenos::PrimitiveType value = xenos::PrimitiveType::kTriangleList;
   if (!xe::kernel::xna::XnaPrimitiveToXenos(xna_primitive, &value)) {
-    XELOGW("[xna] no conversion for XNA PrimitiveType {} - the console "
-           "refuses this", xna_primitive);
+    XELOGW(
+        "[xna] no conversion for XNA PrimitiveType {} - the console "
+        "refuses this",
+        xna_primitive);
   }
   return value;
 }
@@ -159,10 +161,11 @@ std::atomic<bool> drew_ever{false};
 // rasterized draw from a discarded one, and a per-draw line cannot show which
 // stage is losing them. These are counted per stage and reported once a frame,
 // so one run says where the pixels die instead of whether one guess worked.
-// How the last draw of the frame described its colour surface. The render target
-// cache keys its host textures by base, pitch and format, so a resolve that
-// describes any of the three differently finds a different render target - an
-// untouched one - and copies black out of it no matter how well the frame drew.
+// How the last draw of the frame described its colour surface. The render
+// target cache keys its host textures by base, pitch and format, so a resolve
+// that describes any of the three differently finds a different render target -
+// an untouched one - and copies black out of it no matter how well the frame
+// drew.
 struct LastSurface {
   std::atomic<uint32_t> pitch{0};
   std::atomic<uint32_t> height{0};
@@ -238,9 +241,12 @@ uint32_t ResolveRectFor(uint32_t width, uint32_t height) {
     return 0;
   }
   auto* rect = memory->TranslateVirtual<float*>(address);
-  rect[0] = 0.0f;                rect[1] = 0.0f;
-  rect[2] = float(width);        rect[3] = 0.0f;
-  rect[4] = float(width);        rect[5] = float(height);
+  rect[0] = 0.0f;
+  rect[1] = 0.0f;
+  rect[2] = float(width);
+  rect[3] = 0.0f;
+  rect[4] = float(width);
+  rect[5] = float(height);
   resolve_rects[key] = address;
   return address;
 }
@@ -396,10 +402,10 @@ void IssueOnGpuThread(const XnaGpuDraw& draw,
   const uint32_t stream_count = static_cast<uint32_t>(streams.size());
   RegisterFile& regs = *registers;
 
-  const uint32_t width = draw.target_width    ? draw.target_width
+  const uint32_t width = draw.target_width     ? draw.target_width
                          : draw.viewport_width ? draw.viewport_width
                                                : 1280;
-  const uint32_t height = draw.target_height    ? draw.target_height
+  const uint32_t height = draw.target_height     ? draw.target_height
                           : draw.viewport_height ? draw.viewport_height
                                                  : 720;
 
@@ -442,8 +448,7 @@ void IssueOnGpuThread(const XnaGpuDraw& draw,
   // told the same one - a clear that lands anywhere else leaves the buffer the
   // test reads uncleared. When the slots do not fit in EDRAM that placement
   // falls back to tile zero, which collides with colour.
-  const uint32_t depth_base =
-      XnaGpuEdramDepthBase(width, height, target_count);
+  const uint32_t depth_base = XnaGpuEdramDepthBase(width, height, target_count);
   const bool depth_fits = depth_base != kXnaGpuNoDepth;
 
   reg::RB_DEPTHCONTROL depth_control;
@@ -554,8 +559,7 @@ void IssueOnGpuThread(const XnaGpuDraw& draw,
   const uint32_t scissor_top = band_rows ? band_y0 : 0;
   const uint32_t scissor_bottom = band_rows ? band_y0 + band_rows : height;
   Set(regs, XE_GPU_REG_PA_SC_WINDOW_SCISSOR_TL, scissor_top << 16);
-  Set(regs, XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR,
-      (scissor_bottom << 16) | width);
+  Set(regs, XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR, (scissor_bottom << 16) | width);
   Set(regs, XE_GPU_REG_PA_SC_SCREEN_SCISSOR_TL, 0);
   Set(regs, XE_GPU_REG_PA_SC_SCREEN_SCISSOR_BR, (height << 16) | width);
 
@@ -619,7 +623,8 @@ void IssueOnGpuThread(const XnaGpuDraw& draw,
     // a two stream draw would read each stream through the other's descriptor.
     for (uint32_t i = 0; i < 96 && fetch_slot_count < 32; ++i) {
       const uint32_t slot = 95 - i;
-      if (!(map.vertex_fetch_bitmap[slot / 32] & (uint32_t(1) << (slot % 32)))) {
+      if (!(map.vertex_fetch_bitmap[slot / 32] &
+            (uint32_t(1) << (slot % 32)))) {
         continue;
       }
       if (slot == kNullVertexFetchConstant) {
@@ -709,9 +714,8 @@ void IssueOnGpuThread(const XnaGpuDraw& draw,
       XELOGD(
           "[xna] trace fetch slot {}: guest {:08X} phys {:08X} {} bytes "
           "stride {}{}",
-          fetch_slots[slot_index], address,
-          memory->GetPhysicalAddress(address), size_bytes, stream.stride,
-          text);
+          fetch_slots[slot_index], address, memory->GetPhysicalAddress(address),
+          size_bytes, stream.stride, text);
     }
   }
 
@@ -765,9 +769,12 @@ void IssueOnGpuThread(const XnaGpuDraw& draw,
       texture.clamp_x = static_cast<xenos::ClampMode>(binding.address_u);
       texture.clamp_y = static_cast<xenos::ClampMode>(binding.address_v);
       texture.clamp_z = static_cast<xenos::ClampMode>(binding.address_v);
-      texture.mag_filter = static_cast<xenos::TextureFilter>(binding.mag_filter);
-      texture.min_filter = static_cast<xenos::TextureFilter>(binding.min_filter);
-      texture.mip_filter = static_cast<xenos::TextureFilter>(binding.mip_filter);
+      texture.mag_filter =
+          static_cast<xenos::TextureFilter>(binding.mag_filter);
+      texture.min_filter =
+          static_cast<xenos::TextureFilter>(binding.min_filter);
+      texture.mip_filter =
+          static_cast<xenos::TextureFilter>(binding.mip_filter);
       texture.aniso_filter = static_cast<xenos::AnisoFilter>(binding.aniso);
     } else {
       texture.clamp_x = xenos::ClampMode::kClampToEdge;
@@ -851,7 +858,6 @@ void IssueOnGpuThread(const XnaGpuDraw& draw,
     dma_size.swap_mode =
         draw.index_32bit ? xenos::Endian::k8in32 : xenos::Endian::k8in16;
     Set(regs, XE_GPU_REG_VGT_DMA_SIZE, dma_size.value);
-
   }
 
   auto* vertex_shader = static_cast<xe::gpu::Shader*>(draw.vertex_shader);
@@ -886,11 +892,11 @@ void IssueOnGpuThread(const XnaGpuDraw& draw,
 
   // THIS REGISTER DECIDES WHETHER THE DRAW RASTERIZES AT ALL.
   //
-  // IsRasterizationPotentiallyDone rejects the draw outright when vs_export_mode
-  // is kMultipass, which is 7 - all three bits set. Never having written this
-  // register left it holding whatever the last pass put there, and IssueDraw
-  // reports a rejected draw as success, so every draw logged as issued while
-  // nothing rasterized.
+  // IsRasterizationPotentiallyDone rejects the draw outright when
+  // vs_export_mode is kMultipass, which is 7 - all three bits set. Never having
+  // written this register left it holding whatever the last pass put there, and
+  // IssueDraw reports a rejected draw as success, so every draw logged as
+  // issued while nothing rasterized.
   //
   // The register counts are left at zero deliberately: the interpolator count
   // is max(the shader's own static bound, what this field allows), so zero lets
@@ -913,11 +919,11 @@ void IssueOnGpuThread(const XnaGpuDraw& draw,
   reg::VGT_DRAW_INITIATOR initiator;
   initiator.value = 0;
   initiator.prim_type = ToXenosPrimitive(draw.primitive_type);
-  initiator.source_select =
-      draw.indexed ? xenos::SourceSelect::kDMA : xenos::SourceSelect::kAutoIndex;
+  initiator.source_select = draw.indexed ? xenos::SourceSelect::kDMA
+                                         : xenos::SourceSelect::kAutoIndex;
   initiator.major_mode = xenos::MajorMode::kImplicit;
-  initiator.index_size =
-      draw.index_32bit ? xenos::IndexFormat::kInt32 : xenos::IndexFormat::kInt16;
+  initiator.index_size = draw.index_32bit ? xenos::IndexFormat::kInt32
+                                          : xenos::IndexFormat::kInt16;
   initiator.num_indices = index_count;
   Set(regs, XE_GPU_REG_VGT_DRAW_INITIATOR, initiator.value);
   // IssueDraw reports several "this draw has no effect" paths as success, so
@@ -975,15 +981,14 @@ void IssueOnGpuThread(const XnaGpuDraw& draw,
       const bool analyzed = shader->is_ucode_analyzed();
       std::string text;
       for (uint32_t r = 0; r < (analyzed ? 256u : 32u); ++r) {
-        if (analyzed &&
-            !(shader->constant_register_map().float_bitmap[r / 64] &
-              (uint64_t(1) << (r % 64)))) {
+        if (analyzed && !(shader->constant_register_map().float_bitmap[r / 64] &
+                          (uint64_t(1) << (r % 64)))) {
           continue;
         }
         const uint32_t at = bank + r * 4;
-        text += fmt::format(" c{}=({:g} {:g} {:g} {:g})", r,
-                            GetFloat(regs, at), GetFloat(regs, at + 1),
-                            GetFloat(regs, at + 2), GetFloat(regs, at + 3));
+        text += fmt::format(" c{}=({:g} {:g} {:g} {:g})", r, GetFloat(regs, at),
+                            GetFloat(regs, at + 1), GetFloat(regs, at + 2),
+                            GetFloat(regs, at + 3));
       }
       XELOGD("[xna] trace {} constants{}:{}", is_vertex ? "vs" : "ps",
              analyzed ? "" : " (not analyzed yet, c0-c31)", text);
@@ -992,10 +997,10 @@ void IssueOnGpuThread(const XnaGpuDraw& draw,
 
   const bool issued = processor->HostedIssueDraw(
       ToXenosPrimitive(draw.primitive_type), index_count, draw.indexed,
-      // The same physical address VGT_DMA_BASE gets. IndexBufferInfo::guest_base
-      // is a physical address - the primitive processor reads the indices out of
-      // shared memory with it - and handing it the virtual one had it fetching
-      // from somewhere else entirely.
+      // The same physical address VGT_DMA_BASE gets.
+      // IndexBufferInfo::guest_base is a physical address - the primitive
+      // processor reads the indices out of shared memory with it - and handing
+      // it the virtual one had it fetching from somewhere else entirely.
       memory->GetPhysicalAddress(index_base), draw.index_32bit,
       static_cast<uint32_t>(xenos::Endian::kNone), index_bytes_left);
 
@@ -1091,26 +1096,46 @@ void IssueOnGpuThread(const XnaGpuDraw& draw,
 // something different.
 xenos::TextureFormat XnaGpuTextureFormatFor(uint32_t xna_surface_format) {
   switch (xna_surface_format) {
-    case 0:  return xenos::TextureFormat::k_8_8_8_8;       // Color
-    case 1:  return xenos::TextureFormat::k_5_6_5;         // Bgr565
-    case 2:  return xenos::TextureFormat::k_1_5_5_5;       // Bgra5551
-    case 3:  return xenos::TextureFormat::k_4_4_4_4;       // Bgra4444
-    case 4:  return xenos::TextureFormat::k_DXT1;          // Dxt1
-    case 5:  return xenos::TextureFormat::k_DXT2_3;        // Dxt3
-    case 6:  return xenos::TextureFormat::k_DXT4_5;        // Dxt5
-    case 7:  return xenos::TextureFormat::k_8_8;           // NormalizedByte2
-    case 8:  return xenos::TextureFormat::k_8_8_8_8;       // NormalizedByte4
-    case 9:  return xenos::TextureFormat::k_2_10_10_10;    // Rgba1010102
-    case 10: return xenos::TextureFormat::k_16_16;         // Rg32
-    case 11: return xenos::TextureFormat::k_16_16_16_16;   // Rgba64
-    case 12: return xenos::TextureFormat::k_8;             // Alpha8
-    case 13: return xenos::TextureFormat::k_32_FLOAT;      // Single
-    case 14: return xenos::TextureFormat::k_32_32_FLOAT;   // Vector2
-    case 15: return xenos::TextureFormat::k_32_32_32_32_FLOAT;  // Vector4
-    case 16: return xenos::TextureFormat::k_16_FLOAT;      // HalfSingle
-    case 17: return xenos::TextureFormat::k_16_16_FLOAT;   // HalfVector2
-    case 18: return xenos::TextureFormat::k_16_16_16_16_FLOAT;  // HalfVector4
-    default: return xenos::TextureFormat::k_8_8_8_8;
+    case 0:
+      return xenos::TextureFormat::k_8_8_8_8;  // Color
+    case 1:
+      return xenos::TextureFormat::k_5_6_5;  // Bgr565
+    case 2:
+      return xenos::TextureFormat::k_1_5_5_5;  // Bgra5551
+    case 3:
+      return xenos::TextureFormat::k_4_4_4_4;  // Bgra4444
+    case 4:
+      return xenos::TextureFormat::k_DXT1;  // Dxt1
+    case 5:
+      return xenos::TextureFormat::k_DXT2_3;  // Dxt3
+    case 6:
+      return xenos::TextureFormat::k_DXT4_5;  // Dxt5
+    case 7:
+      return xenos::TextureFormat::k_8_8;  // NormalizedByte2
+    case 8:
+      return xenos::TextureFormat::k_8_8_8_8;  // NormalizedByte4
+    case 9:
+      return xenos::TextureFormat::k_2_10_10_10;  // Rgba1010102
+    case 10:
+      return xenos::TextureFormat::k_16_16;  // Rg32
+    case 11:
+      return xenos::TextureFormat::k_16_16_16_16;  // Rgba64
+    case 12:
+      return xenos::TextureFormat::k_8;  // Alpha8
+    case 13:
+      return xenos::TextureFormat::k_32_FLOAT;  // Single
+    case 14:
+      return xenos::TextureFormat::k_32_32_FLOAT;  // Vector2
+    case 15:
+      return xenos::TextureFormat::k_32_32_32_32_FLOAT;  // Vector4
+    case 16:
+      return xenos::TextureFormat::k_16_FLOAT;  // HalfSingle
+    case 17:
+      return xenos::TextureFormat::k_16_16_FLOAT;  // HalfVector2
+    case 18:
+      return xenos::TextureFormat::k_16_16_16_16_FLOAT;  // HalfVector4
+    default:
+      return xenos::TextureFormat::k_8_8_8_8;
   }
 }
 
@@ -1146,9 +1171,9 @@ xenos::Endian XnaGpuTextureEndianFor(xenos::TextureFormat format) {
 uint32_t XnaGpuColorFormatFor(uint32_t xna_surface_format) {
   using xenos::ColorRenderTargetFormat;
   switch (xna_surface_format) {
-    case 0:   // Color
+    case 0:  // Color
       return uint32_t(ColorRenderTargetFormat::k_8_8_8_8);
-    case 9:   // Rgba1010102 - the light accumulation targets.
+    case 9:  // Rgba1010102 - the light accumulation targets.
       return uint32_t(ColorRenderTargetFormat::k_2_10_10_10);
     case 10:  // Rg32
       return uint32_t(ColorRenderTargetFormat::k_16_16);
@@ -1181,7 +1206,8 @@ uint32_t XnaGpuColorFormatFor(uint32_t xna_surface_format) {
 static xenos::BlendFactor XenosBlendFactorForXna(uint32_t xna) {
   xenos::BlendFactor value = xenos::BlendFactor::kOne;
   if (!xe::kernel::xna::XnaBlendFactorToXenos(xna, &value)) {
-    XELOGW("[xna] no conversion for XNA Blend {} - the console refuses this", xna);
+    XELOGW("[xna] no conversion for XNA Blend {} - the console refuses this",
+           xna);
   }
   return value;
 }
@@ -1189,7 +1215,10 @@ static xenos::BlendFactor XenosBlendFactorForXna(uint32_t xna) {
 static xenos::BlendOp XenosBlendOpForXna(uint32_t xna) {
   xenos::BlendOp value = xenos::BlendOp::kAdd;
   if (!xe::kernel::xna::XnaBlendOpToXenos(xna, &value)) {
-    XELOGW("[xna] no conversion for XNA BlendFunction {} - the console refuses this", xna);
+    XELOGW(
+        "[xna] no conversion for XNA BlendFunction {} - the console refuses "
+        "this",
+        xna);
   }
   return value;
 }
@@ -1197,7 +1226,10 @@ static xenos::BlendOp XenosBlendOpForXna(uint32_t xna) {
 static xenos::CompareFunction XenosCompareForXnaCompare(uint32_t xna) {
   xenos::CompareFunction value = xenos::CompareFunction::kAlways;
   if (!xe::kernel::xna::XnaCompareToXenos(xna, &value)) {
-    XELOGW("[xna] no conversion for XNA CompareFunction {} - the console refuses this", xna);
+    XELOGW(
+        "[xna] no conversion for XNA CompareFunction {} - the console refuses "
+        "this",
+        xna);
   }
   return value;
 }
@@ -1293,8 +1325,8 @@ uint32_t XnaGpuEdramDepthBase(uint32_t width, uint32_t height,
   return static_cast<uint32_t>(base);
 }
 
-uint32_t XnaGpuEdramBaseForSlot(uint32_t width, uint32_t height,
-                                uint32_t slot, uint32_t target_count) {
+uint32_t XnaGpuEdramBaseForSlot(uint32_t width, uint32_t height, uint32_t slot,
+                                uint32_t target_count) {
   if (!slot) {
     return 0;
   }
@@ -1437,20 +1469,18 @@ void XnaGpuResolveTarget(const XnaGpuTarget& target, uint32_t edram_base) {
     copy_control.copy_sample_select = xenos::CopySampleSelect::k0;
     copy_control.copy_command = xenos::CopyCommand::kRaw;
     Set(regs, XE_GPU_REG_RB_COPY_CONTROL, copy_control.value);
-    const uint32_t bpp_log2 =
-        xenos::IsColorRenderTargetFormat64bpp(
-            static_cast<xenos::ColorRenderTargetFormat>(
-                XnaGpuColorFormatFor(copy.format)))
-            ? 3u
-            : 2u;
+    const uint32_t bpp_log2 = xenos::IsColorRenderTargetFormat64bpp(
+                                  static_cast<xenos::ColorRenderTargetFormat>(
+                                      XnaGpuColorFormatFor(copy.format)))
+                                  ? 3u
+                                  : 2u;
     const int32_t band_offset =
-        band_rows ? xe::gpu::texture_address::Tiled2D(
-                        0, int32_t(band_y0), xe::align(copy.width, 32u),
-                        bpp_log2)
-                  : 0;
+        band_rows
+            ? xe::gpu::texture_address::Tiled2D(
+                  0, int32_t(band_y0), xe::align(copy.width, 32u), bpp_log2)
+            : 0;
     Set(regs, XE_GPU_REG_RB_COPY_DEST_BASE,
-        memory->GetPhysicalAddress(copy.guest_address) +
-            uint32_t(band_offset));
+        memory->GetPhysicalAddress(copy.guest_address) + uint32_t(band_offset));
 
     reg::RB_COPY_DEST_PITCH copy_pitch;
     copy_pitch.value = 0;
@@ -1673,7 +1703,8 @@ void XnaGpuPresent(uint32_t width, uint32_t height) {
     copy_info.value = 0;
     copy_info.copy_dest_endian = xenos::Endian128::k8in32;
     copy_info.copy_dest_format = xenos::ColorFormat::k_8_8_8_8;
-    copy_info.copy_dest_number = xenos::SurfaceNumberFormat::kUnsignedRepeatingFraction;
+    copy_info.copy_dest_number =
+        xenos::SurfaceNumberFormat::kUnsignedRepeatingFraction;
     Set(regs, XE_GPU_REG_RB_COPY_DEST_INFO, copy_info.value);
 
     // THE RESOLVE RECTANGLE COMES FROM VERTEX FETCH CONSTANT 0.
@@ -1749,8 +1780,7 @@ void XnaGpuPresent(uint32_t width, uint32_t height) {
         frame_counters.no_rasterize.exchange(0),
         frame_counters.refused.exchange(0),
         frame_counters.reached_pipeline.exchange(0),
-        frame_counters.drawn.exchange(0),
-        frame_counters.textured.exchange(0),
+        frame_counters.drawn.exchange(0), frame_counters.textured.exchange(0),
         frame_counters.into_lighting.exchange(0), width, height,
         kernel_state()->memory()->GetPhysicalAddress(front));
 

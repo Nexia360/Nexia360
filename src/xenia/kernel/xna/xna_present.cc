@@ -126,14 +126,22 @@ Objects g;
 // which is the whole reason a hosted title's textures can be used as they are.
 DXGI_FORMAT ToDxgiFormat(uint32_t surface_format) {
   switch (surface_format) {
-    case 1:  return DXGI_FORMAT_B5G6R5_UNORM;
-    case 2:  return DXGI_FORMAT_B5G5R5A1_UNORM;
-    case 3:  return DXGI_FORMAT_B4G4R4A4_UNORM;
-    case 4:  return DXGI_FORMAT_BC1_UNORM;
-    case 5:  return DXGI_FORMAT_BC2_UNORM;
-    case 6:  return DXGI_FORMAT_BC3_UNORM;
-    case 12: return DXGI_FORMAT_A8_UNORM;
-    default: return DXGI_FORMAT_R8G8B8A8_UNORM;
+    case 1:
+      return DXGI_FORMAT_B5G6R5_UNORM;
+    case 2:
+      return DXGI_FORMAT_B5G5R5A1_UNORM;
+    case 3:
+      return DXGI_FORMAT_B4G4R4A4_UNORM;
+    case 4:
+      return DXGI_FORMAT_BC1_UNORM;
+    case 5:
+      return DXGI_FORMAT_BC2_UNORM;
+    case 6:
+      return DXGI_FORMAT_BC3_UNORM;
+    case 12:
+      return DXGI_FORMAT_A8_UNORM;
+    default:
+      return DXGI_FORMAT_R8G8B8A8_UNORM;
   }
 }
 
@@ -628,10 +636,10 @@ void XnaSetBackgroundFromSwapTexture() {
   auto* state = kernel_state();
   auto* emulator = state ? state->emulator() : nullptr;
   auto* graphics = emulator ? emulator->graphics_system() : nullptr;
-  auto* processor =
-      graphics ? dynamic_cast<xe::gpu::d3d12::D3D12CommandProcessor*>(
-                     graphics->command_processor())
-               : nullptr;
+  auto* processor = graphics
+                        ? dynamic_cast<xe::gpu::d3d12::D3D12CommandProcessor*>(
+                              graphics->command_processor())
+                        : nullptr;
   if (!processor) {
     return;
   }
@@ -745,8 +753,8 @@ void XnaPresentFrame() {
             if (vertex_count + 6 > 6 * kMaxSpritesPerFrame) {
               break;
             }
-            const uint8_t* record = batch.records.data() +
-                                    size_t(s) * kSpriteRecordBytes;
+            const uint8_t* record =
+                batch.records.data() + size_t(s) * kSpriteRecordBytes;
             float f[8];
             std::memcpy(f, record, sizeof(f));
             uint32_t packed = 0;
@@ -802,9 +810,8 @@ void XnaPresentFrame() {
           table.ptr += UINT64(slots[i]) * g.srv_stride;
           g.list->SetGraphicsRootDescriptorTable(1, table);
           D3D12_VERTEX_BUFFER_VIEW vertex_view = {};
-          vertex_view.BufferLocation =
-              g.vertex_buffer->GetGPUVirtualAddress() +
-              UINT64(first_vertex) * sizeof(Vertex);
+          vertex_view.BufferLocation = g.vertex_buffer->GetGPUVirtualAddress() +
+                                       UINT64(first_vertex) * sizeof(Vertex);
           vertex_view.SizeInBytes =
               UINT((vertex_count - first_vertex) * sizeof(Vertex));
           vertex_view.StrideInBytes = sizeof(Vertex);
@@ -851,8 +858,7 @@ void XnaPresentFrame() {
         static uint32_t frames_with_sprites = 0;
         ++frames_seen;
         const bool worth_reporting =
-            frames_seen == 1 ||
-            (!batches.empty() && frames_with_sprites < 3);
+            frames_seen == 1 || (!batches.empty() && frames_with_sprites < 3);
         if (!batches.empty()) {
           ++frames_with_sprites;
         }

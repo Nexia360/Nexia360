@@ -9,15 +9,15 @@
 
 #include "xenia/kernel/xna/xna_launcher.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <memory>
-#include <algorithm>
 #include <mutex>
-#include <string>
 #include <span>
+#include <string>
 #include <system_error>
 #include <vector>
 
@@ -159,9 +159,9 @@ vfs::Entry* FindManagedEntry(vfs::Entry* directory, int depth,
     if (!(child->attributes() & vfs::kFileAttributeDirectory)) {
       continue;
     }
-    if (auto* found = FindManagedEntry(child.get(), depth + 1,
-                                       prefix + child->name() + "\\",
-                                       out_relative)) {
+    if (auto* found =
+            FindManagedEntry(child.get(), depth + 1,
+                             prefix + child->name() + "\\", out_relative)) {
       return found;
     }
   }
@@ -266,8 +266,7 @@ std::unique_ptr<vfs::Device> OpenPackage(const std::filesystem::path& path) {
 // ResolvePath is public on Device but protected on XContentContainerDevice, so
 // it has to be reached through the base - access is checked against the static
 // type, and Device is where the interface actually lives.
-vfs::Entry* ResolveInPackage(vfs::Device* device,
-                             const std::string_view path) {
+vfs::Entry* ResolveInPackage(vfs::Device* device, const std::string_view path) {
   return device->ResolvePath(path);
 }
 
@@ -459,10 +458,9 @@ bool XnaReadTitleFile(const std::string& relative, std::vector<uint8_t>* out) {
   }
   out->resize(static_cast<size_t>(entry->size()));
   size_t read = 0;
-  const bool ok =
-      out->empty() ||
-      file->ReadSync(std::span<uint8_t>(out->data(), out->size()), 0, &read) ==
-          X_STATUS_SUCCESS;
+  const bool ok = out->empty() ||
+                  file->ReadSync(std::span<uint8_t>(out->data(), out->size()),
+                                 0, &read) == X_STATUS_SUCCESS;
   file->Destroy();
   if (!ok) {
     return false;
@@ -475,8 +473,8 @@ std::filesystem::path XnaPackageCachePath(const std::filesystem::path& package,
                                           const XnaPackageInfo& info) {
   auto* state = kernel_state();
   auto* emulator = state ? state->emulator() : nullptr;
-  const auto root = emulator ? emulator->storage_root()
-                             : std::filesystem::current_path();
+  const auto root =
+      emulator ? emulator->storage_root() : std::filesystem::current_path();
   // The package's own file name is the only thing that differs between two
   // XNA titles - see the header. Deliberately not "xna": that directory is
   // where the managed host is published, and unpacked titles have no business
@@ -562,9 +560,9 @@ bool LaunchXnaPackage(const std::filesystem::path& path) {
     const auto* header = container ? container->GetContainerHeader() : nullptr;
     if (header) {
       const auto& metadata = header->content_metadata;
-      const uint32_t title_size = std::min<uint32_t>(
-          metadata.title_thumbnail_size,
-          uint32_t(sizeof(metadata.title_thumbnail)));
+      const uint32_t title_size =
+          std::min<uint32_t>(metadata.title_thumbnail_size,
+                             uint32_t(sizeof(metadata.title_thumbnail)));
       const uint32_t package_size = std::min<uint32_t>(
           metadata.thumbnail_size, uint32_t(sizeof(metadata.thumbnail)));
       if (title_size) {
@@ -577,10 +575,8 @@ bool LaunchXnaPackage(const std::filesystem::path& path) {
     }
     XELOGI("XnaLauncher: title icon {} byte(s)", mounted_icon.size());
   }
-  const std::string game_path =
-      info.entry_path.substr(info.root_directory.empty()
-                                 ? 0
-                                 : info.root_directory.size() + 1);
+  const std::string game_path = info.entry_path.substr(
+      info.root_directory.empty() ? 0 : info.root_directory.size() + 1);
   XELOGI("XnaLauncher: mounted {}, running {} from inside it",
          xe::path_to_utf8(path), game_path);
 

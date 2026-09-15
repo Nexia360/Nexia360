@@ -31,10 +31,13 @@ namespace xe {
 namespace kernel {
 namespace xam {
 
+static_assert(sizeof(X_AVATAR_METADATA) ==
+              xe::kernel::xna::avatar::kManifestBytes);
+
 static void WriteAvatarMetadata(
-    uint32_t guest, const xe::kernel::xna::XnaAvatarDescriptionBytes& bytes) {
-  uint8_t* out = guest ? kernel_memory()->TranslateVirtual<uint8_t*>(guest)
-                       : nullptr;
+    uint32_t guest, const xe::kernel::xna::XnaAvatarManifestBytes& bytes) {
+  uint8_t* out =
+      guest ? kernel_memory()->TranslateVirtual<uint8_t*>(guest) : nullptr;
   if (out) {
     std::memcpy(out, bytes.data(), sizeof(X_AVATAR_METADATA));
   }
@@ -44,8 +47,8 @@ static void WriteAvatarMetadata(
 dword_result_t XamAvatarInitialize_entry(dword_t version,
                                          dword_t coordinate_system,
                                          dword_t processor_number,
-                                         lpdword_t function_ptrs,
-                                         dword_t heap, dword_t flags) {
+                                         lpdword_t function_ptrs, dword_t heap,
+                                         dword_t flags) {
   SetAvatarCoordinateSystem(coordinate_system);
   if (kernel_state()->title_id() == kAvatarEditorID) {
     return X_STATUS_SUCCESS;
@@ -95,7 +98,7 @@ dword_result_t XamAvatarGetManifestLocalUser_entry(
 
     WriteAvatarMetadata(
         avatar_metadata_ptr.guest_address(),
-        xe::kernel::xna::XnaAvatarDescriptionForXuid(user_profile->xuid()));
+        xe::kernel::xna::XnaAvatarManifestForXuid(user_profile->xuid()));
     return X_ERROR_SUCCESS;
   };
 
@@ -120,7 +123,7 @@ dword_result_t XamAvatarGetManifestsByXuid_entry(
       const uint64_t id = xuids[i];
       WriteAvatarMetadata(
           avatar_info_ptr + i * uint32_t(sizeof(X_AVATAR_METADATA)),
-          xe::kernel::xna::XnaAvatarDescriptionForXuid(id));
+          xe::kernel::xna::XnaAvatarManifestForXuid(id));
     }
   }
 
@@ -151,8 +154,7 @@ DECLARE_XAM_EXPORT1(XamAvatarGetAssetsResultSize, kAvatars, kStub);
 dword_result_t XamAvatarGetAssets_entry(
     pointer_t<X_AVATAR_METADATA> avatar_metadata_ptr,
     dword_t avatar_component_mask, dword_t flags, dword_t result_buffer_ptr,
-    dword_t gpu_resource_buffer_ptr,
-    pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
+    dword_t gpu_resource_buffer_ptr, pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
   const uint32_t metadata_address = avatar_metadata_ptr.guest_address();
   const uint32_t mask = avatar_component_mask;
   const uint32_t result_address = result_buffer_ptr;
@@ -165,9 +167,9 @@ dword_result_t XamAvatarGetAssets_entry(
   }
   auto run = [=](uint32_t& extended_error, uint32_t& length) {
     length = 0;
-    const X_RESULT result = BuildAvatarAssets(
-        metadata.empty() ? nullptr : metadata.data(), metadata.size(), mask,
-        result_address, gpu_address);
+    const X_RESULT result =
+        BuildAvatarAssets(metadata.empty() ? nullptr : metadata.data(),
+                          metadata.size(), mask, result_address, gpu_address);
     extended_error = result;
     return result == X_ERROR_SUCCESS ? X_ERROR_SUCCESS
                                      : X_ERROR_FUNCTION_FAILED;
@@ -219,8 +221,9 @@ dword_result_t XamAvatarSetManifest_entry(
         user_profile->xuid(), kDashboardID, &setting);
 
     xe::kernel::xna::avatar::Description description;
-    if (xe::kernel::xna::avatar::ParseDescription(
-            manifest.data(), manifest.size(), &description)) {
+    if (xe::kernel::xna::avatar::ParseAnyDescription(
+            xe::kernel::xna::XnaAvatarCatalog(), manifest.data(),
+            manifest.size(), &description)) {
       xe::kernel::xna::XnaAvatarWriteProfileFile(user_profile->xuid(),
                                                  description);
     }
@@ -244,17 +247,14 @@ dword_result_t XamAvatarGetMetadataRandom_entry(
     dword_t body_type, dword_t avatars_count,
     pointer_t<X_AVATAR_METADATA> avatar_metadata_ptr,
     pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
-  const int32_t wire_body = body_type == static_cast<uint32_t>(
-                                             X_AVATAR_BODY_TYPE::Male)
-                                ? 1
-                            : body_type == static_cast<uint32_t>(
-                                               X_AVATAR_BODY_TYPE::Female)
-                                ? 0
-                                : -1;
+  const int32_t wire_body =
+      body_type == static_cast<uint32_t>(X_AVATAR_BODY_TYPE::Male)     ? 1
+      : body_type == static_cast<uint32_t>(X_AVATAR_BODY_TYPE::Female) ? 0
+                                                                       : -1;
   const uint32_t base = avatar_metadata_ptr.guest_address();
   for (uint32_t i = 0; base && i < avatars_count; ++i) {
     WriteAvatarMetadata(base + i * uint32_t(sizeof(X_AVATAR_METADATA)),
-                        xe::kernel::xna::XnaAvatarRandomDescription(wire_body));
+                        xe::kernel::xna::XnaAvatarRandomManifest(wire_body));
   }
 
   if (overlapped_ptr) {

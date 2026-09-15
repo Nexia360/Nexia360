@@ -44,7 +44,8 @@ std::atomic<bool> install_pending{false};
 
 #if XE_PLATFORM_WIN32
 bool RegistryFlag(const wchar_t* key, const wchar_t* value) {
-  for (DWORD view : {DWORD(RRF_SUBKEY_WOW6432KEY), DWORD(RRF_SUBKEY_WOW6464KEY)}) {
+  for (DWORD view :
+       {DWORD(RRF_SUBKEY_WOW6432KEY), DWORD(RRF_SUBKEY_WOW6464KEY)}) {
     DWORD data = 0;
     DWORD size = sizeof(data);
     if (RegGetValueW(HKEY_LOCAL_MACHINE, key, value, RRF_RT_REG_DWORD | view,
@@ -111,8 +112,8 @@ bool RunInstaller(std::string* out_error) {
       std::filesystem::temp_directory_path(ec) / "Nexia" / "XNA_Install";
   std::filesystem::create_directories(directory, ec);
   if (ec) {
-    *out_error = "could not create " + xe::path_to_utf8(directory) + ": " +
-                 ec.message();
+    *out_error =
+        "could not create " + xe::path_to_utf8(directory) + ": " + ec.message();
     return false;
   }
 
@@ -252,6 +253,21 @@ bool XnaRuntimeInstalled(std::string* out_missing) {
 
 bool XnaRuntimeInstallPending() { return install_pending.load(); }
 
+bool InstallXnaRuntime(std::string* out_error) {
+#if XE_PLATFORM_WIN32
+  if (install_pending.exchange(true)) {
+    *out_error = "an XNA runtime install is already running";
+    return false;
+  }
+  const bool ran = RunInstaller(out_error);
+  install_pending.store(false);
+  return ran;
+#else
+  *out_error = "the XNA runtime installer only runs on Windows";
+  return false;
+#endif  // XE_PLATFORM_WIN32
+}
+
 void RequestXnaRuntimeInstall(const std::string& missing) {
 #if XE_PLATFORM_WIN32
   if (install_pending.exchange(true)) {
@@ -273,16 +289,20 @@ void RequestXnaRuntimeInstall(const std::string& missing) {
     std::string body =
         "This is an Xbox Live Indie Game. Nexia runs it with Microsoft's XNA\n"
         "Framework, and this PC is missing:\n"
-        "  " + missing + "\n\n"
+        "  " +
+        missing +
+        "\n\n"
         "Choosing Accept runs Nexia's XNA installer. It downloads these from\n"
-        "Microsoft's own servers, checks that each is signed by Microsoft, and\n"
+        "Microsoft's own servers, checks that each is signed by Microsoft, "
+        "and\n"
         "installs them:\n"
         "  - .NET Framework 3.5 (a Windows feature)\n"
         "  - .NET 9 Runtime (runs Nexia's XNA host)\n"
         "  - XNA Framework 3.1\n"
         "  - XNA Framework 4.0 Refresh\n"
         "  - DirectX End-User Runtimes (June 2010)\n"
-        "It also downloads the XNA Game Studio 4.0 Refresh setup, but does not\n"
+        "It also downloads the XNA Game Studio 4.0 Refresh setup, but does "
+        "not\n"
         "run it. Nothing else on this PC is changed.\n\n"
         "Windows will ask for administrator permission, because only an\n"
         "administrator can install these. A PowerShell window shows the\n"

@@ -101,8 +101,9 @@ void MessagesDialog::Reload() {
   selected_ = -1;
   loading_ = true;
 
-  messages_query_ = emulator_window_->emulator()->GetXboxLiveAPI()->
-      GetMessagesAsync(xuid, mode_ == Mode::kText ? "text" : "voice");
+  messages_query_ =
+      emulator_window_->emulator()->GetXboxLiveAPI()->GetMessagesAsync(
+          xuid, mode_ == Mode::kText ? "text" : "voice");
 }
 
 void MessagesDialog::StartRecipientQuery() {
@@ -266,8 +267,7 @@ void MessagesDialog::PlayMessage(const kernel::HubMessage& message) {
     apu::sdl::VoiceChat::Get().PlayPcmMessage(playable.data(), playable.size());
   }
 
-  status_ = fmt::format("Playing {:.1f}s from {}.", seconds,
-                        message.from_name);
+  status_ = fmt::format("Playing {:.1f}s from {}.", seconds, message.from_name);
 }
 
 void MessagesDialog::SendComposed() {
@@ -333,12 +333,12 @@ void MessagesDialog::DrawList() {
       const auto& message = messages_[i];
 
       // Unread is what the badge counts, so it is what the row leads with.
-      const std::string label = fmt::format(
-          "{}{} - {}##msg{}", message.read ? "" : "* ",
-          message.from_name.empty() ? "Unknown" : message.from_name,
-          message.created_at.substr(0, std::min<size_t>(
-                                           16, message.created_at.size())),
-          i);
+      const std::string label =
+          fmt::format("{}{} - {}##msg{}", message.read ? "" : "* ",
+                      message.from_name.empty() ? "Unknown" : message.from_name,
+                      message.created_at.substr(
+                          0, std::min<size_t>(16, message.created_at.size())),
+                      i);
 
       if (ImGui::Selectable(label.c_str(), selected_ == i)) {
         selected_ = i;
@@ -394,7 +394,8 @@ void MessagesDialog::DrawList() {
 
   ImGui::Separator();
 
-  if (ImGui::Button(mode_ == Mode::kText ? "New Message" : "New Voice Message")) {
+  if (ImGui::Button(mode_ == Mode::kText ? "New Message"
+                                         : "New Voice Message")) {
     view_ = View::kCompose;
     status_.clear();
 
@@ -422,11 +423,10 @@ void MessagesDialog::DrawCompose() {
     ImGui::BeginChild("##recipients", ImVec2(560.0f, 140.0f), true);
 
     for (int i = 0; i < static_cast<int>(recipients_.size()); ++i) {
-      const std::string label =
-          fmt::format("{}##to{}",
-                      recipients_[i].gamertag.empty() ? "Unknown"
-                                                      : recipients_[i].gamertag,
-                      i);
+      const std::string label = fmt::format(
+          "{}##to{}",
+          recipients_[i].gamertag.empty() ? "Unknown" : recipients_[i].gamertag,
+          i);
 
       if (ImGui::Selectable(label.c_str(), compose_target_ == i)) {
         compose_target_ = i;
@@ -604,8 +604,7 @@ void MessagesDialog::OnDraw(ImGuiIO& io) {
 
   bool open = true;
 
-  if (ImGui::BeginPopupModal(title, &open,
-                             ImGuiWindowFlags_AlwaysAutoResize)) {
+  if (ImGui::BeginPopupModal(title, &open, ImGuiWindowFlags_AlwaysAutoResize)) {
     if (view_ == View::kList) {
       DrawList();
     } else {

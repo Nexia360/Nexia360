@@ -50,6 +50,8 @@ constexpr uint32_t kComponentMaskBody = 0x2u;
 constexpr uint32_t kComponentMaskHair = 0x4u;
 constexpr uint32_t kNoJoint = 0xFFFFFFFFu;
 constexpr uint32_t kComponentMaskAll = 0x1FFFu;
+constexpr uint32_t kComponentMaskCarryable = 0x1000u;
+constexpr uint32_t kCarryableBytes = 0x5C;
 constexpr uint32_t kComponentMaskHead = 0x1u;
 constexpr uint32_t kVertexFixedBytes = 0x1C;
 constexpr uint32_t kTextureAlignment = 0x1000;
@@ -72,9 +74,13 @@ struct Arena {
   }
 };
 
-void Put16(uint8_t* p, uint16_t value) { xe::store_and_swap<uint16_t>(p, value); }
+void Put16(uint8_t* p, uint16_t value) {
+  xe::store_and_swap<uint16_t>(p, value);
+}
 
-void Put32(uint8_t* p, uint32_t value) { xe::store_and_swap<uint32_t>(p, value); }
+void Put32(uint8_t* p, uint32_t value) {
+  xe::store_and_swap<uint32_t>(p, value);
+}
 
 void PutFloat(uint8_t* p, float value) {
   uint32_t bits;
@@ -126,7 +132,8 @@ void WriteTextureData(const avatar::RawTexture& texture, uint8_t* destination,
   const bool known = BlockLayout(texture.format, &block_pixels, &bytes_log2);
   const bool tile = texture.tiled && known;
   const uint32_t block_bytes = 1u << bytes_log2;
-  const uint32_t blocks_wide = (texture.width + block_pixels - 1) / block_pixels;
+  const uint32_t blocks_wide =
+      (texture.width + block_pixels - 1) / block_pixels;
   const uint32_t blocks_high =
       (texture.height + block_pixels - 1) / block_pixels;
   const uint32_t pitch_aligned = xe::align(blocks_wide, 32u);
@@ -149,14 +156,15 @@ void WriteTextureData(const avatar::RawTexture& texture, uint8_t* destination,
         continue;
       }
       for (uint32_t row = 0; row < texture.rows; ++row) {
-        std::memcpy(out + row * padded_pitch, source + size_t(row) * texture.pitch,
-                    texture.pitch);
+        std::memcpy(out + row * padded_pitch,
+                    source + size_t(row) * texture.pitch, texture.pitch);
       }
       continue;
     }
     for (uint32_t by = 0; by < blocks_high && by < texture.rows; ++by) {
       for (uint32_t bx = 0; bx < blocks_wide; ++bx) {
-        const size_t from = size_t(by) * texture.pitch + size_t(bx) * block_bytes;
+        const size_t from =
+            size_t(by) * texture.pitch + size_t(bx) * block_bytes;
         if (from + block_bytes > stored) {
           continue;
         }
@@ -171,8 +179,8 @@ void WriteTextureData(const avatar::RawTexture& texture, uint8_t* destination,
   }
 }
 
-void WriteSkeleton(uint8_t* joints, bool mirror) {
-  const avatar::Skeleton& skeleton = avatar::MainSkeleton();
+void WriteSkeleton(uint8_t* joints, bool mirror,
+                   const avatar::Skeleton& skeleton) {
   const float z_sign = mirror ? -1.0f : 1.0f;
   for (uint32_t j = 0; j < skeleton.count; ++j) {
     const uint32_t parent =
@@ -198,12 +206,17 @@ void WriteSkeleton(uint8_t* joints, bool mirror) {
       for (int k = 0; k < 3; ++k) {
         offset[k] -= skeleton.bind[parent][k];
       }
+    } else {
+      for (int k = 0; k < 3; ++k) {
+        offset[k] *= skeleton.scale[j][k];
+      }
     }
     PutVector(out + 0x10, world[0], world[1], world[2] * z_sign, 1.0f);
     PutVector(out + 0x20, 0.0f, 0.0f, 0.0f, 1.0f);
     PutVector(out + 0x30, offset[0], offset[1], offset[2] * z_sign, 1.0f);
     PutVector(out + 0x40, 0.0f, 0.0f, 0.0f, 1.0f);
-    PutVector(out + 0x50, 1.0f, 1.0f, 1.0f, 1.0f);
+    PutVector(out + 0x50, skeleton.scale[j][0], skeleton.scale[j][1],
+              skeleton.scale[j][2], 1.0f);
   }
 }
 
@@ -278,9 +291,9 @@ void PutColorParam(uint8_t* p, uint32_t argb) {
 
 bool WriteModel(const avatar::RawModel& model,
                 const std::vector<const avatar::RawTexture*>& overrides,
-                const Palette& palette, bool mirror, float inset,
-                uint8_t* cpu, uint32_t cpu_guest, uint8_t* gpu,
-                uint32_t gpu_guest, uint8_t* record) {
+                const Palette& palette, bool mirror, float inset, uint8_t* cpu,
+                uint32_t cpu_guest, uint8_t* gpu, uint32_t gpu_guest,
+                uint8_t* record) {
   const size_t batches_end =
       size_t(model.batches_offset) + model.batches.size() * kBatchBytes;
   const size_t textures_end =
@@ -422,7 +435,7 @@ X_RESULT BuildAvatarAssets(const uint8_t* metadata, size_t metadata_size,
   std::memset(result, 0, kAvatarResultBufferSize);
   std::memset(gpu, 0, kAvatarGpuBufferSize);
 
-  const avatar::Skeleton& skeleton = avatar::MainSkeleton();
+  const avatar::Skeleton skeleton = avatar::ScaledSkeleton(description);
   const uint32_t assets = cpu.Take(kAssetsBytes, 16);
   const uint32_t skeleton_at = cpu.Take(kSkeletonBytes, 16);
   const uint32_t joints = cpu.Take(skeleton.count * kJointBytes, 16);
@@ -431,7 +444,7 @@ X_RESULT BuildAvatarAssets(const uint8_t* metadata, size_t metadata_size,
     XELOGW("XamAvatarGetAssets: no room for the skeleton");
     return X_E_FAIL;
   }
-  WriteSkeleton(result + joints, mirror);
+  WriteSkeleton(result + joints, mirror, skeleton);
   Put32(result + skeleton_at, skeleton.count);
   Put32(result + skeleton_at + 4, result_guest + joints);
 
@@ -439,11 +452,21 @@ X_RESULT BuildAvatarAssets(const uint8_t* metadata, size_t metadata_size,
                             ? (component_mask & kComponentMaskAll)
                             : kComponentMaskAll;
   std::vector<avatar::Component> wanted;
+  std::shared_ptr<const avatar::Carryable> carryable;
+  avatar::Component carried = {};
   for (const avatar::Component& component :
        avatar::Components(*catalog, description)) {
-    if (component.mask & mask) {
-      wanted.push_back(component);
+    if (!(component.mask & mask)) {
+      continue;
     }
+    if (component.mask & kComponentMaskCarryable) {
+      carryable = catalog->LoadCarryable(component.entry);
+      if (carryable) {
+        carried = component;
+        continue;
+      }
+    }
+    wanted.push_back(component);
   }
   const uint32_t infos = cpu.Take(uint32_t(wanted.size()) * kInfoBytes, 16);
   const uint32_t models = cpu.Take(uint32_t(wanted.size()) * kModelBytes, 16);
@@ -464,9 +487,8 @@ X_RESULT BuildAvatarAssets(const uint8_t* metadata, size_t metadata_size,
     const uint32_t cpu_at = cpu.Take(model->cpu_size, 16);
     const uint32_t gpu_at = video.Take(model->gpu_size, kTextureAlignment);
     if (cpu_at == UINT32_MAX || gpu_at == UINT32_MAX) {
-      XELOGW(
-          "XamAvatarGetAssets: no room for asset {} ({} cpu, {} gpu bytes)",
-          component.entry, model->cpu_size, model->gpu_size);
+      XELOGW("XamAvatarGetAssets: no room for asset {} ({} cpu, {} gpu bytes)",
+             component.entry, model->cpu_size, model->gpu_size);
       continue;
     }
     std::vector<const avatar::RawTexture*> overrides(model->textures.size(),
@@ -480,8 +502,9 @@ X_RESULT BuildAvatarAssets(const uint8_t* metadata, size_t metadata_size,
           }
           const int32_t feature = avatar::HeadFeatureForUsage(param.usage);
           const int32_t entry =
-              feature >= 0 ? avatar::FeatureEntry(description, uint32_t(feature))
-                           : -1;
+              feature >= 0
+                  ? avatar::FeatureEntry(description, uint32_t(feature))
+                  : -1;
           if (entry < 0) {
             continue;
           }
@@ -497,9 +520,8 @@ X_RESULT BuildAvatarAssets(const uint8_t* metadata, size_t metadata_size,
     const float inset =
         (component.mask & kComponentMaskBody) ? avatar::kBodyInset : 0.0f;
     if (!WriteModel(*model, overrides, ComponentPalette(description, component),
-                    mirror, inset, result + cpu_at,
-                    result_guest + cpu_at, gpu + gpu_at, gpu_guest + gpu_at,
-                    record)) {
+                    mirror, inset, result + cpu_at, result_guest + cpu_at,
+                    gpu + gpu_at, gpu_guest + gpu_at, record)) {
       XELOGW("XamAvatarGetAssets: asset {} does not fit its own layout",
              component.entry);
       std::memset(record, 0, kModelBytes);
@@ -510,12 +532,80 @@ X_RESULT BuildAvatarAssets(const uint8_t* metadata, size_t metadata_size,
     if (entry) {
       std::memcpy(info, entry->asset_id.data(), entry->asset_id.size());
     }
-    Put32(info + 0x10, component.mask);
+    Put16(info + 0x10, uint16_t(component.mask));
     ++written;
   }
 
+  uint32_t carryable_guest = 0;
+  if (carryable) {
+    auto model = catalog->LoadRawModel(carried.entry);
+    std::vector<uint8_t> stream;
+    const uint32_t record = cpu.Take(kCarryableBytes, 16);
+    const uint32_t carry_skeleton = cpu.Take(kSkeletonBytes, 16);
+    const uint32_t carry_joints =
+        cpu.Take(carryable->skeleton.count * kJointBytes, 16);
+    const bool loaded = model &&
+                        catalog->AnimationStream(carried.entry, &stream) &&
+                        stream.size() > avatar::kAnimationHeaderBytes;
+    const uint32_t payload =
+        loaded ? uint32_t(stream.size() - avatar::kAnimationHeaderBytes) : 0;
+    const uint32_t cpu_at = loaded ? cpu.Take(model->cpu_size, 16) : UINT32_MAX;
+    const uint32_t gpu_at =
+        loaded ? video.Take(model->gpu_size, kTextureAlignment) : UINT32_MAX;
+    const uint32_t object_at =
+        loaded ? video.Take(avatar::kAnimationObjectBytes, 16) : UINT32_MAX;
+    const uint32_t buffer_at = loaded ? video.Take(payload, 16) : UINT32_MAX;
+    if (record == UINT32_MAX || carry_skeleton == UINT32_MAX ||
+        carry_joints == UINT32_MAX || cpu_at == UINT32_MAX ||
+        gpu_at == UINT32_MAX || object_at == UINT32_MAX ||
+        buffer_at == UINT32_MAX) {
+      XELOGW(
+          "XamAvatarGetAssets: carryable {} did not fit ({} animation bytes)",
+          carried.entry, payload);
+    } else {
+      uint8_t* carry = result + record;
+      WriteSkeleton(result + carry_joints, mirror, carryable->skeleton);
+      Put32(result + carry_skeleton, carryable->skeleton.count);
+      Put32(result + carry_skeleton + 4, result_guest + carry_joints);
+      Put32(carry, result_guest + carry_skeleton);
+      const avatar::Entry* entry = catalog->Find(carried.entry);
+      if (entry) {
+        std::memcpy(carry + 4, entry->asset_id.data(), entry->asset_id.size());
+      }
+      Put16(carry + 4 + 0x10, uint16_t(kComponentMaskCarryable));
+      const std::vector<const avatar::RawTexture*> overrides(
+          model->textures.size(), nullptr);
+      const bool model_ok =
+          WriteModel(*model, overrides, ComponentPalette(description, carried),
+                     mirror, 0.0f, result + cpu_at, result_guest + cpu_at,
+                     gpu + gpu_at, gpu_guest + gpu_at, carry + 4 + kInfoBytes);
+      uint8_t* object = gpu + object_at;
+      std::memset(object, 0, avatar::kAnimationObjectBytes);
+      Put32(object + avatar::kAnimationSizeOffset, payload);
+      Put32(object + avatar::kAnimationBufferOffset, gpu_guest + buffer_at);
+      const bool animation_ok =
+          avatar::WriteAnimationObject(stream, mirror, object);
+      if (animation_ok) {
+        const uint32_t size =
+            xe::load_and_swap<uint32_t>(object + avatar::kAnimationSizeOffset);
+        std::memcpy(gpu + buffer_at,
+                    stream.data() + avatar::kAnimationHeaderBytes, size);
+        Put32(carry + 4 + kInfoBytes + kModelBytes, gpu_guest + object_at);
+      }
+      if (model_ok) {
+        carryable_guest = result_guest + record;
+      }
+      XELOGI(
+          "XamAvatarGetAssets: carryable '{}' with {} joints, model {}, "
+          "animation {}",
+          entry ? entry->name : std::string(), carryable->skeleton.count,
+          model_ok ? "written" : "rejected",
+          animation_ok ? "written" : "rejected");
+    }
+  }
+
   Put32(result + assets, result_guest + skeleton_at);
-  Put32(result + assets + 0x04, 0);
+  Put32(result + assets + 0x04, carryable_guest);
   Put32(result + assets + 0x08, written);
   Put32(result + assets + 0x0C, result_guest + infos);
   Put32(result + assets + 0x10, result_guest + models);
@@ -566,9 +656,11 @@ X_RESULT LoadAvatarAnimation(const std::array<uint8_t, 16>& asset_id,
       xe::load_and_swap<uint32_t>(object + avatar::kAnimationSizeOffset);
   std::memcpy(buffer, stream.data() + avatar::kAnimationHeaderBytes, size);
   const avatar::Entry* entry = catalog->Find(uint32_t(index));
-  XELOGI("XamAvatarLoadAnimation {}: entry {} '{}', {} of {} bytes, {} coordinates",
-         label, index, entry ? entry->name : std::string(), size, capacity,
-         mirror ? "left-handed" : "right-handed");
+  XELOGI(
+      "XamAvatarLoadAnimation {}: entry {} '{}', {} of {} bytes, {} "
+      "coordinates",
+      label, index, entry ? entry->name : std::string(), size, capacity,
+      mirror ? "left-handed" : "right-handed");
   return X_ERROR_SUCCESS;
 }
 

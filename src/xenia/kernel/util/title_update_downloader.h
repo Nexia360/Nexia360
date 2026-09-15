@@ -68,6 +68,11 @@ class TitleUpdateDownloader {
                        const std::function<void(uint64_t, uint64_t)>& progress,
                        const std::atomic<bool>* cancel);
 
+  static bool DownloadUrl(
+      const std::string& url, const std::filesystem::path& dest_path,
+      const std::function<void(uint64_t, uint64_t)>& progress,
+      const std::atomic<bool>* cancel);
+
  private:
   static std::string BuildListUrl(uint32_t title_id);
   static std::string BuildDownloadUrl(uint32_t update_id);

@@ -9,6 +9,8 @@
 
 #include "xenia/app/emulator_window.h"
 
+#include <mutex>
+
 #include "third_party/imgui/imgui.h"
 #include "third_party/stb/stb_image_write.h"
 #if defined(__clang__)
@@ -30,11 +32,11 @@
 #include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/platform.h"
-#include "xenia/base/string_util.h"
-#include "xenia/base/utf8.h"
 #include "xenia/base/profiling.h"
+#include "xenia/base/string_util.h"
 #include "xenia/base/system.h"
 #include "xenia/base/threading.h"
+#include "xenia/base/utf8.h"
 #include "xenia/config.h"
 #include "xenia/cpu/processor.h"
 #include "xenia/emulator.h"
@@ -44,12 +46,15 @@
 #include "xenia/hid/mousehook_config.h"
 #include "xenia/kernel/XLiveAPI.h"
 #include "xenia/kernel/title_id_utils.h"
+#include "xenia/kernel/util/title_update_downloader.h"
 #include "xenia/kernel/util/title_update_manager.h"
 #include "xenia/kernel/xam/profile_manager.h"
 #include "xenia/kernel/xam/xam_module.h"
+#include "xenia/kernel/xam/xam_private.h"
 #include "xenia/kernel/xam/xam_state.h"
 #include "xenia/kernel/xam/xam_ui.h"
 #include "xenia/kernel/xconfig.h"
+#include "xenia/kernel/xna/xna_avatar_format.h"
 #include "xenia/kernel/xna/xna_dependencies.h"
 #include "xenia/kernel/xna/xna_launcher.h"
 #include "xenia/kernel/xna/xna_runtime_install.h"
@@ -83,6 +88,8 @@ DECLARE_string(api_list);
 DECLARE_bool(upnp);
 
 DECLARE_string(network_guid);
+
+DECLARE_bool(title_switch_in_process);
 
 DEFINE_bool(title_switch_clear_handles, true,
             "Release the previous title's handles when a title switch happens "
@@ -1003,9 +1010,12 @@ bool EmulatorWindow::Initialize() {
                          std::bind(&EmulatorWindow::ExtractZarchive, this)));
     file_menu->AddChild(std::move(zar_menu));
 
-    xna_menu->AddChild(MenuItem::Create(
-        MenuItem::Type::kString, "Install XNA Package...",
-        std::bind(&EmulatorWindow::InstallXnaPackage, this)));
+    xna_menu->AddChild(
+        MenuItem::Create(MenuItem::Type::kString, "Setup XNA...",
+                         std::bind(&EmulatorWindow::SetupXna, this)));
+    xna_menu->AddChild(
+        MenuItem::Create(MenuItem::Type::kString, "Install XNA Package...",
+                         std::bind(&EmulatorWindow::InstallXnaPackage, this)));
     xna_menu->AddChild(MenuItem::Create(
         MenuItem::Type::kString, "Find XNA Dependencies...",
         std::bind(&EmulatorWindow::FindXnaDependencies, this)));
@@ -1599,8 +1609,7 @@ bool EmulatorWindow::ShouldRelaunchOnExit() const {
   std::error_code error;
   const std::filesystem::path folder = xe::filesystem::GetExecutableFolder();
 
-  for (const auto& entry :
-       std::filesystem::directory_iterator(folder, error)) {
+  for (const auto& entry : std::filesystem::directory_iterator(folder, error)) {
     if (error) {
       break;
     }
@@ -1622,9 +1631,7 @@ bool EmulatorWindow::ShouldRelaunchOnExit() const {
   return false;
 }
 
-void EmulatorWindow::RelaunchForPendingLaunchData() const {
-  xe::LaunchSelf();
-}
+void EmulatorWindow::RelaunchForPendingLaunchData() const { xe::LaunchSelf(); }
 
 void EmulatorWindow::FileExit() {
   exit_requested_from_menu_ = true;
@@ -1685,8 +1692,8 @@ void EmulatorWindow::InstallContentPackages(
 
     size_t found = 0;
     for (const auto& file : std::filesystem::recursive_directory_iterator(
-             staging, std::filesystem::directory_options::skip_permission_denied,
-             ec)) {
+             staging,
+             std::filesystem::directory_options::skip_permission_denied, ec)) {
       if (!file.is_regular_file(ec)) {
         continue;
       }
@@ -1702,12 +1709,12 @@ void EmulatorWindow::InstallContentPackages(
                xe::path_to_utf8(file.path().filename()));
         continue;
       }
-      XELOGI("InstallContent: {} holds {} (title {:08X}, type {:08X})",
-             xe::path_to_utf8(path.filename()),
-             xe::path_to_utf8(file.path().filename()),
-             header->content_metadata.execution_info.title_id.get(),
-             static_cast<uint32_t>(
-                 header->content_metadata.content_type.get()));
+      XELOGI(
+          "InstallContent: {} holds {} (title {:08X}, type {:08X})",
+          xe::path_to_utf8(path.filename()),
+          xe::path_to_utf8(file.path().filename()),
+          header->content_metadata.execution_info.title_id.get(),
+          static_cast<uint32_t>(header->content_metadata.content_type.get()));
       packages.push_back(file.path());
       ++found;
     }
@@ -1758,16 +1765,16 @@ void EmulatorWindow::InstallContentPackages(
   }
 
   auto start_install = [this, content_installation_status, staging_dirs]() {
-    auto installationThread = std::thread([this, content_installation_status,
-                                           staging_dirs] {
-      for (auto& entry : *content_installation_status) {
-        emulator_->InstallContentPackage(entry.path_, entry);
-      }
-      std::error_code ec;
-      for (const auto& staging : *staging_dirs) {
-        std::filesystem::remove_all(staging, ec);
-      }
-    });
+    auto installationThread =
+        std::thread([this, content_installation_status, staging_dirs] {
+          for (auto& entry : *content_installation_status) {
+            emulator_->InstallContentPackage(entry.path_, entry);
+          }
+          std::error_code ec;
+          for (const auto& staging : *staging_dirs) {
+            std::filesystem::remove_all(staging, ec);
+          }
+        });
     installationThread.detach();
 
     new ContentInstallDialog(imgui_drawer_.get(), *this,
@@ -2215,9 +2222,8 @@ void EmulatorWindow::ShowAvatarEditorDialog() {
 }
 
 void EmulatorWindow::SwitchTitle() {
-  auto xam =
-      emulator_->kernel_state()->GetKernelModule<kernel::xam::XamModule>(
-          "xam.xex");
+  auto xam = emulator_->kernel_state()->GetKernelModule<kernel::xam::XamModule>(
+      "xam.xex");
   if (!xam) {
     return;
   }
@@ -2231,10 +2237,9 @@ void EmulatorWindow::SwitchTitle() {
   xam->loader_data().launch_path.clear();
   if (XSUCCEEDED(result)) {
     std::error_code error;
-    std::filesystem::remove(
-        std::filesystem::path(
-            std::string(kernel::xam::kXamModuleLoaderDataFileName)),
-        error);
+    std::filesystem::remove(std::filesystem::path(std::string(
+                                kernel::xam::kXamModuleLoaderDataFileName)),
+                            error);
     return;
   }
   XELOGE("In-place title switch failed ({:08X}); restarting the emulator",
@@ -2280,7 +2285,6 @@ void EmulatorWindow::UpdateSocialMenu() {
                                             : "&Social");
 
   window_->CompleteMainMenuItemsUpdate();
-
 }
 
 void EmulatorWindow::ToggleUpdaterDialog() {
@@ -2975,12 +2979,32 @@ xe::X_STATUS EmulatorWindow::RunTitle(
   }
 
   if (emulator_->is_title_open()) {
-    // Terminate the current title and start a new title.
-    // if (emulator_->TerminateTitle() == X_STATUS_SUCCESS) {
-    //   return RunTitle(path);
-    // }
-
-    return X_STATUS_UNSUCCESSFUL;
+    auto xam =
+        emulator_->kernel_state()->GetKernelModule<kernel::xam::XamModule>(
+            "xam.xex");
+    const std::string next_host_path =
+        xe::path_to_utf8(std::filesystem::absolute(path_to_file));
+    if (xam) {
+      kernel::xam::RecordLaunchOrigin();
+      auto& loader_data = xam->loader_data();
+      loader_data.host_path = next_host_path;
+      loader_data.launch_path.clear();
+      loader_data.launch_flags = 0;
+      loader_data.launch_data.clear();
+      loader_data.command_line.clear();
+    }
+    if (!cvars::title_switch_in_process && xam) {
+      XELOGI("User launch of {} while a title runs; restarting the emulator",
+             next_host_path);
+      xam->SaveLoaderData();
+      config::SaveConfig();
+      xe::LaunchSelf();
+      xe::FlushLog();
+      std::quick_exit(0);
+    }
+    XELOGI("User launch of {} while a title runs; switching in place",
+           next_host_path);
+    emulator_->TerminateTitle(cvars::title_switch_clear_handles);
   }
 
   // Prevent crashing the emulator by not loading a game if a game is already
@@ -3153,9 +3177,9 @@ void EmulatorWindow::InstallXnaPackage() {
   const auto library = GetXnaLibraryPath();
   std::filesystem::create_directories(library, ec);
   const auto destination = library / source.filename();
-  std::filesystem::copy_file(
-      source, destination, std::filesystem::copy_options::overwrite_existing,
-      ec);
+  std::filesystem::copy_file(source, destination,
+                             std::filesystem::copy_options::overwrite_existing,
+                             ec);
   if (ec) {
     XELOGE("Could not install XNA package: {}", ec.message());
     new xe::ui::HostNotificationWindow(imgui_drawer(), "Install failed",
@@ -3169,9 +3193,313 @@ void EmulatorWindow::InstallXnaPackage() {
   // appears next time - say so rather than leaving the user hunting for it.
   new xe::ui::HostNotificationWindow(
       imgui_drawer(), "XNA title installed",
-      info.display_name + " will appear in the XNA Titles menu after a "
-                          "restart.",
+      info.display_name +
+          " will appear in the XNA Titles menu after a "
+          "restart.",
       0);
+}
+
+namespace {
+
+constexpr const char* kXnaSetupSystemUpdateUrl =
+    "https://download.microsoft.com/download/8/f/4/"
+    "8f456817-e264-4207-9b95-6efc990fee98/SystemUpdate_17559_USB.zip";
+
+struct XnaSetupState {
+  std::mutex mutex;
+  std::string stage;
+  std::string report;
+  std::filesystem::path package;
+  std::atomic<uint64_t> received{0};
+  std::atomic<uint64_t> total{0};
+  std::atomic<bool> downloading{false};
+  std::atomic<bool> cancel{false};
+  std::atomic<bool> finished{false};
+
+  void SetStage(std::string text) {
+    std::lock_guard<std::mutex> lock(mutex);
+    stage = std::move(text);
+  }
+  void AddReport(const std::string& line) {
+    std::lock_guard<std::mutex> lock(mutex);
+    report += line + "\n";
+  }
+};
+
+constexpr const char* kXnaSetupDashboardFiles[] = {"dash.xex",
+                                                   "XenonSCLatin.xtt"};
+
+std::string LowerAscii(std::string text) {
+  for (char& c : text) {
+    if (c >= 'A' && c <= 'Z') {
+      c = char(c - 'A' + 'a');
+    }
+  }
+  return text;
+}
+
+void InstallXnaSetupDashboard(XnaSetupState* state,
+                              const std::filesystem::path& zip,
+                              const std::filesystem::path& staging,
+                              const std::filesystem::path& dashboard) {
+  std::error_code ec;
+  std::filesystem::remove_all(staging, ec);
+  std::filesystem::create_directories(staging, ec);
+  if (ec || !kernel::xna::ExtractZipArchive(zip, staging)) {
+    state->AddReport("Dashboard: FAILED - could not extract " +
+                     xe::path_to_utf8(zip));
+    std::filesystem::remove_all(staging, ec);
+    return;
+  }
+
+  std::filesystem::create_directories(dashboard, ec);
+  for (const char* name : kXnaSetupDashboardFiles) {
+    const std::string wanted = LowerAscii(name);
+    std::filesystem::path found;
+    for (const auto& file : std::filesystem::recursive_directory_iterator(
+             staging,
+             std::filesystem::directory_options::skip_permission_denied, ec)) {
+      if (file.is_regular_file(ec) &&
+          LowerAscii(xe::path_to_utf8(file.path().filename())) == wanted) {
+        found = file.path();
+        break;
+      }
+    }
+    if (found.empty()) {
+      state->AddReport(std::string("Dashboard: FAILED - ") + name +
+                       " is not in the system update");
+      continue;
+    }
+    const auto target = dashboard / name;
+    std::filesystem::copy_file(
+        found, target, std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) {
+      state->AddReport(std::string("Dashboard: FAILED - could not copy ") +
+                       name + " (" + ec.message() + ")");
+    } else {
+      state->AddReport(std::string("Dashboard: ") + name + " -> " +
+                       xe::path_to_utf8(target));
+    }
+  }
+  std::filesystem::remove_all(staging, ec);
+}
+
+void RunXnaSetup(std::shared_ptr<XnaSetupState> state,
+                 std::filesystem::path content_root) {
+  state->SetStage("Copying Nexia's XNA host files...");
+  std::string message;
+  if (kernel::xna::DeployXnaHostPayload(&message)) {
+    state->AddReport("XNA host files: ready (" + message + ")");
+  } else {
+    state->AddReport("XNA host files: FAILED - " + message);
+  }
+
+  state->SetStage("Checking the Microsoft XNA runtime...");
+  std::string missing;
+  if (kernel::xna::XnaRuntimeInstalled(&missing)) {
+    state->AddReport("Microsoft XNA runtime: already installed");
+  } else {
+    state->SetStage(
+        "Installing the Microsoft XNA runtime.\n"
+        "Windows asks for administrator permission, and a PowerShell\n"
+        "window shows the progress.");
+    std::string error;
+    const bool ran = kernel::xna::InstallXnaRuntime(&error);
+    if (kernel::xna::XnaRuntimeInstalled(&missing)) {
+      state->AddReport("Microsoft XNA runtime: installed");
+    } else if (!ran) {
+      state->AddReport("Microsoft XNA runtime: NOT installed - " + error);
+    } else {
+      state->AddReport("Microsoft XNA runtime: still missing " + missing +
+                       " (a Windows restart may be needed)");
+    }
+  }
+
+  std::error_code ec;
+  const auto dashboard = xe::filesystem::GetExecutableFolder() / "Dashboard";
+  const bool avatars_installed = std::filesystem::exists(
+      kernel::xna::avatar::CatalogPath(content_root), ec);
+  bool dashboard_installed = true;
+  for (const char* name : kXnaSetupDashboardFiles) {
+    if (!std::filesystem::exists(dashboard / name, ec)) {
+      dashboard_installed = false;
+    }
+  }
+  if (avatars_installed) {
+    state->AddReport("Avatar data: already installed");
+  }
+  if (dashboard_installed) {
+    state->AddReport("Dashboard: already installed in " +
+                     xe::path_to_utf8(dashboard));
+  }
+
+  if (avatars_installed && dashboard_installed) {
+    state->AddReport("System update download: not needed");
+  } else if (state->cancel.load()) {
+    state->AddReport("System update download: cancelled");
+  } else {
+    state->SetStage(
+        "Downloading the Xbox 360 system update (avatar data and\n"
+        "dashboard) from download.microsoft.com...");
+    const auto directory =
+        std::filesystem::temp_directory_path(ec) / "Nexia" / "XNA_Setup";
+    std::filesystem::create_directories(directory, ec);
+    const auto zip = directory / "SystemUpdate_17559_USB.zip";
+    state->downloading.store(true);
+    const bool downloaded = kernel::util::TitleUpdateDownloader::DownloadUrl(
+        kXnaSetupSystemUpdateUrl, zip,
+        [state](uint64_t received, uint64_t total) {
+          state->received.store(received);
+          state->total.store(total);
+        },
+        &state->cancel);
+    state->downloading.store(false);
+    if (!downloaded) {
+      state->AddReport(state->cancel.load()
+                           ? "System update download: cancelled"
+                           : "System update download: FAILED - see the log");
+    } else {
+      if (!dashboard_installed) {
+        state->SetStage("Copying the dashboard...");
+        InstallXnaSetupDashboard(state.get(), zip, directory / "extract",
+                                 dashboard);
+      }
+      if (!avatars_installed) {
+        state->AddReport("Avatar data: downloaded, installs when you press OK");
+        std::lock_guard<std::mutex> lock(state->mutex);
+        state->package = zip;
+      }
+    }
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(state->mutex);
+    XELOGE("Setup XNA:\n{}", state->report);
+  }
+  state->finished.store(true);
+}
+
+class XnaSetupDialog final : public ui::ImGuiDialog {
+ public:
+  XnaSetupDialog(ui::ImGuiDrawer* imgui_drawer,
+                 std::shared_ptr<XnaSetupState> state,
+                 std::function<void(std::filesystem::path)> install)
+      : ui::ImGuiDialog(imgui_drawer),
+        state_(std::move(state)),
+        install_(std::move(install)),
+        window_id_(GetWindowId()) {}
+
+ protected:
+  void OnDraw(ImGuiIO& io) override {
+    ImGui::SetNextWindowPos(ImVec2(20, 20), ImGuiCond_FirstUseEver);
+    bool open = true;
+    if (!ImGui::Begin(
+            fmt::format("Setup XNA###{}", window_id_).c_str(), &open,
+            ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize)) {
+      ImGui::End();
+      return;
+    }
+
+    std::string stage;
+    std::string report;
+    std::filesystem::path package;
+    {
+      std::lock_guard<std::mutex> lock(state_->mutex);
+      stage = state_->stage;
+      report = state_->report;
+      package = state_->package;
+    }
+    const bool finished = state_->finished.load();
+
+    if (!report.empty()) {
+      ImGui::TextUnformatted(report.c_str());
+    }
+    if (!finished) {
+      if (!report.empty()) {
+        ImGui::Separator();
+      }
+      ImGui::TextUnformatted(stage.c_str());
+    }
+    if (state_->downloading.load()) {
+      const uint64_t received = state_->received.load();
+      const uint64_t total = state_->total.load();
+      const std::string overlay =
+          total ? fmt::format("{:.1f} / {:.1f} MB", received / 1048576.0,
+                              total / 1048576.0)
+                : fmt::format("{:.1f} MB", received / 1048576.0);
+      ImGui::ProgressBar(total ? float(double(received) / double(total)) : 0.0f,
+                         ImVec2(420.0f, 0.0f), overlay.c_str());
+    }
+
+    ImGui::Spacing();
+    if (finished) {
+      if (ImGui::Button("OK") || !open) {
+        ImGui::End();
+        Close();
+        if (!package.empty()) {
+          install_(package);
+        }
+        return;
+      }
+    } else if (state_->cancel.load()) {
+      ImGui::TextUnformatted("Cancelling...");
+    } else if (ImGui::Button("Cancel") || !open) {
+      state_->cancel.store(true);
+    }
+    ImGui::End();
+  }
+
+ private:
+  std::shared_ptr<XnaSetupState> state_;
+  std::function<void(std::filesystem::path)> install_;
+  uint64_t window_id_;
+};
+
+}  // namespace
+
+void EmulatorWindow::SetupXna() {
+  std::string title = "Setup XNA";
+  std::string body =
+      "Sets up this PC to run Xbox Live Indie Games (XNA titles) in Nexia.\n\n"
+      "Choosing Accept does three things:\n"
+      "  1. Copies Nexia's XNA host files out of Nexia360.exe into its xna\n"
+      "     folder.\n"
+      "  2. If anything is missing, runs Nexia's XNA runtime installer. It\n"
+      "     downloads these from Microsoft's own servers, checks that each is\n"
+      "     signed by Microsoft, and installs them:\n"
+      "       - .NET Framework 3.5 (a Windows feature)\n"
+      "       - .NET 9 Runtime (runs Nexia's XNA host)\n"
+      "       - XNA Framework 3.1 and XNA Framework 4.0 Refresh\n"
+      "       - DirectX End-User Runtimes (June 2010)\n"
+      "     Windows asks for administrator permission for this step, and a\n"
+      "     PowerShell window shows the progress.\n"
+      "  3. If the avatar data or the dashboard is not installed, downloads\n"
+      "     Microsoft's Xbox 360 system update 17559 from\n"
+      "     download.microsoft.com. It copies the dashboard (dash.xex and\n"
+      "     XenonSCLatin.xtt) into the Dashboard folder next to Nexia360.exe,\n"
+      "     and installs the avatar, dashboard and Kinect data packages. The\n"
+      "     system update itself is not installed.\n\n"
+      "Choosing Cancel changes nothing.";
+
+  auto* dialog = new kernel::xam::MessageBoxDialog(imgui_drawer(), title, body,
+                                                   {"Accept", "Cancel"}, 1);
+  dialog->set_close_callback([this, dialog]() {
+    if (dialog->chosen_button() != 0) {
+      XELOGI("Setup XNA: declined");
+      return;
+    }
+    XELOGI("Setup XNA: accepted");
+    app_context().CallInUIThread([this]() {
+      auto state = std::make_shared<XnaSetupState>();
+      state->SetStage("Starting...");
+      new XnaSetupDialog(
+          imgui_drawer(), state, [this](std::filesystem::path package) {
+            app_context().CallInUIThread(
+                [this, package]() { InstallContentPackages({package}); });
+          });
+      std::thread(RunXnaSetup, state, emulator_->content_root()).detach();
+    });
+  });
 }
 
 void EmulatorWindow::ShowXnaDependencies() {
@@ -3186,7 +3514,8 @@ void EmulatorWindow::FindXnaDependencies() {
   std::string title = "Find XNA Dependencies";
   std::string body =
       "Xbox Live Indie Games need the Xbox 360's own XNA runtime to run in\n"
-      "Nexia. This finds those files on your PC and packs them into one zip.\n\n"
+      "Nexia. This finds those files on your PC and packs them into one "
+      "zip.\n\n"
       "It looks for:\n"
       "  - the console XNA runtime: MXF.dlx, MXF.Graphics.dlx and the other\n"
       "    MXF*.dlx files, plus mscorlib.dlx and the System*.dlx files\n"
@@ -3198,8 +3527,8 @@ void EmulatorWindow::FindXnaDependencies() {
       "The zip is saved as XNA_Dependencies.zip next to Nexia360.exe, and\n"
       "that folder opens when it is done.";
 
-  auto* dialog = new kernel::xam::MessageBoxDialog(
-      imgui_drawer(), title, body, {"Find Files", "Cancel"}, 1);
+  auto* dialog = new kernel::xam::MessageBoxDialog(imgui_drawer(), title, body,
+                                                   {"Find Files", "Cancel"}, 1);
   dialog->set_close_callback([this, dialog]() {
     if (dialog->chosen_button() != 0) {
       return;
@@ -3291,8 +3620,8 @@ void EmulatorWindow::InstallXnaDependencies() {
   std::string message;
   const bool installed =
       kernel::xna::InstallXnaDependenciesFrom(selected[0], &message);
-  XELOGE("XNA dependency install from {}:\n{}",
-         xe::path_to_utf8(selected[0]), message);
+  XELOGE("XNA dependency install from {}:\n{}", xe::path_to_utf8(selected[0]),
+         message);
   new xe::ui::HostNotificationWindow(
       imgui_drawer(),
       installed ? "XNA dependencies installed" : "XNA dependencies incomplete",

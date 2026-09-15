@@ -13,10 +13,10 @@
 
 #include "xenia/base/byte_stream.h"
 #include "xenia/base/logging.h"
+#include "xenia/base/threading.h"
 #include "xenia/emulator.h"
 #include "xenia/hid/input_system.h"
 #include "xenia/kernel/user_module.h"
-#include "xenia/base/threading.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xam/content_manager.h"
 #include "xenia/kernel/xam/xam_module.h"
@@ -1090,7 +1090,8 @@ void KernelState::MarkSystemThreads() {
   for (const auto& [thread_id, thread] : threads_by_id_) {
     system_thread_ids_.push_back(thread_id);
   }
-  XELOGI("KernelState: {} threads predate the title", system_thread_ids_.size());
+  XELOGI("KernelState: {} threads predate the title",
+         system_thread_ids_.size());
 }
 
 bool KernelState::IsSystemThread(uint32_t thread_id) const {

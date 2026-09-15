@@ -171,7 +171,6 @@ bool XmaContextNew::Work() {
 
   while (remaining_subframe_blocks_in_output_buffer_ >=
          minimum_subframe_decode_count) {
-
     const uint32_t pre_decode_offset = data.input_buffer_read_offset;
     const uint8_t pre_remaining_subframes = current_frame_remaining_subframes_;
 
@@ -220,7 +219,6 @@ bool XmaContextNew::Work() {
              id());
     data.output_buffer_valid = 0;
   }
-
 
   StoreContextMerged(data, initial_data, context_ptr);
   return true;
@@ -348,7 +346,6 @@ void XmaContextNew::Consume(RingBuffer* XE_RESTRICT output_rb,
 
   remaining_subframe_blocks_in_output_buffer_ -= subframes_to_write + headroom;
   current_frame_remaining_subframes_ -= subframes_to_write;
-
 }
 
 void XmaContextNew::Decode(XMA_CONTEXT_DATA* data) {
@@ -395,7 +392,6 @@ void XmaContextNew::Decode(XMA_CONTEXT_DATA* data) {
            id());
     return;
   }
-
 
   // Games like Dirt 2 can kick the decoder with read offset 0 (pointing into
   // the packet header) before filling in a valid offset. Clamp to the first
@@ -548,7 +544,6 @@ void XmaContextNew::Decode(XMA_CONTEXT_DATA* data) {
 
   xma_frame_.fill(0);
 
-
   const uint32_t padding_start = static_cast<uint8_t>(
       stream.Copy(xma_frame_.data() + 1, packet_info.current_frame_size_));
 
@@ -593,7 +588,6 @@ void XmaContextNew::Decode(XMA_CONTEXT_DATA* data) {
   if (!packet_info.isLastFrameInPacket()) {
     const uint32_t next_frame_offset =
         (data->input_buffer_read_offset + bits_to_copy) % kBitsPerPacket;
-
 
     data->input_buffer_read_offset =
         (packet_index * kBitsPerPacket) + next_frame_offset;

@@ -83,8 +83,7 @@ constexpr const char* kHostRid = "linux-x64";
 // Accepts a file that is not architecture-specific at all, or one whose path
 // names this machine's runtime identifier.
 bool IsForThisMachine(const std::filesystem::path& path) {
-  const std::string text =
-      xe::utf8::lower_ascii(xe::path_to_utf8(path));
+  const std::string text = xe::utf8::lower_ascii(xe::path_to_utf8(path));
   if (text.find("runtimes") == std::string::npos) {
     return true;
   }
@@ -159,8 +158,7 @@ bool RunHidden(const std::wstring& command_line) {
   startup.wShowWindow = SW_HIDE;
   PROCESS_INFORMATION process = {};
   if (!CreateProcessW(nullptr, mutable_command.data(), nullptr, nullptr, FALSE,
-                      CREATE_NO_WINDOW, nullptr, nullptr, &startup,
-                      &process)) {
+                      CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process)) {
     return false;
   }
   WaitForSingleObject(process.hProcess, INFINITE);
@@ -179,8 +177,8 @@ bool ExtractArchive(const std::filesystem::path& archive,
   // bsdtar ships with Windows 10 1803 and later and reads zip files.
   // Quoted: a user's folder can contain spaces, and tar would see two
   // arguments instead of one.
-  std::wstring tar = L"tar -xf \"" + archive.wstring() +
-                     L"\" -C \"" + destination.wstring() + L"\"";
+  std::wstring tar = L"tar -xf \"" + archive.wstring() + L"\" -C \"" +
+                     destination.wstring() + L"\"";
   if (RunHidden(tar)) {
     return true;
   }
@@ -269,11 +267,10 @@ std::vector<XnaDependency> CheckXnaDependencies() {
   console.required = true;
   console.present = have_console;
   console.detail =
-      have_console
-          ? xe::path_to_utf8(ConsoleRuntimePath())
-          : "not embedded in this build - build Nexia with "
-            "XE_XNA_CONSOLE_RUNTIME_DIR pointing at the MXF*.dlx and "
-            "Compact Framework .dlx files";
+      have_console ? xe::path_to_utf8(ConsoleRuntimePath())
+                   : "not embedded in this build - build Nexia with "
+                     "XE_XNA_CONSOLE_RUNTIME_DIR pointing at the MXF*.dlx and "
+                     "Compact Framework .dlx files";
   results.push_back(std::move(console));
 
   // MonoGame is the fallback for when the console runtime is absent: it can
@@ -362,8 +359,8 @@ bool PayloadBytes(const XnaHostPayloadFile& file, const uint8_t** out_data,
   }
 #if XE_PLATFORM_WIN32
   if (file.resource_id) {
-    HRSRC resource = FindResourceW(
-        nullptr, MAKEINTRESOURCEW(file.resource_id), MAKEINTRESOURCEW(10));
+    HRSRC resource = FindResourceW(nullptr, MAKEINTRESOURCEW(file.resource_id),
+                                   MAKEINTRESOURCEW(10));
     if (resource) {
       HGLOBAL loaded = LoadResource(nullptr, resource);
       const void* bytes = loaded ? LockResource(loaded) : nullptr;
@@ -464,10 +461,10 @@ bool DeployXnaHostPayload(std::string* out_message) {
     out << kXnaHostPayloadVersion << "\n";
   }
   *out_message =
-      replaced ? fmt::format("Nexia.Xna.Host {} -> {} ({} file(s) replaced)",
-                             installed, kXnaHostPayloadVersion, replaced)
-               : fmt::format("Nexia.Xna.Host {} is current",
-                             kXnaHostPayloadVersion);
+      replaced
+          ? fmt::format("Nexia.Xna.Host {} -> {} ({} file(s) replaced)",
+                        installed, kXnaHostPayloadVersion, replaced)
+          : fmt::format("Nexia.Xna.Host {} is current", kXnaHostPayloadVersion);
   return true;
 }
 
@@ -477,8 +474,8 @@ bool InstallXnaDependenciesFrom(const std::filesystem::path& source_dir,
   const auto overlay = XnaOverlayPath();
   std::filesystem::create_directories(overlay, ec);
   if (ec) {
-    *out_message = "Could not create " + xe::path_to_utf8(overlay) + ": " +
-                   ec.message();
+    *out_message =
+        "Could not create " + xe::path_to_utf8(overlay) + ": " + ec.message();
     return false;
   }
 
@@ -535,12 +532,11 @@ bool InstallXnaDependenciesFrom(const std::filesystem::path& source_dir,
     }
 
     std::error_code copy_ec;
-    std::filesystem::copy_file(entry.path(), overlay / entry.path().filename(),
-                               std::filesystem::copy_options::overwrite_existing,
-                               copy_ec);
+    std::filesystem::copy_file(
+        entry.path(), overlay / entry.path().filename(),
+        std::filesystem::copy_options::overwrite_existing, copy_ec);
     if (copy_ec) {
-      XELOGE("XnaDependencies: could not copy {}: {}", name,
-             copy_ec.message());
+      XELOGE("XnaDependencies: could not copy {}: {}", name, copy_ec.message());
       failed.push_back(name);
     } else {
       XELOGI("XnaDependencies: installed {}", name);
@@ -637,8 +633,8 @@ bool CreateZipArchive(const std::filesystem::path& staging,
   std::wstring powershell =
       L"powershell -NoProfile -NonInteractive -Command "
       L"\"Compress-Archive -Path '" +
-      (staging / "*").wstring() + L"' -DestinationPath '" +
-      zip_path.wstring() + L"' -Force\"";
+      (staging / "*").wstring() + L"' -DestinationPath '" + zip_path.wstring() +
+      L"' -Force\"";
   return RunHidden(powershell);
 }
 
@@ -711,8 +707,8 @@ bool BuildXnaDependencyZip(const std::filesystem::path& source_dir,
                       (item.required ? " (required)" : " (optional)") + "\n";
       required_missing = required_missing || item.required;
     } else {
-      found_text += "  " + destination + "  <-  " +
-                    xe::path_to_utf8(item.found) + "\n";
+      found_text +=
+          "  " + destination + "  <-  " + xe::path_to_utf8(item.found) + "\n";
       ++found_count;
     }
   }
@@ -735,8 +731,8 @@ bool BuildXnaDependencyZip(const std::filesystem::path& source_dir,
   std::filesystem::remove_all(staging, ec);
   std::filesystem::create_directories(staging, ec);
   if (ec) {
-    *out_report += "\nCould not create " + xe::path_to_utf8(staging) + ": " +
-                   ec.message();
+    *out_report +=
+        "\nCould not create " + xe::path_to_utf8(staging) + ": " + ec.message();
     return false;
   }
 
@@ -753,8 +749,8 @@ bool BuildXnaDependencyZip(const std::filesystem::path& source_dir,
         item.found, directory / xe::to_path(item.found_name),
         std::filesystem::copy_options::overwrite_existing, ec);
     if (ec) {
-      *out_report += "\nCould not copy " + xe::path_to_utf8(item.found) +
-                     ": " + ec.message();
+      *out_report += "\nCould not copy " + xe::path_to_utf8(item.found) + ": " +
+                     ec.message();
       std::filesystem::remove_all(staging, ec);
       return false;
     }

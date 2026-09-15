@@ -82,10 +82,9 @@ class PipelineCache {
   // title's effect has already been swapped into host order when its container
   // was, and swapping it again turns every instruction into garbage that still
   // parses.
-  D3D12Shader* LoadShader(
-      xenos::ShaderType shader_type, const uint32_t* host_address,
-      uint32_t dword_count,
-      std::endian ucode_source_endian = std::endian::big);
+  D3D12Shader* LoadShader(xenos::ShaderType shader_type,
+                          const uint32_t* host_address, uint32_t dword_count,
+                          std::endian ucode_source_endian = std::endian::big);
   // Analyze shader microcode on the translator thread.
   void AnalyzeShaderUcode(Shader& shader) {
     if (!shader.is_ucode_analyzed()) {

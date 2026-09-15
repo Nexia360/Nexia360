@@ -29,6 +29,7 @@ namespace avatar {
 constexpr uint32_t kBoneCount = 71;
 constexpr uint32_t kMaxJoints = 72;
 constexpr size_t kDescriptionBytes = 1020;
+constexpr size_t kManifestBytes = 0x3E8;
 constexpr uint32_t kLayerCount = 6;
 constexpr uint16_t kNoItem = 0xFFFF;
 
@@ -104,6 +105,11 @@ struct Description {
   std::array<uint16_t, kSlotCount> items;
   std::array<uint32_t, kColorCount> colors;
   std::array<std::array<uint32_t, 3>, kClothingSlotCount> custom;
+  std::array<std::array<uint8_t, 16>, 3> blend_shapes = {};
+  std::vector<std::array<uint8_t, 32>> components;
+  std::array<std::array<uint8_t, 32>, 4> required = {};
+  uint32_t height_bits = 0;
+  uint32_t weight_bits = 0;
   Description();
 };
 
@@ -121,6 +127,7 @@ struct Entry {
   uint32_t size = 0;
   std::string name;
   std::array<uint8_t, 16> asset_id = {};
+  uint32_t external = 0;
   uint32_t BodyMask() const { return flags >> 24; }
 };
 
@@ -222,7 +229,11 @@ struct Skeleton {
   uint32_t count = 0;
   uint8_t parents[kMaxJoints] = {};
   float bind[kMaxJoints][3] = {};
+  float scale[kMaxJoints][3];
+  Skeleton();
 };
+
+constexpr size_t kKeyFloats = 10;
 
 struct Clip {
   uint32_t frames = 0;
@@ -246,7 +257,16 @@ bool DecodeModel(const std::vector<uint8_t>& data, Model* out);
 bool DecodeTexture(const std::vector<uint8_t>& data, Texture* out);
 bool DecodeSkeleton(const uint8_t* data, size_t size, Skeleton* out);
 bool DecodeClip(const std::vector<uint8_t>& data, Clip* out);
+bool DecodeCarryableClip(const std::vector<uint8_t>& data, Clip* out);
+bool DecodeCarryableSkeleton(const std::vector<uint8_t>& data, Skeleton* out);
+
+struct Carryable {
+  Skeleton skeleton;
+  std::shared_ptr<const Clip> body;
+  std::shared_ptr<const Clip> joints;
+};
 const Skeleton& MainSkeleton();
+Skeleton ScaledSkeleton(const Description& description);
 
 constexpr uint32_t kAnimationObjectBytes = 0x5990;
 constexpr uint32_t kAnimationHeaderBytes = 0x28;
@@ -262,16 +282,21 @@ class Catalog {
   bool loaded() const { return !entries_.empty(); }
   const std::vector<Entry>& entries() const { return entries_; }
   const Entry* Find(uint32_t index) const;
+  const Entry* FindAsset(const uint8_t* asset_id) const;
+  bool AddAsset(const std::array<uint8_t, 16>& asset_id, std::string name,
+                std::vector<uint8_t> blob);
   bool Records(uint32_t index, std::vector<Record>* out) const;
   std::shared_ptr<const Model> LoadModel(uint32_t index);
   std::shared_ptr<const Texture> LoadFeature(uint32_t index);
   std::shared_ptr<const Clip> LoadClip(uint32_t index);
+  std::shared_ptr<const Carryable> LoadCarryable(uint32_t index);
   bool AnimationStream(uint32_t index, std::vector<uint8_t>* out) const;
   std::shared_ptr<const RawModel> LoadRawModel(uint32_t index);
   std::shared_ptr<const RawTexture> LoadRawTexture(uint32_t index);
 
  private:
   std::vector<uint8_t> data_;
+  std::vector<std::vector<uint8_t>> externals_;
   std::vector<Entry> entries_;
   std::mutex mutex_;
   std::map<uint32_t, std::shared_ptr<const Model>> models_;
@@ -279,6 +304,7 @@ class Catalog {
   std::map<uint32_t, std::shared_ptr<const Clip>> clips_;
   std::map<uint32_t, std::shared_ptr<const RawModel>> raw_models_;
   std::map<uint32_t, std::shared_ptr<const RawTexture>> raw_textures_;
+  std::map<uint32_t, std::shared_ptr<const Carryable>> carryables_;
 };
 
 struct Component {
@@ -298,12 +324,19 @@ Catalog* SharedCatalog(const std::filesystem::path& content_root);
 bool IsHatVariant(const Entry& entry);
 std::vector<uint32_t> ItemsForSlot(const Catalog& catalog, uint32_t slot,
                                    uint32_t body);
-void PlaceItem(const Catalog& catalog, Description* description,
-               uint32_t slot, uint16_t entry);
+void PlaceItem(const Catalog& catalog, Description* description, uint32_t slot,
+               uint16_t entry);
 Description RandomDescription(const Catalog& catalog, std::mt19937& rng,
                               int32_t body);
 Description DescriptionFromBytes(const Catalog* catalog, const uint8_t* bytes,
                                  size_t size);
+bool HasManifestLayout(const uint8_t* bytes, size_t size);
+bool ParseManifest(const Catalog* catalog, const uint8_t* bytes, size_t size,
+                   Description* out);
+bool ParseAnyDescription(const Catalog* catalog, const uint8_t* bytes,
+                         size_t size, Description* out);
+std::array<uint8_t, kManifestBytes> SerializeManifest(
+    const Catalog* catalog, const Description& description, uint64_t xuid);
 int32_t PresetClip(uint32_t preset);
 
 Matrix Identity();
@@ -312,16 +345,20 @@ void BindPose(const Skeleton& skeleton, Matrix* local);
 void SamplePose(const Clip& clip, const Skeleton& skeleton, float seconds,
                 Matrix* local);
 void SkinMatrices(const Skeleton& skeleton, const Matrix* local, Matrix* skin);
+void SampleCarryable(const Carryable& carryable, float seconds, Matrix* local);
 
 struct Part {
   std::shared_ptr<const Model> model;
   uint32_t entry = 0;
   uint32_t kind = 0;
+  bool carried = false;
   float custom[3][4] = {};
 };
 
 struct Scene {
   uint32_t body = 1;
+  Skeleton skeleton;
+  std::shared_ptr<const Carryable> carryable;
   std::vector<Part> parts;
   std::shared_ptr<const Texture> features[kFeatureCount];
   uint32_t feature_entries[kFeatureCount] = {};
@@ -339,8 +376,8 @@ struct Material {
   uint64_t texture_ids[kLayerCount] = {};
 };
 
-Material BuildMaterial(const Scene& scene, const Part& part,
-                       const Batch& batch, const Expression& expression);
+Material BuildMaterial(const Scene& scene, const Part& part, const Batch& batch,
+                       const Expression& expression);
 
 struct GpuVertex {
   float position[3];
@@ -377,8 +414,9 @@ void SkinBatch(const Batch& batch, const Matrix* skin,
                std::vector<GpuVertex>* out, float inset = 0.0f);
 void FillMaterialConstants(const Material& material, GpuConstants* out);
 void RenderPreview(const Scene& scene, const Matrix* local,
-                   const Expression& expression, uint32_t width,
-                   uint32_t height, float yaw, std::vector<uint8_t>* rgba);
+                   const Matrix* carried_local, const Expression& expression,
+                   uint32_t width, uint32_t height, float yaw,
+                   std::vector<uint8_t>* rgba);
 std::vector<uint8_t> EncodePng(uint32_t width, uint32_t height,
                                const std::vector<uint8_t>& rgba);
 

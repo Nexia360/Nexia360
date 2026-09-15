@@ -51,8 +51,8 @@ gpu::xenos::Endian XnaGpuTextureEndianFor(gpu::xenos::TextureFormat format);
 // target pass needs one region per slot, and the draw that writes them and the
 // resolve that reads them back have to name the same tile or the resolve reads
 // a region nothing wrote. Both call this rather than repeating the arithmetic.
-uint32_t XnaGpuEdramBaseForSlot(uint32_t width, uint32_t height,
-                                uint32_t slot, uint32_t target_count);
+uint32_t XnaGpuEdramBaseForSlot(uint32_t width, uint32_t height, uint32_t slot,
+                                uint32_t target_count);
 
 // Returned by XnaGpuEdramDepthBase when the depth buffer cannot be given a
 // region of its own.
@@ -172,9 +172,9 @@ struct XnaGpuDraw {
   // of blending, which is what left the transparent meshes as white blocks.
   // color_src/color_dst/alpha_src/alpha_dst are XNA Blend; color_op/alpha_op
   // are XNA BlendFunction.
-  uint32_t color_src = 0;   // XNA Blend::One
-  uint32_t color_dst = 1;   // XNA Blend::Zero
-  uint32_t color_op = 0;    // XNA BlendFunction::Add
+  uint32_t color_src = 0;  // XNA Blend::One
+  uint32_t color_dst = 1;  // XNA Blend::Zero
+  uint32_t color_op = 0;   // XNA BlendFunction::Add
   uint32_t alpha_src = 0;
   uint32_t alpha_dst = 1;
   uint32_t alpha_op = 0;

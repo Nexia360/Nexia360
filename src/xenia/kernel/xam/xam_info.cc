@@ -708,8 +708,8 @@ void LaunchTitle(const std::string& launch_path, const std::string& mount_path,
     host = loader_data.dashboard_path;
   } else {
     if (!mount_path.empty() && launch_path.front() != '\\') {
-      host = LaunchHostPath(
-          xe::utf8::join_guest_paths(mount_path, launch_path), &inner);
+      host = LaunchHostPath(xe::utf8::join_guest_paths(mount_path, launch_path),
+                            &inner);
     }
     if (host.empty()) {
       host = LaunchHostPath(launch_path, &inner);
@@ -856,9 +856,7 @@ dword_result_t XamOfflineTimerGetData_entry(lpvoid_t data_ptr) {
 }
 DECLARE_XAM_EXPORT1(XamOfflineTimerGetData, kNone, kImplemented);
 
-dword_result_t XamGetOnlineCountryFeatures_entry(dword_t country) {
-  return 0;
-}
+dword_result_t XamGetOnlineCountryFeatures_entry(dword_t country) { return 0; }
 DECLARE_XAM_EXPORT1(XamGetOnlineCountryFeatures, kNone, kStub);
 
 dword_result_t XamNetworkStorageHasUserEnabledStorage_entry(

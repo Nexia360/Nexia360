@@ -45,12 +45,12 @@
 #include "xenia/kernel/user_module.h"
 #include "xenia/kernel/xam/achievement_manager.h"
 #include "xenia/kernel/xam/xam_module.h"
-#include "xenia/kernel/xna/xna_bridge.h"
-#include "xenia/kernel/xna/xna_host.h"
-#include "xenia/kernel/xna/xna_launcher.h"
 #include "xenia/kernel/xam/xdbf/spa_info.h"
 #include "xenia/kernel/xbdm/xbdm_module.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_module.h"
+#include "xenia/kernel/xna/xna_bridge.h"
+#include "xenia/kernel/xna/xna_host.h"
+#include "xenia/kernel/xna/xna_launcher.h"
 #include "xenia/memory.h"
 #include "xenia/ui/file_picker.h"
 #include "xenia/ui/imgui_dialog.h"
@@ -1002,6 +1002,9 @@ X_STATUS Emulator::InstallContentPackage(
   if (!installation_info.target_update_id_.empty() &&
       installation_info.content_type_ != XContentType::kInstaller &&
       installation_info.content_type_ != XContentType::kSUStoragePack &&
+      installation_info.content_type_ != XContentType::kProfile &&
+      installation_info.content_type_ != XContentType::kAvatarItem &&
+      installation_info.title_id_ != kernel::kDashboardID &&
       title_update_manager_) {
     // Marketplace content is shared across profiles, so it is keyed under
     // xuid 0 - match ContentManager::ResolvePackagePath exactly or the

@@ -306,8 +306,7 @@ bool D3D12SharedMemory::MapUnallocatedTilesToNullTile() {
 
   // REUSE_SINGLE_TILE points every tile in the region at the same heap tile,
   // which is the whole trick - it costs one tile of memory rather than 512 MB.
-  D3D12_TILE_RANGE_FLAGS range_flags =
-      D3D12_TILE_RANGE_FLAG_REUSE_SINGLE_TILE;
+  D3D12_TILE_RANGE_FLAGS range_flags = D3D12_TILE_RANGE_FLAG_REUSE_SINGLE_TILE;
   UINT heap_range_start_offset = 0;
   UINT range_tile_count = region_size.NumTiles;
   direct_queue->UpdateTileMappings(

@@ -35,9 +35,8 @@ PlayerSearchUI::PlayerSearchUI(xe::ui::ImGuiDrawer* imgui_drawer,
 
 void PlayerSearchUI::Refresh() {
   active_search_ = std::string(search_);
-  players_query_ =
-      kernel_state()->GetXboxLiveAPI()->GetHubPlayersAsync(active_search_,
-                                                           kResultLimit);
+  players_query_ = kernel_state()->GetXboxLiveAPI()->GetHubPlayersAsync(
+      active_search_, kResultLimit);
   searching_ = true;
 }
 
@@ -109,9 +108,8 @@ void PlayerSearchUI::DrawPlayerRow(const HubPlayer& player) {
   ImGui::EndGroup();
 
   const bool is_self = player.xuid == profile_->GetOnlineXUID();
-  const bool already_friend =
-      kernel_state()->friends_manager()->IsFriend(profile_->xuid(),
-                                                  player.xuid);
+  const bool already_friend = kernel_state()->friends_manager()->IsFriend(
+      profile_->xuid(), player.xuid);
   const bool full = kernel_state()->friends_manager()->GetFriendsCount(
                         profile_->xuid()) >= X_ONLINE_MAX_FRIENDS;
 
@@ -135,7 +133,8 @@ void PlayerSearchUI::DrawPlayerRow(const HubPlayer& player) {
 
   if (is_self && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
     ImGui::SetTooltip("This is you.");
-  } else if (full && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+  } else if (full &&
+             ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
     ImGui::SetTooltip("Friends list is full!");
   }
 
@@ -181,15 +180,16 @@ bool PlayerSearchUI::Draw() {
     const std::string search_display =
         search_[0] ? std::string(search_) : "(click to enter)";
 
-    if (ImGui::Button(search_display.c_str(), ImVec2(window_width - 80.0f, 0)) ||
+    if (ImGui::Button(search_display.c_str(),
+                      ImVec2(window_width - 80.0f, 0)) ||
         (ImGui::IsItemFocused() && input.Activated())) {
       if (!keyboard_open_) {
         keyboard_open_ = true;
 
         auto* keyboard = xe::ui::KeyboardDialog::ShowKeyboard(
             drawer, "Enter Gamertag", std::string(search_),
-            xe::ui::KeyboardDialog::InputType::kText, nullptr,
-            "PlayerSearchUI", "OnScreenKeyboard");
+            xe::ui::KeyboardDialog::InputType::kText, nullptr, "PlayerSearchUI",
+            "OnScreenKeyboard");
 
         keyboard->set_close_callback([this, keyboard]() {
           if (!keyboard->was_cancelled()) {

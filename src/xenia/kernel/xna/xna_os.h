@@ -127,7 +127,8 @@ struct XnaOsTable {
   // handed out must be released, whatever the outcome.
   uint32_t (*GuideBeginMessageBox)(uint32_t slot, const char* title,
                                    const char* text, const char* const* buttons,
-                                   uint32_t button_count, uint32_t focus_button);
+                                   uint32_t button_count,
+                                   uint32_t focus_button);
   uint32_t (*GuideBeginKeyboard)(uint32_t slot, const char* title,
                                  const char* description,
                                  const char* default_text, uint32_t max_length);
@@ -158,8 +159,10 @@ struct XnaOsTable {
 // corrupt memory at the first call and look like a bug somewhere else - so the
 // shape is pinned down here and checked against Marshal.SizeOf in the tests.
 static_assert(sizeof(XnaOsUser) == 52, "XnaOsUser layout changed");
-static_assert(offsetof(XnaOsUser, online_xuid) == 8, "XnaOsUser layout changed");
-static_assert(offsetof(XnaOsUser, signin_state) == 16, "XnaOsUser layout changed");
+static_assert(offsetof(XnaOsUser, online_xuid) == 8,
+              "XnaOsUser layout changed");
+static_assert(offsetof(XnaOsUser, signin_state) == 16,
+              "XnaOsUser layout changed");
 static_assert(offsetof(XnaOsUser, gamertag) == 36, "XnaOsUser layout changed");
 static_assert(sizeof(void*) != 8 || sizeof(XnaOsTable) == 128,
               "XnaOsTable layout changed - bump kXnaOsAbiVersion and update "

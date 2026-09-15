@@ -50,10 +50,10 @@ struct XnaArg {
 
   uint64_t scalar = 0;  // kScalar
 
-  void* host = nullptr;  // kBuffer
-  uint32_t size = 0;     // kBuffer
-  bool copy_in = false;  // kBuffer
-  bool copy_out = false; // kBuffer
+  void* host = nullptr;   // kBuffer
+  uint32_t size = 0;      // kBuffer
+  bool copy_in = false;   // kBuffer
+  bool copy_out = false;  // kBuffer
 
   static XnaArg Scalar(uint64_t value) {
     XnaArg arg;

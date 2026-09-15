@@ -377,6 +377,7 @@ class EmulatorWindow {
   void InstallXnaPackage();
   void InstallXnaDependencies();
   void InstallXnaDependencyPackage();
+  void SetupXna();
   void ShowXnaDependencies();
   void FindXnaDependencies();
   void ScanXnaDependencies();
@@ -482,7 +483,6 @@ class EmulatorWindow {
   ui::MenuItem* social_menu_item_ = nullptr;
   ui::MenuItem* social_texts_item_ = nullptr;
   ui::MenuItem* social_vm_item_ = nullptr;
-
 
   std::unique_ptr<UpdaterDialog> updater_dialog_;
 

@@ -177,8 +177,8 @@ void XamModule::SaveLoaderData() {
   const uint8_t last_active_user_set =
       loader_data_.last_active_user_set ? 1 : 0;
   fwrite(&last_active_user_set, sizeof(last_active_user_set), 1, file);
-  fwrite(&loader_data_.last_active_user,
-         sizeof(loader_data_.last_active_user), 1, file);
+  fwrite(&loader_data_.last_active_user, sizeof(loader_data_.last_active_user),
+         1, file);
 
   fwrite(&loader_data_.prior_title_id, sizeof(loader_data_.prior_title_id), 1,
          file);

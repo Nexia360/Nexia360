@@ -11,6 +11,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <map>
@@ -22,6 +24,7 @@
 
 #include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
+#include "xenia/base/string.h"
 #include "xenia/emulator.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/title_id_utils.h"
@@ -31,6 +34,9 @@
 #include "xenia/kernel/xam/user_settings.h"
 #include "xenia/kernel/xam/user_tracker.h"
 #include "xenia/kernel/xam/xam_state.h"
+#include "xenia/vfs/devices/xcontent_container_device.h"
+#include "xenia/vfs/entry.h"
+#include "xenia/vfs/file.h"
 
 namespace xe {
 namespace kernel {
@@ -89,6 +95,102 @@ void CopyMatrices(const avatar::Matrix* local, float* out) {
   }
 }
 
+bool ReadPackageFile(const std::filesystem::path& package,
+                     const std::string_view name, std::vector<uint8_t>* out) {
+  auto device = vfs::XContentContainerDevice::CreateContentDevice(
+      "\\NexiaAvatarAsset", package);
+  if (!device || !device->Initialize()) {
+    return false;
+  }
+  vfs::Device* base = device.get();
+  vfs::Entry* entry = base->ResolvePath(name);
+  if (!entry) {
+    return false;
+  }
+  vfs::File* file = nullptr;
+  if (entry->Open(vfs::FileAccess::kGenericRead, &file) != X_STATUS_SUCCESS ||
+      !file) {
+    return false;
+  }
+  out->resize(static_cast<size_t>(entry->size()));
+  size_t read = 0;
+  const bool ok = out->empty() ||
+                  file->ReadSync(std::span<uint8_t>(out->data(), out->size()),
+                                 0, &read) == X_STATUS_SUCCESS;
+  file->Destroy();
+  if (!ok) {
+    return false;
+  }
+  out->resize(read);
+  return !out->empty();
+}
+
+void AddAvatarAssetPackage(avatar::Catalog* catalog,
+                           const std::filesystem::path& path) {
+  const auto header = vfs::XContentContainerDevice::ReadContainerHeader(path);
+  if (!header || !header->content_header.is_magic_valid() ||
+      header->content_metadata.content_type != XContentType::kAvatarItem) {
+    return;
+  }
+  std::array<uint8_t, 16> asset_id;
+  std::memcpy(asset_id.data(),
+              header->content_metadata.metadata_v2.avatar_asset_data.asset_id,
+              asset_id.size());
+  const std::string name =
+      xe::to_utf8(header->content_metadata.display_name(XLanguage::kEnglish));
+  std::vector<uint8_t> blob;
+  if (!ReadPackageFile(path, "asset_v2.bin", &blob)) {
+    XELOGW("[xna] avatar: {} ('{}') has no asset_v2.bin",
+           xe::path_to_utf8(path), name);
+    return;
+  }
+  if (catalog->AddAsset(asset_id, name, std::move(blob))) {
+    XELOGI("[xna] avatar: added '{}' from {}", name, xe::path_to_utf8(path));
+  } else {
+    XELOGW("[xna] avatar: '{}' in {} is not a usable avatar asset", name,
+           xe::path_to_utf8(path));
+  }
+}
+
+void AddInstalledAvatarAssets(avatar::Catalog* catalog,
+                              const std::filesystem::path& content_root) {
+  constexpr auto options =
+      std::filesystem::directory_options::skip_permission_denied;
+  const auto add_files = [&](const std::filesystem::path& folder) {
+    std::error_code ec;
+    for (const auto& file :
+         std::filesystem::directory_iterator(folder, options, ec)) {
+      std::error_code file_ec;
+      if (file.is_regular_file(file_ec)) {
+        AddAvatarAssetPackage(catalog, file.path());
+      }
+    }
+  };
+  std::error_code ec;
+  for (const auto& owner :
+       std::filesystem::directory_iterator(content_root, options, ec)) {
+    std::error_code owner_ec;
+    if (!owner.is_directory(owner_ec)) {
+      continue;
+    }
+    for (const auto& title :
+         std::filesystem::directory_iterator(owner.path(), options, owner_ec)) {
+      std::error_code title_ec;
+      if (title.is_directory(title_ec)) {
+        add_files(title.path() / "00009000");
+      }
+    }
+    std::error_code profile_ec;
+    for (const auto& profile : std::filesystem::directory_iterator(
+             owner.path() / "FFFE07D1" / "00010000", options, profile_ec)) {
+      std::error_code entry_ec;
+      if (profile.is_directory(entry_ec)) {
+        add_files(profile.path() / "AvatarAssets");
+      }
+    }
+  }
+}
+
 }  // namespace
 
 avatar::Catalog* XnaAvatarCatalog() {
@@ -97,7 +199,14 @@ avatar::Catalog* XnaAvatarCatalog() {
   if (!emulator) {
     return nullptr;
   }
-  return avatar::SharedCatalog(emulator->content_root());
+  avatar::Catalog* catalog = avatar::SharedCatalog(emulator->content_root());
+  if (catalog) {
+    static std::once_flag assets_loaded;
+    std::call_once(assets_loaded, [&]() {
+      AddInstalledAvatarAssets(catalog, emulator->content_root());
+    });
+  }
+  return catalog;
 }
 
 std::filesystem::path XnaAvatarProfilePath(uint64_t xuid) {
@@ -115,7 +224,9 @@ std::filesystem::path XnaAvatarProfilePath(uint64_t xuid) {
          "NexiaAvatar.nxav";
 }
 
-bool XnaAvatarLoadProfile(uint64_t xuid, avatar::Description* out) {
+namespace {
+
+bool LoadProfileFile(uint64_t xuid, avatar::Description* out) {
   const std::filesystem::path path = XnaAvatarProfilePath(xuid);
   if (path.empty()) {
     return false;
@@ -130,6 +241,58 @@ bool XnaAvatarLoadProfile(uint64_t xuid, avatar::Description* out) {
     return false;
   }
   return avatar::ParseDescription(bytes.data(), bytes.size(), out);
+}
+
+bool LoadProfileSetting(uint64_t xuid, std::vector<uint8_t>* out) {
+  auto* state = kernel_state();
+  if (!state || !state->xam_state()) {
+    return false;
+  }
+  auto* tracker = state->xam_state()->user_tracker();
+  auto* profiles = state->xam_state()->profile_manager();
+  if (!tracker || !profiles) {
+    return false;
+  }
+  const xam::UserProfile* profile = profiles->GetProfileAny(xuid);
+  xam::UserProfile* user =
+      state->xam_state()->GetUserProfile(profile ? profile->xuid() : xuid);
+  if (!user) {
+    return false;
+  }
+  const auto setting = tracker->GetSetting(
+      user, kDashboardID,
+      static_cast<uint32_t>(
+          xam::UserSettingId::XPROFILE_GAMERCARD_AVATAR_INFO_1));
+  if (!setting || setting->get_type() != xam::X_USER_DATA_TYPE::BINARY) {
+    return false;
+  }
+  const std::span<const uint8_t> bytes = setting->get_extended_data();
+  out->assign(bytes.begin(), bytes.end());
+  return !out->empty();
+}
+
+}  // namespace
+
+bool XnaAvatarLoadProfile(uint64_t xuid, avatar::Description* out) {
+  avatar::Description saved;
+  const bool have_file = LoadProfileFile(xuid, &saved);
+  std::vector<uint8_t> stored;
+  if (LoadProfileSetting(xuid, &stored) &&
+      avatar::ParseAnyDescription(XnaAvatarCatalog(), stored.data(),
+                                  stored.size(), out)) {
+    if (have_file && avatar::HasManifestLayout(stored.data(), stored.size())) {
+      for (uint32_t slot = 0; slot < avatar::kClothingSlotCount; ++slot) {
+        if (out->items[slot] == saved.items[slot]) {
+          out->custom[slot] = saved.custom[slot];
+        }
+      }
+    }
+    return true;
+  }
+  if (have_file) {
+    *out = saved;
+  }
+  return have_file;
 }
 
 bool XnaAvatarSaveProfile(uint64_t xuid,
@@ -156,10 +319,9 @@ void XnaAvatarWriteProfileSetting(uint64_t xuid,
   if (!profile) {
     return;
   }
-  const auto bytes = Serialize(description);
-  const std::vector<uint8_t> data(
-      bytes.begin(),
-      bytes.begin() + std::min<size_t>(bytes.size(), xam::kMaxUserDataSize));
+  const auto bytes = avatar::SerializeManifest(XnaAvatarCatalog(), description,
+                                               profile->xuid());
+  const std::vector<uint8_t> data(bytes.begin(), bytes.end());
   const xam::UserSetting setting(
       xam::UserSettingId::XPROFILE_GAMERCARD_AVATAR_INFO_1, data);
   tracker->UpsertSetting(profile->xuid(), kDashboardID, &setting);
@@ -178,20 +340,27 @@ void XnaAvatarSyncProfileSetting(uint64_t xuid) {
     return;
   }
   avatar::Description saved;
-  if (!XnaAvatarLoadProfile(xuid, &saved)) {
-    return;
-  }
+  bool have = LoadProfileFile(xuid, &saved);
   const auto setting = tracker->GetSetting(
       user, kDashboardID,
       static_cast<uint32_t>(
           xam::UserSettingId::XPROFILE_GAMERCARD_AVATAR_INFO_1));
   if (setting && setting->get_type() == xam::X_USER_DATA_TYPE::BINARY) {
     const std::span<const uint8_t> bytes = setting->get_extended_data();
-    avatar::Description stored;
-    if (avatar::ParseDescription(bytes.data(), bytes.size(), &stored)) {
+    if (avatar::HasManifestLayout(bytes.data(), bytes.size())) {
       return;
     }
+    avatar::Description stored;
+    if (avatar::ParseDescription(bytes.data(), bytes.size(), &stored)) {
+      saved = stored;
+      have = true;
+    }
   }
+  if (!have) {
+    return;
+  }
+  XELOGI("[xna] avatar: {:016X} dashboard setting rewritten as a manifest",
+         xuid);
   XnaAvatarWriteProfileSetting(xuid, saved);
 }
 
@@ -218,7 +387,8 @@ uint32_t XnaAvatarCreateRenderer(const uint8_t* description, size_t size) {
   const uint32_t handle = next_handle.fetch_add(1);
   auto renderer = std::make_shared<Renderer>();
   avatar::Catalog* catalog = XnaAvatarCatalog();
-  renderer->description = avatar::DescriptionFromBytes(catalog, description, size);
+  renderer->description =
+      avatar::DescriptionFromBytes(catalog, description, size);
   {
     std::lock_guard<std::mutex> lock(registry_mutex);
     renderers[handle] = renderer;
@@ -231,9 +401,10 @@ uint32_t XnaAvatarCreateRenderer(const uint8_t* description, size_t size) {
       XELOGI("[xna] avatar: renderer {} ready with {} parts", handle,
              scene->parts.size());
     } else {
-      XELOGW("[xna] avatar: renderer {} has no avatar assets - install the "
-             "Avatar update (AvatarAssetPack.toc) to see avatars",
-             handle);
+      XELOGW(
+          "[xna] avatar: renderer {} has no avatar assets - install the "
+          "Avatar update (AvatarAssetPack.toc) to see avatars",
+          handle);
     }
     {
       std::lock_guard<std::mutex> lock(renderer->mutex);
@@ -283,7 +454,20 @@ void XnaAvatarDraw(uint32_t handle, const float* world, const float* view,
     }
   }
   avatar::Matrix skin[avatar::kMaxJoints];
-  avatar::SkinMatrices(avatar::MainSkeleton(), local, skin);
+  avatar::SkinMatrices(scene->skeleton, local, skin);
+  avatar::Matrix carry_skin[avatar::kMaxJoints];
+  if (scene->carryable) {
+    const float length =
+        scene->carryable->joints ? scene->carryable->joints->Length() : 0.0f;
+    const double now = std::chrono::duration<double>(
+                           std::chrono::steady_clock::now().time_since_epoch())
+                           .count();
+    const float seconds =
+        length > 0.0f ? float(std::fmod(now, double(length))) : 0.0f;
+    avatar::Matrix carry_local[avatar::kMaxJoints];
+    avatar::SampleCarryable(*scene->carryable, seconds, carry_local);
+    avatar::SkinMatrices(scene->carryable->skeleton, carry_local, carry_skin);
+  }
   avatar::Matrix world_matrix;
   avatar::Matrix view_matrix;
   avatar::Matrix projection_matrix;
@@ -310,9 +494,9 @@ void XnaAvatarDraw(uint32_t handle, const float* world, const float* view,
   for (const avatar::Part& part : scene->parts) {
     for (const avatar::Batch& batch : part.model->batches) {
       std::vector<avatar::GpuVertex>& skinned = vertices[slot++];
-      avatar::SkinBatch(batch, skin, &skinned,
-                        part.kind == avatar::kKindBody ? avatar::kBodyInset
-                                                       : 0.0f);
+      avatar::SkinBatch(
+          batch, part.carried ? carry_skin : skin, &skinned,
+          part.kind == avatar::kKindBody ? avatar::kBodyInset : 0.0f);
       if (skinned.empty() || batch.indices.empty()) {
         continue;
       }
@@ -404,11 +588,35 @@ XnaAvatarDescriptionBytes XnaAvatarRandomDescription(int32_t wire_body) {
   std::lock_guard<std::mutex> lock(random_mutex);
   if (!catalog) {
     avatar::Description description;
-    description.body = uint8_t(body >= 0 ? body : int32_t(random_generator() & 1));
+    description.body =
+        uint8_t(body >= 0 ? body : int32_t(random_generator() & 1));
     description.height = uint8_t(random_generator() & 0xFF);
     return Serialize(description);
   }
   return Serialize(avatar::RandomDescription(*catalog, random_generator, body));
+}
+
+XnaAvatarManifestBytes XnaAvatarManifestForXuid(uint64_t xuid) {
+  std::vector<uint8_t> stored;
+  if (xuid && LoadProfileSetting(xuid, &stored) &&
+      avatar::HasManifestLayout(stored.data(), stored.size())) {
+    XnaAvatarManifestBytes manifest = {};
+    std::memcpy(manifest.data(), stored.data(), manifest.size());
+    return manifest;
+  }
+  const auto bytes = XnaAvatarDescriptionForXuid(xuid);
+  avatar::Catalog* catalog = XnaAvatarCatalog();
+  return avatar::SerializeManifest(
+      catalog,
+      avatar::DescriptionFromBytes(catalog, bytes.data(), bytes.size()), xuid);
+}
+
+XnaAvatarManifestBytes XnaAvatarRandomManifest(int32_t wire_body) {
+  const auto bytes = XnaAvatarRandomDescription(wire_body);
+  avatar::Catalog* catalog = XnaAvatarCatalog();
+  return avatar::SerializeManifest(
+      catalog,
+      avatar::DescriptionFromBytes(catalog, bytes.data(), bytes.size()), 0);
 }
 
 float XnaAvatarHeight(const uint8_t* description, size_t size) {
@@ -431,8 +639,8 @@ uint32_t XnaAvatarCreateAnimation(uint32_t preset, float* length) {
   if (catalog && clip >= 0) {
     animation.clip = catalog->LoadClip(uint32_t(clip));
   }
-  *length = animation.clip ? animation.clip->Length()
-                           : kFallbackAnimationSeconds;
+  *length =
+      animation.clip ? animation.clip->Length() : kFallbackAnimationSeconds;
   if (!animation.clip) {
     XELOGW("[xna] avatar: animation preset {} (clip {}) is unavailable", preset,
            clip);

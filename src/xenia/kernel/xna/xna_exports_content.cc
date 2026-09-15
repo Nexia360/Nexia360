@@ -170,10 +170,10 @@ int ContextRead(mspack_file* file, void* buffer, int bytes) {
     // Bounded by what is actually in the buffer as well as by what is left of
     // the chunk, now that a chunk may be served in pieces.
     const size_t buffered = context->pending.size() - context->pending_read;
-    const int take = static_cast<int>(std::min<size_t>(
-        std::min<size_t>(context->chunk_remaining,
-                         static_cast<size_t>(bytes - served)),
-        buffered));
+    const int take = static_cast<int>(
+        std::min<size_t>(std::min<size_t>(context->chunk_remaining,
+                                          static_cast<size_t>(bytes - served)),
+                         buffered));
     if (take == 0) {
       break;
     }
@@ -317,10 +317,10 @@ extern "C" uint64_t xna_STORAGE_STORAGE_CreateDecompressionContext() {
 
   // Output length 0 means "until the input runs out", which is right: the
   // caller drives this a buffer at a time and never says how much is coming.
-  context->lzx = lzxd_init(&context->sys,
-                           reinterpret_cast<mspack_file*>(context),
-                           reinterpret_cast<mspack_file*>(context), kWindowBits,
-                           0, kFrameSize, 0, 0);
+  context->lzx =
+      lzxd_init(&context->sys, reinterpret_cast<mspack_file*>(context),
+                reinterpret_cast<mspack_file*>(context), kWindowBits, 0,
+                kFrameSize, 0, 0);
   if (!context->lzx) {
     delete context;
     // The caller tests the handle against IntPtr.Zero and raises
@@ -426,8 +426,7 @@ extern "C" int32_t xna_STORAGE_STORAGE_Decompress(uint64_t handle, void* dest,
     return 0;
   }
 
-  const int result =
-      lzxd_decompress(context->lzx, static_cast<off_t>(request));
+  const int result = lzxd_decompress(context->lzx, static_cast<off_t>(request));
   context->total_written += context->out_written;
 
   // The first few calls decide whether the framing above is right, and the

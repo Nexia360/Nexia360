@@ -45,21 +45,20 @@ using host_char_t = char;
 using hostfxr_handle = void*;
 
 using hostfxr_initialize_for_runtime_config_fn =
-    int32_t(*)(const host_char_t* runtime_config_path,
-                       const void* parameters, hostfxr_handle* out_context);
-using hostfxr_get_runtime_delegate_fn = int32_t(*)(
-    hostfxr_handle context, int32_t delegate_type, void** out_delegate);
-using hostfxr_close_fn = int32_t(*)(hostfxr_handle context);
+    int32_t (*)(const host_char_t* runtime_config_path, const void* parameters,
+                hostfxr_handle* out_context);
+using hostfxr_get_runtime_delegate_fn = int32_t (*)(hostfxr_handle context,
+                                                    int32_t delegate_type,
+                                                    void** out_delegate);
+using hostfxr_close_fn = int32_t (*)(hostfxr_handle context);
 
 // hdt_load_assembly_and_get_function_pointer.
 constexpr int32_t kLoadAssemblyAndGetFunctionPointer = 5;
 
-using load_assembly_and_get_function_pointer_fn =
-    int32_t(*)(const host_char_t* assembly_path,
-                       const host_char_t* type_name,
-                       const host_char_t* method_name,
-                       const host_char_t* delegate_type_name, void* reserved,
-                       void** out_delegate);
+using load_assembly_and_get_function_pointer_fn = int32_t (*)(
+    const host_char_t* assembly_path, const host_char_t* type_name,
+    const host_char_t* method_name, const host_char_t* delegate_type_name,
+    void* reserved, void** out_delegate);
 
 // Passing this as the delegate type name means "the method is
 // [UnmanagedCallersOnly]; use its own signature", which is what lets the
@@ -68,11 +67,10 @@ const host_char_t* const kUnmanagedCallersOnly =
     reinterpret_cast<const host_char_t*>(-1);
 
 // The managed bootstrap's entry point, as hostfxr wants it named.
-using xna_bootstrap_start_fn = int32_t(*)(const XnaOsTable* os_table,
-                                                  const char* game_path_utf8);
+using xna_bootstrap_start_fn = int32_t (*)(const XnaOsTable* os_table,
+                                           const char* game_path_utf8);
 
-std::basic_string<host_char_t> ToHostString(
-    const std::filesystem::path& path) {
+std::basic_string<host_char_t> ToHostString(const std::filesystem::path& path) {
 #if XE_PLATFORM_WIN32
   return path.wstring();
 #else
@@ -150,7 +148,8 @@ std::filesystem::path FindHostFxr() {
     if (!std::filesystem::is_directory(fxr_root, ec)) {
       continue;
     }
-    for (const auto& entry : std::filesystem::directory_iterator(fxr_root, ec)) {
+    for (const auto& entry :
+         std::filesystem::directory_iterator(fxr_root, ec)) {
       if (!entry.is_directory()) {
         continue;
       }
@@ -205,8 +204,9 @@ bool XnaHost::LoadHostFxr() {
   }
   const auto path = FindHostFxr();
   if (path.empty()) {
-    Fail("no .NET runtime found - install the .NET desktop runtime, or set "
-         "DOTNET_ROOT");
+    Fail(
+        "no .NET runtime found - install the .NET desktop runtime, or set "
+        "DOTNET_ROOT");
     return false;
   }
   hostfxr_module_ = OpenLibrary(path);
@@ -309,8 +309,8 @@ bool XnaHost::Start(const std::filesystem::path& bootstrap_assembly,
 
 void XnaHost::Stop() {
   if (host_context_) {
-    if (auto close = GetExport<hostfxr_close_fn>(hostfxr_module_,
-                                                 "hostfxr_close")) {
+    if (auto close =
+            GetExport<hostfxr_close_fn>(hostfxr_module_, "hostfxr_close")) {
       close(host_context_);
     }
     host_context_ = nullptr;

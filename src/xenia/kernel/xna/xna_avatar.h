@@ -49,6 +49,10 @@ void XnaAvatarSyncProfileSetting(uint64_t xuid);
 
 using XnaAvatarDescriptionBytes =
     std::array<uint8_t, avatar::kDescriptionBytes>;
+using XnaAvatarManifestBytes = std::array<uint8_t, avatar::kManifestBytes>;
+
+XnaAvatarManifestBytes XnaAvatarManifestForXuid(uint64_t xuid);
+XnaAvatarManifestBytes XnaAvatarRandomManifest(int32_t wire_body);
 
 uint32_t XnaAvatarCreateRenderer(const uint8_t* description, size_t size);
 bool XnaAvatarRendererReady(uint32_t handle);

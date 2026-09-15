@@ -115,10 +115,9 @@ constexpr uint32_t kClothingPalette[] = {
     0xFF1ABC9C, 0xFF34495E, 0xFFECF0F1, 0xFF2C2C2C, 0xFF7F8C8D, 0xFFD35400};
 
 const char* const kSlotNames[kSlotCount] = {
-    "Hair",     "Shirt",      "Trousers",   "Shoes",       "Hat",
-    "Gloves",   "Glasses",    "Wristwear",  "Earrings",    "Ring",
-    "Carryable", "Eyes",      "Eyebrows",   "Mouth",       "Facial hair",
-    "Face paint", "Eye shadow"};
+    "Hair",     "Shirt",     "Trousers",    "Shoes",      "Hat",       "Gloves",
+    "Glasses",  "Wristwear", "Earrings",    "Ring",       "Carryable", "Eyes",
+    "Eyebrows", "Mouth",     "Facial hair", "Face paint", "Eye shadow"};
 
 const char* const kColorNames[kColorCount] = {
     "Skin",       "Hair",        "Lips",      "Eyes",     "Eyebrows",
@@ -605,8 +604,8 @@ struct LzxContext {
 
 int LzxRead(mspack_file* file, void* buffer, int bytes) {
   auto* context = reinterpret_cast<LzxContext*>(file);
-  const size_t take = std::min<size_t>(size_t(bytes),
-                                       context->input_size - context->input_at);
+  const size_t take =
+      std::min<size_t>(size_t(bytes), context->input_size - context->input_at);
   std::memcpy(buffer, context->input + context->input_at, take);
   context->input_at += take;
   return int(take);
@@ -774,8 +773,9 @@ void Slerp(const float* a, const float* b, float t, float out[4]) {
 void BindOffset(const Skeleton& skeleton, uint32_t joint, float out[3]) {
   const uint32_t parent = skeleton.parents[joint];
   for (int k = 0; k < 3; ++k) {
-    out[k] = skeleton.bind[joint][k] -
-             (parent < joint ? skeleton.bind[parent][k] : 0.0f);
+    out[k] = parent < joint
+                 ? skeleton.bind[joint][k] - skeleton.bind[parent][k]
+                 : skeleton.bind[joint][k] * skeleton.scale[joint][k];
   }
 }
 
@@ -933,13 +933,12 @@ void Shade(const Material& material, const float (*uv)[2],
       alpha = s[3];
     }
   }
-  const float diffuse =
-      std::max(0.0f, -(normal[0] * light.direction[0] +
-                       normal[1] * light.direction[1] +
-                       normal[2] * light.direction[2]));
+  const float diffuse = std::max(
+      0.0f, -(normal[0] * light.direction[0] + normal[1] * light.direction[1] +
+              normal[2] * light.direction[2]));
   for (int k = 0; k < 3; ++k) {
-    out[k] = std::min(
-        1.0f, color[k] * (light.ambient[k] + light.color[k] * diffuse));
+    out[k] = std::min(1.0f,
+                      color[k] * (light.ambient[k] + light.color[k] * diffuse));
   }
   out[3] = alpha;
 }
@@ -1184,8 +1183,7 @@ bool DecodeSkeleton(const uint8_t* data, size_t size, Skeleton* out) {
       !LatticeValid(rotation)) {
     return false;
   }
-  const uint64_t per_joint =
-      8 + LatticeBits(position) + LatticeBits(rotation);
+  const uint64_t per_joint = 8 + LatticeBits(position) + LatticeBits(rotation);
   if (!b.Holds(324 + uint64_t(count) * per_joint)) {
     return false;
   }
@@ -1212,17 +1210,131 @@ const Skeleton& MainSkeleton() {
   return skeleton;
 }
 
-bool DecodeClip(const std::vector<uint8_t>& d, Clip* out) {
-  if (d.size() < 0x28) {
+bool DecodeCarryableSkeleton(const std::vector<uint8_t>& data, Skeleton* out) {
+  if (data.size() < 12) {
     return false;
   }
-  Bits header{d.data(), d.size()};
-  const float rate = header.Float(32);
-  const uint32_t section = header.Get(6 * 32, 32);
-  if (0x28 + size_t(section) > d.size()) {
+  const uint32_t length = Le32(data.data() + 8);
+  if (!length || length > data.size()) {
     return false;
   }
-  Bits b{d.data() + 0x28, section};
+  return DecodeSkeleton(data.data() + data.size() - length, length, out);
+}
+
+Skeleton::Skeleton() {
+  for (uint32_t j = 0; j < kMaxJoints; ++j) {
+    for (int k = 0; k < 3; ++k) {
+      scale[j][k] = 1.0f;
+    }
+  }
+}
+
+namespace {
+
+struct JointWeight {
+  uint8_t joint;
+  float scale[3];
+};
+
+constexpr float kFatStrength = 0.6f;
+
+constexpr JointWeight kTallWeights[] = {
+    {0, {1.1f, 1.1f, 1.1f}},
+    {19, {0.9f, 0.9f, 0.9f}},
+};
+
+constexpr JointWeight kShortWeights[] = {
+    {0, {0.9f, 0.9f, 0.9f}},
+    {19, {1.05f, 1.05f, 1.05f}},
+};
+
+constexpr JointWeight kFatMaleWeights[] = {
+    {4, {1.6f, 1.6f, 2.2f}},  {7, {1.5f, 1.0f, 1.5f}},
+    {9, {1.5f, 1.0f, 1.5f}},  {10, {1.8f, 1.0f, 1.9f}},
+    {13, {1.5f, 1.0f, 1.5f}}, {17, {1.5f, 1.0f, 1.5f}},
+    {18, {1.5f, 1.0f, 1.4f}}, {24, {1.9f, 1.0f, 1.5f}},
+    {26, {1.0f, 1.5f, 1.5f}}, {27, {1.0f, 1.5f, 1.5f}},
+    {29, {1.0f, 1.5f, 1.5f}}, {30, {1.0f, 1.5f, 1.5f}},
+    {32, {1.0f, 1.5f, 1.5f}}, {35, {1.0f, 1.5f, 1.5f}},
+};
+
+constexpr JointWeight kFatFemaleWeights[] = {
+    {4, {1.5f, 1.5f, 2.0f}},  {7, {1.6f, 1.0f, 1.6f}},
+    {9, {1.6f, 1.0f, 1.6f}},  {10, {1.6f, 1.0f, 2.0f}},
+    {13, {1.6f, 1.0f, 1.6f}}, {17, {1.6f, 1.0f, 1.6f}},
+    {18, {1.6f, 1.0f, 1.6f}}, {24, {2.0f, 1.0f, 1.6f}},
+    {26, {1.0f, 1.6f, 1.6f}}, {27, {1.0f, 1.6f, 1.6f}},
+    {29, {1.0f, 1.6f, 1.6f}}, {30, {1.0f, 1.6f, 1.6f}},
+    {32, {1.0f, 1.6f, 1.6f}}, {35, {1.0f, 1.6f, 1.6f}},
+};
+
+constexpr JointWeight kThinMaleWeights[] = {
+    {4, {0.84f, 1.0f, 0.92f}},  {7, {0.76f, 1.0f, 0.76f}},
+    {9, {0.76f, 1.0f, 0.76f}},  {10, {0.68f, 1.0f, 0.68f}},
+    {13, {0.76f, 1.0f, 0.76f}}, {17, {0.76f, 1.0f, 0.76f}},
+    {18, {0.92f, 1.0f, 0.84f}}, {24, {0.76f, 1.0f, 0.76f}},
+    {26, {1.0f, 0.76f, 0.76f}}, {27, {1.0f, 0.76f, 0.76f}},
+    {29, {1.0f, 0.76f, 0.76f}}, {30, {1.0f, 0.76f, 0.76f}},
+    {32, {1.0f, 0.76f, 0.76f}}, {35, {1.0f, 0.76f, 0.76f}},
+};
+
+constexpr JointWeight kThinFemaleWeights[] = {
+    {4, {0.79f, 1.0f, 0.82f}},  {7, {0.82f, 1.0f, 0.82f}},
+    {9, {0.82f, 1.0f, 0.82f}},  {10, {0.82f, 1.0f, 0.7f}},
+    {13, {0.82f, 1.0f, 0.82f}}, {17, {0.82f, 1.0f, 0.82f}},
+    {18, {0.88f, 1.0f, 0.82f}}, {24, {0.82f, 1.0f, 0.82f}},
+    {26, {1.0f, 0.82f, 0.82f}}, {27, {1.0f, 0.82f, 0.82f}},
+    {29, {1.0f, 0.82f, 0.82f}}, {30, {1.0f, 0.82f, 0.82f}},
+    {32, {1.0f, 0.82f, 0.82f}}, {35, {1.0f, 0.82f, 0.82f}},
+};
+
+template <size_t N>
+void ApplyScaling(Skeleton* skeleton, const JointWeight (&weights)[N],
+                  float strength, float amount) {
+  amount = std::clamp(amount, 0.0f, 1.0f);
+  for (const JointWeight& weight : weights) {
+    if (weight.joint >= skeleton->count) {
+      continue;
+    }
+    for (int k = 0; k < 3; ++k) {
+      const float target = 1.0f + strength * (weight.scale[k] - 1.0f);
+      skeleton->scale[weight.joint][k] *= 1.0f + amount * (target - 1.0f);
+    }
+  }
+}
+
+}  // namespace
+
+Skeleton ScaledSkeleton(const Description& description) {
+  Skeleton skeleton = MainSkeleton();
+  const float height = float(description.height) / 127.5f - 1.0f;
+  const float weight = float(description.weight) / 127.5f - 1.0f;
+  if (height >= 0.0f) {
+    ApplyScaling(&skeleton, kTallWeights, 1.0f, height);
+  } else {
+    ApplyScaling(&skeleton, kShortWeights, 1.0f, -height);
+  }
+  if (description.body) {
+    if (weight >= 0.0f) {
+      ApplyScaling(&skeleton, kFatMaleWeights, kFatStrength, weight);
+    } else {
+      ApplyScaling(&skeleton, kThinMaleWeights, 1.0f, -weight);
+    }
+  } else {
+    if (weight > 0.0f) {
+      ApplyScaling(&skeleton, kFatFemaleWeights, kFatStrength, weight);
+    } else {
+      ApplyScaling(&skeleton, kThinFemaleWeights, 1.0f, -weight);
+    }
+  }
+  return skeleton;
+}
+
+namespace {
+
+bool DecodeJointSection(const uint8_t* data, size_t size, float rate,
+                        Clip* out) {
+  Bits b{data, size};
   if (!b.Holds(kClipHeaderBits)) {
     return false;
   }
@@ -1253,7 +1365,7 @@ bool DecodeClip(const std::vector<uint8_t>& d, Clip* out) {
   clip.frames = frames;
   clip.joints = joints;
   clip.rate = rate > 0.0f && rate < 1000.0f ? rate : 30.0f;
-  clip.keys.resize(size_t(frames) * joints * 7);
+  clip.keys.resize(size_t(frames) * joints * kKeyFloats);
   for (uint32_t f = 0; f < frames; ++f) {
     uint64_t fb = kClipHeaderBits + uint64_t(f) * per_frame;
     for (uint32_t j = 0; j < joints; ++j) {
@@ -1263,15 +1375,47 @@ bool DecodeClip(const std::vector<uint8_t>& d, Clip* out) {
       ReadPoint(b, &fb, contexts[size_t(j) * 3 + 0], position);
       ReadPoint(b, &fb, contexts[size_t(j) * 3 + 1], rotation);
       ReadPoint(b, &fb, contexts[size_t(j) * 3 + 2], scale);
-      float* key = clip.keys.data() + (size_t(f) * joints + j) * 7;
+      float* key = clip.keys.data() + (size_t(f) * joints + j) * kKeyFloats;
       RotationToQuaternion(rotation, key);
       key[4] = position[0];
       key[5] = position[1];
       key[6] = position[2];
+      key[7] = scale[0];
+      key[8] = scale[1];
+      key[9] = scale[2];
     }
   }
   *out = std::move(clip);
   return true;
+}
+
+}  // namespace
+
+bool DecodeClip(const std::vector<uint8_t>& d, Clip* out) {
+  if (d.size() < 0x28) {
+    return false;
+  }
+  Bits header{d.data(), d.size()};
+  const float rate = header.Float(32);
+  const uint32_t section = header.Get(6 * 32, 32);
+  if (0x28 + size_t(section) > d.size()) {
+    return false;
+  }
+  return DecodeJointSection(d.data() + 0x28, section, rate, out);
+}
+
+bool DecodeCarryableClip(const std::vector<uint8_t>& d, Clip* out) {
+  if (d.size() < 0x28) {
+    return false;
+  }
+  Bits header{d.data(), d.size()};
+  const float rate = header.Float(32);
+  const uint32_t begin = header.Get(6 * 32, 32);
+  const uint32_t end = header.Get(8 * 32, 32);
+  if (end <= begin || 0x28 + size_t(end) > d.size()) {
+    return false;
+  }
+  return DecodeJointSection(d.data() + 0x28 + begin, end - begin, rate, out);
 }
 
 namespace {
@@ -1525,12 +1669,67 @@ const Entry* Catalog::Find(uint32_t index) const {
   return index < entries_.size() ? &entries_[index] : nullptr;
 }
 
+const Entry* Catalog::FindAsset(const uint8_t* asset_id) const {
+  for (const Entry& entry : entries_) {
+    if (entry.external && std::memcmp(entry.asset_id.data(), asset_id,
+                                      entry.asset_id.size()) == 0) {
+      return &entry;
+    }
+  }
+  return nullptr;
+}
+
+bool Catalog::AddAsset(const std::array<uint8_t, 16>& asset_id,
+                       std::string name, std::vector<uint8_t> blob) {
+  if (blob.size() <= 0x3C || std::memcmp(blob.data(), "STRB", 4) != 0) {
+    return false;
+  }
+  const uint32_t kind = Be32(asset_id.data());
+  if (PrimarySlot(kind) < 0) {
+    return false;
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (FindAsset(asset_id.data())) {
+    return true;
+  }
+  uint32_t body = 3;
+  size_t at = 0x3C;
+  while (at + 12 <= blob.size()) {
+    const uint8_t tag = blob[at];
+    const uint32_t length = Be32(blob.data() + at + 1);
+    const size_t end = at + 12 + length;
+    if (!tag || end > blob.size()) {
+      break;
+    }
+    if (tag == 8 && length >= 15 && (blob[at + 13] & 3)) {
+      body = blob[at + 13] & 3;
+    }
+    at = end;
+    while (at < blob.size() && (at & 3) && blob[at] == 0) {
+      ++at;
+    }
+  }
+  Entry entry;
+  entry.index = uint32_t(entries_.size());
+  entry.kind = kind;
+  entry.flags = body << 24;
+  entry.blob = 1;
+  entry.size = uint32_t(blob.size());
+  entry.name = std::move(name);
+  entry.asset_id = asset_id;
+  externals_.push_back(std::move(blob));
+  entry.external = uint32_t(externals_.size());
+  entries_.push_back(std::move(entry));
+  return true;
+}
+
 bool Catalog::Records(uint32_t index, std::vector<Record>* out) const {
   const Entry* entry = Find(index);
   if (!entry || !entry->blob) {
     return false;
   }
-  const uint8_t* b = data_.data() + entry->blob;
+  const uint8_t* b = entry->external ? externals_[entry->external - 1].data()
+                                     : data_.data() + entry->blob;
   const size_t size = entry->size;
   size_t at = 0x3C;
   while (at + 12 <= size) {
@@ -1574,6 +1773,40 @@ bool Catalog::Records(uint32_t index, std::vector<Record>* out) const {
     }
   }
   return !out->empty();
+}
+
+std::shared_ptr<const Carryable> Catalog::LoadCarryable(uint32_t index) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto found = carryables_.find(index);
+  if (found != carryables_.end()) {
+    return found->second;
+  }
+  std::shared_ptr<const Carryable> result;
+  std::vector<Record> records;
+  if (Records(index, &records)) {
+    auto carryable = std::make_shared<Carryable>();
+    bool has_skeleton = false;
+    for (const Record& record : records) {
+      if (record.type == 5) {
+        has_skeleton =
+            DecodeCarryableSkeleton(record.data, &carryable->skeleton);
+      } else if (record.type == 1) {
+        auto body = std::make_shared<Clip>();
+        if (DecodeClip(record.data, body.get())) {
+          carryable->body = body;
+        }
+        auto joints = std::make_shared<Clip>();
+        if (DecodeCarryableClip(record.data, joints.get())) {
+          carryable->joints = joints;
+        }
+      }
+    }
+    if (has_skeleton) {
+      result = carryable;
+    }
+  }
+  carryables_[index] = result;
+  return result;
 }
 
 std::shared_ptr<const Model> Catalog::LoadModel(uint32_t index) {
@@ -1884,8 +2117,8 @@ std::vector<uint32_t> ItemsForSlot(const Catalog& catalog, uint32_t slot,
   return items;
 }
 
-void PlaceItem(const Catalog& catalog, Description* description,
-               uint32_t slot, uint16_t entry) {
+void PlaceItem(const Catalog& catalog, Description* description, uint32_t slot,
+               uint16_t entry) {
   if (slot >= kSlotCount) {
     return;
   }
@@ -1975,10 +2208,363 @@ Description RandomDescription(const Catalog& catalog, std::mt19937& rng,
   return description;
 }
 
+namespace {
+
+constexpr size_t kManifestWeightOffset = 0x4;
+constexpr size_t kManifestHeightOffset = 0x8;
+constexpr size_t kManifestBlendOffset = 0x0C;
+constexpr uint32_t kManifestBlendCount = 3;
+constexpr size_t kManifestFaceOffset = 0x3C;
+constexpr uint32_t kManifestFaceCount = 6;
+constexpr size_t kManifestColorsOffset = 0xFC;
+constexpr size_t kManifestBodyOffset = 0x120;
+constexpr size_t kManifestHeadOffset = 0x140;
+constexpr size_t kManifestComponentsOffset = 0x160;
+constexpr uint32_t kManifestComponentCount = 13;
+constexpr size_t kManifestDefaultsOffset = 0x300;
+constexpr uint32_t kManifestDefaultCount = 4;
+constexpr size_t kManifestEntryBytes = 0x20;
+constexpr size_t kManifestEntryMaskOffset = 0x10;
+constexpr size_t kManifestXuidOffset = 0x380;
+constexpr uint8_t kStockAssetSuffix[8] = {0xC1, 0xC8, 0xF1, 0x09,
+                                          0xA1, 0x9C, 0xB2, 0xE0};
+enum ShapeType : uint32_t { kShapeChin, kShapeNose, kShapeEars };
+enum TextureType : uint32_t {
+  kTextureMouth,
+  kTextureEyes,
+  kTextureEyebrows,
+  kTextureFacialHair,
+  kTextureEyeShadow,
+  kTextureFacePaint,
+};
+constexpr uint32_t kShapeKinds[kManifestBlendCount] = {0x100000, 0x80000,
+                                                       0x200000};
+constexpr uint16_t kMaleShapeDefaults[kManifestBlendCount] = {0x031D, 0x032B,
+                                                              0x0337};
+constexpr uint16_t kFemaleShapeDefaults[kManifestBlendCount] = {0x0321, 0x0327,
+                                                                0x033A};
+constexpr uint32_t kTextureKinds[kManifestFaceCount] = {
+    0x8000, 0x2000, 0x4000, 0x10000, 0x40000, 0x20000};
+constexpr uint32_t kRequiredTextureCount = kTextureEyebrows + 1;
+constexpr uint16_t kMaleTextureDefaults[kRequiredTextureCount] = {
+    0x02EB, 0x02AC, 0x0267};
+constexpr uint16_t kFemaleTextureDefaults[kRequiredTextureCount] = {
+    0x02EC, 0x0292, 0x0262};
+constexpr uint32_t kManifestDefaultMasks[kManifestDefaultCount] = {0x20, 0x10,
+                                                                   0x08, 0x04};
+constexpr uint16_t kManifestMaleDefaults[kManifestDefaultCount] = {
+    0x0031, 0x0090, 0x0048, 0x01C1};
+constexpr uint16_t kManifestFemaleDefaults[kManifestDefaultCount] = {
+    0x00FC, 0x015A, 0x012C, 0x0221};
+
+uint16_t ManifestBe16(const uint8_t* p) { return uint16_t((p[0] << 8) | p[1]); }
+
+void ManifestPut16(uint8_t* p, uint16_t value) {
+  p[0] = uint8_t(value >> 8);
+  p[1] = uint8_t(value);
+}
+
+void ManifestPut32(uint8_t* p, uint32_t value) {
+  p[0] = uint8_t(value >> 24);
+  p[1] = uint8_t(value >> 16);
+  p[2] = uint8_t(value >> 8);
+  p[3] = uint8_t(value);
+}
+
+uint8_t ManifestAmount(uint32_t bits);
+
+uint32_t ManifestAmountBits(uint8_t value, uint32_t original) {
+  if (original && ManifestAmount(original) == value) {
+    return original;
+  }
+  const float amount = float(value) / 127.5f - 1.0f;
+  uint32_t bits;
+  std::memcpy(&bits, &amount, sizeof(bits));
+  return bits;
+}
+
+int32_t ManifestAssetEntry(const Catalog& catalog, const uint8_t* id);
+
+void PutStockAsset(uint8_t* out, uint32_t kind, uint16_t index, uint16_t body) {
+  ManifestPut32(out, kind);
+  ManifestPut16(out + 4, index);
+  ManifestPut16(out + 6, body);
+  std::memcpy(out + 8, kStockAssetSuffix, sizeof(kStockAssetSuffix));
+}
+
+bool PutStockEntry(const Catalog* catalog, uint8_t* out, uint16_t index) {
+  const Entry* entry = catalog ? catalog->Find(index) : nullptr;
+  if (!entry || !entry->blob) {
+    return false;
+  }
+  if (entry->external) {
+    std::memcpy(out, entry->asset_id.data(), entry->asset_id.size());
+    return true;
+  }
+  const uint32_t body = entry->BodyMask() & 3;
+  PutStockAsset(out, entry->kind, index, uint16_t(body ? body : 3));
+  return true;
+}
+
+uint8_t ManifestAmount(uint32_t bits) {
+  float value;
+  std::memcpy(&value, &bits, sizeof(value));
+  if (!std::isfinite(value)) {
+    return 128;
+  }
+  return uint8_t(
+      std::lround(std::clamp((value + 1.0f) * 127.5f, 0.0f, 255.0f)));
+}
+
+bool NullAsset(const uint8_t* id) {
+  for (int i = 0; i < 16; ++i) {
+    if (id[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+int32_t ManifestAssetEntry(const Catalog& catalog, const uint8_t* id) {
+  if (std::memcmp(id + 8, kStockAssetSuffix, sizeof(kStockAssetSuffix)) != 0) {
+    const Entry* external = catalog.FindAsset(id);
+    return external ? int32_t(external->index) : -1;
+  }
+  const uint32_t index = ManifestBe16(id + 4);
+  const Entry* entry = catalog.Find(index);
+  if (!entry || !entry->blob ||
+      (entry->kind & ~kOutfitBit) != (Be32(id) & ~kOutfitBit)) {
+    return -1;
+  }
+  return int32_t(index);
+}
+
+}  // namespace
+
+bool HasManifestLayout(const uint8_t* bytes, size_t size) {
+  if (!bytes || size < kManifestBytes || HasDescriptionMagic(bytes, size)) {
+    return false;
+  }
+  return ManifestBe16(bytes + kManifestBodyOffset + kManifestEntryMaskOffset) ==
+             kKindBody &&
+         ManifestBe16(bytes + kManifestHeadOffset + kManifestEntryMaskOffset) ==
+             kKindHead;
+}
+
+bool ParseManifest(const Catalog* catalog, const uint8_t* bytes, size_t size,
+                   Description* out) {
+  if (!HasManifestLayout(bytes, size)) {
+    return false;
+  }
+  Description description;
+  description.body = ManifestBe16(bytes + kManifestBodyOffset + 6) == 2 ? 0 : 1;
+  description.weight_bits = Be32(bytes + kManifestWeightOffset);
+  description.height_bits = Be32(bytes + kManifestHeightOffset);
+  description.weight = ManifestAmount(description.weight_bits);
+  description.height = ManifestAmount(description.height_bits);
+  for (uint32_t color = 0; color < kColorCount; ++color) {
+    description.colors[color] = Be32(bytes + kManifestColorsOffset + color * 4);
+  }
+  for (uint32_t i = 0; i < kManifestBlendCount; ++i) {
+    std::memcpy(description.blend_shapes[i].data(),
+                bytes + kManifestBlendOffset + i * 16, 16);
+  }
+  if (catalog) {
+    const auto covered = [&](uint32_t slot) {
+      for (uint32_t other = 0; other < kSlotCount; ++other) {
+        if (description.items[other] == kNoItem) {
+          continue;
+        }
+        const Entry* entry = catalog->Find(description.items[other]);
+        const uint32_t coverage =
+            (entry ? SlotCoverage(entry->kind) : 0) | SlotBit(other);
+        if (coverage & SlotBit(slot)) {
+          return true;
+        }
+      }
+      return false;
+    };
+    const auto place = [&](const uint8_t* record, bool only_if_uncovered) {
+      if (NullAsset(record)) {
+        return true;
+      }
+      const int32_t index = ManifestAssetEntry(*catalog, record);
+      if (index < 0) {
+        return false;
+      }
+      const int32_t slot = PrimarySlot(catalog->Find(uint32_t(index))->kind);
+      if (slot < 0 || (only_if_uncovered && covered(uint32_t(slot)))) {
+        return true;
+      }
+      description.items[slot] = uint16_t(index);
+      return true;
+    };
+    for (uint32_t i = 0; i < kManifestFaceCount; ++i) {
+      place(bytes + kManifestFaceOffset + i * kManifestEntryBytes, false);
+    }
+    for (uint32_t i = 0; i < kManifestComponentCount; ++i) {
+      const uint8_t* record =
+          bytes + kManifestComponentsOffset + i * kManifestEntryBytes;
+      if (NullAsset(record)) {
+        break;
+      }
+      place(record, false);
+    }
+    for (uint32_t i = 0; i < kManifestDefaultCount; ++i) {
+      place(bytes + kManifestDefaultsOffset + i * kManifestEntryBytes, true);
+    }
+  }
+  for (uint32_t i = 0; i < kManifestComponentCount; ++i) {
+    const uint8_t* record =
+        bytes + kManifestComponentsOffset + i * kManifestEntryBytes;
+    if (NullAsset(record)) {
+      break;
+    }
+    std::array<uint8_t, 32> raw;
+    std::memcpy(raw.data(), record, raw.size());
+    description.components.push_back(raw);
+  }
+  for (uint32_t i = 0; i < kManifestDefaultCount; ++i) {
+    std::memcpy(description.required[i].data(),
+                bytes + kManifestDefaultsOffset + i * kManifestEntryBytes,
+                kManifestEntryBytes);
+  }
+  *out = description;
+  return true;
+}
+
+std::array<uint8_t, kManifestBytes> SerializeManifest(
+    const Catalog* catalog, const Description& description, uint64_t xuid) {
+  std::array<uint8_t, kManifestBytes> manifest = {};
+  uint8_t* bytes = manifest.data();
+  const bool male = description.body != 0;
+  ManifestPut32(
+      bytes + kManifestWeightOffset,
+      ManifestAmountBits(description.weight, description.weight_bits));
+  ManifestPut32(
+      bytes + kManifestHeightOffset,
+      ManifestAmountBits(description.height, description.height_bits));
+  for (uint32_t i = 0; i < kManifestBlendCount; ++i) {
+    uint8_t* out = bytes + kManifestBlendOffset + i * 16;
+    if (!NullAsset(description.blend_shapes[i].data())) {
+      std::memcpy(out, description.blend_shapes[i].data(), 16);
+      continue;
+    }
+    PutStockAsset(out, kShapeKinds[i],
+                  male ? kMaleShapeDefaults[i] : kFemaleShapeDefaults[i], 3);
+  }
+  for (uint32_t i = 0; i < kManifestFaceCount; ++i) {
+    uint8_t* out = bytes + kManifestFaceOffset + i * kManifestEntryBytes;
+    const int32_t slot = PrimarySlot(kTextureKinds[i]);
+    if (slot >= 0 && description.items[slot] != kNoItem &&
+        PutStockEntry(catalog, out, description.items[slot])) {
+      continue;
+    }
+    if (i < kRequiredTextureCount) {
+      PutStockAsset(out, kTextureKinds[i],
+                    male ? kMaleTextureDefaults[i] : kFemaleTextureDefaults[i],
+                    3);
+    }
+  }
+  for (uint32_t color = 0; color < kColorCount; ++color) {
+    ManifestPut32(bytes + kManifestColorsOffset + color * 4,
+                  description.colors[color]);
+  }
+  uint8_t* body = bytes + kManifestBodyOffset;
+  PutStockAsset(body, kKindBody,
+                uint16_t(male ? kMaleBodyEntry : kFemaleBodyEntry),
+                male ? 1 : 2);
+  ManifestPut16(body + kManifestEntryMaskOffset, uint16_t(kKindBody));
+  uint8_t* head = bytes + kManifestHeadOffset;
+  PutStockAsset(head, kKindHead, uint16_t(kHeadEntry), 3);
+  ManifestPut16(head + kManifestEntryMaskOffset, uint16_t(kKindHead));
+  uint32_t count = 0;
+  std::array<bool, kSlotCount> written = {};
+  const auto emit = [&](const uint8_t* record) {
+    std::memcpy(bytes + kManifestComponentsOffset + count * kManifestEntryBytes,
+                record, kManifestEntryBytes);
+    ++count;
+  };
+  for (const auto& raw : description.components) {
+    if (count >= kManifestComponentCount) {
+      break;
+    }
+    const int32_t index =
+        catalog ? ManifestAssetEntry(*catalog, raw.data()) : -1;
+    const int32_t slot = index >= 0
+                             ? PrimarySlot(catalog->Find(uint32_t(index))->kind)
+                             : PrimarySlot(Be32(raw.data()));
+    if (slot < 0 || uint32_t(slot) >= kClothingSlotCount || written[slot]) {
+      continue;
+    }
+    const uint16_t item = description.items[slot];
+    if (index >= 0 ? item == uint16_t(index) : item == kNoItem) {
+      emit(raw.data());
+      written[slot] = true;
+    }
+  }
+  for (uint32_t slot = 0;
+       slot < kClothingSlotCount && count < kManifestComponentCount; ++slot) {
+    const uint16_t item = description.items[slot];
+    uint8_t* record =
+        bytes + kManifestComponentsOffset + count * kManifestEntryBytes;
+    if (written[slot] || item == kNoItem ||
+        !PutStockEntry(catalog, record, item)) {
+      continue;
+    }
+    ManifestPut16(record + kManifestEntryMaskOffset,
+                  uint16_t(catalog->Find(item)->kind));
+    ++count;
+  }
+  for (uint32_t i = 0; i < kManifestDefaultCount; ++i) {
+    const uint32_t mask = kManifestDefaultMasks[i];
+    uint8_t* record = bytes + kManifestDefaultsOffset + i * kManifestEntryBytes;
+    int32_t equipped = -1;
+    for (uint32_t slot = 0; catalog && slot < kClothingSlotCount; ++slot) {
+      const Entry* entry = description.items[slot] == kNoItem
+                               ? nullptr
+                               : catalog->Find(description.items[slot]);
+      if (entry && entry->kind == mask) {
+        equipped = description.items[slot];
+        break;
+      }
+    }
+    const auto& previous = description.required[i];
+    const int32_t previous_index =
+        catalog && !NullAsset(previous.data())
+            ? ManifestAssetEntry(*catalog, previous.data())
+            : -1;
+    const bool previous_fits =
+        !NullAsset(previous.data()) &&
+        ManifestBe16(previous.data() + kManifestEntryMaskOffset) == mask &&
+        (previous.data()[7] & (male ? 1 : 2));
+    if (previous_fits && (equipped < 0 || equipped == previous_index)) {
+      std::memcpy(record, previous.data(), kManifestEntryBytes);
+      continue;
+    }
+    const uint16_t pick = equipped >= 0 ? uint16_t(equipped)
+                                        : (male ? kManifestMaleDefaults[i]
+                                                : kManifestFemaleDefaults[i]);
+    if (!PutStockEntry(catalog, record, pick)) {
+      PutStockAsset(record, mask, pick, mask == 0x04 ? 3 : (male ? 1 : 2));
+    }
+    ManifestPut16(record + kManifestEntryMaskOffset, uint16_t(mask));
+  }
+  ManifestPut32(bytes + kManifestXuidOffset, uint32_t(xuid >> 32));
+  ManifestPut32(bytes + kManifestXuidOffset + 4, uint32_t(xuid));
+  return manifest;
+}
+
+bool ParseAnyDescription(const Catalog* catalog, const uint8_t* bytes,
+                         size_t size, Description* out) {
+  return ParseDescription(bytes, size, out) ||
+         ParseManifest(catalog, bytes, size, out);
+}
+
 Description DescriptionFromBytes(const Catalog* catalog, const uint8_t* bytes,
                                  size_t size) {
   Description description;
-  if (ParseDescription(bytes, size, &description)) {
+  if (ParseAnyDescription(catalog, bytes, size, &description)) {
     return description;
   }
   uint32_t seed = 2166136261u;
@@ -2046,15 +2632,19 @@ void SamplePose(const Clip& clip, const Skeleton& skeleton, float seconds,
   const uint32_t joints =
       std::min(std::min(clip.joints, skeleton.count), kBoneCount);
   for (uint32_t j = 0; j < joints; ++j) {
-    const float* a = clip.keys.data() + (size_t(f0) * clip.joints + j) * 7;
-    const float* b = clip.keys.data() + (size_t(f1) * clip.joints + j) * 7;
+    const float* a =
+        clip.keys.data() + (size_t(f0) * clip.joints + j) * kKeyFloats;
+    const float* b =
+        clip.keys.data() + (size_t(f1) * clip.joints + j) * kKeyFloats;
     float q[4];
     Slerp(a, b, t, q);
     float translation[3];
+    Matrix scale = Identity();
     for (int k = 0; k < 3; ++k) {
       translation[k] = a[4 + k] + (b[4 + k] - a[4 + k]) * t;
+      scale[k * 5] = a[7 + k] + (b[7 + k] - a[7 + k]) * t;
     }
-    local[j] = FromQuaternion(q, translation);
+    local[j] = Multiply(scale, FromQuaternion(q, translation));
   }
 }
 
@@ -2069,8 +2659,13 @@ void SkinMatrices(const Skeleton& skeleton, const Matrix* local, Matrix* skin) {
     const uint32_t parent = skeleton.parents[j];
     float offset[3];
     BindOffset(skeleton, j, offset);
-    const Matrix posed =
-        Multiply(local[j], Translation(offset[0], offset[1], offset[2]));
+    Matrix scale = Identity();
+    scale[0] = skeleton.scale[j][0];
+    scale[5] = skeleton.scale[j][1];
+    scale[10] = skeleton.scale[j][2];
+    const Matrix posed = Multiply(
+        scale,
+        Multiply(local[j], Translation(offset[0], offset[1], offset[2])));
     world[j] = parent < j ? Multiply(posed, world[parent]) : posed;
     skin[j] = Multiply(Translation(-skeleton.bind[j][0], -skeleton.bind[j][1],
                                    -skeleton.bind[j][2]),
@@ -2078,9 +2673,18 @@ void SkinMatrices(const Skeleton& skeleton, const Matrix* local, Matrix* skin) {
   }
 }
 
+void SampleCarryable(const Carryable& carryable, float seconds, Matrix* local) {
+  if (carryable.joints) {
+    SamplePose(*carryable.joints, carryable.skeleton, seconds, local);
+  } else {
+    BindPose(carryable.skeleton, local);
+  }
+}
+
 Scene BuildScene(Catalog& catalog, const Description& description) {
   Scene scene;
   scene.body = description.body;
+  scene.skeleton = ScaledSkeleton(description);
   for (uint32_t color = 0; color < kColorCount; ++color) {
     ColorToFloat(description.colors[color], scene.colors[color]);
   }
@@ -2124,13 +2728,18 @@ Scene BuildScene(Catalog& catalog, const Description& description) {
           {hair, hair, hair});
     } else {
       add(item, entry->kind, description.custom[slot]);
+      if (slot == kSlotCarryable && !scene.parts.empty() &&
+          scene.parts.back().entry == item) {
+        scene.carryable = catalog.LoadCarryable(item);
+        scene.parts.back().carried = scene.carryable != nullptr;
+      }
     }
   }
   return scene;
 }
 
-Material BuildMaterial(const Scene& scene, const Part& part,
-                       const Batch& batch, const Expression& expression) {
+Material BuildMaterial(const Scene& scene, const Part& part, const Batch& batch,
+                       const Expression& expression) {
   Material material;
   const bool head = part.kind == kKindHead;
   for (int k = 0; k < 4; ++k) {
@@ -2170,8 +2779,8 @@ Material BuildMaterial(const Scene& scene, const Part& part,
         }
         kind = candidate.kind;
         texture = scene.features[candidate.feature].get();
-        id = (uint64_t(scene.feature_entries[candidate.feature]) << 16) |
-             0xFFFF;
+        id =
+            (uint64_t(scene.feature_entries[candidate.feature]) << 16) | 0xFFFF;
         if (candidate.color >= 0) {
           std::memcpy(tint, scene.colors[candidate.color], sizeof(tint));
         }
@@ -2235,9 +2844,8 @@ void SkinBatch(const Batch& batch, const Matrix* skin,
         normal[c] += weight * n[c];
       }
     }
-    const float length =
-        std::sqrt(normal[0] * normal[0] + normal[1] * normal[1] +
-                  normal[2] * normal[2]);
+    const float length = std::sqrt(
+        normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]);
     for (int c = 0; c < 3; ++c) {
       const float unit = length > 0.0f ? normal[c] / length : 0.0f;
       const float facing = c == 1 ? 1.0f : -1.0f;
@@ -2256,8 +2864,9 @@ void FillMaterialConstants(const Material& material, GpuConstants* out) {
 }
 
 void RenderPreview(const Scene& scene, const Matrix* local,
-                   const Expression& expression, uint32_t width,
-                   uint32_t height, float yaw, std::vector<uint8_t>* rgba) {
+                   const Matrix* carried_local, const Expression& expression,
+                   uint32_t width, uint32_t height, float yaw,
+                   std::vector<uint8_t>* rgba) {
   rgba->assign(size_t(width) * height * 4, 0);
   for (size_t i = 0; i < size_t(width) * height; ++i) {
     (*rgba)[i * 4 + 0] = 38;
@@ -2269,7 +2878,17 @@ void RenderPreview(const Scene& scene, const Matrix* local,
     return;
   }
   Matrix skin[kMaxJoints];
-  SkinMatrices(MainSkeleton(), local, skin);
+  SkinMatrices(scene.skeleton, local, skin);
+  Matrix carry_skin[kMaxJoints];
+  if (scene.carryable) {
+    Matrix carry_local[kMaxJoints];
+    if (carried_local) {
+      std::copy(carried_local, carried_local + kMaxJoints, carry_local);
+    } else {
+      BindPose(scene.carryable->skeleton, carry_local);
+    }
+    SkinMatrices(scene.carryable->skeleton, carry_local, carry_skin);
+  }
   const Lighting light = DefaultLighting();
   const float facing = yaw + 3.14159265f;
   const float cosine = std::cos(facing);
@@ -2287,7 +2906,7 @@ void RenderPreview(const Scene& scene, const Matrix* local,
       Prepared entry;
       entry.batch = &batch;
       entry.material = BuildMaterial(scene, part, batch, expression);
-      SkinBatch(batch, skin, &entry.vertices,
+      SkinBatch(batch, part.carried ? carry_skin : skin, &entry.vertices,
                 part.kind == kKindBody ? kBodyInset : 0.0f);
       for (GpuVertex& vertex : entry.vertices) {
         const float x = vertex.position[0];
@@ -2331,15 +2950,16 @@ void RenderPreview(const Scene& scene, const Matrix* local,
       if (std::fabs(area) < 1e-9f) {
         continue;
       }
-      const int32_t min_x = std::max(
-          0, int32_t(std::floor(std::min({sx[0], sx[1], sx[2]}))));
-      const int32_t max_x = std::min(
-          int32_t(width) - 1, int32_t(std::ceil(std::max({sx[0], sx[1], sx[2]}))));
-      const int32_t min_y = std::max(
-          0, int32_t(std::floor(std::min({sy[0], sy[1], sy[2]}))));
-      const int32_t max_y = std::min(
-          int32_t(height) - 1,
-          int32_t(std::ceil(std::max({sy[0], sy[1], sy[2]}))));
+      const int32_t min_x =
+          std::max(0, int32_t(std::floor(std::min({sx[0], sx[1], sx[2]}))));
+      const int32_t max_x =
+          std::min(int32_t(width) - 1,
+                   int32_t(std::ceil(std::max({sx[0], sx[1], sx[2]}))));
+      const int32_t min_y =
+          std::max(0, int32_t(std::floor(std::min({sy[0], sy[1], sy[2]}))));
+      const int32_t max_y =
+          std::min(int32_t(height) - 1,
+                   int32_t(std::ceil(std::max({sy[0], sy[1], sy[2]}))));
       for (int32_t y = min_y; y <= max_y; ++y) {
         for (int32_t x = min_x; x <= max_x; ++x) {
           const float px = float(x) + 0.5f;

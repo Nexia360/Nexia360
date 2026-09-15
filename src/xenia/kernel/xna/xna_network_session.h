@@ -50,9 +50,9 @@ uint32_t XnaSessionBeginJoin(uint32_t finder, uint32_t index);
 uint32_t XnaSessionEndJoin(uint32_t operation, XnaSessionSummary* out);
 
 bool XnaSessionPrepareUpdate(uint32_t handle, uint32_t current_size);
-uint32_t XnaSessionUpdate(uint32_t handle, const uint8_t* records,
-                          size_t size, uint32_t buffer_total,
-                          std::vector<uint8_t>* events, uint32_t* needed);
+uint32_t XnaSessionUpdate(uint32_t handle, const uint8_t* records, size_t size,
+                          uint32_t buffer_total, std::vector<uint8_t>* events,
+                          uint32_t* needed);
 void XnaSessionDestroy(uint32_t handle);
 
 }  // namespace xna

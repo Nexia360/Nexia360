@@ -2544,8 +2544,8 @@ Shader* D3D12CommandProcessor::HostedLoadShader(xenos::ShaderType shader_type,
   // byte-swapped whole when it was loaded, so the microcode inside it is
   // already native - and the guest default of big-endian would swap it back,
   // handing the translator instructions that are byte-reversed but still parse.
-  Shader* shader = pipeline_cache_->LoadShader(shader_type, microcode,
-                                               dword_count, std::endian::native);
+  Shader* shader = pipeline_cache_->LoadShader(
+      shader_type, microcode, dword_count, std::endian::native);
   switch (shader_type) {
     case xenos::ShaderType::kVertex:
       active_vertex_shader_ = shader;
@@ -2567,8 +2567,8 @@ bool D3D12CommandProcessor::HostedIssueDraw(xenos::PrimitiveType primitive_type,
                                             uint32_t index_length) {
   IndexBufferInfo info;
   if (indexed) {
-    info.format = index_32bit ? xenos::IndexFormat::kInt32
-                              : xenos::IndexFormat::kInt16;
+    info.format =
+        index_32bit ? xenos::IndexFormat::kInt32 : xenos::IndexFormat::kInt16;
     info.endianness = static_cast<xenos::Endian>(index_endian);
     info.count = index_count;
     info.guest_base = index_guest_base;
@@ -3157,9 +3157,9 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
                   reinterpret_cast<const uint8_t*>(readback_mapping);
               for (const ReadbackRange& readback_range_entry :
                    readback_ranges) {
-                std::memcpy(
-                    memory_->TranslatePhysical(readback_range_entry.source_offset),
-                    readback_bytes, readback_range_entry.size);
+                std::memcpy(memory_->TranslatePhysical(
+                                readback_range_entry.source_offset),
+                            readback_bytes, readback_range_entry.size);
                 readback_bytes += readback_range_entry.size;
               }
               D3D12_RANGE readback_write_range = {};
@@ -3453,10 +3453,9 @@ D3D12CommandProcessor::ResolveCount D3D12CommandProcessor::CountResolvedPixels(
                         : 0;
       }
     }
-    XELOGD(
-        "[xna]    resolve {:08X}: {} run(s), {} of {} pixel(s) examined",
-        physical_base, uint32_t(contract.valid_runs.size()), examined,
-        length / 4);
+    XELOGD("[xna]    resolve {:08X}: {} run(s), {} of {} pixel(s) examined",
+           physical_base, uint32_t(contract.valid_runs.size()), examined,
+           length / 4);
     uint32_t first = 0;
     std::memcpy(&first, bytes, sizeof(first));
     D3D12_RANGE written = {};
@@ -3765,7 +3764,8 @@ void D3D12CommandProcessor::ReportDeviceRemovedExtendedData() {
 
   D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT breadcrumbs;
   if (SUCCEEDED(dred->GetAutoBreadcrumbsOutput(&breadcrumbs))) {
-    const D3D12_AUTO_BREADCRUMB_NODE* node = breadcrumbs.pHeadAutoBreadcrumbNode;
+    const D3D12_AUTO_BREADCRUMB_NODE* node =
+        breadcrumbs.pHeadAutoBreadcrumbNode;
     uint32_t node_index = 0;
     while (node != nullptr && node_index < 8) {
       // The count is what the GPU finished; anything after it in the list was

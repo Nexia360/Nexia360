@@ -373,11 +373,11 @@ void TitleUpdateDialog::DrawDownloadSection() {
                                    static_cast<double>(total))
               : 0.0f;
 
-    ImGui::ProgressBar(fraction, ImVec2(480.0f, 0),
-                       fmt::format("{} - {:.1f} / {:.1f} MiB",
-                                   downloading_name_, received / 1048576.0,
-                                   total / 1048576.0)
-                           .c_str());
+    ImGui::ProgressBar(
+        fraction, ImVec2(480.0f, 0),
+        fmt::format("{} - {:.1f} / {:.1f} MiB", downloading_name_,
+                    received / 1048576.0, total / 1048576.0)
+            .c_str());
 
     if (ImGui::Button("Cancel Download")) {
       download_cancel_ = true;
@@ -396,8 +396,8 @@ void TitleUpdateDialog::DrawDownloadSection() {
     ImGui::PushID(static_cast<int>(update.id));
 
     // Size is published in KiB.
-    ImGui::Text("%s      %.1f MiB      %s",
-                CatalogueTitle(update).c_str(), update.listed_size / 1024.0,
+    ImGui::Text("%s      %.1f MiB      %s", CatalogueTitle(update).c_str(),
+                update.listed_size / 1024.0,
                 update.upload_date.substr(0, 10).c_str());
 
     ImGui::SameLine(360.0f);

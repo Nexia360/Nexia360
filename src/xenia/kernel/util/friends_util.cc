@@ -196,13 +196,14 @@ std::vector<uint8_t> GetFriendGamerpic(uint64_t owner_xuid,
     // And into the shared cache, so the face survives being unfriended and is
     // available to any list drawn from SeenPlayers.
     const auto seen = db->GetSeenPlayer(friend_xuid);
-    const std::string key = record.has_value() ? record->gamerpic_key
-                                               : std::string();
+    const std::string key =
+        record.has_value() ? record->gamerpic_key : std::string();
 
     db->SetSeenPlayerGamerpic(
         friend_xuid, key,
-        small_tile ? (seen.has_value() ? seen->gamerpic : std::vector<uint8_t>())
-                   : downloaded,
+        small_tile
+            ? (seen.has_value() ? seen->gamerpic : std::vector<uint8_t>())
+            : downloaded,
         small_tile ? downloaded
                    : (seen.has_value() ? seen->gamerpic_small
                                        : std::vector<uint8_t>()));

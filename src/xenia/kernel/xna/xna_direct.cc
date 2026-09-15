@@ -24,6 +24,7 @@
 #include "xenia/base/math.h"
 #include "xenia/base/memory.h"
 #include "xenia/base/string_buffer.h"
+#include "xenia/base/xxhash.h"
 #include "xenia/emulator.h"
 #include "xenia/gpu/dxbc_shader.h"
 #include "xenia/gpu/dxbc_shader_translator.h"
@@ -32,7 +33,6 @@
 #include "xenia/gpu/xenos.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/shim_utils.h"
-#include "xenia/base/xxhash.h"
 #include "xenia/kernel/xna/xna_direct_vulkan.h"
 #include "xenia/kernel/xna/xna_exports.h"
 #include "xenia/kernel/xna/xna_present.h"
@@ -59,10 +59,10 @@ namespace xna {
 
 namespace {
 
-using Microsoft::WRL::ComPtr;
 using gpu::DxbcShader;
 using gpu::DxbcShaderTranslator;
 using gpu::Shader;
+using Microsoft::WRL::ComPtr;
 namespace xenos = gpu::xenos;
 namespace reg = gpu::reg;
 
@@ -84,9 +84,9 @@ constexpr uint32_t kTargetViews = 1024;
 constexpr uint32_t kNullVertexFetchConstant = 80;
 constexpr uint32_t kFetchConstantDwords = 192;
 
-const D3D12_RESOURCE_STATES kReadState = D3D12_RESOURCE_STATES(
-    D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
-    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+const D3D12_RESOURCE_STATES kReadState =
+    D3D12_RESOURCE_STATES(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+                          D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
 struct Target {
   ComPtr<ID3D12Resource> color;
@@ -185,8 +185,7 @@ struct State {
   uint64_t readback_bytes = 0;
 
   ComPtr<ID3D12RootSignature> avatar_root_signature;
-  std::map<std::vector<uint32_t>, ComPtr<ID3D12PipelineState>>
-      avatar_pipelines;
+  std::map<std::vector<uint32_t>, ComPtr<ID3D12PipelineState>> avatar_pipelines;
   std::unordered_map<uint64_t, HostTexture> avatar_textures;
 };
 
@@ -331,42 +330,71 @@ uint8_t* AllocateUpload(uint32_t bytes, uint32_t alignment, uint32_t* offset) {
 
 DXGI_FORMAT TextureFormatFor(uint32_t surface_format) {
   switch (surface_format) {
-    case 1:  return DXGI_FORMAT_B5G6R5_UNORM;
-    case 2:  return DXGI_FORMAT_B5G5R5A1_UNORM;
-    case 3:  return DXGI_FORMAT_B4G4R4A4_UNORM;
-    case 4:  return DXGI_FORMAT_BC1_UNORM;
-    case 5:  return DXGI_FORMAT_BC2_UNORM;
-    case 6:  return DXGI_FORMAT_BC3_UNORM;
-    case 7:  return DXGI_FORMAT_R8G8_SNORM;
-    case 8:  return DXGI_FORMAT_R8G8B8A8_SNORM;
-    case 9:  return DXGI_FORMAT_R10G10B10A2_UNORM;
-    case 10: return DXGI_FORMAT_R16G16_UNORM;
-    case 11: return DXGI_FORMAT_R16G16B16A16_UNORM;
-    case 12: return DXGI_FORMAT_A8_UNORM;
-    case 13: return DXGI_FORMAT_R32_FLOAT;
-    case 14: return DXGI_FORMAT_R32G32_FLOAT;
-    case 15: return DXGI_FORMAT_R32G32B32A32_FLOAT;
-    case 16: return DXGI_FORMAT_R16_FLOAT;
-    case 17: return DXGI_FORMAT_R16G16_FLOAT;
+    case 1:
+      return DXGI_FORMAT_B5G6R5_UNORM;
+    case 2:
+      return DXGI_FORMAT_B5G5R5A1_UNORM;
+    case 3:
+      return DXGI_FORMAT_B4G4R4A4_UNORM;
+    case 4:
+      return DXGI_FORMAT_BC1_UNORM;
+    case 5:
+      return DXGI_FORMAT_BC2_UNORM;
+    case 6:
+      return DXGI_FORMAT_BC3_UNORM;
+    case 7:
+      return DXGI_FORMAT_R8G8_SNORM;
+    case 8:
+      return DXGI_FORMAT_R8G8B8A8_SNORM;
+    case 9:
+      return DXGI_FORMAT_R10G10B10A2_UNORM;
+    case 10:
+      return DXGI_FORMAT_R16G16_UNORM;
+    case 11:
+      return DXGI_FORMAT_R16G16B16A16_UNORM;
+    case 12:
+      return DXGI_FORMAT_A8_UNORM;
+    case 13:
+      return DXGI_FORMAT_R32_FLOAT;
+    case 14:
+      return DXGI_FORMAT_R32G32_FLOAT;
+    case 15:
+      return DXGI_FORMAT_R32G32B32A32_FLOAT;
+    case 16:
+      return DXGI_FORMAT_R16_FLOAT;
+    case 17:
+      return DXGI_FORMAT_R16G16_FLOAT;
     case 18:
-    case 19: return DXGI_FORMAT_R16G16B16A16_FLOAT;
-    default: return DXGI_FORMAT_R8G8B8A8_UNORM;
+    case 19:
+      return DXGI_FORMAT_R16G16B16A16_FLOAT;
+    default:
+      return DXGI_FORMAT_R8G8B8A8_UNORM;
   }
 }
 
 DXGI_FORMAT TargetFormatFor(uint32_t surface_format) {
   switch (surface_format) {
-    case 9:  return DXGI_FORMAT_R10G10B10A2_UNORM;
-    case 10: return DXGI_FORMAT_R16G16_UNORM;
-    case 11: return DXGI_FORMAT_R16G16B16A16_UNORM;
-    case 13: return DXGI_FORMAT_R32_FLOAT;
-    case 14: return DXGI_FORMAT_R32G32_FLOAT;
-    case 15: return DXGI_FORMAT_R32G32B32A32_FLOAT;
-    case 16: return DXGI_FORMAT_R16_FLOAT;
-    case 17: return DXGI_FORMAT_R16G16_FLOAT;
+    case 9:
+      return DXGI_FORMAT_R10G10B10A2_UNORM;
+    case 10:
+      return DXGI_FORMAT_R16G16_UNORM;
+    case 11:
+      return DXGI_FORMAT_R16G16B16A16_UNORM;
+    case 13:
+      return DXGI_FORMAT_R32_FLOAT;
+    case 14:
+      return DXGI_FORMAT_R32G32_FLOAT;
+    case 15:
+      return DXGI_FORMAT_R32G32B32A32_FLOAT;
+    case 16:
+      return DXGI_FORMAT_R16_FLOAT;
+    case 17:
+      return DXGI_FORMAT_R16G16_FLOAT;
     case 18:
-    case 19: return DXGI_FORMAT_R16G16B16A16_FLOAT;
-    default: return DXGI_FORMAT_R8G8B8A8_UNORM;
+    case 19:
+      return DXGI_FORMAT_R16G16B16A16_FLOAT;
+    default:
+      return DXGI_FORMAT_R8G8B8A8_UNORM;
   }
 }
 
@@ -436,8 +464,8 @@ Target* EnsureTarget(uint32_t key, uint32_t width, uint32_t height,
   desc.SampleDesc.Count = 1;
   desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
   if (FAILED(s.device->CreateCommittedResource(
-          &ui::d3d12::util::kHeapPropertiesDefault, D3D12_HEAP_FLAG_NONE,
-          &desc, D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr,
+          &ui::d3d12::util::kHeapPropertiesDefault, D3D12_HEAP_FLAG_NONE, &desc,
+          D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr,
           IID_PPV_ARGS(&target.color)))) {
     XELOGE("[xna] direct: could not create a {}x{} render target (format {})",
            width, height, uint32_t(format));
@@ -509,9 +537,10 @@ uint32_t EnsureTexture(const XnaGpuTextureBinding& binding) {
     return texture.srv;
   }
   if (IsBlockCompressed(format) && ((base.width & 3) || (base.height & 3))) {
-    XELOGW("[xna] direct: texture {:08X} is {}x{} block compressed, not a "
-           "multiple of 4",
-           binding.handle, base.width, base.height);
+    XELOGW(
+        "[xna] direct: texture {:08X} is {}x{} block compressed, not a "
+        "multiple of 4",
+        binding.handle, base.width, base.height);
     return UINT32_MAX;
   }
 
@@ -530,14 +559,13 @@ uint32_t EnsureTexture(const XnaGpuTextureBinding& binding) {
   s.device->GetCopyableFootprints(&desc, 0, levels, 0, footprints.data(),
                                   rows.data(), row_bytes.data(), &total);
   if (!EnsureRoom(total + D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT, 0, 0)) {
-    XELOGW("[xna] direct: texture {:08X} needs {} upload bytes",
-           binding.handle, total);
+    XELOGW("[xna] direct: texture {:08X} needs {} upload bytes", binding.handle,
+           total);
     return UINT32_MAX;
   }
   uint32_t offset = 0;
-  uint8_t* mapped = AllocateUpload(uint32_t(total),
-                                   D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT,
-                                   &offset);
+  uint8_t* mapped = AllocateUpload(
+      uint32_t(total), D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT, &offset);
   if (!mapped) {
     return UINT32_MAX;
   }
@@ -566,10 +594,10 @@ uint32_t EnsureTexture(const XnaGpuTextureBinding& binding) {
     const uint64_t source_pitch = view.size / (rows[level] ? rows[level] : 1);
     for (UINT row = 0; row < rows[level]; ++row) {
       const uint64_t copy = std::min<uint64_t>(row_bytes[level], source_pitch);
-      XnaCopyTextureRow(mapped + footprints[level].Offset +
-                            uint64_t(row) * footprints[level].Footprint.RowPitch,
-                        view.data + uint64_t(row) * source_pitch, size_t(copy),
-                        unit);
+      XnaCopyTextureRow(
+          mapped + footprints[level].Offset +
+              uint64_t(row) * footprints[level].Footprint.RowPitch,
+          view.data + uint64_t(row) * source_pitch, size_t(copy), unit);
     }
     D3D12_TEXTURE_COPY_LOCATION destination = {};
     destination.pResource = texture.resource.Get();
@@ -646,23 +674,23 @@ void WriteSampler(uint64_t key, D3D12_CPU_DESCRIPTOR_HANDLE handle) {
   const uint32_t min = uint32_t((key >> 2) & 3);
   const uint32_t mip = uint32_t((key >> 4) & 3);
   const uint32_t aniso = uint32_t((key >> 6) & 7);
-  const D3D12_FILTER_TYPE mag_type = mag == uint32_t(xenos::TextureFilter::kLinear)
-                                         ? D3D12_FILTER_TYPE_LINEAR
-                                         : D3D12_FILTER_TYPE_POINT;
-  const D3D12_FILTER_TYPE min_type = min == uint32_t(xenos::TextureFilter::kLinear)
-                                         ? D3D12_FILTER_TYPE_LINEAR
-                                         : D3D12_FILTER_TYPE_POINT;
-  const D3D12_FILTER_TYPE mip_type = mip == uint32_t(xenos::TextureFilter::kLinear)
-                                         ? D3D12_FILTER_TYPE_LINEAR
-                                         : D3D12_FILTER_TYPE_POINT;
+  const D3D12_FILTER_TYPE mag_type =
+      mag == uint32_t(xenos::TextureFilter::kLinear) ? D3D12_FILTER_TYPE_LINEAR
+                                                     : D3D12_FILTER_TYPE_POINT;
+  const D3D12_FILTER_TYPE min_type =
+      min == uint32_t(xenos::TextureFilter::kLinear) ? D3D12_FILTER_TYPE_LINEAR
+                                                     : D3D12_FILTER_TYPE_POINT;
+  const D3D12_FILTER_TYPE mip_type =
+      mip == uint32_t(xenos::TextureFilter::kLinear) ? D3D12_FILTER_TYPE_LINEAR
+                                                     : D3D12_FILTER_TYPE_POINT;
   D3D12_SAMPLER_DESC desc = {};
   desc.MaxAnisotropy = 1;
   if (aniso >= 2 && aniso <= 5) {
     desc.Filter = D3D12_FILTER_ANISOTROPIC;
     desc.MaxAnisotropy = 1u << (aniso - 1);
   } else {
-    desc.Filter = D3D12_ENCODE_BASIC_FILTER(min_type, mag_type, mip_type,
-                                            D3D12_FILTER_REDUCTION_TYPE_STANDARD);
+    desc.Filter = D3D12_ENCODE_BASIC_FILTER(
+        min_type, mag_type, mip_type, D3D12_FILTER_REDUCTION_TYPE_STANDARD);
   }
   desc.AddressU = AddressModeFor(uint32_t((key >> 9) & 7));
   desc.AddressV = AddressModeFor(uint32_t((key >> 12) & 7));
@@ -778,8 +806,8 @@ ID3D12RootSignature* RootSignatureFor(uint32_t textures_pixel,
           textures_start, main_space, D3D12_SHADER_VISIBILITY_VERTEX);
   }
   if (samplers_vertex) {
-    table(ranges[3], D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, samplers_vertex, 0,
-          0, D3D12_SHADER_VISIBILITY_VERTEX);
+    table(ranges[3], D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER, samplers_vertex, 0, 0,
+          D3D12_SHADER_VISIBILITY_VERTEX);
   }
 
   D3D12_ROOT_SIGNATURE_DESC desc = {};
@@ -789,9 +817,10 @@ ID3D12RootSignature* RootSignatureFor(uint32_t textures_pixel,
   ID3D12RootSignature* root_signature =
       ui::d3d12::util::CreateRootSignature(*s.provider, desc);
   if (!root_signature) {
-    XELOGE("[xna] direct: no root signature for {} pixel textures, {} pixel "
-           "samplers, {} vertex textures, {} vertex samplers",
-           textures_pixel, samplers_pixel, textures_vertex, samplers_vertex);
+    XELOGE(
+        "[xna] direct: no root signature for {} pixel textures, {} pixel "
+        "samplers, {} vertex textures, {} vertex samplers",
+        textures_pixel, samplers_pixel, textures_vertex, samplers_vertex);
     return nullptr;
   }
   ComPtr<ID3D12RootSignature> owned;
@@ -802,57 +831,91 @@ ID3D12RootSignature* RootSignatureFor(uint32_t textures_pixel,
 
 D3D12_BLEND BlendFor(uint32_t xna, bool alpha) {
   switch (xna) {
-    case 0:  return D3D12_BLEND_ONE;
-    case 1:  return D3D12_BLEND_ZERO;
-    case 2:  return alpha ? D3D12_BLEND_SRC_ALPHA : D3D12_BLEND_SRC_COLOR;
-    case 3:  return alpha ? D3D12_BLEND_INV_SRC_ALPHA : D3D12_BLEND_INV_SRC_COLOR;
-    case 4:  return D3D12_BLEND_SRC_ALPHA;
-    case 5:  return D3D12_BLEND_INV_SRC_ALPHA;
-    case 6:  return alpha ? D3D12_BLEND_DEST_ALPHA : D3D12_BLEND_DEST_COLOR;
-    case 7:  return alpha ? D3D12_BLEND_INV_DEST_ALPHA
-                          : D3D12_BLEND_INV_DEST_COLOR;
-    case 8:  return D3D12_BLEND_DEST_ALPHA;
-    case 9:  return D3D12_BLEND_INV_DEST_ALPHA;
-    case 10: return D3D12_BLEND_BLEND_FACTOR;
-    case 11: return D3D12_BLEND_INV_BLEND_FACTOR;
-    case 12: return D3D12_BLEND_SRC_ALPHA_SAT;
-    default: return D3D12_BLEND_ONE;
+    case 0:
+      return D3D12_BLEND_ONE;
+    case 1:
+      return D3D12_BLEND_ZERO;
+    case 2:
+      return alpha ? D3D12_BLEND_SRC_ALPHA : D3D12_BLEND_SRC_COLOR;
+    case 3:
+      return alpha ? D3D12_BLEND_INV_SRC_ALPHA : D3D12_BLEND_INV_SRC_COLOR;
+    case 4:
+      return D3D12_BLEND_SRC_ALPHA;
+    case 5:
+      return D3D12_BLEND_INV_SRC_ALPHA;
+    case 6:
+      return alpha ? D3D12_BLEND_DEST_ALPHA : D3D12_BLEND_DEST_COLOR;
+    case 7:
+      return alpha ? D3D12_BLEND_INV_DEST_ALPHA : D3D12_BLEND_INV_DEST_COLOR;
+    case 8:
+      return D3D12_BLEND_DEST_ALPHA;
+    case 9:
+      return D3D12_BLEND_INV_DEST_ALPHA;
+    case 10:
+      return D3D12_BLEND_BLEND_FACTOR;
+    case 11:
+      return D3D12_BLEND_INV_BLEND_FACTOR;
+    case 12:
+      return D3D12_BLEND_SRC_ALPHA_SAT;
+    default:
+      return D3D12_BLEND_ONE;
   }
 }
 
 D3D12_BLEND_OP BlendOpFor(uint32_t xna) {
   switch (xna) {
-    case 1:  return D3D12_BLEND_OP_SUBTRACT;
-    case 2:  return D3D12_BLEND_OP_REV_SUBTRACT;
-    case 3:  return D3D12_BLEND_OP_MIN;
-    case 4:  return D3D12_BLEND_OP_MAX;
-    default: return D3D12_BLEND_OP_ADD;
+    case 1:
+      return D3D12_BLEND_OP_SUBTRACT;
+    case 2:
+      return D3D12_BLEND_OP_REV_SUBTRACT;
+    case 3:
+      return D3D12_BLEND_OP_MIN;
+    case 4:
+      return D3D12_BLEND_OP_MAX;
+    default:
+      return D3D12_BLEND_OP_ADD;
   }
 }
 
 D3D12_COMPARISON_FUNC CompareFor(uint32_t xna) {
   switch (xna) {
-    case 1:  return D3D12_COMPARISON_FUNC_NEVER;
-    case 2:  return D3D12_COMPARISON_FUNC_LESS;
-    case 3:  return D3D12_COMPARISON_FUNC_LESS_EQUAL;
-    case 4:  return D3D12_COMPARISON_FUNC_EQUAL;
-    case 5:  return D3D12_COMPARISON_FUNC_GREATER_EQUAL;
-    case 6:  return D3D12_COMPARISON_FUNC_GREATER;
-    case 7:  return D3D12_COMPARISON_FUNC_NOT_EQUAL;
-    default: return D3D12_COMPARISON_FUNC_ALWAYS;
+    case 1:
+      return D3D12_COMPARISON_FUNC_NEVER;
+    case 2:
+      return D3D12_COMPARISON_FUNC_LESS;
+    case 3:
+      return D3D12_COMPARISON_FUNC_LESS_EQUAL;
+    case 4:
+      return D3D12_COMPARISON_FUNC_EQUAL;
+    case 5:
+      return D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+    case 6:
+      return D3D12_COMPARISON_FUNC_GREATER;
+    case 7:
+      return D3D12_COMPARISON_FUNC_NOT_EQUAL;
+    default:
+      return D3D12_COMPARISON_FUNC_ALWAYS;
   }
 }
 
 D3D12_STENCIL_OP StencilOpFor(uint32_t xna) {
   switch (xna) {
-    case 1:  return D3D12_STENCIL_OP_ZERO;
-    case 2:  return D3D12_STENCIL_OP_REPLACE;
-    case 3:  return D3D12_STENCIL_OP_INCR;
-    case 4:  return D3D12_STENCIL_OP_DECR;
-    case 5:  return D3D12_STENCIL_OP_INCR_SAT;
-    case 6:  return D3D12_STENCIL_OP_DECR_SAT;
-    case 7:  return D3D12_STENCIL_OP_INVERT;
-    default: return D3D12_STENCIL_OP_KEEP;
+    case 1:
+      return D3D12_STENCIL_OP_ZERO;
+    case 2:
+      return D3D12_STENCIL_OP_REPLACE;
+    case 3:
+      return D3D12_STENCIL_OP_INCR;
+    case 4:
+      return D3D12_STENCIL_OP_DECR;
+    case 5:
+      return D3D12_STENCIL_OP_INCR_SAT;
+    case 6:
+      return D3D12_STENCIL_OP_DECR_SAT;
+    case 7:
+      return D3D12_STENCIL_OP_INVERT;
+    default:
+      return D3D12_STENCIL_OP_KEEP;
   }
 }
 
@@ -1027,10 +1090,10 @@ ID3D12PipelineState* PipelineFor(const PipelineKey& key,
   }
   desc.BlendState.AlphaToCoverageEnable = FALSE;
   desc.BlendState.IndependentBlendEnable = TRUE;
-  const bool color_blend = !(key.blend[0] == 0 && key.blend[1] == 1 &&
-                             key.blend[2] == 0);
-  const bool alpha_blend = !(key.blend[3] == 0 && key.blend[4] == 1 &&
-                             key.blend[5] == 0);
+  const bool color_blend =
+      !(key.blend[0] == 0 && key.blend[1] == 1 && key.blend[2] == 0);
+  const bool alpha_blend =
+      !(key.blend[3] == 0 && key.blend[4] == 1 && key.blend[5] == 0);
   for (uint32_t i = 0; i < key.target_count; ++i) {
     D3D12_RENDER_TARGET_BLEND_DESC& blend = desc.BlendState.RenderTarget[i];
     blend.BlendEnable = (color_blend || alpha_blend) ? TRUE : FALSE;
@@ -1050,9 +1113,9 @@ ID3D12PipelineState* PipelineFor(const PipelineKey& key,
   desc.RasterizerState.FrontCounterClockwise = FALSE;
   desc.RasterizerState.DepthClipEnable = TRUE;
   desc.DepthStencilState.DepthEnable = key.depth_enable ? TRUE : FALSE;
-  desc.DepthStencilState.DepthWriteMask =
-      (key.depth_enable && key.depth_write) ? D3D12_DEPTH_WRITE_MASK_ALL
-                                            : D3D12_DEPTH_WRITE_MASK_ZERO;
+  desc.DepthStencilState.DepthWriteMask = (key.depth_enable && key.depth_write)
+                                              ? D3D12_DEPTH_WRITE_MASK_ALL
+                                              : D3D12_DEPTH_WRITE_MASK_ZERO;
   desc.DepthStencilState.DepthFunc = CompareFor(key.depth_function);
   ApplyStencil(key.stencil, &desc.DepthStencilState);
   desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE(key.topology_type);
@@ -1094,9 +1157,9 @@ bool PackFloats(const DxbcShader* shader, const float* registers,
     count += xe::bit_count(map.float_bitmap[word]);
   }
   uint32_t offset = 0;
-  uint8_t* out = AllocateUpload(std::max<uint32_t>(count, 1) * 16,
-                                D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT,
-                                &offset);
+  uint8_t* out =
+      AllocateUpload(std::max<uint32_t>(count, 1) * 16,
+                     D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT, &offset);
   if (!out) {
     return false;
   }
@@ -1191,8 +1254,8 @@ bool DrawLocked(const XnaGpuDraw& draw, const XnaGpuStream* streams,
   }
 
   static const XnaGpuTextureBinding kUnbound{};
-  const auto texture_for = [&](uint32_t fetch_constant)
-      -> const XnaGpuTextureBinding& {
+  const auto texture_for =
+      [&](uint32_t fetch_constant) -> const XnaGpuTextureBinding& {
     return fetch_constant < XnaGpuDraw::kMaxTextureSlots
                ? draw.textures[fetch_constant]
                : kUnbound;
@@ -1278,9 +1341,9 @@ bool DrawLocked(const XnaGpuDraw& draw, const XnaGpuStream* streams,
     min_index = UINT32_MAX;
     max_index = 0;
     for (uint32_t i = 0; i < index_count; ++i) {
-      const uint32_t value =
-          draw.index_32bit ? xe::load_and_swap<uint32_t>(source + i * 4)
-                           : xe::load_and_swap<uint16_t>(source + i * 2);
+      const uint32_t value = draw.index_32bit
+                                 ? xe::load_and_swap<uint32_t>(source + i * 4)
+                                 : xe::load_and_swap<uint16_t>(source + i * 2);
       values[i] = value;
       min_index = std::min(min_index, value);
       max_index = std::max(max_index, value);
@@ -1339,10 +1402,11 @@ bool DrawLocked(const XnaGpuDraw& draw, const XnaGpuStream* streams,
     }
     const uint64_t begin = (uint64_t(first_vertex) + min_index) * stride;
     if (begin >= stream.size_bytes) {
-      XELOGD("[xna] direct: vertex {} at stride {} is past the {} byte "
-             "stream at {:08X}",
-             uint64_t(first_vertex) + min_index, stride, stream.size_bytes,
-             stream.guest_address);
+      XELOGD(
+          "[xna] direct: vertex {} at stride {} is past the {} byte "
+          "stream at {:08X}",
+          uint64_t(first_vertex) + min_index, stride, stream.size_bytes,
+          stream.guest_address);
       return false;
     }
     uint64_t bytes = vertex_span * stride;
@@ -1373,12 +1437,13 @@ bool DrawLocked(const XnaGpuDraw& draw, const XnaGpuStream* streams,
       (pixel_samplers_cached ? 0 : uint32_t(samplers_pixel.size())) +
       (vertex_samplers_cached ? 0 : uint32_t(samplers_vertex.size()));
   if (!EnsureRoom(upload_bytes, uint32_t(views.size()),
-                  sampler_room ? uint32_t(samplers_pixel.size() +
-                                          samplers_vertex.size())
-                               : 0)) {
-    XELOGW("[xna] direct: draw needs {} upload bytes and {} views, more than "
-           "a frame holds",
-           upload_bytes, views.size());
+                  sampler_room
+                      ? uint32_t(samplers_pixel.size() + samplers_vertex.size())
+                      : 0)) {
+    XELOGW(
+        "[xna] direct: draw needs {} upload bytes and {} views, more than "
+        "a frame holds",
+        upload_bytes, views.size());
     return false;
   }
 
@@ -1492,9 +1557,9 @@ bool DrawLocked(const XnaGpuDraw& draw, const XnaGpuStream* streams,
     return false;
   }
 
-  ID3D12RootSignature* root_signature = RootSignatureFor(
-      textures_pixel, uint32_t(samplers_pixel.size()), textures_vertex,
-      uint32_t(samplers_vertex.size()));
+  ID3D12RootSignature* root_signature =
+      RootSignatureFor(textures_pixel, uint32_t(samplers_pixel.size()),
+                       textures_vertex, uint32_t(samplers_vertex.size()));
   if (!root_signature) {
     return false;
   }
@@ -1552,8 +1617,8 @@ bool DrawLocked(const XnaGpuDraw& draw, const XnaGpuStream* streams,
                                            SamplerGpu(sampler_pixel_base));
   }
   if (textures_vertex) {
-    s.list->SetGraphicsRootDescriptorTable(
-        parameter++, ViewGpu(view_base + textures_pixel));
+    s.list->SetGraphicsRootDescriptorTable(parameter++,
+                                           ViewGpu(view_base + textures_pixel));
   }
   if (!samplers_vertex.empty()) {
     s.list->SetGraphicsRootDescriptorTable(parameter++,
@@ -1601,8 +1666,8 @@ void ClearLocked(const XnaGpuTarget& target, const float* color,
   if (!BeginRecording()) {
     return;
   }
-  Target* host = EnsureTarget(target.guest_address, target.width,
-                              target.height, target.format);
+  Target* host = EnsureTarget(target.guest_address, target.width, target.height,
+                              target.format);
   if (!host) {
     return;
   }
@@ -1734,8 +1799,8 @@ bool ReadBackLocked(uint8_t* out, uint32_t bytes) {
   UINT rows = 0;
   UINT64 row_bytes = 0;
   UINT64 total = 0;
-  s.device->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, &rows,
-                                  &row_bytes, &total);
+  s.device->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, &rows, &row_bytes,
+                                  &total);
   if (!s.readback || s.readback_bytes < total) {
     s.readback.Reset();
     D3D12_RESOURCE_DESC buffer_desc;
@@ -1766,15 +1831,15 @@ bool ReadBackLocked(uint8_t* out, uint32_t bytes) {
 
   D3D12_RANGE read_range = {0, SIZE_T(total)};
   uint8_t* mapped = nullptr;
-  if (FAILED(s.readback->Map(0, &read_range,
-                             reinterpret_cast<void**>(&mapped)))) {
+  if (FAILED(
+          s.readback->Map(0, &read_range, reinterpret_cast<void**>(&mapped)))) {
     return false;
   }
   for (uint32_t y = 0; y < kBackBufferHeight; ++y) {
-    std::memcpy(out + size_t(y) * row,
-                mapped + footprint.Offset +
-                    uint64_t(y) * footprint.Footprint.RowPitch,
-                row);
+    std::memcpy(
+        out + size_t(y) * row,
+        mapped + footprint.Offset + uint64_t(y) * footprint.Footprint.RowPitch,
+        row);
   }
   D3D12_RANGE written = {0, 0};
   s.readback->Unmap(0, &written);
@@ -1806,7 +1871,8 @@ bool CreateBlit() {
   root_desc.pParameters = parameters;
   root_desc.NumStaticSamplers = 1;
   root_desc.pStaticSamplers = &sampler;
-  root_desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+  root_desc.Flags =
+      D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
   ID3D12RootSignature* root_signature =
       ui::d3d12::util::CreateRootSignature(*s.provider, root_desc);
   if (!root_signature) {
@@ -1981,17 +2047,15 @@ uint32_t EnsureAvatarTexture(uint64_t id, const avatar::Texture& texture) {
     return UINT32_MAX;
   }
   uint32_t offset = 0;
-  uint8_t* mapped = AllocateUpload(uint32_t(total),
-                                   D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT,
-                                   &offset);
+  uint8_t* mapped = AllocateUpload(
+      uint32_t(total), D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT, &offset);
   if (!mapped) {
     return UINT32_MAX;
   }
   ComPtr<ID3D12Resource> resource;
   if (FAILED(s.device->CreateCommittedResource(
-          &ui::d3d12::util::kHeapPropertiesDefault, D3D12_HEAP_FLAG_NONE,
-          &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-          IID_PPV_ARGS(&resource)))) {
+          &ui::d3d12::util::kHeapPropertiesDefault, D3D12_HEAP_FLAG_NONE, &desc,
+          D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&resource)))) {
     XELOGE("[xna] direct: could not create avatar texture {:X} {}x{}x{}", id,
            texture.width, texture.height, texture.slices);
     return UINT32_MAX;
@@ -2160,11 +2224,11 @@ bool Initialize() {
     return false;
   }
   s.provider = dynamic_cast<ui::d3d12::D3D12Provider*>(graphics->provider());
-  s.presenter =
-      dynamic_cast<ui::d3d12::D3D12Presenter*>(graphics->presenter());
+  s.presenter = dynamic_cast<ui::d3d12::D3D12Presenter*>(graphics->presenter());
   if (!s.provider || !s.presenter) {
-    XELOGW("[xna] direct D3D12 path unavailable: the host backend is not "
-           "D3D12");
+    XELOGW(
+        "[xna] direct D3D12 path unavailable: the host backend is not "
+        "D3D12");
     return false;
   }
   s.device = s.provider->GetDevice();
@@ -2238,8 +2302,7 @@ bool Initialize() {
   null_uav.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
   null_uav.Buffer.NumElements = 1;
   null_uav.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
-  s.device->CreateUnorderedAccessView(nullptr, nullptr, &null_uav,
-                                      ViewCpu(1));
+  s.device->CreateUnorderedAccessView(nullptr, nullptr, &null_uav, ViewCpu(1));
 
   D3D12_SHADER_RESOURCE_VIEW_DESC null_srv = {};
   null_srv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -2389,8 +2452,8 @@ void XnaDirectClearStencil(const XnaGpuTarget& target, uint32_t value) {
   if (!Ready() || !BeginRecording()) {
     return;
   }
-  Target* host = EnsureTarget(target.guest_address, target.width,
-                              target.height, target.format);
+  Target* host = EnsureTarget(target.guest_address, target.width, target.height,
+                              target.format);
   if (!host) {
     return;
   }

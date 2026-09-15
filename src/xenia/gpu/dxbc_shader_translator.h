@@ -1185,7 +1185,6 @@ class DxbcShaderTranslator : public ShaderTranslator {
   // terminates from hanging the GPU.
   uint32_t system_temp_control_flow_iterations_;
 
-
   // The bool constant number containing the condition for the currently
   // processed exec (or the last - unless a label has reset this), or
   // kCfExecBoolConstantNone if it's not checked.

@@ -1108,9 +1108,8 @@ void ImGuiDrawer::PollXInput() {
     // reads as untouched - ImGui is told nothing and the focus manager is fed
     // zeros - so the press that opened the dialog cannot activate anything in
     // it, no matter how long it is held or which button it was.
-    const WORD dpad_mask =
-        XINPUT_GAMEPAD_DPAD_UP | XINPUT_GAMEPAD_DPAD_DOWN |
-        XINPUT_GAMEPAD_DPAD_LEFT | XINPUT_GAMEPAD_DPAD_RIGHT;
+    const WORD dpad_mask = XINPUT_GAMEPAD_DPAD_UP | XINPUT_GAMEPAD_DPAD_DOWN |
+                           XINPUT_GAMEPAD_DPAD_LEFT | XINPUT_GAMEPAD_DPAD_RIGHT;
     const float gate_stick_deadzone = 0.3f;
     const bool sticks_deflected =
         (pad.sThumbLX / 32767.0f) > gate_stick_deadzone ||
@@ -1223,9 +1222,9 @@ void ImGuiDrawer::PollXInput() {
       // B likewise: ImGui treats FaceRight as nav-cancel and closes the popup
       // on the press, which leaks the release to the layer below.
       imgui_io.AddKeyEvent(ImGuiKey_GamepadFaceRight,
-                           gamepad_b_just_released_);  // B (release)
-      imgui_io.AddKeyEvent(ImGuiKey_GamepadFaceLeft, x_pressed);   // X
-      imgui_io.AddKeyEvent(ImGuiKey_GamepadFaceUp, y_pressed);     // Y
+                           gamepad_b_just_released_);             // B (release)
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadFaceLeft, x_pressed);  // X
+      imgui_io.AddKeyEvent(ImGuiKey_GamepadFaceUp, y_pressed);    // Y
       imgui_io.AddKeyEvent(ImGuiKey_GamepadStart, start_pressed);
       imgui_io.AddKeyEvent(ImGuiKey_GamepadBack, back_pressed);
       imgui_io.AddKeyEvent(ImGuiKey_GamepadL1, lb_pressed);  // LB

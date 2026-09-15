@@ -36,7 +36,7 @@ struct PosePreset {
 };
 
 constexpr PosePreset kPoses[] = {
-    {"Standing", 3, 0.0f}, {"Wave", 7, 1.2f},      {"Clap", 6, 0.8f},
+    {"Standing", 3, 0.0f},  {"Wave", 7, 1.2f},       {"Clap", 6, 0.8f},
     {"Celebrate", 8, 1.0f}, {"Bind pose", -1, 0.0f},
 };
 
@@ -49,8 +49,8 @@ constexpr char kConfirmFocusName[] = "AvatarEditorConfirm";
 constexpr char kConfirmPopup[] = "Unsaved Avatar##nexia_avatar_confirm";
 
 constexpr uint32_t kFaceColors[] = {
-    avatar::kColorSkin,       avatar::kColorHair,    avatar::kColorEyebrow,
-    avatar::kColorIris,       avatar::kColorLips,    avatar::kColorFacialHair,
+    avatar::kColorSkin,      avatar::kColorHair, avatar::kColorEyebrow,
+    avatar::kColorIris,      avatar::kColorLips, avatar::kColorFacialHair,
     avatar::kColorEyeShadow,
 };
 
@@ -152,9 +152,22 @@ void AvatarEditorDialog::RebuildPreview() {
       avatar::SamplePose(*clip, avatar::MainSkeleton(), pose.seconds, local);
     }
   }
+  avatar::Matrix carried[avatar::kMaxJoints];
+  const avatar::Matrix* carried_pose = nullptr;
+  if (scene.carryable && pose.clip >= 0) {
+    const float seconds = scene.carryable->joints
+                              ? scene.carryable->joints->Length() * 0.25f
+                              : 0.0f;
+    if (scene.carryable->body) {
+      avatar::SamplePose(*scene.carryable->body, avatar::MainSkeleton(),
+                         seconds, local);
+    }
+    avatar::SampleCarryable(*scene.carryable, seconds, carried);
+    carried_pose = carried;
+  }
   std::vector<uint8_t> rgba;
-  avatar::RenderPreview(scene, local, avatar::Expression(), kPreviewWidth,
-                        kPreviewHeight, yaw_, &rgba);
+  avatar::RenderPreview(scene, local, carried_pose, avatar::Expression(),
+                        kPreviewWidth, kPreviewHeight, yaw_, &rgba);
   const std::vector<uint8_t> png =
       avatar::EncodePng(kPreviewWidth, kPreviewHeight, rgba);
   preview_ = imgui_drawer()->LoadImGuiIcon(png);
@@ -194,9 +207,9 @@ void AvatarEditorDialog::DrawSlot(uint32_t slot) {
       const avatar::Entry* candidate = catalog_->Find(item);
       const bool selected = item == current;
       ImGui::PushID(int(item));
-      if (ImGui::Selectable(candidate->name.empty() ? "(unnamed)"
-                                                    : candidate->name.c_str(),
-                            selected)) {
+      if (ImGui::Selectable(
+              candidate->name.empty() ? "(unnamed)" : candidate->name.c_str(),
+              selected)) {
         avatar::PlaceItem(*catalog_, &description_, slot, uint16_t(item));
         Changed();
       }
@@ -283,7 +296,7 @@ void AvatarEditorDialog::DrawEditor() {
   ImGui::SetNextItemWidth(kComboWidth);
   if (ImGui::SliderInt("##height", &height, 0, 255, "")) {
     description_.height = uint8_t(height);
-    unsaved_ = true;
+    Changed();
   }
   ImGui::SameLine();
   ImGui::Text("Height %.2f m", avatar::DescriptionHeight(description_));
@@ -291,7 +304,7 @@ void AvatarEditorDialog::DrawEditor() {
   ImGui::SetNextItemWidth(kComboWidth);
   if (ImGui::SliderInt("Weight", &weight, 0, 255)) {
     description_.weight = uint8_t(weight);
-    unsaved_ = true;
+    Changed();
   }
   ImGui::SeparatorText("Clothing");
   for (uint32_t slot = 0; slot < avatar::kClothingSlotCount; ++slot) {

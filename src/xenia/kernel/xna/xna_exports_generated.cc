@@ -50,98 +50,154 @@ constexpr uint32_t kNotImplemented = 0x80004001;  // E_NOTIMPL
 
 }  // namespace
 
-extern "C" uint32_t xna_AUDIO_MicrophoneUnsafeNativeMethods__CreateMicrophone(int32_t a0, uint32_t* a1) {
-  xe::kernel::xna::XnaExportDefaulted("AUDIO!MicrophoneUnsafeNativeMethods::CreateMicrophone");
-  if (a1) { *a1 = 0; }
+extern "C" uint32_t xna_AUDIO_MicrophoneUnsafeNativeMethods__CreateMicrophone(
+    int32_t a0, uint32_t* a1) {
+  xe::kernel::xna::XnaExportDefaulted(
+      "AUDIO!MicrophoneUnsafeNativeMethods::CreateMicrophone");
+  if (a1) {
+    *a1 = 0;
+  }
   return 0;
 }
 
-extern "C" uint32_t xna_AUDIO_MicrophoneUnsafeNativeMethods__DestroyMicrophone(uint32_t a0) {
-  xe::kernel::xna::XnaExportDefaulted("AUDIO!MicrophoneUnsafeNativeMethods::DestroyMicrophone");
+extern "C" uint32_t xna_AUDIO_MicrophoneUnsafeNativeMethods__DestroyMicrophone(
+    uint32_t a0) {
+  xe::kernel::xna::XnaExportDefaulted(
+      "AUDIO!MicrophoneUnsafeNativeMethods::DestroyMicrophone");
   return 0;
 }
 
-extern "C" uint32_t xna_AUDIO_MicrophoneUnsafeNativeMethods__GetCaptureBufferDuration(uint32_t a0, int32_t* a1) {
-  xe::kernel::xna::XnaExportDefaulted("AUDIO!MicrophoneUnsafeNativeMethods::GetCaptureBufferDuration");
-  if (a1) { *a1 = 0; }
+extern "C" uint32_t
+xna_AUDIO_MicrophoneUnsafeNativeMethods__GetCaptureBufferDuration(uint32_t a0,
+                                                                  int32_t* a1) {
+  xe::kernel::xna::XnaExportDefaulted(
+      "AUDIO!MicrophoneUnsafeNativeMethods::GetCaptureBufferDuration");
+  if (a1) {
+    *a1 = 0;
+  }
   return 0;
 }
 
-extern "C" uint32_t xna_AUDIO_MicrophoneUnsafeNativeMethods__GetData(uint32_t a0, uint8_t* a1, int32_t a2, int32_t* a3) {
-  xe::kernel::xna::XnaExportDefaulted("AUDIO!MicrophoneUnsafeNativeMethods::GetData");
-  if (a3) { *a3 = 0; }
+extern "C" uint32_t xna_AUDIO_MicrophoneUnsafeNativeMethods__GetData(
+    uint32_t a0, uint8_t* a1, int32_t a2, int32_t* a3) {
+  xe::kernel::xna::XnaExportDefaulted(
+      "AUDIO!MicrophoneUnsafeNativeMethods::GetData");
+  if (a3) {
+    *a3 = 0;
+  }
   return 0;
 }
 
-extern "C" uint32_t xna_AUDIO_MicrophoneUnsafeNativeMethods__GetMicrophoneCount(int32_t* a0) {
-  xe::kernel::xna::XnaExportDefaulted("AUDIO!MicrophoneUnsafeNativeMethods::GetMicrophoneCount");
-  if (a0) { *a0 = 0; }
+extern "C" uint32_t xna_AUDIO_MicrophoneUnsafeNativeMethods__GetMicrophoneCount(
+    int32_t* a0) {
+  xe::kernel::xna::XnaExportDefaulted(
+      "AUDIO!MicrophoneUnsafeNativeMethods::GetMicrophoneCount");
+  if (a0) {
+    *a0 = 0;
+  }
   return 0;
 }
 
-extern "C" uint32_t xna_AUDIO_MicrophoneUnsafeNativeMethods__GetName(uint32_t a0, char* a1, int32_t a2) {
-  xe::kernel::xna::XnaExportDefaulted("AUDIO!MicrophoneUnsafeNativeMethods::GetName");
-  if (a1) { a1[0] = 0; }
+extern "C" uint32_t xna_AUDIO_MicrophoneUnsafeNativeMethods__GetName(
+    uint32_t a0, char* a1, int32_t a2) {
+  xe::kernel::xna::XnaExportDefaulted(
+      "AUDIO!MicrophoneUnsafeNativeMethods::GetName");
+  if (a1) {
+    a1[0] = 0;
+  }
   return 0;
 }
 
-extern "C" uint32_t xna_AUDIO_MicrophoneUnsafeNativeMethods__GetSampleRate(uint32_t a0, int32_t* a1) {
-  xe::kernel::xna::XnaExportDefaulted("AUDIO!MicrophoneUnsafeNativeMethods::GetSampleRate");
-  if (a1) { *a1 = 0; }
+extern "C" uint32_t xna_AUDIO_MicrophoneUnsafeNativeMethods__GetSampleRate(
+    uint32_t a0, int32_t* a1) {
+  xe::kernel::xna::XnaExportDefaulted(
+      "AUDIO!MicrophoneUnsafeNativeMethods::GetSampleRate");
+  if (a1) {
+    *a1 = 0;
+  }
   return 0;
 }
 
-extern "C" uint32_t xna_AUDIO_MicrophoneUnsafeNativeMethods__GetState(uint32_t a0, uint32_t* a1) {
-  xe::kernel::xna::XnaExportDefaulted("AUDIO!MicrophoneUnsafeNativeMethods::GetState");
-  if (a1) { *a1 = 0; }
+extern "C" uint32_t xna_AUDIO_MicrophoneUnsafeNativeMethods__GetState(
+    uint32_t a0, uint32_t* a1) {
+  xe::kernel::xna::XnaExportDefaulted(
+      "AUDIO!MicrophoneUnsafeNativeMethods::GetState");
+  if (a1) {
+    *a1 = 0;
+  }
   return 0;
 }
 
-extern "C" uint32_t xna_AUDIO_MicrophoneUnsafeNativeMethods__IsDefault(uint32_t a0, int32_t* a1) {
-  xe::kernel::xna::XnaExportDefaulted("AUDIO!MicrophoneUnsafeNativeMethods::IsDefault");
-  if (a1) { *a1 = 0; }
+extern "C" uint32_t xna_AUDIO_MicrophoneUnsafeNativeMethods__IsDefault(
+    uint32_t a0, int32_t* a1) {
+  xe::kernel::xna::XnaExportDefaulted(
+      "AUDIO!MicrophoneUnsafeNativeMethods::IsDefault");
+  if (a1) {
+    *a1 = 0;
+  }
   return 0;
 }
 
-extern "C" uint32_t xna_AUDIO_MicrophoneUnsafeNativeMethods__IsHeadset(uint32_t a0, int32_t* a1) {
-  xe::kernel::xna::XnaExportDefaulted("AUDIO!MicrophoneUnsafeNativeMethods::IsHeadset");
-  if (a1) { *a1 = 0; }
+extern "C" uint32_t xna_AUDIO_MicrophoneUnsafeNativeMethods__IsHeadset(
+    uint32_t a0, int32_t* a1) {
+  xe::kernel::xna::XnaExportDefaulted(
+      "AUDIO!MicrophoneUnsafeNativeMethods::IsHeadset");
+  if (a1) {
+    *a1 = 0;
+  }
   return 0;
 }
 
-extern "C" uint32_t xna_AUDIO_MicrophoneUnsafeNativeMethods__IsPlayerHeadset(uint32_t a0, int32_t a1, int32_t* a2) {
-  xe::kernel::xna::XnaExportDefaulted("AUDIO!MicrophoneUnsafeNativeMethods::IsPlayerHeadset");
-  if (a2) { *a2 = 0; }
+extern "C" uint32_t xna_AUDIO_MicrophoneUnsafeNativeMethods__IsPlayerHeadset(
+    uint32_t a0, int32_t a1, int32_t* a2) {
+  xe::kernel::xna::XnaExportDefaulted(
+      "AUDIO!MicrophoneUnsafeNativeMethods::IsPlayerHeadset");
+  if (a2) {
+    *a2 = 0;
+  }
   return 0;
 }
 
-extern "C" uint32_t xna_AUDIO_MicrophoneUnsafeNativeMethods__SetCaptureBufferDuration(uint32_t a0, int32_t a1) {
-  xe::kernel::xna::XnaExportDefaulted("AUDIO!MicrophoneUnsafeNativeMethods::SetCaptureBufferDuration");
+extern "C" uint32_t
+xna_AUDIO_MicrophoneUnsafeNativeMethods__SetCaptureBufferDuration(uint32_t a0,
+                                                                  int32_t a1) {
+  xe::kernel::xna::XnaExportDefaulted(
+      "AUDIO!MicrophoneUnsafeNativeMethods::SetCaptureBufferDuration");
   return 0;
 }
 
-extern "C" void xna_AUDIO_MicrophoneUnsafeNativeMethods__ShutdownCaptureEngine() {
-  xe::kernel::xna::XnaExportDefaulted("AUDIO!MicrophoneUnsafeNativeMethods::ShutdownCaptureEngine");
+extern "C" void
+xna_AUDIO_MicrophoneUnsafeNativeMethods__ShutdownCaptureEngine() {
+  xe::kernel::xna::XnaExportDefaulted(
+      "AUDIO!MicrophoneUnsafeNativeMethods::ShutdownCaptureEngine");
 }
 
-extern "C" uint32_t xna_AUDIO_MicrophoneUnsafeNativeMethods__Start(uint32_t a0) {
-  xe::kernel::xna::XnaExportDefaulted("AUDIO!MicrophoneUnsafeNativeMethods::Start");
+extern "C" uint32_t xna_AUDIO_MicrophoneUnsafeNativeMethods__Start(
+    uint32_t a0) {
+  xe::kernel::xna::XnaExportDefaulted(
+      "AUDIO!MicrophoneUnsafeNativeMethods::Start");
   return 0;
 }
 
 extern "C" uint32_t xna_AUDIO_MicrophoneUnsafeNativeMethods__Stop(uint32_t a0) {
-  xe::kernel::xna::XnaExportDefaulted("AUDIO!MicrophoneUnsafeNativeMethods::Stop");
+  xe::kernel::xna::XnaExportDefaulted(
+      "AUDIO!MicrophoneUnsafeNativeMethods::Stop");
   return 0;
 }
 
-extern "C" uint32_t xna_AUDIO_SoundEffectUnsafeNativeMethods__Apply3D(uint32_t a0, void* a1, int32_t a2, void* a3) {
-  xe::kernel::xna::XnaExportDefaulted("AUDIO!SoundEffectUnsafeNativeMethods::Apply3D");
+extern "C" uint32_t xna_AUDIO_SoundEffectUnsafeNativeMethods__Apply3D(
+    uint32_t a0, void* a1, int32_t a2, void* a3) {
+  xe::kernel::xna::XnaExportDefaulted(
+      "AUDIO!SoundEffectUnsafeNativeMethods::Apply3D");
   return 0;
 }
 
-extern "C" uint32_t xna_D3D_D3D_Effect_GetValueString(uint32_t a0, uint32_t a1, uint32_t a2, char* a3) {
+extern "C" uint32_t xna_D3D_D3D_Effect_GetValueString(uint32_t a0, uint32_t a1,
+                                                      uint32_t a2, char* a3) {
   xe::kernel::xna::XnaExportDefaulted("D3D!D3D_Effect_GetValueString");
-  if (a3) { a3[0] = 0; }
+  if (a3) {
+    a3[0] = 0;
+  }
   return 0;
 }
 
@@ -150,110 +206,161 @@ extern "C" uint32_t xna_MEDIA_Imaging_CloseKernelStream(uint32_t a0) {
   return 0;
 }
 
-extern "C" uint32_t xna_MEDIA_Imaging_CreateKernelMemoryStream(uint8_t* a0, int32_t a1, uint32_t* a2) {
+extern "C" uint32_t xna_MEDIA_Imaging_CreateKernelMemoryStream(uint8_t* a0,
+                                                               int32_t a1,
+                                                               uint32_t* a2) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Imaging_CreateKernelMemoryStream");
-  if (a2) { *a2 = 0; }
+  if (a2) {
+    *a2 = 0;
+  }
   return 0;
 }
 
-extern "C" uint32_t xna_MEDIA_Imaging_CreateKernelStreamForManagedStream(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint32_t* a4) {
-  xe::kernel::xna::XnaExportDefaulted("MEDIA!Imaging_CreateKernelStreamForManagedStream");
-  if (a4) { *a4 = 0; }
+extern "C" uint32_t xna_MEDIA_Imaging_CreateKernelStreamForManagedStream(
+    uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint32_t* a4) {
+  xe::kernel::xna::XnaExportDefaulted(
+      "MEDIA!Imaging_CreateKernelStreamForManagedStream");
+  if (a4) {
+    *a4 = 0;
+  }
   return 0;
 }
 
-extern "C" uint32_t xna_MEDIA_Imaging_DecodeStreamToTexture(uint32_t a0, uint32_t a1, uint32_t* a2, uint32_t* a3, const void* a4, int32_t a5, uint32_t* a6) {
-  xe::kernel::xna::XnaExportUnimplemented("MEDIA!Imaging_DecodeStreamToTexture");
+extern "C" uint32_t xna_MEDIA_Imaging_DecodeStreamToTexture(
+    uint32_t a0, uint32_t a1, uint32_t* a2, uint32_t* a3, const void* a4,
+    int32_t a5, uint32_t* a6) {
+  xe::kernel::xna::XnaExportUnimplemented(
+      "MEDIA!Imaging_DecodeStreamToTexture");
   return kNotImplemented;
 }
 
-extern "C" uint32_t xna_MEDIA_Imaging_EncodeBufferToStream(const void* a0, uint8_t* a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, uint32_t* a7) {
+extern "C" uint32_t xna_MEDIA_Imaging_EncodeBufferToStream(
+    const void* a0, uint8_t* a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5,
+    int32_t a6, uint32_t* a7) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Imaging_EncodeBufferToStream");
-  if (a7) { *a7 = 0; }
+  if (a7) {
+    *a7 = 0;
+  }
   return 0;
 }
 
-extern "C" uint32_t xna_MEDIA_Imaging_GetStreamLength(uint32_t a0, int64_t* a1) {
+extern "C" uint32_t xna_MEDIA_Imaging_GetStreamLength(uint32_t a0,
+                                                      int64_t* a1) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Imaging_GetStreamLength");
-  if (a1) { *a1 = 0; }
+  if (a1) {
+    *a1 = 0;
+  }
   return 0;
 }
 
-extern "C" uint32_t xna_MEDIA_Imaging_ReadFromStream(uint32_t a0, uint8_t* a1, int32_t a2, int32_t* a3) {
+extern "C" uint32_t xna_MEDIA_Imaging_ReadFromStream(uint32_t a0, uint8_t* a1,
+                                                     int32_t a2, int32_t* a3) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Imaging_ReadFromStream");
-  if (a3) { *a3 = 0; }
+  if (a3) {
+    *a3 = 0;
+  }
   return 0;
 }
 
-extern "C" uint32_t xna_MEDIA_Imaging_SeekInStream(uint32_t a0, int64_t a1, int32_t a2, int64_t* a3) {
+extern "C" uint32_t xna_MEDIA_Imaging_SeekInStream(uint32_t a0, int64_t a1,
+                                                   int32_t a2, int64_t* a3) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Imaging_SeekInStream");
-  if (a3) { *a3 = 0; }
+  if (a3) {
+    *a3 = 0;
+  }
   return 0;
 }
 
 extern "C" uint32_t xna_MEDIA_Media_Album_GetArtist(uint32_t a0, uint32_t* a1) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Media_Album_GetArtist");
-  if (a1) { *a1 = 0; }
+  if (a1) {
+    *a1 = 0;
+  }
   return 0;
 }
 
-extern "C" uint32_t xna_MEDIA_Media_Album_GetDuration(uint32_t a0, int32_t* a1) {
+extern "C" uint32_t xna_MEDIA_Media_Album_GetDuration(uint32_t a0,
+                                                      int32_t* a1) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Media_Album_GetDuration");
-  if (a1) { *a1 = 0; }
+  if (a1) {
+    *a1 = 0;
+  }
   return 0;
 }
 
 extern "C" uint32_t xna_MEDIA_Media_Album_GetGenre(uint32_t a0, uint32_t* a1) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Media_Album_GetGenre");
-  if (a1) { *a1 = 0; }
+  if (a1) {
+    *a1 = 0;
+  }
   return 0;
 }
 
 extern "C" uint32_t xna_MEDIA_Media_Album_GetSongs(uint32_t a0, uint32_t* a1) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Media_Album_GetSongs");
-  if (a1) { *a1 = 0; }
+  if (a1) {
+    *a1 = 0;
+  }
   return 0;
 }
 
-extern "C" uint32_t xna_MEDIA_Media_Artist_GetAlbums(uint32_t a0, uint32_t* a1) {
+extern "C" uint32_t xna_MEDIA_Media_Artist_GetAlbums(uint32_t a0,
+                                                     uint32_t* a1) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Media_Artist_GetAlbums");
-  if (a1) { *a1 = 0; }
+  if (a1) {
+    *a1 = 0;
+  }
   return 0;
 }
 
 extern "C" uint32_t xna_MEDIA_Media_Artist_GetSongs(uint32_t a0, uint32_t* a1) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Media_Artist_GetSongs");
-  if (a1) { *a1 = 0; }
+  if (a1) {
+    *a1 = 0;
+  }
   return 0;
 }
 
 extern "C" uint32_t xna_MEDIA_Media_Genre_GetAlbums(uint32_t a0, uint32_t* a1) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Media_Genre_GetAlbums");
-  if (a1) { *a1 = 0; }
+  if (a1) {
+    *a1 = 0;
+  }
   return 0;
 }
 
 extern "C" uint32_t xna_MEDIA_Media_Genre_GetSongs(uint32_t a0, uint32_t* a1) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Media_Genre_GetSongs");
-  if (a1) { *a1 = 0; }
+  if (a1) {
+    *a1 = 0;
+  }
   return 0;
 }
 
-extern "C" uint32_t xna_MEDIA_Media_Item_GetName(uint32_t a0, char* a1, uint32_t a2) {
+extern "C" uint32_t xna_MEDIA_Media_Item_GetName(uint32_t a0, char* a1,
+                                                 uint32_t a2) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Media_Item_GetName");
-  if (a1) { a1[0] = 0; }
+  if (a1) {
+    a1[0] = 0;
+  }
   return 0;
 }
 
-extern "C" uint32_t xna_MEDIA_Media_Item_IsEqual(uint32_t a0, uint32_t a1, uint32_t* a2) {
+extern "C" uint32_t xna_MEDIA_Media_Item_IsEqual(uint32_t a0, uint32_t a1,
+                                                 uint32_t* a2) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Media_Item_IsEqual");
-  if (a2) { *a2 = 0; }
+  if (a2) {
+    *a2 = 0;
+  }
   return 0;
 }
 
-extern "C" uint32_t xna_MEDIA_Media_Library_CreateLibrary(int32_t a0, uint32_t* a1) {
+extern "C" uint32_t xna_MEDIA_Media_Library_CreateLibrary(int32_t a0,
+                                                          uint32_t* a1) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Media_Library_CreateLibrary");
-  if (a1) { *a1 = 0; }
+  if (a1) {
+    *a1 = 0;
+  }
   return 0;
 }
 
@@ -262,45 +369,65 @@ extern "C" uint32_t xna_MEDIA_Media_Library_DestroyLibrary(uint32_t a0) {
   return 0;
 }
 
-extern "C" uint32_t xna_MEDIA_Media_Library_GetAlbums(uint32_t a0, uint32_t* a1) {
+extern "C" uint32_t xna_MEDIA_Media_Library_GetAlbums(uint32_t a0,
+                                                      uint32_t* a1) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Media_Library_GetAlbums");
-  if (a1) { *a1 = 0; }
+  if (a1) {
+    *a1 = 0;
+  }
   return 0;
 }
 
-extern "C" uint32_t xna_MEDIA_Media_Library_GetArtists(uint32_t a0, uint32_t* a1) {
+extern "C" uint32_t xna_MEDIA_Media_Library_GetArtists(uint32_t a0,
+                                                       uint32_t* a1) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Media_Library_GetArtists");
-  if (a1) { *a1 = 0; }
+  if (a1) {
+    *a1 = 0;
+  }
   return 0;
 }
 
-extern "C" uint32_t xna_MEDIA_Media_Library_GetGenres(uint32_t a0, uint32_t* a1) {
+extern "C" uint32_t xna_MEDIA_Media_Library_GetGenres(uint32_t a0,
+                                                      uint32_t* a1) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Media_Library_GetGenres");
-  if (a1) { *a1 = 0; }
+  if (a1) {
+    *a1 = 0;
+  }
   return 0;
 }
 
-extern "C" uint32_t xna_MEDIA_Media_Library_GetPlaylists(uint32_t a0, uint32_t* a1) {
+extern "C" uint32_t xna_MEDIA_Media_Library_GetPlaylists(uint32_t a0,
+                                                         uint32_t* a1) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Media_Library_GetPlaylists");
-  if (a1) { *a1 = 0; }
+  if (a1) {
+    *a1 = 0;
+  }
   return 0;
 }
 
-extern "C" uint32_t xna_MEDIA_Media_Library_GetSongs(uint32_t a0, uint32_t* a1) {
+extern "C" uint32_t xna_MEDIA_Media_Library_GetSongs(uint32_t a0,
+                                                     uint32_t* a1) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Media_Library_GetSongs");
-  if (a1) { *a1 = 0; }
+  if (a1) {
+    *a1 = 0;
+  }
   return 0;
 }
 
 extern "C" uint32_t xna_MEDIA_Media_List_GetCount(uint32_t a0, int32_t* a1) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Media_List_GetCount");
-  if (a1) { *a1 = 0; }
+  if (a1) {
+    *a1 = 0;
+  }
   return 0;
 }
 
-extern "C" uint32_t xna_MEDIA_Media_List_GetItemAtIndex(uint32_t a0, int32_t a1, uint32_t* a2) {
+extern "C" uint32_t xna_MEDIA_Media_List_GetItemAtIndex(uint32_t a0, int32_t a1,
+                                                        uint32_t* a2) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Media_List_GetItemAtIndex");
-  if (a2) { *a2 = 0; }
+  if (a2) {
+    *a2 = 0;
+  }
   return 0;
 }
 
@@ -309,82 +436,120 @@ extern "C" uint32_t xna_MEDIA_Media_List_Release(uint32_t a0) {
   return 0;
 }
 
-extern "C" uint32_t xna_MEDIA_Media_Playlist_GetDuration(uint32_t a0, int32_t* a1) {
+extern "C" uint32_t xna_MEDIA_Media_Playlist_GetDuration(uint32_t a0,
+                                                         int32_t* a1) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Media_Playlist_GetDuration");
-  if (a1) { *a1 = 0; }
+  if (a1) {
+    *a1 = 0;
+  }
   return 0;
 }
 
-extern "C" uint32_t xna_MEDIA_Media_Playlist_GetSongs(uint32_t a0, uint32_t* a1) {
+extern "C" uint32_t xna_MEDIA_Media_Playlist_GetSongs(uint32_t a0,
+                                                      uint32_t* a1) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Media_Playlist_GetSongs");
-  if (a1) { *a1 = 0; }
+  if (a1) {
+    *a1 = 0;
+  }
   return 0;
 }
-
 
 extern "C" uint32_t xna_MEDIA_Media_Song_GetAlbum(uint32_t a0, uint32_t* a1) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Media_Song_GetAlbum");
-  if (a1) { *a1 = 0; }
+  if (a1) {
+    *a1 = 0;
+  }
   return 0;
 }
 
 extern "C" uint32_t xna_MEDIA_Media_Song_GetArtist(uint32_t a0, uint32_t* a1) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Media_Song_GetArtist");
-  if (a1) { *a1 = 0; }
+  if (a1) {
+    *a1 = 0;
+  }
   return 0;
 }
 
 extern "C" uint32_t xna_MEDIA_Media_Song_GetGenre(uint32_t a0, uint32_t* a1) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Media_Song_GetGenre");
-  if (a1) { *a1 = 0; }
+  if (a1) {
+    *a1 = 0;
+  }
   return 0;
 }
 
-extern "C" uint32_t xna_MEDIA_Media_Song_GetPlayCount(uint32_t a0, int32_t* a1) {
+extern "C" uint32_t xna_MEDIA_Media_Song_GetPlayCount(uint32_t a0,
+                                                      int32_t* a1) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Media_Song_GetPlayCount");
-  if (a1) { *a1 = 0; }
+  if (a1) {
+    *a1 = 0;
+  }
   return 0;
 }
 
 extern "C" uint32_t xna_MEDIA_Media_Song_GetRating(uint32_t a0, int32_t* a1) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Media_Song_GetRating");
-  if (a1) { *a1 = 0; }
+  if (a1) {
+    *a1 = 0;
+  }
   return 0;
 }
 
-extern "C" uint32_t xna_MEDIA_Media_Song_GetTrackNumber(uint32_t a0, int32_t* a1) {
+extern "C" uint32_t xna_MEDIA_Media_Song_GetTrackNumber(uint32_t a0,
+                                                        int32_t* a1) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Media_Song_GetTrackNumber");
-  if (a1) { *a1 = 0; }
+  if (a1) {
+    *a1 = 0;
+  }
   return 0;
 }
 
-extern "C" uint32_t xna_MEDIA_Media_Song_IsRestricted(uint32_t a0, uint32_t* a1) {
+extern "C" uint32_t xna_MEDIA_Media_Song_IsRestricted(uint32_t a0,
+                                                      uint32_t* a1) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Media_Song_IsRestricted");
-  if (a1) { *a1 = 0; }
+  if (a1) {
+    *a1 = 0;
+  }
   return 0;
 }
 
-extern "C" uint32_t xna_MEDIA_Media_VideoDecoder_Create(uint32_t a0, const char* a1, uint32_t a2, uint32_t a3, uint32_t a4, uint32_t a5, uint32_t a6, uint32_t* a7) {
+extern "C" uint32_t xna_MEDIA_Media_VideoDecoder_Create(
+    uint32_t a0, const char* a1, uint32_t a2, uint32_t a3, uint32_t a4,
+    uint32_t a5, uint32_t a6, uint32_t* a7) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Media_VideoDecoder_Create");
-  if (a7) { *a7 = 0; }
+  if (a7) {
+    *a7 = 0;
+  }
   return 0;
 }
 
-extern "C" uint32_t xna_MEDIA_Media_VideoDecoder_GetPlayPosition(uint32_t a0, int32_t* a1) {
-  xe::kernel::xna::XnaExportDefaulted("MEDIA!Media_VideoDecoder_GetPlayPosition");
-  if (a1) { *a1 = 0; }
+extern "C" uint32_t xna_MEDIA_Media_VideoDecoder_GetPlayPosition(uint32_t a0,
+                                                                 int32_t* a1) {
+  xe::kernel::xna::XnaExportDefaulted(
+      "MEDIA!Media_VideoDecoder_GetPlayPosition");
+  if (a1) {
+    *a1 = 0;
+  }
   return 0;
 }
 
-extern "C" uint32_t xna_MEDIA_Media_VideoDecoder_GetState(uint32_t a0, uint32_t* a1) {
+extern "C" uint32_t xna_MEDIA_Media_VideoDecoder_GetState(uint32_t a0,
+                                                          uint32_t* a1) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Media_VideoDecoder_GetState");
-  if (a1) { *a1 = 0; }
+  if (a1) {
+    *a1 = 0;
+  }
   return 0;
 }
 
-extern "C" uint32_t xna_MEDIA_Media_VideoDecoder_GetTexture(uint32_t a0, uint32_t a1, uint32_t a2, uint32_t* a3) {
+extern "C" uint32_t xna_MEDIA_Media_VideoDecoder_GetTexture(uint32_t a0,
+                                                            uint32_t a1,
+                                                            uint32_t a2,
+                                                            uint32_t* a3) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Media_VideoDecoder_GetTexture");
-  if (a3) { *a3 = 0; }
+  if (a3) {
+    *a3 = 0;
+  }
   return 0;
 }
 
@@ -403,17 +568,20 @@ extern "C" uint32_t xna_MEDIA_Media_VideoDecoder_Resume(uint32_t a0) {
   return 0;
 }
 
-extern "C" uint32_t xna_MEDIA_Media_VideoDecoder_SetLooping(uint32_t a0, uint32_t a1) {
+extern "C" uint32_t xna_MEDIA_Media_VideoDecoder_SetLooping(uint32_t a0,
+                                                            uint32_t a1) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Media_VideoDecoder_SetLooping");
   return 0;
 }
 
-extern "C" uint32_t xna_MEDIA_Media_VideoDecoder_SetMute(uint32_t a0, uint32_t a1) {
+extern "C" uint32_t xna_MEDIA_Media_VideoDecoder_SetMute(uint32_t a0,
+                                                         uint32_t a1) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Media_VideoDecoder_SetMute");
   return 0;
 }
 
-extern "C" uint32_t xna_MEDIA_Media_VideoDecoder_SetVolume(uint32_t a0, float a1) {
+extern "C" uint32_t xna_MEDIA_Media_VideoDecoder_SetVolume(uint32_t a0,
+                                                           float a1) {
   xe::kernel::xna::XnaExportDefaulted("MEDIA!Media_VideoDecoder_SetVolume");
   return 0;
 }
@@ -428,14 +596,22 @@ extern "C" uint32_t xna_MEDIA_Media_VideoDecoder_Stop(uint32_t a0) {
   return 0;
 }
 
-extern "C" uint32_t xna_STORAGE_STORAGE_DeleteContent(uint32_t a0, uint32_t a1, const char* a2, uint32_t a3, uint32_t a4) {
+extern "C" uint32_t xna_STORAGE_STORAGE_DeleteContent(uint32_t a0, uint32_t a1,
+                                                      const char* a2,
+                                                      uint32_t a3,
+                                                      uint32_t a4) {
   xe::kernel::xna::XnaExportUnimplemented("STORAGE!STORAGE_DeleteContent");
   return kNotImplemented;
 }
 
-extern "C" uint32_t xna_STORAGE_STORAGE_ShowDeviceUI(int32_t a0, uint32_t* a1, uint32_t* a2) {
+extern "C" uint32_t xna_STORAGE_STORAGE_ShowDeviceUI(int32_t a0, uint32_t* a1,
+                                                     uint32_t* a2) {
   xe::kernel::xna::XnaExportDefaulted("STORAGE!STORAGE_ShowDeviceUI");
-  if (a1) { *a1 = 0; }
-  if (a2) { *a2 = 0; }
+  if (a1) {
+    *a1 = 0;
+  }
+  if (a2) {
+    *a2 = 0;
+  }
   return 0;
 }

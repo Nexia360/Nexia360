@@ -27,6 +27,8 @@ void RequestXnaRuntimeInstall(const std::string& missing);
 
 bool XnaRuntimeInstallPending();
 
+bool InstallXnaRuntime(std::string* out_error);
+
 }  // namespace xna
 }  // namespace kernel
 }  // namespace xe

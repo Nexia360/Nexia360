@@ -196,7 +196,8 @@ bool DecodeWithXmaDecoder(const uint8_t* data, uint32_t size, bool is_stereo,
     // XMA_CONTEXT_DATA declares an explicit constructor and so has no default
     // one. Reading it back also keeps what the clear just set - notably the
     // read offset, which starts at the packet header rather than at zero.
-    apu::XMA_CONTEXT_DATA context(memory->TranslateVirtual<uint8_t*>(context_ptr));
+    apu::XMA_CONTEXT_DATA context(
+        memory->TranslateVirtual<uint8_t*>(context_ptr));
     context.input_buffer_0_ptr = memory->GetPhysicalAddress(input_guest);
     context.input_buffer_0_packet_count = packet_count;
     context.input_buffer_0_valid = 1;
@@ -272,7 +273,8 @@ bool DecodeWithXmaDecoder(const uint8_t* data, uint32_t size, bool is_stereo,
         const auto* samples = reinterpret_cast<const uint16_t*>(
             blocks + read_block * kBytesPerOutputBlock);
         for (uint32_t i = 0; i < kBytesPerOutputBlock / sizeof(uint16_t); ++i) {
-          const int16_t sample = static_cast<int16_t>(xe::byte_swap(samples[i]));
+          const int16_t sample =
+              static_cast<int16_t>(xe::byte_swap(samples[i]));
           out->push_back(sample / 32768.0f);
         }
         read_block = (read_block + 1) % kOutputBlocks;
@@ -286,7 +288,6 @@ bool DecodeWithXmaDecoder(const uint8_t* data, uint32_t size, bool is_stereo,
     context.output_buffer_valid = 1;
     context.Store(memory->TranslateVirtual<uint8_t*>(context_ptr));
   }
-
 
   xma->ReleaseContext(context_ptr);
   memory->SystemHeapFree(input_guest);
@@ -310,8 +311,8 @@ void ExpandMono(std::vector<float>* samples) {
   samples->swap(stereo);
 }
 
-bool DecodePcm(const XnaAudioFormat& format, const uint8_t* data,
-               uint32_t size, std::vector<float>* out) {
+bool DecodePcm(const XnaAudioFormat& format, const uint8_t* data, uint32_t size,
+               std::vector<float>* out) {
   const uint32_t channels = std::max<uint32_t>(format.channels, 1);
   const uint32_t bytes = format.bits_per_sample == 8 ? 1 : 2;
   const uint32_t frame_bytes = bytes * channels;
@@ -321,9 +322,9 @@ bool DecodePcm(const XnaAudioFormat& format, const uint8_t* data,
     if (bytes == 1) {
       return (float(sample[0]) - 128.0f) / 128.0f;
     }
-    const uint16_t raw =
-        format.big_endian ? uint16_t((sample[0] << 8) | sample[1])
-                          : uint16_t(sample[0] | (sample[1] << 8));
+    const uint16_t raw = format.big_endian
+                             ? uint16_t((sample[0] << 8) | sample[1])
+                             : uint16_t(sample[0] | (sample[1] << 8));
     return float(int16_t(raw)) / 32768.0f;
   };
   out->reserve(size_t(frames) * kChannels);
@@ -352,14 +353,16 @@ void AppendFrame(const AVFrame* frame, std::vector<float>* out) {
         return reinterpret_cast<const float*>(
             frame->extended_data[0])[index * channels + c];
       case AV_SAMPLE_FMT_S16P:
-        return reinterpret_cast<const int16_t*>(frame->extended_data[c])[index] /
+        return reinterpret_cast<const int16_t*>(
+                   frame->extended_data[c])[index] /
                32768.0f;
       case AV_SAMPLE_FMT_S16:
         return reinterpret_cast<const int16_t*>(
                    frame->extended_data[0])[index * channels + c] /
                32768.0f;
       case AV_SAMPLE_FMT_S32P:
-        return reinterpret_cast<const int32_t*>(frame->extended_data[c])[index] /
+        return reinterpret_cast<const int32_t*>(
+                   frame->extended_data[c])[index] /
                2147483648.0f;
       case AV_SAMPLE_FMT_S32:
         return reinterpret_cast<const int32_t*>(
@@ -384,8 +387,8 @@ void DrainDecoder(AVCodecContext* context, AVFrame* frame,
   }
 }
 
-bool DecodeWma(const XnaAudioFormat& format, const uint8_t* data,
-               uint32_t size, std::vector<float>* out) {
+bool DecodeWma(const XnaAudioFormat& format, const uint8_t* data, uint32_t size,
+               std::vector<float>* out) {
   if (!format.block_align || !format.channels || !format.sample_rate) {
     return false;
   }
@@ -402,8 +405,8 @@ bool DecodeWma(const XnaAudioFormat& format, const uint8_t* data,
   av_channel_layout_default(&context->ch_layout, int(format.channels));
   context->block_align = int(format.block_align);
   context->bit_rate = int64_t(format.avg_bytes_per_second) * 8;
-  context->extradata = static_cast<uint8_t*>(
-      av_mallocz(6 + AV_INPUT_BUFFER_PADDING_SIZE));
+  context->extradata =
+      static_cast<uint8_t*>(av_mallocz(6 + AV_INPUT_BUFFER_PADDING_SIZE));
   if (context->extradata) {
     context->extradata_size = 6;
     context->extradata[4] = 31;
@@ -517,11 +520,12 @@ void MixVoice(Voice& voice, float* frame, size_t frames_per_submit,
       return;
     }
     if (voice.loop) {
-      const bool region = voice.loop_length &&
-                          size_t(voice.loop_begin) + voice.loop_length <= frames;
+      const bool region =
+          voice.loop_length &&
+          size_t(voice.loop_begin) + voice.loop_length <= frames;
       const double begin = region ? double(voice.loop_begin) : 0.0;
-      const double end =
-          region ? double(voice.loop_begin) + voice.loop_length : double(frames);
+      const double end = region ? double(voice.loop_begin) + voice.loop_length
+                                : double(frames);
       if (voice.cursor >= end && end > begin) {
         voice.cursor = begin + std::fmod(voice.cursor - begin, end - begin);
       }
@@ -657,11 +661,10 @@ void ForPending(uint64_t owner, Change change) {
 }
 
 void RemoveOwnerLocked(uint64_t owner) {
-  voices.erase(std::remove_if(voices.begin(), voices.end(),
-                              [owner](const Voice& v) {
-                                return v.owner == owner;
-                              }),
-               voices.end());
+  voices.erase(
+      std::remove_if(voices.begin(), voices.end(),
+                     [owner](const Voice& v) { return v.owner == owner; }),
+      voices.end());
 }
 
 }  // namespace
@@ -671,13 +674,13 @@ XnaSamples XnaDecodeAudio(const XnaAudioFormat& format, const uint8_t* data,
   if (!data || !size) {
     return nullptr;
   }
-  const uint64_t key =
-      cache ? XXH3_64bits(data, size) ^ (uint64_t(format.codec) << 56) ^
-                  (uint64_t(format.sample_rate) << 20) ^
-                  (uint64_t(format.channels) << 8) ^
-                  (uint64_t(format.bits_per_sample) << 1) ^
-                  uint64_t(format.big_endian ? 1 : 0)
-            : 0;
+  const uint64_t key = cache ? XXH3_64bits(data, size) ^
+                                   (uint64_t(format.codec) << 56) ^
+                                   (uint64_t(format.sample_rate) << 20) ^
+                                   (uint64_t(format.channels) << 8) ^
+                                   (uint64_t(format.bits_per_sample) << 1) ^
+                                   uint64_t(format.big_endian ? 1 : 0)
+                             : 0;
   if (cache) {
     std::lock_guard<std::mutex> lock(player_mutex);
     auto found = decoded_cache.find(key);
@@ -924,20 +927,23 @@ void XnaVoiceDetach(uint64_t owner) {
 void XnaVoiceSetPaused(uint64_t owner, bool paused) {
   ForOwner(owner, [paused](Voice& voice) { voice.paused = paused; });
   std::lock_guard<std::mutex> lock(player_mutex);
-  ForPending(owner, [paused](XnaVoiceParams& params) { params.paused = paused; });
+  ForPending(owner,
+             [paused](XnaVoiceParams& params) { params.paused = paused; });
 }
 
 void XnaVoiceSetVolume(uint64_t owner, float volume) {
   ForOwner(owner, [volume](Voice& voice) { voice.volume = volume; });
   std::lock_guard<std::mutex> lock(player_mutex);
-  ForPending(owner, [volume](XnaVoiceParams& params) { params.volume = volume; });
+  ForPending(owner,
+             [volume](XnaVoiceParams& params) { params.volume = volume; });
 }
 
 void XnaVoiceSetPan(uint64_t owner, float pan) {
   const float clamped = std::clamp(pan, -1.0f, 1.0f);
   ForOwner(owner, [clamped](Voice& voice) { voice.pan = clamped; });
   std::lock_guard<std::mutex> lock(player_mutex);
-  ForPending(owner, [clamped](XnaVoiceParams& params) { params.pan = clamped; });
+  ForPending(owner,
+             [clamped](XnaVoiceParams& params) { params.pan = clamped; });
 }
 
 void XnaVoiceSetPitch(uint64_t owner, float pitch) {
@@ -1025,8 +1031,7 @@ bool XactPlayWave(uint32_t cue, uint32_t category, const uint8_t* data,
         owner,
         [bytes, format](uint32_t* sample_rate) {
           *sample_rate = format.sample_rate;
-          return XnaDecodeAudio(format, bytes->data(),
-                                uint32_t(bytes->size()));
+          return XnaDecodeAudio(format, bytes->data(), uint32_t(bytes->size()));
         },
         params);
     XELOGI("[xna] XACT cue {} decoding {} byte(s) of WMA in the background",

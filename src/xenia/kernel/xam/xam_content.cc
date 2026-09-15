@@ -931,8 +931,8 @@ dword_result_t xeXamContentLaunchImage(dword_t user_index,
 
   xam->SaveLoaderData();
 
-  XELOGE("XamContentLaunchImage: host '{}' module '{}'",
-         loader_data.host_path, loader_data.launch_path);
+  XELOGE("XamContentLaunchImage: host '{}' module '{}'", loader_data.host_path,
+         loader_data.launch_path);
 
   ReloadForLaunch();
   return X_ERROR_SUCCESS;

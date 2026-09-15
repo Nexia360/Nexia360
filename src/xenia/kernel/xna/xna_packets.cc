@@ -28,9 +28,9 @@
 #include "xenia/kernel/xna/xna_packets.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
-#include <atomic>
 #include <map>
 #include <string>
 
@@ -150,33 +150,56 @@ bool IsKnownType(uint32_t type) {
 
 const char* TypeName(uint32_t type) {
   switch (static_cast<HlcbPacketType>(type)) {
-    case HlcbPacketType::kClear: return "Clear";
-    case HlcbPacketType::kSetIndexBuffer: return "SetIndexBuffer";
-    case HlcbPacketType::kSetVertexDeclaration: return "SetVertexDeclaration";
-    case HlcbPacketType::kSetStreamSource: return "SetStreamSource";
-    case HlcbPacketType::kSetTexture: return "SetTexture";
-    case HlcbPacketType::kEffectApply: return "EffectApply";
-    case HlcbPacketType::kEffectSetTexture: return "EffectSetTexture";
-    case HlcbPacketType::kEffectSetTechnique: return "EffectSetTechnique";
-    case HlcbPacketType::kSetBlendState: return "SetBlendState";
-    case HlcbPacketType::kSetDepthStencilState: return "SetDepthStencilState";
-    case HlcbPacketType::kSetRasterizerState: return "SetRasterizerState";
-    case HlcbPacketType::kSetSamplerState: return "SetSamplerState";
-    case HlcbPacketType::kSetHighFrequencyState: return "SetHighFrequencyState";
-    case HlcbPacketType::kSetRenderTargets: return "SetRenderTargets";
-    case HlcbPacketType::kSetScissorRect: return "SetScissorRect";
-    case HlcbPacketType::kSetViewPort: return "SetViewPort";
-    case HlcbPacketType::kDrawPrimitives: return "DrawPrimitives";
-    case HlcbPacketType::kDrawIndexedPrimitives: return "DrawIndexedPrimitives";
+    case HlcbPacketType::kClear:
+      return "Clear";
+    case HlcbPacketType::kSetIndexBuffer:
+      return "SetIndexBuffer";
+    case HlcbPacketType::kSetVertexDeclaration:
+      return "SetVertexDeclaration";
+    case HlcbPacketType::kSetStreamSource:
+      return "SetStreamSource";
+    case HlcbPacketType::kSetTexture:
+      return "SetTexture";
+    case HlcbPacketType::kEffectApply:
+      return "EffectApply";
+    case HlcbPacketType::kEffectSetTexture:
+      return "EffectSetTexture";
+    case HlcbPacketType::kEffectSetTechnique:
+      return "EffectSetTechnique";
+    case HlcbPacketType::kSetBlendState:
+      return "SetBlendState";
+    case HlcbPacketType::kSetDepthStencilState:
+      return "SetDepthStencilState";
+    case HlcbPacketType::kSetRasterizerState:
+      return "SetRasterizerState";
+    case HlcbPacketType::kSetSamplerState:
+      return "SetSamplerState";
+    case HlcbPacketType::kSetHighFrequencyState:
+      return "SetHighFrequencyState";
+    case HlcbPacketType::kSetRenderTargets:
+      return "SetRenderTargets";
+    case HlcbPacketType::kSetScissorRect:
+      return "SetScissorRect";
+    case HlcbPacketType::kSetViewPort:
+      return "SetViewPort";
+    case HlcbPacketType::kDrawPrimitives:
+      return "DrawPrimitives";
+    case HlcbPacketType::kDrawIndexedPrimitives:
+      return "DrawIndexedPrimitives";
     case HlcbPacketType::kDrawUserIndexedPrimitives:
       return "DrawUserIndexedPrimitives";
-    case HlcbPacketType::kDrawUserPrimitives: return "DrawUserPrimitives";
-    case HlcbPacketType::kDrawSprites: return "DrawSprites";
+    case HlcbPacketType::kDrawUserPrimitives:
+      return "DrawUserPrimitives";
+    case HlcbPacketType::kDrawSprites:
+      return "DrawSprites";
     case HlcbPacketType::kDrawInstancedPrimitives:
       return "DrawInstancedPrimitives";
-    case HlcbPacketType::kBeginQuery: return "BeginQuery";
-    case HlcbPacketType::kEndQuery: return "EndQuery";
-    default: return "EffectSetValue";
+    case HlcbPacketType::kBeginQuery:
+      return "BeginQuery";
+    case HlcbPacketType::kEndQuery:
+      return "EndQuery";
+    default:
+      return "EffectSetValue";
   }
 }
 
@@ -242,12 +265,12 @@ bool HlcbDecoder::Walk(const uint8_t* data, uint32_t size, HlcbSink* sink) {
     // was truncated into the packet type. Every resource descriptor lives in
     // one 16 MB guest arena precisely so that byte is a constant and can be put
     // back here - once, for every packet, rather than in each sink.
-    const uint32_t handle =
-        XnaGuestResolveHandle(PacketHandle(header));
+    const uint32_t handle = XnaGuestResolveHandle(PacketHandle(header));
 
     if (!IsKnownType(type)) {
       XELOGE(
-          "[xna] HLCB desync at byte {} of {}: packet type {} is not a command. "
+          "[xna] HLCB desync at byte {} of {}: packet type {} is not a "
+          "command. "
           "Some packet before this one was decoded at the wrong size",
           offset, size, type);
       // The buffer itself is the evidence: the header words are readable in the
@@ -363,7 +386,8 @@ bool HlcbDecoder::Walk(const uint8_t* data, uint32_t size, HlcbSink* sink) {
           // multiplying it out would overflow into a plausible-looking size.
           if (element && count > (size - offset) / element) {
             XELOGE(
-                "[xna] HLCB {} at byte {} claims {} elements of {} bytes, which "
+                "[xna] HLCB {} at byte {} claims {} elements of {} bytes, "
+                "which "
                 "does not fit in {}",
                 TypeName(type), offset, count, element, size);
             return false;

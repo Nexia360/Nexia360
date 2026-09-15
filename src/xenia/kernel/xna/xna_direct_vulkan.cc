@@ -376,17 +376,27 @@ VkImageView CreateView(VkImage image, VkImageViewType type, VkFormat format,
 
 VkFormat TargetFormatFor(uint32_t surface_format) {
   switch (surface_format) {
-    case 9:  return VK_FORMAT_A2B10G10R10_UNORM_PACK32;
-    case 10: return VK_FORMAT_R16G16_UNORM;
-    case 11: return VK_FORMAT_R16G16B16A16_UNORM;
-    case 13: return VK_FORMAT_R32_SFLOAT;
-    case 14: return VK_FORMAT_R32G32_SFLOAT;
-    case 15: return VK_FORMAT_R32G32B32A32_SFLOAT;
-    case 16: return VK_FORMAT_R16_SFLOAT;
-    case 17: return VK_FORMAT_R16G16_SFLOAT;
+    case 9:
+      return VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+    case 10:
+      return VK_FORMAT_R16G16_UNORM;
+    case 11:
+      return VK_FORMAT_R16G16B16A16_UNORM;
+    case 13:
+      return VK_FORMAT_R32_SFLOAT;
+    case 14:
+      return VK_FORMAT_R32G32_SFLOAT;
+    case 15:
+      return VK_FORMAT_R32G32B32A32_SFLOAT;
+    case 16:
+      return VK_FORMAT_R16_SFLOAT;
+    case 17:
+      return VK_FORMAT_R16G16_SFLOAT;
     case 18:
-    case 19: return VK_FORMAT_R16G16B16A16_SFLOAT;
-    default: return VK_FORMAT_R8G8B8A8_UNORM;
+    case 19:
+      return VK_FORMAT_R16G16B16A16_SFLOAT;
+    default:
+      return VK_FORMAT_R8G8B8A8_UNORM;
   }
 }
 
@@ -401,7 +411,8 @@ TextureFormatInfo TextureFormatFor(uint32_t surface_format) {
       return {VK_FORMAT_R4G4B4A4_UNORM_PACK16,
               {VK_COMPONENT_SWIZZLE_G, VK_COMPONENT_SWIZZLE_B,
                VK_COMPONENT_SWIZZLE_A, VK_COMPONENT_SWIZZLE_R},
-              1, 2};
+              1,
+              2};
     case 4:
       return {VK_FORMAT_BC1_RGBA_UNORM_BLOCK, id, 4, 8};
     case 5:
@@ -422,7 +433,8 @@ TextureFormatInfo TextureFormatFor(uint32_t surface_format) {
       return {VK_FORMAT_R8_UNORM,
               {VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_ZERO,
                VK_COMPONENT_SWIZZLE_ZERO, VK_COMPONENT_SWIZZLE_R},
-              1, 1};
+              1,
+              1};
     case 13:
       return {VK_FORMAT_R32_SFLOAT, id, 1, 4};
     case 14:
@@ -480,20 +492,19 @@ Target* EnsureTarget(uint32_t key, uint32_t width, uint32_t height,
     RetireTarget(target);
   }
   const VkComponentMapping id = {};
-  if (!CreateImage(VK_IMAGE_TYPE_2D, format, width, height, 1, 1, 1,
-                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                       VK_IMAGE_USAGE_SAMPLED_BIT |
-                       VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                       VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                   0, &target.color, &target.color_memory)) {
-    XELOGE("[xna] direct vulkan: could not create a {}x{} render target",
-           width, height);
+  if (!CreateImage(
+          VK_IMAGE_TYPE_2D, format, width, height, 1, 1, 1,
+          VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+              VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+          0, &target.color, &target.color_memory)) {
+    XELOGE("[xna] direct vulkan: could not create a {}x{} render target", width,
+           height);
     target = Target();
     return nullptr;
   }
-  target.attachment_view = CreateView(target.color, VK_IMAGE_VIEW_TYPE_2D,
-                                      format, VK_IMAGE_ASPECT_COLOR_BIT, 1, 1,
-                                      id);
+  target.attachment_view =
+      CreateView(target.color, VK_IMAGE_VIEW_TYPE_2D, format,
+                 VK_IMAGE_ASPECT_COLOR_BIT, 1, 1, id);
   target.sampled_view = CreateView(target.color, VK_IMAGE_VIEW_TYPE_2D_ARRAY,
                                    format, VK_IMAGE_ASPECT_COLOR_BIT, 1, 1, id);
   if (!CreateImage(VK_IMAGE_TYPE_2D, kDepthFormat, width, height, 1, 1, 1,
@@ -505,9 +516,9 @@ Target* EnsureTarget(uint32_t key, uint32_t width, uint32_t height,
     RetireTarget(target);
     return nullptr;
   }
-  target.depth_view = CreateView(target.depth, VK_IMAGE_VIEW_TYPE_2D,
-                                 kDepthFormat, VK_IMAGE_ASPECT_DEPTH_BIT, 1, 1,
-                                 id);
+  target.depth_view =
+      CreateView(target.depth, VK_IMAGE_VIEW_TYPE_2D, kDepthFormat,
+                 VK_IMAGE_ASPECT_DEPTH_BIT, 1, 1, id);
   target.width = width;
   target.height = height;
   target.format = format;
@@ -564,11 +575,10 @@ VkImageView EnsureTexture(const XnaGpuTextureBinding& binding) {
   const TextureFormatInfo info = TextureFormatFor(base.format);
 
   HostTexture& texture = s.textures[binding.handle];
-  const bool same_shape = texture.image != VK_NULL_HANDLE &&
-                          texture.width == base.width &&
-                          texture.height == base.height &&
-                          texture.levels == levels &&
-                          texture.format == info.format;
+  const bool same_shape =
+      texture.image != VK_NULL_HANDLE && texture.width == base.width &&
+      texture.height == base.height && texture.levels == levels &&
+      texture.format == info.format;
   if (same_shape && texture.version == base.version) {
     return texture.view;
   }
@@ -590,20 +600,20 @@ VkImageView EnsureTexture(const XnaGpuTextureBinding& binding) {
       s.retired.push_back({texture.image, VK_NULL_HANDLE, texture.memory});
       texture = HostTexture();
     }
-    if (!CreateImage(VK_IMAGE_TYPE_2D, info.format, base.width, base.height, 1,
-                     levels, 1,
-                     VK_IMAGE_USAGE_SAMPLED_BIT |
-                         VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                     0, &texture.image, &texture.memory)) {
-      XELOGE("[xna] direct vulkan: could not create texture {:08X} {}x{} "
-             "format {}",
-             binding.handle, base.width, base.height, base.format);
+    if (!CreateImage(
+            VK_IMAGE_TYPE_2D, info.format, base.width, base.height, 1, levels,
+            1, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, 0,
+            &texture.image, &texture.memory)) {
+      XELOGE(
+          "[xna] direct vulkan: could not create texture {:08X} {}x{} "
+          "format {}",
+          binding.handle, base.width, base.height, base.format);
       texture = HostTexture();
       return VK_NULL_HANDLE;
     }
-    texture.view = CreateView(texture.image, VK_IMAGE_VIEW_TYPE_2D_ARRAY,
-                              info.format, VK_IMAGE_ASPECT_COLOR_BIT, levels, 1,
-                              info.mapping);
+    texture.view =
+        CreateView(texture.image, VK_IMAGE_VIEW_TYPE_2D_ARRAY, info.format,
+                   VK_IMAGE_ASPECT_COLOR_BIT, levels, 1, info.mapping);
     texture.layout = VK_IMAGE_LAYOUT_UNDEFINED;
     if (texture.view == VK_NULL_HANDLE) {
       s.retired.push_back({texture.image, VK_NULL_HANDLE, texture.memory});
@@ -726,8 +736,7 @@ VkSampler SamplerFor(uint64_t key) {
   info.mipLodBias = 0.0f;
   if (s.anisotropy && aniso >= 2 && aniso <= 5) {
     info.anisotropyEnable = VK_TRUE;
-    info.maxAnisotropy =
-        std::min(float(1u << (aniso - 1)), s.max_anisotropy);
+    info.maxAnisotropy = std::min(float(1u << (aniso - 1)), s.max_anisotropy);
   } else {
     info.anisotropyEnable = VK_FALSE;
     info.maxAnisotropy = 1.0f;
@@ -792,10 +801,9 @@ VkPipelineLayout PipelineLayoutFor(uint32_t textures_pixel,
                                    uint32_t samplers_pixel,
                                    uint32_t textures_vertex,
                                    uint32_t samplers_vertex) {
-  const uint64_t key = uint64_t(textures_pixel) |
-                       (uint64_t(samplers_pixel) << 16) |
-                       (uint64_t(textures_vertex) << 32) |
-                       (uint64_t(samplers_vertex) << 48);
+  const uint64_t key =
+      uint64_t(textures_pixel) | (uint64_t(samplers_pixel) << 16) |
+      (uint64_t(textures_vertex) << 32) | (uint64_t(samplers_vertex) << 48);
   auto found = s.pipeline_layouts.find(key);
   if (found != s.pipeline_layouts.end()) {
     return found->second;
@@ -818,8 +826,7 @@ VkPipelineLayout PipelineLayoutFor(uint32_t textures_pixel,
   info.setLayoutCount = SpirvShaderTranslator::kDescriptorSetCount;
   info.pSetLayouts = layouts;
   VkPipelineLayout layout = VK_NULL_HANDLE;
-  if (F().vkCreatePipelineLayout(s.vk, &info, nullptr, &layout) !=
-      VK_SUCCESS) {
+  if (F().vkCreatePipelineLayout(s.vk, &info, nullptr, &layout) != VK_SUCCESS) {
     layout = VK_NULL_HANDLE;
   }
   s.pipeline_layouts.emplace(key, layout);
@@ -918,53 +925,77 @@ VkFramebuffer FramebufferFor(VkRenderPass render_pass, Target* const* targets,
 
 VkBlendFactor BlendFor(uint32_t xna, bool alpha) {
   switch (xna) {
-    case 0:  return VK_BLEND_FACTOR_ONE;
-    case 1:  return VK_BLEND_FACTOR_ZERO;
-    case 2:  return alpha ? VK_BLEND_FACTOR_SRC_ALPHA
-                          : VK_BLEND_FACTOR_SRC_COLOR;
-    case 3:  return alpha ? VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA
-                          : VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
-    case 4:  return VK_BLEND_FACTOR_SRC_ALPHA;
-    case 5:  return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-    case 6:  return alpha ? VK_BLEND_FACTOR_DST_ALPHA
-                          : VK_BLEND_FACTOR_DST_COLOR;
-    case 7:  return alpha ? VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA
-                          : VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR;
-    case 8:  return VK_BLEND_FACTOR_DST_ALPHA;
-    case 9:  return VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
-    case 10: return VK_BLEND_FACTOR_CONSTANT_COLOR;
-    case 11: return VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR;
-    case 12: return VK_BLEND_FACTOR_SRC_ALPHA_SATURATE;
-    default: return VK_BLEND_FACTOR_ONE;
+    case 0:
+      return VK_BLEND_FACTOR_ONE;
+    case 1:
+      return VK_BLEND_FACTOR_ZERO;
+    case 2:
+      return alpha ? VK_BLEND_FACTOR_SRC_ALPHA : VK_BLEND_FACTOR_SRC_COLOR;
+    case 3:
+      return alpha ? VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA
+                   : VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
+    case 4:
+      return VK_BLEND_FACTOR_SRC_ALPHA;
+    case 5:
+      return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    case 6:
+      return alpha ? VK_BLEND_FACTOR_DST_ALPHA : VK_BLEND_FACTOR_DST_COLOR;
+    case 7:
+      return alpha ? VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA
+                   : VK_BLEND_FACTOR_ONE_MINUS_DST_COLOR;
+    case 8:
+      return VK_BLEND_FACTOR_DST_ALPHA;
+    case 9:
+      return VK_BLEND_FACTOR_ONE_MINUS_DST_ALPHA;
+    case 10:
+      return VK_BLEND_FACTOR_CONSTANT_COLOR;
+    case 11:
+      return VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_COLOR;
+    case 12:
+      return VK_BLEND_FACTOR_SRC_ALPHA_SATURATE;
+    default:
+      return VK_BLEND_FACTOR_ONE;
   }
 }
 
 VkBlendOp BlendOpFor(uint32_t xna) {
   switch (xna) {
-    case 1:  return VK_BLEND_OP_SUBTRACT;
-    case 2:  return VK_BLEND_OP_REVERSE_SUBTRACT;
-    case 3:  return VK_BLEND_OP_MIN;
-    case 4:  return VK_BLEND_OP_MAX;
-    default: return VK_BLEND_OP_ADD;
+    case 1:
+      return VK_BLEND_OP_SUBTRACT;
+    case 2:
+      return VK_BLEND_OP_REVERSE_SUBTRACT;
+    case 3:
+      return VK_BLEND_OP_MIN;
+    case 4:
+      return VK_BLEND_OP_MAX;
+    default:
+      return VK_BLEND_OP_ADD;
   }
 }
 
 VkCompareOp CompareFor(uint32_t xna) {
   switch (xna) {
-    case 1:  return VK_COMPARE_OP_NEVER;
-    case 2:  return VK_COMPARE_OP_LESS;
-    case 3:  return VK_COMPARE_OP_LESS_OR_EQUAL;
-    case 4:  return VK_COMPARE_OP_EQUAL;
-    case 5:  return VK_COMPARE_OP_GREATER_OR_EQUAL;
-    case 6:  return VK_COMPARE_OP_GREATER;
-    case 7:  return VK_COMPARE_OP_NOT_EQUAL;
-    default: return VK_COMPARE_OP_ALWAYS;
+    case 1:
+      return VK_COMPARE_OP_NEVER;
+    case 2:
+      return VK_COMPARE_OP_LESS;
+    case 3:
+      return VK_COMPARE_OP_LESS_OR_EQUAL;
+    case 4:
+      return VK_COMPARE_OP_EQUAL;
+    case 5:
+      return VK_COMPARE_OP_GREATER_OR_EQUAL;
+    case 6:
+      return VK_COMPARE_OP_GREATER;
+    case 7:
+      return VK_COMPARE_OP_NOT_EQUAL;
+    default:
+      return VK_COMPARE_OP_ALWAYS;
   }
 }
 
-bool TopologyFor(xenos::PrimitiveType primitive,
-                 VkPrimitiveTopology* topology, bool* polygonal,
-                 bool* line) {
+bool TopologyFor(xenos::PrimitiveType primitive, VkPrimitiveTopology* topology,
+                 bool* polygonal, bool* line) {
   *polygonal = false;
   *line = false;
   switch (primitive) {
@@ -1125,7 +1156,8 @@ VkPipeline PipelineFor(const PipelineKey& key, VkShaderModule vertex,
     ++stage_count;
   }
   VkPipelineVertexInputStateCreateInfo vertex_input = {};
-  vertex_input.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+  vertex_input.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
   VkPipelineInputAssemblyStateCreateInfo input_assembly = {};
   input_assembly.sType =
       VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -1348,8 +1380,8 @@ bool DrawLocked(const XnaGpuDraw& draw, const XnaGpuStream* streams,
   }
 
   static const XnaGpuTextureBinding kUnbound{};
-  const auto texture_for = [&](uint32_t fetch_constant)
-      -> const XnaGpuTextureBinding& {
+  const auto texture_for =
+      [&](uint32_t fetch_constant) -> const XnaGpuTextureBinding& {
     return fetch_constant < XnaGpuDraw::kMaxTextureSlots
                ? draw.textures[fetch_constant]
                : kUnbound;
@@ -1398,14 +1430,14 @@ bool DrawLocked(const XnaGpuDraw& draw, const XnaGpuStream* streams,
   std::vector<VkSampler> pixel_samplers;
   if (pixel) {
     for (const auto& binding : pixel->GetSamplerBindingsAfterTranslation()) {
-      pixel_samplers.push_back(
-          SamplerFor(SamplerKeyFor(binding, texture_for(binding.fetch_constant))));
+      pixel_samplers.push_back(SamplerFor(
+          SamplerKeyFor(binding, texture_for(binding.fetch_constant))));
     }
   }
   std::vector<VkSampler> vertex_samplers;
   for (const auto& binding : vertex->GetSamplerBindingsAfterTranslation()) {
-    vertex_samplers.push_back(
-        SamplerFor(SamplerKeyFor(binding, texture_for(binding.fetch_constant))));
+    vertex_samplers.push_back(SamplerFor(
+        SamplerKeyFor(binding, texture_for(binding.fetch_constant))));
   }
 
   uint32_t min_index = 0;
@@ -1431,9 +1463,9 @@ bool DrawLocked(const XnaGpuDraw& draw, const XnaGpuStream* streams,
     min_index = UINT32_MAX;
     max_index = 0;
     for (uint32_t i = 0; i < index_count; ++i) {
-      const uint32_t value =
-          draw.index_32bit ? xe::load_and_swap<uint32_t>(source + i * 4)
-                           : xe::load_and_swap<uint16_t>(source + i * 2);
+      const uint32_t value = draw.index_32bit
+                                 ? xe::load_and_swap<uint32_t>(source + i * 4)
+                                 : xe::load_and_swap<uint16_t>(source + i * 2);
       values[i] = value;
       min_index = std::min(min_index, value);
       max_index = std::max(max_index, value);
@@ -1516,9 +1548,9 @@ bool DrawLocked(const XnaGpuDraw& draw, const XnaGpuStream* streams,
 
   const uint32_t textures_pixel = uint32_t(pixel_views.size());
   const uint32_t textures_vertex = uint32_t(vertex_views.size());
-  VkPipelineLayout pipeline_layout = PipelineLayoutFor(
-      textures_pixel, uint32_t(pixel_samplers.size()), textures_vertex,
-      uint32_t(vertex_samplers.size()));
+  VkPipelineLayout pipeline_layout =
+      PipelineLayoutFor(textures_pixel, uint32_t(pixel_samplers.size()),
+                        textures_vertex, uint32_t(vertex_samplers.size()));
   if (pipeline_layout == VK_NULL_HANDLE) {
     return false;
   }
@@ -1536,9 +1568,10 @@ bool DrawLocked(const XnaGpuDraw& draw, const XnaGpuStream* streams,
         false, textures_pixel, uint32_t(pixel_samplers.size()));
   }
   if (!EnsureRoom(upload_bytes, set_count)) {
-    XELOGW("[xna] direct vulkan: draw needs {} upload bytes, more than a "
-           "frame holds",
-           upload_bytes);
+    XELOGW(
+        "[xna] direct vulkan: draw needs {} upload bytes, more than a "
+        "frame holds",
+        upload_bytes);
     return false;
   }
   VkDescriptorSet sets[3] = {};
@@ -1851,8 +1884,8 @@ void ClearLocked(const XnaGpuTarget& target, const float* color,
   if (!BeginRecording()) {
     return;
   }
-  Target* host = EnsureTarget(target.guest_address, target.width,
-                              target.height, target.format);
+  Target* host = EnsureTarget(target.guest_address, target.width, target.height,
+                              target.format);
   if (!host) {
     return;
   }
@@ -1981,8 +2014,9 @@ void PresentLocked() {
         F().vkCmdBeginRenderPass(s.cmd, &begin, VK_SUBPASS_CONTENTS_INLINE);
         F().vkCmdBindPipeline(s.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                               s.blit_pipeline);
-        VkViewport viewport = {0.0f, 0.0f, float(kBackBufferWidth),
-                               float(kBackBufferHeight), 0.0f, 1.0f};
+        VkViewport viewport = {
+            0.0f, 0.0f, float(kBackBufferWidth), float(kBackBufferHeight),
+            0.0f, 1.0f};
         F().vkCmdSetViewport(s.cmd, 0, 1, &viewport);
         VkRect2D scissor = {};
         scissor.extent.width = kBackBufferWidth;
@@ -1997,9 +2031,9 @@ void PresentLocked() {
         struct {
           int32_t offset[2];
           float size_inv[2];
-        } pixel_constants = {{0, 0},
-                             {1.0f / float(kBackBufferWidth),
-                              1.0f / float(kBackBufferHeight)}};
+        } pixel_constants = {
+            {0, 0},
+            {1.0f / float(kBackBufferWidth), 1.0f / float(kBackBufferHeight)}};
         F().vkCmdPushConstants(s.cmd, s.blit_layout,
                                VK_SHADER_STAGE_FRAGMENT_BIT, 16,
                                sizeof(pixel_constants), &pixel_constants);
@@ -2014,8 +2048,8 @@ void PresentLocked() {
         release.newLayout = uivk::VulkanPresenter::kGuestOutputInternalLayout;
         F().vkCmdPipelineBarrier(
             s.cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-            uivk::VulkanPresenter::kGuestOutputInternalStageMask, 0, 0,
-            nullptr, 0, nullptr, 1, &release);
+            uivk::VulkanPresenter::kGuestOutputInternalStageMask, 0, 0, nullptr,
+            0, nullptr, 1, &release);
         Submit();
         return true;
       });
@@ -2188,8 +2222,8 @@ bool CreateBlit() {
   layout_info.pSetLayouts = &s.blit_set_layout;
   layout_info.pushConstantRangeCount = 2;
   layout_info.pPushConstantRanges = ranges;
-  if (F().vkCreatePipelineLayout(s.vk, &layout_info, nullptr,
-                                 &s.blit_layout) != VK_SUCCESS) {
+  if (F().vkCreatePipelineLayout(s.vk, &layout_info, nullptr, &s.blit_layout) !=
+      VK_SUCCESS) {
     return false;
   }
 
@@ -2237,7 +2271,8 @@ bool CreateBlit() {
   stages[1].module = s.blit_ps;
   stages[1].pName = "main";
   VkPipelineVertexInputStateCreateInfo vertex_input = {};
-  vertex_input.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+  vertex_input.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
   VkPipelineInputAssemblyStateCreateInfo input_assembly = {};
   input_assembly.sType =
       VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -2352,8 +2387,8 @@ bool Initialize() {
   s.shared_binding_count =
       1u << SpirvShaderTranslator::GetSharedMemoryStorageBufferCountLog2(
           features.max_storage_buffer_range);
-  s.translator = std::make_unique<SpirvShaderTranslator>(features, false,
-                                                         false, false);
+  s.translator =
+      std::make_unique<SpirvShaderTranslator>(features, false, false, false);
 
   const VkShaderStageFlags guest_stages =
       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;

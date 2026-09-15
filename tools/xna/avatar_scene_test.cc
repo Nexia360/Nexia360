@@ -22,6 +22,180 @@ int main(int argc, char** argv) {
     std::printf("cannot load %s\n", argv[1]);
     return 1;
   }
+  if (std::string(argv[2]) == "carryable" && argc > 4) {
+    FILE* in = std::fopen(argv[3], "rb");
+    if (!in) {
+      return 1;
+    }
+    std::vector<uint8_t> blob;
+    uint8_t chunk[4096];
+    size_t got;
+    while ((got = std::fread(chunk, 1, sizeof(chunk), in)) > 0) {
+      blob.insert(blob.end(), chunk, chunk + got);
+    }
+    std::fclose(in);
+    std::array<uint8_t, 16> id = {};
+    const std::string hex = argv[4];
+    for (size_t i = 0; i < id.size() && i * 2 + 1 < hex.size(); ++i) {
+      id[i] = uint8_t(std::strtoul(hex.substr(i * 2, 2).c_str(), nullptr, 16));
+    }
+    catalog.AddAsset(id, "external", blob);
+    const Entry* entry = catalog.FindAsset(id.data());
+    std::vector<Record> records;
+    catalog.Records(entry->index, &records);
+    for (const Record& record : records) {
+      if (record.type == 5) {
+        for (size_t offset = 0;
+             offset + 4 < record.data.size() && offset <= 0x30; offset += 4) {
+          Skeleton skeleton;
+          if (DecodeSkeleton(record.data.data() + offset,
+                             record.data.size() - offset, &skeleton)) {
+            std::printf("t5 skeleton at +%zX: %u joints\n", offset,
+                        skeleton.count);
+            for (uint32_t j = 0; j < skeleton.count; ++j) {
+              std::printf("  joint %2u parent %3u bind %8.4f %8.4f %8.4f\n", j,
+                          skeleton.parents[j], skeleton.bind[j][0],
+                          skeleton.bind[j][1], skeleton.bind[j][2]);
+            }
+          }
+        }
+      }
+      if (record.type == 1) {
+        Clip body;
+        Clip carried;
+        const bool a = DecodeClip(record.data, &body);
+        const bool b = DecodeCarryableClip(record.data, &carried);
+        std::printf(
+            "t1: body %s (%u frames, %u joints), carryable %s (%u "
+            "frames, %u joints)\n",
+            a ? "ok" : "failed", body.frames, body.joints, b ? "ok" : "failed",
+            carried.frames, carried.joints);
+      }
+    }
+    return 0;
+  }
+  if (std::string(argv[2]) == "asset" && argc > 4) {
+    FILE* in = std::fopen(argv[3], "rb");
+    if (!in) {
+      return 1;
+    }
+    std::vector<uint8_t> blob;
+    uint8_t chunk[4096];
+    size_t got;
+    while ((got = std::fread(chunk, 1, sizeof(chunk), in)) > 0) {
+      blob.insert(blob.end(), chunk, chunk + got);
+    }
+    std::fclose(in);
+    std::array<uint8_t, 16> id = {};
+    const std::string hex = argv[4];
+    for (size_t i = 0; i < id.size() && i * 2 + 1 < hex.size(); ++i) {
+      id[i] = uint8_t(std::strtoul(hex.substr(i * 2, 2).c_str(), nullptr, 16));
+    }
+    if (!catalog.AddAsset(id, "external", blob)) {
+      std::printf("AddAsset refused\n");
+      return 1;
+    }
+    const Entry* entry = catalog.FindAsset(id.data());
+    std::printf("asset entry %04X kind %08X body %u slot %d\n", entry->index,
+                entry->kind, entry->BodyMask(), PrimarySlot(entry->kind));
+    std::vector<Record> records;
+    catalog.Records(entry->index, &records);
+    for (const Record& record : records) {
+      std::printf("  record type %u, %zu bytes\n", record.type,
+                  record.data.size());
+    }
+    auto model = catalog.LoadModel(entry->index);
+    if (!model) {
+      std::printf("model did not decode\n");
+      return 1;
+    }
+    size_t vertices = 0;
+    for (const Batch& batch : model->batches) {
+      vertices += batch.vertices.size();
+    }
+    std::printf("model: %zu batches, %zu vertices, %zu textures\n",
+                model->batches.size(), vertices, model->textures.size());
+    if (argc > 5) {
+      Description description;
+      description.items[kSlotCarryable] = uint16_t(entry->index);
+      const Scene scene = BuildScene(catalog, description);
+      Matrix local[kMaxJoints];
+      BindPose(scene.skeleton, local);
+      Matrix carried[kMaxJoints];
+      const Matrix* carried_pose = nullptr;
+      if (scene.carryable) {
+        const float seconds = argc > 6 ? float(std::atof(argv[6])) : 0.0f;
+        if (scene.carryable->body) {
+          SamplePose(*scene.carryable->body, scene.skeleton, seconds, local);
+        }
+        SampleCarryable(*scene.carryable, seconds, carried);
+        carried_pose = carried;
+      }
+      std::vector<uint8_t> rgba;
+      RenderPreview(scene, local, carried_pose, Expression(), 512, 512, 0.6f,
+                    &rgba);
+      const std::vector<uint8_t> png = EncodePng(512, 512, rgba);
+      FILE* out = std::fopen(argv[5], "wb");
+      if (out) {
+        std::fwrite(png.data(), 1, png.size(), out);
+        std::fclose(out);
+      }
+    }
+    return 0;
+  }
+  if (std::string(argv[2]) == "manifest" && argc > 3) {
+    FILE* in = std::fopen(argv[3], "rb");
+    if (!in) {
+      return 1;
+    }
+    std::vector<uint8_t> original(kManifestBytes);
+    const size_t got = std::fread(original.data(), 1, original.size(), in);
+    std::fclose(in);
+    Description description;
+    if (got != original.size() ||
+        !ParseManifest(&catalog, original.data(), original.size(),
+                       &description)) {
+      std::printf("not a manifest\n");
+      return 1;
+    }
+    std::printf("body %u height %u weight %u components %zu\n",
+                description.body, description.height, description.weight,
+                description.components.size());
+    for (uint32_t slot = 0; slot < kSlotCount; ++slot) {
+      const uint16_t item = description.items[slot];
+      const Entry* entry = item == kNoItem ? nullptr : catalog.Find(item);
+      std::printf("  %-12s %04X %s\n", SlotName(slot), item,
+                  entry ? entry->name.c_str() : "-");
+    }
+    for (uint32_t color = 0; color < kColorCount; ++color) {
+      std::printf("  colour %-12s %08X\n", ColorName(color),
+                  description.colors[color]);
+    }
+    uint64_t xuid = 0;
+    for (int i = 0; i < 8; ++i) {
+      xuid = (xuid << 8) | original[0x380 + i];
+    }
+    const auto rebuilt = SerializeManifest(&catalog, description, xuid);
+    size_t differ = 0;
+    for (size_t i = 0; i < rebuilt.size(); ++i) {
+      if (rebuilt[i] != original[i]) {
+        if (differ < 64) {
+          std::printf("  differs at %03zX: %02X -> %02X\n", i, original[i],
+                      rebuilt[i]);
+        }
+        ++differ;
+      }
+    }
+    std::printf("rebuilt differs in %zu bytes\n", differ);
+    if (argc > 4) {
+      FILE* out = std::fopen(argv[4], "wb");
+      if (out) {
+        std::fwrite(rebuilt.data(), 1, rebuilt.size(), out);
+        std::fclose(out);
+      }
+    }
+    return 0;
+  }
   if (std::string(argv[2]) == "entries") {
     uint32_t highest = 0;
     for (const Entry& entry : catalog.entries()) {
@@ -81,11 +255,11 @@ int main(int argc, char** argv) {
   }
   const auto bytes = SerializeDescription(description);
   Description parsed;
-  const bool round_trip = ParseDescription(bytes.data(), bytes.size(), &parsed) &&
-                          parsed.items == description.items &&
-                          parsed.colors == description.colors &&
-                          parsed.custom == description.custom &&
-                          parsed.body == description.body;
+  const bool round_trip =
+      ParseDescription(bytes.data(), bytes.size(), &parsed) &&
+      parsed.items == description.items &&
+      parsed.colors == description.colors &&
+      parsed.custom == description.custom && parsed.body == description.body;
   std::printf("description round trip %s\n", round_trip ? "ok" : "FAILED");
   {
     const Skeleton& skeleton = MainSkeleton();
@@ -113,13 +287,13 @@ int main(int argc, char** argv) {
     bool fits = true;
     for (const RawTexture& texture : raw->textures) {
       texture_bytes += texture.data.size();
-      fits = fits && uint64_t(texture.gpu_offset) + texture.gpu_size <=
-                         raw->gpu_size;
+      fits = fits &&
+             uint64_t(texture.gpu_offset) + texture.gpu_size <= raw->gpu_size;
     }
     for (const RawBatch& batch : raw->batches) {
       fits = fits &&
-             uint64_t(batch.vb_offset) + uint64_t(batch.stride) *
-                                             batch.vertices.size() <=
+             uint64_t(batch.vb_offset) +
+                     uint64_t(batch.stride) * batch.vertices.size() <=
                  raw->gpu_size &&
              uint64_t(batch.ib_offset) + batch.indices.size() * 2 <=
                  raw->gpu_size &&
@@ -140,7 +314,8 @@ int main(int argc, char** argv) {
       }
       if ((texture.format & 0x3F) == 0x14) {
         for (size_t at = 0; at + 16 <= texture.data.size(); at += 16) {
-          alpha_zero_blocks += texture.data[at] == 0 && texture.data[at + 1] == 0;
+          alpha_zero_blocks +=
+              texture.data[at] == 0 && texture.data[at + 1] == 0;
         }
       }
       std::printf(
@@ -155,8 +330,7 @@ int main(int argc, char** argv) {
       std::printf("  shader %u:", batch.shader);
       for (const Param& param : batch.params) {
         std::printf(" [t%u u%u %08X %08X %08X %08X]", param.type, param.usage,
-                    param.data[0], param.data[1], param.data[2],
-                    param.data[3]);
+                    param.data[0], param.data[1], param.data[2], param.data[3]);
       }
       std::printf("\n");
     }
@@ -232,8 +406,8 @@ int main(int argc, char** argv) {
     auto clip = catalog.LoadClip(entry.index);
     const uint8_t* o = object.data();
     const uint32_t size = be32(o + kAnimationSizeOffset);
-    const bool ok = written && flipped && clip &&
-                    be32(o) == clip->frames && be32(o + 4) == clip->joints &&
+    const bool ok = written && flipped && clip && be32(o) == clip->frames &&
+                    be32(o + 4) == clip->joints &&
                     kAnimationHeaderBytes + size == stream.size();
     objects += ok;
     if (!ok || streams <= 3) {
@@ -274,9 +448,9 @@ int main(int argc, char** argv) {
                 part.model->batches.size(), part.model->textures.size());
     for (const Batch& batch : part.model->batches) {
       const Material material = BuildMaterial(scene, part, batch, expression);
-      std::printf("  batch shader %u uvs %u verts %zu tris %zu layers:",
-                  batch.shader, batch.uv_sets, batch.vertices.size(),
-                  batch.indices.size() / 3);
+      std::printf(
+          "  batch shader %u uvs %u verts %zu tris %zu layers:", batch.shader,
+          batch.uv_sets, batch.vertices.size(), batch.indices.size() / 3);
       for (uint32_t i = 0; i < kLayerCount; ++i) {
         if (material.layer[i][0]) {
           std::printf(" [k%u uv%u s%u c%u %ux%u]", material.layer[i][0],
@@ -327,7 +501,7 @@ int main(int argc, char** argv) {
     }
   }
   std::vector<uint8_t> rgba;
-  RenderPreview(scene, local, expression, 360, 540, yaw, &rgba);
+  RenderPreview(scene, local, nullptr, expression, 360, 540, yaw, &rgba);
   const std::vector<uint8_t> png = EncodePng(360, 540, rgba);
   FILE* file = std::fopen(argv[2], "wb");
   if (!file) {

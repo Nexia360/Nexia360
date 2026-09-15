@@ -27,15 +27,15 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
-#include <cstdio>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <deque>
 #include <map>
-#include <set>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -46,21 +46,21 @@
 #include "xenia/base/math.h"
 #include "xenia/base/memory.h"
 #include "xenia/emulator.h"
-#include "xenia/gpu/graphics_system.h"
 #include "xenia/gpu/d3d12/d3d12_command_processor.h"
+#include "xenia/gpu/graphics_system.h"
 #include "xenia/gpu/texture_address.h"
 #include "xenia/kernel/kernel_state.h"
-#include "xenia/memory.h"
 #include "xenia/kernel/util/shim_utils.h"
-#include "xenia/kernel/xna/xna_exports.h"
-#include "xenia/kernel/xna/xna_effect.h"
 #include "xenia/kernel/xna/xna_avatar.h"
 #include "xenia/kernel/xna/xna_direct.h"
+#include "xenia/kernel/xna/xna_effect.h"
+#include "xenia/kernel/xna/xna_exports.h"
 #include "xenia/kernel/xna/xna_gpu.h"
 #include "xenia/kernel/xna/xna_guest_heap.h"
 #include "xenia/kernel/xna/xna_packets.h"
 #include "xenia/kernel/xna/xna_present.h"
 #include "xenia/kernel/xna/xna_runtimehost.h"
+#include "xenia/memory.h"
 
 #include <cmath>
 
@@ -196,7 +196,8 @@ std::string TextureNameStem(const std::string& name) {
 // handle is therefore a 24-bit index into a table of descriptors in guest
 // memory, and the descriptor carries the payload address. See
 // xna_guest_heap.h.
-uint32_t AllocateHandle(uint32_t type = xe::kernel::xna::XnaGuestResource::kNone) {
+uint32_t AllocateHandle(
+    uint32_t type = xe::kernel::xna::XnaGuestResource::kNone) {
   const uint32_t handle = xe::kernel::xna::XnaGuestResourceCreate(type);
   if (!handle) {
     // Every caller compares against this and raises OutOfMemoryException, which
@@ -222,21 +223,32 @@ struct SurfaceLayout {
 
 SurfaceLayout FormatLayout(uint32_t format) {
   switch (format) {
-    case 4:  return {4, 4, 8};    // Dxt1
-    case 5:  return {4, 4, 16};   // Dxt3
-    case 6:  return {4, 4, 16};   // Dxt5
-    case 12: return {1, 1, 1};    // Alpha8
-    case 1:                       // Bgr565
-    case 2:                       // Bgra5551
-    case 3:                       // Bgra4444
-    case 7:                       // NormalizedByte2
-    case 16: return {1, 1, 2};    // HalfSingle
-    case 11: return {1, 1, 8};    // Rgba64
-    case 14: return {1, 1, 8};    // Vector2
-    case 18: return {1, 1, 8};    // HalfVector4
-    case 19: return {1, 1, 8};    // HdrBlendable
-    case 15: return {1, 1, 16};   // Vector4
-    default: return {1, 1, 4};    // Color, Rgba1010102, Rg32, Single, ...
+    case 4:
+      return {4, 4, 8};  // Dxt1
+    case 5:
+      return {4, 4, 16};  // Dxt3
+    case 6:
+      return {4, 4, 16};  // Dxt5
+    case 12:
+      return {1, 1, 1};  // Alpha8
+    case 1:              // Bgr565
+    case 2:              // Bgra5551
+    case 3:              // Bgra4444
+    case 7:              // NormalizedByte2
+    case 16:
+      return {1, 1, 2};  // HalfSingle
+    case 11:
+      return {1, 1, 8};  // Rgba64
+    case 14:
+      return {1, 1, 8};  // Vector2
+    case 18:
+      return {1, 1, 8};  // HalfVector4
+    case 19:
+      return {1, 1, 8};  // HdrBlendable
+    case 15:
+      return {1, 1, 16};  // Vector4
+    default:
+      return {1, 1, 4};  // Color, Rgba1010102, Rg32, Single, ...
   }
 }
 
@@ -256,7 +268,7 @@ uint32_t FullMipCount(uint32_t width, uint32_t height) {
   return count;
 }
 
-constexpr uint32_t kInvalidArg = 0x80070057;   // E_INVALIDARG
+constexpr uint32_t kInvalidArg = 0x80070057;      // E_INVALIDARG
 constexpr uint32_t kNotImplemented = 0x80004001;  // E_NOTIMPL
 
 }  // namespace
@@ -375,7 +387,8 @@ extern "C" uint32_t xna_D3D_D3D_Device_CreateRasterizerState(
 
 // The decoded SamplerState.Settings a handle stands for. The struct on the wire
 // is { TextureFilter Filter; TextureAddressMode AddressU, V, W; int
-// MaxAnisotropy; int MaxMipLevel; float LODBias; } - all 4 bytes, in that order.
+// MaxAnisotropy; int MaxMipLevel; float LODBias; } - all 4 bytes, in that
+// order.
 struct SamplerParams {
   uint32_t address_u = 2;
   uint32_t address_v = 2;
@@ -392,10 +405,14 @@ static std::map<uint32_t, SamplerParams> sampler_params;
 // kClampToEdge 2, Mirror 2 -> kMirroredRepeat 1.
 static uint32_t XnaAddressToXenos(uint32_t mode) {
   switch (mode) {
-    case 0: return 0;  // Wrap -> kRepeat
-    case 1: return 2;  // Clamp -> kClampToEdge
-    case 2: return 1;  // Mirror -> kMirroredRepeat
-    default: return 2;
+    case 0:
+      return 0;  // Wrap -> kRepeat
+    case 1:
+      return 2;  // Clamp -> kClampToEdge
+    case 2:
+      return 1;  // Mirror -> kMirroredRepeat
+    default:
+      return 2;
   }
 }
 
@@ -415,10 +432,8 @@ extern "C" uint32_t xna_D3D_D3D_Device_CreateSamplerState(
     const bool linear = filter != 1;  // anything but Point has linear somewhere
     params.mag_filter = linear ? 1 : 0;
     params.min_filter = linear ? 1 : 0;
-    params.mip_filter = (filter == 1 || filter == 4 || filter == 6 ||
-                         filter == 8)
-                            ? 0
-                            : 1;
+    params.mip_filter =
+        (filter == 1 || filter == 4 || filter == 6 || filter == 8) ? 0 : 1;
     params.aniso = filter == 2 ? 4 : 0;  // kMax_8_1 when anisotropic
   }
   std::lock_guard<std::mutex> lock(resource_mutex);
@@ -506,8 +521,8 @@ extern "C" uint32_t xna_D3D_D3D_Texture2D_CreateHandle(
   const uint32_t levels = texture.levels;
 
   std::lock_guard<std::mutex> lock(resource_mutex);
-  const uint32_t handle = AllocateHandle(
-      xe::kernel::xna::XnaGuestResource::kTexture);
+  const uint32_t handle =
+      AllocateHandle(xe::kernel::xna::XnaGuestResource::kTexture);
   if (handle == UINT32_MAX) {
     return handle;
   }
@@ -578,7 +593,7 @@ static uint32_t GuestSwapWidthForFormat(uint32_t xna_surface_format) {
 }
 
 static void CopyGuest(void* dest, const void* src, uint32_t bytes,
-               uint32_t element_size) {
+                      uint32_t element_size) {
   switch (element_size) {
     case 2:
       xe::copy_and_swap(static_cast<uint16_t*>(dest),
@@ -632,8 +647,8 @@ static uint32_t CopyTextureLevel(Texture& texture, uint32_t slot, uint32_t mip,
       rect ? static_cast<uint32_t>(rect->height) : level_height;
   const uint32_t left = rect ? static_cast<uint32_t>(rect->x) : 0;
   const uint32_t top = rect ? static_cast<uint32_t>(rect->y) : 0;
-  if (!copy_width || !copy_height ||
-      left + copy_width > level_width || top + copy_height > level_height) {
+  if (!copy_width || !copy_height || left + copy_width > level_width ||
+      top + copy_height > level_height) {
     ++texture.discards;
     return kInvalidArg;
   }
@@ -642,8 +657,7 @@ static uint32_t CopyTextureLevel(Texture& texture, uint32_t slot, uint32_t mip,
   // nearest block would corrupt the pixels around it.
   if (layout.block_width > 1 &&
       ((left % layout.block_width) || (top % layout.block_height) ||
-       (copy_width % layout.block_width &&
-        left + copy_width != level_width) ||
+       (copy_width % layout.block_width && left + copy_width != level_width) ||
        (copy_height % layout.block_height &&
         top + copy_height != level_height))) {
     xe::kernel::xna::XnaExportUnimplemented(
@@ -702,8 +716,7 @@ static uint32_t CopyTextureLevel(Texture& texture, uint32_t slot, uint32_t mip,
   // returns zeroes however well the resolve worked. That is what made every
   // GetData in the probe report 00000000.
   if (read) {
-    auto* resource =
-        xe::kernel::xna::XnaGuestResourceLookup(texture.handle);
+    auto* resource = xe::kernel::xna::XnaGuestResourceLookup(texture.handle);
     if (resource && resource->data) {
       xe::kernel::xna::XnaGuestRangeRead(
           resource->data + static_cast<uint32_t>(level.offset),
@@ -749,19 +762,19 @@ extern "C" uint32_t xna_D3D_D3D_Texture2D_CopyData(
       return kInvalidArg;
     }
     texture_format = found_locked->second.format;
-    result = CopyTextureLevel(found_locked->second, info->level, info->level,
-                              data, info->data_size, info->element_size, rect,
-                              read);
+    result =
+        CopyTextureLevel(found_locked->second, info->level, info->level, data,
+                         info->data_size, info->element_size, rect, read);
     if (!read && !result) {
-      auto* descriptor = xe::kernel::xna::XnaGuestResourceLookup(
-          found_locked->second.handle);
+      auto* descriptor =
+          xe::kernel::xna::XnaGuestResourceLookup(found_locked->second.handle);
       const uint32_t slot = info->level;
       if (descriptor && slot < found_locked->second.level_data.size()) {
         written_address =
             descriptor->data +
             static_cast<uint32_t>(found_locked->second.level_data[slot].offset);
-        written_bytes = static_cast<uint32_t>(
-            found_locked->second.level_data[slot].size);
+        written_bytes =
+            static_cast<uint32_t>(found_locked->second.level_data[slot].size);
       }
     }
   }
@@ -796,7 +809,8 @@ extern "C" uint32_t xna_D3D_D3D_Texture2D_CopyData(
   return result;
 }
 
-// ---- cube maps ---------------------------------------------------------------
+// ---- cube maps
+// ---------------------------------------------------------------
 //
 // A cube is six faces sharing one mip chain, so it is stored as a Texture whose
 // level_data holds `levels * 6` slots and a (face, level) pair names one of
@@ -828,8 +842,8 @@ extern "C" uint32_t xna_D3D_D3D_TextureCube_CreateHandle(
   const uint32_t levels = texture.levels;
 
   std::lock_guard<std::mutex> lock(resource_mutex);
-  const uint32_t handle = AllocateHandle(
-      xe::kernel::xna::XnaGuestResource::kTexture);
+  const uint32_t handle =
+      AllocateHandle(xe::kernel::xna::XnaGuestResource::kTexture);
   if (handle == UINT32_MAX) {
     return handle;
   }
@@ -908,11 +922,10 @@ extern "C" uint32_t xna_D3D_D3D_Texture3D_CreateHandle(
   texture.type = 1;
   texture.format = params->format;
   texture.is_video = params->is_video != 0;
-  texture.levels =
-      params->levels != 0
-          ? params->levels
-          : FullMipCount(std::max(params->width, params->depth),
-                         std::max(params->height, params->depth));
+  texture.levels = params->levels != 0
+                       ? params->levels
+                       : FullMipCount(std::max(params->width, params->depth),
+                                      std::max(params->height, params->depth));
   texture.level_data.resize(texture.levels);
   const SurfaceLayout layout = FormatLayout(texture.format);
   uint32_t offset = 0;
@@ -933,8 +946,8 @@ extern "C" uint32_t xna_D3D_D3D_Texture3D_CreateHandle(
   const uint32_t levels = texture.levels;
 
   std::lock_guard<std::mutex> lock(resource_mutex);
-  const uint32_t handle = AllocateHandle(
-      xe::kernel::xna::XnaGuestResource::kTexture);
+  const uint32_t handle =
+      AllocateHandle(xe::kernel::xna::XnaGuestResource::kTexture);
   if (handle == UINT32_MAX) {
     return handle;
   }
@@ -1081,7 +1094,8 @@ extern "C" uint32_t xna_D3D_D3D_Texture3D_CopyData(
   return 0;
 }
 
-// ---- buffers, declarations, render targets, queries --------------------------
+// ---- buffers, declarations, render targets, queries
+// --------------------------
 //
 // Implemented as a batch rather than one per run: each of these is the next
 // wall behind the last, and tools/xna/classify-returns.ps1 settles the one
@@ -1110,7 +1124,8 @@ uint32_t CreateBuffer(uint32_t type, uint32_t stride, uint32_t byte_size,
   }
   resource->stride = stride;
   resource->usage = usage;
-  if (byte_size && !xe::kernel::xna::XnaGuestResourceResize(handle, byte_size)) {
+  if (byte_size &&
+      !xe::kernel::xna::XnaGuestResourceResize(handle, byte_size)) {
     xe::kernel::xna::XnaGuestResourceDestroy(handle);
     return UINT32_MAX;
   }
@@ -1158,8 +1173,7 @@ uint32_t BufferCopyLocked(uint32_t handle, void* data, uint32_t offset,
   const bool strided = stride != 0 && element_bytes != 0 &&
                        stride != element_bytes && bytes >= element_bytes;
   const uint32_t count = strided ? bytes / element_bytes : 0;
-  const uint32_t span =
-      strided ? (count - 1) * stride + element_bytes : bytes;
+  const uint32_t span = strided ? (count - 1) * stride + element_bytes : bytes;
   // A buffer created with a size of zero is sized by its first write: XNA
   // computes the byte count from the element count and the element size, and
   // those two do not always reach the creation call together.
@@ -1237,12 +1251,12 @@ extern "C" uint32_t xna_D3D_D3D_VertexBuffer_CopyData(
 
 // InteropCreateIndexBuffer(device, byteSize, sixteenBit, isDynamic) - HANDLE.
 //
-// The third argument is the index width, not the usage. IndexBuffer::CreateBuffer
-// compares its element size against 2 and pushes 1 for a sixteen bit buffer,
-// then pushes isDynamic last. Reading those two the other way round made every
-// static buffer - which is all of them - report 32 bit indices, halving the
-// index count the buffer was thought to hold and dropping any draw that started
-// past it.
+// The third argument is the index width, not the usage.
+// IndexBuffer::CreateBuffer compares its element size against 2 and pushes 1
+// for a sixteen bit buffer, then pushes isDynamic last. Reading those two the
+// other way round made every static buffer - which is all of them - report 32
+// bit indices, halving the index count the buffer was thought to hold and
+// dropping any draw that started past it.
 extern "C" uint32_t xna_D3D_D3D_IndexBuffer_CreateHandle(uint32_t device,
                                                          uint32_t byte_size,
                                                          int32_t sixteen_bit,
@@ -1305,8 +1319,8 @@ extern "C" void Nexia_XnaIndexElementSize(uint32_t handle,
 struct XnaVertexElement {
   uint32_t stream;
   uint32_t offset;
-  uint32_t format;      // XNA VertexElementFormat
-  uint32_t usage;       // XNA VertexElementUsage
+  uint32_t format;  // XNA VertexElementFormat
+  uint32_t usage;   // XNA VertexElementUsage
   uint32_t usage_index;
 };
 static_assert(sizeof(XnaVertexElement) == 20,
@@ -1360,9 +1374,8 @@ extern "C" uint32_t xna_D3D_D3D_Decl_CreateHandle(uint32_t device,
             uint32_t(written[at + 4]));
       }
     } else {
-      XELOGW(
-          "[xna] declaration {:08X}: {} element(s) had nowhere to be stored",
-          handle, count);
+      XELOGW("[xna] declaration {:08X}: {} element(s) had nowhere to be stored",
+             handle, count);
     }
   }
   lock.unlock();
@@ -1398,8 +1411,8 @@ extern "C" uint32_t xna_D3D_D3D_Device_CreateRenderTarget(
   texture.level_data.resize(texture.levels);
 
   std::lock_guard<std::mutex> lock(resource_mutex);
-  const uint32_t handle = AllocateHandle(
-      xe::kernel::xna::XnaGuestResource::kTexture);
+  const uint32_t handle =
+      AllocateHandle(xe::kernel::xna::XnaGuestResource::kTexture);
   if (handle == UINT32_MAX) {
     return handle;
   }
@@ -1543,8 +1556,10 @@ extern "C" uint32_t xna_D3D_D3D_Device_GetScissorRect(uint32_t device,
 // pixels in a GPU readback buffer behind a one-shot watch, so the range has to
 // be READ as the guest before the bytes exist at all; and the resolve writes
 // console byte order, so each pixel is swapped on the way out.
-extern "C" uint32_t xna_D3D_D3D_Device_GetBackBufferData(
-    uint32_t device, void* data, const uint32_t* info, const Rect* rect) {
+extern "C" uint32_t xna_D3D_D3D_Device_GetBackBufferData(uint32_t device,
+                                                         void* data,
+                                                         const uint32_t* info,
+                                                         const Rect* rect) {
   if (!data || !info) {
     return kInvalidArg;
   }
@@ -1553,8 +1568,8 @@ extern "C" uint32_t xna_D3D_D3D_Device_GetBackBufferData(
 
   if (xe::kernel::xna::XnaDirectActive()) {
     std::memset(data, 0, data_size);
-    return xe::kernel::xna::XnaDirectReadBackBuffer(
-               static_cast<uint8_t*>(data), data_size)
+    return xe::kernel::xna::XnaDirectReadBackBuffer(static_cast<uint8_t*>(data),
+                                                    data_size)
                ? 0
                : kInvalidArg;
   }
@@ -1597,8 +1612,8 @@ extern "C" uint32_t xna_D3D_D3D_Device_GetBackBufferData(
   const uint32_t pitch = xe::align(width, 32u);
   for (uint32_t y = 0; y < height; ++y) {
     for (uint32_t x = 0; x < width; ++x) {
-      const int32_t at = xe::gpu::texture_address::Tiled2D(
-          int32_t(x), int32_t(y), pitch, 2);
+      const int32_t at =
+          xe::gpu::texture_address::Tiled2D(int32_t(x), int32_t(y), pitch, 2);
       if (at < 0 || uint32_t(at) + 4 > bytes) {
         continue;
       }
@@ -1697,8 +1712,8 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
       back.height = viewport_.height > 0 ? uint32_t(viewport_.height) : 720u;
       back.format = 0;
       back.guest_address = 0;
-      const uint32_t back_depth = xe::kernel::xna::XnaGpuEdramDepthBase(
-          back.width, back.height, 1);
+      const uint32_t back_depth =
+          xe::kernel::xna::XnaGpuEdramDepthBase(back.width, back.height, 1);
       const bool back_depth_fits =
           back_depth != xe::kernel::xna::kXnaGpuNoDepth;
       XELOGD("[xna]    clearing the back buffer ({}x{}) at edram 0, depth {}",
@@ -1795,7 +1810,8 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
         return false;
       }
     }
-    auto* resource = xe::kernel::xna::XnaGuestResourceLookup(user_stream_handle_);
+    auto* resource =
+        xe::kernel::xna::XnaGuestResourceLookup(user_stream_handle_);
     auto* base = xe::kernel::xna::XnaGuestResourceData(user_stream_handle_);
     if (!resource || !resource->data || !base) {
       return false;
@@ -1845,7 +1861,8 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
         return false;
       }
     }
-    auto* resource = xe::kernel::xna::XnaGuestResourceLookup(user_index_handle_);
+    auto* resource =
+        xe::kernel::xna::XnaGuestResourceLookup(user_index_handle_);
     auto* base = xe::kernel::xna::XnaGuestResourceData(user_index_handle_);
     if (!resource || !resource->data || !base) {
       return false;
@@ -2008,16 +2025,14 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
       }
       render_target_count_ = std::min<uint32_t>(count, 4);
       for (uint32_t i = 0; i < render_target_count_; ++i) {
-        render_targets_[i] =
-            xe::kernel::xna::XnaGuestResolveHandle(handles[i]);
+        render_targets_[i] = xe::kernel::xna::XnaGuestResolveHandle(handles[i]);
       }
       for (uint32_t i = render_target_count_; i < 4; ++i) {
         render_targets_[i] = 0;
       }
     }
     XELOGD("[xna] set render targets: {} target(s), first handle {:08X}",
-           render_target_count_,
-           render_target_count_ ? render_targets_[0] : 0);
+           render_target_count_, render_target_count_ ? render_targets_[0] : 0);
     if (!cvars::xna_geometry) {
       return;
     }
@@ -2056,15 +2071,16 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
       return;
     }
     const bool transpose =
-        type == xe::kernel::xna::HlcbPacketType::kEffectSetValueMatrixTranspose ||
         type ==
-            xe::kernel::xna::HlcbPacketType::kEffectSetValueMatrixTransposeArray;
+            xe::kernel::xna::HlcbPacketType::kEffectSetValueMatrixTranspose ||
+        type == xe::kernel::xna::HlcbPacketType::
+                    kEffectSetValueMatrixTransposeArray;
     // The packet type states the stride of the title's own data and the header
     // states how many elements followed it. Without both, an array of matrices
     // is indistinguishable from one very long matrix, and every element after
     // the first is gathered from the wrong floats.
-    const uint32_t element_bytes = xe::kernel::xna::EffectValueElementSize(
-        static_cast<uint32_t>(type));
+    const uint32_t element_bytes =
+        xe::kernel::xna::EffectValueElementSize(static_cast<uint32_t>(type));
     const bool integral =
         type == xe::kernel::xna::HlcbPacketType::kEffectSetValueBool ||
         type == xe::kernel::xna::HlcbPacketType::kEffectSetValueInt ||
@@ -2156,8 +2172,9 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
             : std::max<uint32_t>(total_floats / (count ? count : 1), 4);
     // However many the title actually sent, never more than the data holds or
     // the parameter declares.
-    const uint32_t elements = std::min(
-        {count ? count : 1u, declared, std::max<uint32_t>(total_floats / stride, 1u)});
+    const uint32_t elements =
+        std::min({count ? count : 1u, declared,
+                  std::max<uint32_t>(total_floats / stride, 1u)});
 
     // KEPT, NOT PLACED.
     //
@@ -2262,7 +2279,8 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
     if (!sprites.data || !sprites.count ||
         sprites.data_size < sprites.count * 56u) {
       XELOGW("[xna] DrawSprites dropped: {} sprite(s) in {} byte(s), data {}",
-             sprites.count, sprites.data_size, sprites.data ? "present" : "null");
+             sprites.count, sprites.data_size,
+             sprites.data ? "present" : "null");
       return;
     }
     if (!cvars::xna_geometry) {
@@ -2274,7 +2292,8 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
     }
     const uint32_t declaration = SpriteDeclaration();
     if (!declaration) {
-      XELOGW("[xna] DrawSprites dropped: the sprite declaration was not created");
+      XELOGW(
+          "[xna] DrawSprites dropped: the sprite declaration was not created");
       return;
     }
     struct SpriteVertex {
@@ -2446,8 +2465,8 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
         }
       }
       auto value = parameter_values_.find(entry.first);
-      if (!mine && (value == parameter_values_.end() ||
-                    value->second.size() < 4)) {
+      if (!mine &&
+          (value == parameter_values_.end() || value->second.size() < 4)) {
         auto fallback = defaults_for_shader.find(entry.first);
         if (fallback == defaults_for_shader.end()) {
           continue;
@@ -2466,17 +2485,15 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
         }
         continue;
       }
-      const std::vector<float>& floats =
-          mine ? mine->value : value->second;
+      const std::vector<float>& floats = mine ? mine->value : value->second;
       const uint32_t parameter_class =
           mine ? mine->parameter_class : parameter_class_[entry.first];
       const bool transpose =
           mine ? mine->transposed : parameter_transposed_[entry.first];
       const bool column_major = (parameter_class == 3) != transpose;
       auto count = counts_for_shader.find(entry.first);
-      const uint32_t reserved = count == counts_for_shader.end()
-                                    ? 4u
-                                    : count->second;
+      const uint32_t reserved =
+          count == counts_for_shader.end() ? 4u : count->second;
       // The same split the write at set time made, from the shape kept with
       // the value. A matrix array laid out as one long matrix gathers every
       // element after the first from the wrong floats.
@@ -2498,8 +2515,7 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
             break;
           }
           for (uint32_t c = 0; c < 4; ++c) {
-            const uint32_t source =
-                SourceFloat(e, k, c, stride, column_major);
+            const uint32_t source = SourceFloat(e, k, c, stride, column_major);
             constant_registers_[bank][at][c] =
                 source < total_floats ? floats[source] : 0.0f;
           }
@@ -2548,8 +2564,7 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
   // place; an empty one draws nothing at all.
   bool ApplyFallbackTransform(uint32_t first_register, uint32_t bank) {
     static const char* kCombined[] = {"MatrixTransform", "WorldViewProj",
-                                      "_WorldViewProjection",
-                                      "_WorldViewProj"};
+                                      "_WorldViewProjection", "_WorldViewProj"};
     if (bank >= kConstantBanks) {
       return false;
     }
@@ -2559,8 +2574,8 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
       if (found == parameter_values_.end() || found->second.size() < 16) {
         continue;
       }
-      const bool column_major = (parameter_class_[name] == 3) !=
-                                parameter_transposed_[name];
+      const bool column_major =
+          (parameter_class_[name] == 3) != parameter_transposed_[name];
       for (uint32_t r = 0; r < 4; ++r) {
         const uint32_t at = first_register + r;
         if (at >= kMaxConstantRegisters) {
@@ -2587,9 +2602,8 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
     if (literals.empty() || bank >= kConstantBanks) {
       return;
     }
-    const uint32_t count =
-        std::min<uint32_t>(static_cast<uint32_t>(literals.size() / 4),
-                           kMaxConstantRegisters);
+    const uint32_t count = std::min<uint32_t>(
+        static_cast<uint32_t>(literals.size() / 4), kMaxConstantRegisters);
     std::lock_guard<std::mutex> lock(resource_mutex);
     for (uint32_t i = 0; i < count; ++i) {
       const uint32_t at = kMaxConstantRegisters - count + i;
@@ -2664,12 +2678,11 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
       auto found = textures.find(texture);
       if (found == textures.end() || !found->second.width ||
           !found->second.handle) {
-        XELOGD(
-            "[xna] effect {} slot {}: texture {:08X} not placed - {}", effect,
-            slot, texture,
-            found == textures.end()
-                ? "no texture record"
-                : (!found->second.width ? "zero width" : "no guest handle"));
+        XELOGD("[xna] effect {} slot {}: texture {:08X} not placed - {}",
+               effect, slot, texture,
+               found == textures.end()
+                   ? "no texture record"
+                   : (!found->second.width ? "zero width" : "no guest handle"));
         return;
       }
       auto* resource =
@@ -2715,7 +2728,8 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
     //
     // A shader's constant table names DiffuseMapSampler; the title binds
     // _DiffuseMapTexture. In HLSL those are joined by
-    //   sampler DiffuseMapSampler = sampler_state { Texture = <_DiffuseMapTexture>; };
+    //   sampler DiffuseMapSampler = sampler_state { Texture =
+    //   <_DiffuseMapTexture>; };
     // and that link lives in the effect's sampler state, which is not parsed
     // yet. Until it is, they are paired on their stem - leading underscore
     // gone, one trailing Sampler/Texture/Map removed - which joins every pair
@@ -2745,7 +2759,8 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
         size_t best = 0;
         for (auto it = bindings->begin(); it != bindings->end(); ++it) {
           const std::string stem = TextureNameStem(it->first);
-          if (!stem.empty() && stem.size() > best && stem.size() <= want.size() &&
+          if (!stem.empty() && stem.size() > best &&
+              stem.size() <= want.size() &&
               want.compare(0, stem.size(), stem) == 0) {
             bound = it;
             best = stem.size();
@@ -2829,7 +2844,8 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
       parameters_by_effect_[to] = parameters_from->second;
     }
     XELOGD("[xna] effect {} cloned from {}: {} texture(s), {} parameter(s)", to,
-           from, texture_by_effect_[to].size(), parameters_by_effect_[to].size());
+           from, texture_by_effect_[to].size(),
+           parameters_by_effect_[to].size());
   }
 
   uint32_t RenderTargetCount() {
@@ -3062,16 +3078,18 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
     uint32_t declared = 1;
     uint32_t stride = 4;
   };
-  std::map<uint32_t, std::map<std::string, ParameterValue>> parameters_by_effect_;
+  std::map<uint32_t, std::map<std::string, ParameterValue>>
+      parameters_by_effect_;
 
   // TWO CONSTANT FILES, NOT ONE.
   //
   // Xenos gives each stage its own bank of 256 float registers - the vertex
-  // shader reads SHADER_CONSTANT_000 upward, the pixel shader SHADER_CONSTANT_256
-  // upward - and D3DX allocates each shader's parameters from c0 of its own bank.
-  // Sharing one array let a pixel shader's _FogStartDist_And_EndDistInv, which
-  // genuinely sits at c0 of the pixel bank, land on top of the vertex shader's
-  // _View, and sent every pixel constant to a bank the pixel shader cannot see.
+  // shader reads SHADER_CONSTANT_000 upward, the pixel shader
+  // SHADER_CONSTANT_256 upward - and D3DX allocates each shader's parameters
+  // from c0 of its own bank. Sharing one array let a pixel shader's
+  // _FogStartDist_And_EndDistInv, which genuinely sits at c0 of the pixel bank,
+  // land on top of the vertex shader's _View, and sent every pixel constant to
+  // a bank the pixel shader cannot see.
   static constexpr uint32_t kMaxConstantRegisters = 256;
   static constexpr uint32_t kConstantBanks = 2;
   float constant_registers_[kConstantBanks][kMaxConstantRegisters][4] = {};
@@ -3088,12 +3106,11 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
         // Silent until now. If a G-buffer target never resolves, every pass
         // that samples it reads whatever its guest memory last held, and the
         // frame composites to nothing with no other trace.
-        XELOGD(
-            "[xna] render target {:08X} slot {} not resolved: {}", handle,
-            index,
-            found == textures.end()
-                ? "no texture record"
-                : (!found->second.width ? "zero width" : "no guest handle"));
+        XELOGD("[xna] render target {:08X} slot {} not resolved: {}", handle,
+               index,
+               found == textures.end()
+                   ? "no texture record"
+                   : (!found->second.width ? "zero width" : "no guest handle"));
         return;
       }
       auto* resource =
@@ -3112,9 +3129,8 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
       ++found->second.resolves;
     }
     // The same tile the draw wrote this slot to - see XnaGpuEdramBaseForSlot.
-    const uint32_t edram =
-        xe::kernel::xna::XnaGpuEdramBaseForSlot(target.width, target.height,
-                                                index, target_count);
+    const uint32_t edram = xe::kernel::xna::XnaGpuEdramBaseForSlot(
+        target.width, target.height, index, target_count);
     XELOGD(
         "[xna] resolving render target {:08X} slot {}: {}x{} XNA format {} "
         "from edram {} to guest {:08X}",
@@ -3341,20 +3357,34 @@ const HostedShaderData* HostedShaderDataFor(uint64_t hash) {
 // miss: everything else is wrong while the position fetch looks right.
 uint32_t D3dUsageForXnaUsage(uint32_t usage) {
   switch (usage) {
-    case 0: return 0;    // Position          -> POSITION
-    case 1: return 10;   // Color             -> COLOR
-    case 2: return 5;    // TextureCoordinate -> TEXCOORD
-    case 3: return 3;    // Normal            -> NORMAL
-    case 4: return 7;    // Binormal          -> BINORMAL
-    case 5: return 6;    // Tangent           -> TANGENT
-    case 6: return 2;    // BlendIndices      -> BLENDINDICES
-    case 7: return 1;    // BlendWeight       -> BLENDWEIGHT
-    case 8: return 12;   // Depth             -> DEPTH
-    case 9: return 11;   // Fog               -> FOG
-    case 10: return 4;   // PointSize         -> PSIZE
-    case 11: return 13;  // Sample            -> SAMPLE
-    case 12: return 8;   // TessellateFactor  -> TESSFACTOR
-    default: return UINT32_MAX;
+    case 0:
+      return 0;  // Position          -> POSITION
+    case 1:
+      return 10;  // Color             -> COLOR
+    case 2:
+      return 5;  // TextureCoordinate -> TEXCOORD
+    case 3:
+      return 3;  // Normal            -> NORMAL
+    case 4:
+      return 7;  // Binormal          -> BINORMAL
+    case 5:
+      return 6;  // Tangent           -> TANGENT
+    case 6:
+      return 2;  // BlendIndices      -> BLENDINDICES
+    case 7:
+      return 1;  // BlendWeight       -> BLENDWEIGHT
+    case 8:
+      return 12;  // Depth             -> DEPTH
+    case 9:
+      return 11;  // Fog               -> FOG
+    case 10:
+      return 4;  // PointSize         -> PSIZE
+    case 11:
+      return 13;  // Sample            -> SAMPLE
+    case 12:
+      return 8;  // TessellateFactor  -> TESSFACTOR
+    default:
+      return UINT32_MAX;
   }
 }
 
@@ -3387,51 +3417,81 @@ bool XenosFormatForXnaFormat(uint32_t format, xe::gpu::xenos::VertexFormat* out,
   *is_signed = true;
   *is_integer = true;
   switch (format) {
-    case 0: *out = VertexFormat::k_32_FLOAT; return true;           // Single
-    case 1: *out = VertexFormat::k_32_32_FLOAT; return true;        // Vector2
-    case 2: *out = VertexFormat::k_32_32_32_FLOAT; return true;     // Vector3
-    case 3: *out = VertexFormat::k_32_32_32_32_FLOAT; return true;  // Vector4
-    case 4:                                                         // Color
+    case 0:
+      *out = VertexFormat::k_32_FLOAT;
+      return true;  // Single
+    case 1:
+      *out = VertexFormat::k_32_32_FLOAT;
+      return true;  // Vector2
+    case 2:
+      *out = VertexFormat::k_32_32_32_FLOAT;
+      return true;  // Vector3
+    case 3:
+      *out = VertexFormat::k_32_32_32_32_FLOAT;
+      return true;  // Vector4
+    case 4:         // Color
       *out = VertexFormat::k_8_8_8_8;
       *is_signed = false;
       *is_integer = false;
       return true;
-    case 5:                                                         // Byte4
+    case 5:  // Byte4
       *out = VertexFormat::k_8_8_8_8;
       *is_signed = false;
       return true;
-    case 6: *out = VertexFormat::k_16_16; return true;              // Short2
-    case 7: *out = VertexFormat::k_16_16_16_16; return true;        // Short4
-    case 8:                                             // NormalizedShort2
+    case 6:
+      *out = VertexFormat::k_16_16;
+      return true;  // Short2
+    case 7:
+      *out = VertexFormat::k_16_16_16_16;
+      return true;  // Short4
+    case 8:         // NormalizedShort2
       *out = VertexFormat::k_16_16;
       *is_integer = false;
       return true;
-    case 9:                                             // NormalizedShort4
+    case 9:  // NormalizedShort4
       *out = VertexFormat::k_16_16_16_16;
       *is_integer = false;
       return true;
-    case 10: *out = VertexFormat::k_16_16_FLOAT; return true;        // Half2
-    case 11: *out = VertexFormat::k_16_16_16_16_FLOAT; return true;  // Half4
-    default: return false;
+    case 10:
+      *out = VertexFormat::k_16_16_FLOAT;
+      return true;  // Half2
+    case 11:
+      *out = VertexFormat::k_16_16_16_16_FLOAT;
+      return true;  // Half4
+    default:
+      return false;
   }
 }
 
 // How many bytes one element of each XNA vertex format occupies.
 uint32_t XnaVertexElementBytes(uint32_t format) {
   switch (format) {
-    case 0: return 4;    // Single
-    case 1: return 8;    // Vector2
-    case 2: return 12;   // Vector3
-    case 3: return 16;   // Vector4
-    case 4: return 4;    // Color
-    case 5: return 4;    // Byte4
-    case 6: return 4;    // Short2
-    case 7: return 8;    // Short4
-    case 8: return 4;    // NormalizedShort2
-    case 9: return 8;    // NormalizedShort4
-    case 10: return 4;   // HalfVector2
-    case 11: return 8;   // HalfVector4
-    default: return 0;
+    case 0:
+      return 4;  // Single
+    case 1:
+      return 8;  // Vector2
+    case 2:
+      return 12;  // Vector3
+    case 3:
+      return 16;  // Vector4
+    case 4:
+      return 4;  // Color
+    case 5:
+      return 4;  // Byte4
+    case 6:
+      return 4;  // Short2
+    case 7:
+      return 8;  // Short4
+    case 8:
+      return 4;  // NormalizedShort2
+    case 9:
+      return 8;  // NormalizedShort4
+    case 10:
+      return 4;  // HalfVector2
+    case 11:
+      return 8;  // HalfVector4
+    default:
+      return 0;
   }
 }
 
@@ -3478,8 +3538,8 @@ bool PatchVertexFetches(
       if (other.stream != element.stream) {
         continue;
       }
-      implied = std::max(implied,
-                         other.offset + XnaVertexElementBytes(other.format));
+      implied =
+          std::max(implied, other.offset + XnaVertexElementBytes(other.format));
     }
     strides[element.stream] = (implied + 3) & ~3u;
   }
@@ -3516,8 +3576,8 @@ bool PatchVertexFetches(
         blank_words[0] |= (kNullVertexFetchConstant % 3) << 25;
         blank_words[1] &= ~((uint32_t(0x3F) << 16) | (uint32_t(1) << 12) |
                             (uint32_t(1) << 13));
-        blank_words[1] |= uint32_t(xe::gpu::xenos::VertexFormat::k_32_32_32_32_FLOAT)
-                          << 16;
+        blank_words[1] |=
+            uint32_t(xe::gpu::xenos::VertexFormat::k_32_32_32_32_FLOAT) << 16;
         blank_words[2] &= ~uint32_t(0x7FFFFFFF);
       }
       continue;
@@ -3537,8 +3597,9 @@ bool PatchVertexFetches(
     // fits at all because it is stored as 16.
     if (!stride_bytes || (stride_bytes & 3) || (match->offset & 3) ||
         stride_bytes / 4 > 255) {
-      XELOGW("[xna] stream {} stride {} offset {} cannot be expressed as dwords",
-             match->stream, stride_bytes, match->offset);
+      XELOGW(
+          "[xna] stream {} stride {} offset {} cannot be expressed as dwords",
+          match->stream, stride_bytes, match->offset);
       continue;
     }
     const uint32_t at = semantic.instruction * 3;
@@ -3564,14 +3625,14 @@ bool PatchVertexFetches(
     // num_format_all at 13, signed_rf_mode_all at 14, is_index_rounded at 15,
     // and format is the six bits from 16. Signedness is bit 12; bit 13 set
     // means integer, because num_format_all reads 0 as normalized.
-    words[1] &= ~((uint32_t(0x3F) << 16) | (uint32_t(1) << 12) |
-                  (uint32_t(1) << 13));
+    words[1] &=
+        ~((uint32_t(0x3F) << 16) | (uint32_t(1) << 12) | (uint32_t(1) << 13));
     words[1] |= uint32_t(format) << 16;
     words[1] |= (is_signed ? 1u : 0u) << 12;
     words[1] |= (is_integer ? 1u : 0u) << 13;
     uint32_t decl_type = 0;
     if (xe::kernel::xna::XnaVertexElementFormatToDeclType(match->format,
-                                                         &decl_type)) {
+                                                          &decl_type)) {
       const uint32_t element_swizzle = (decl_type >> 10) & 0xFFF;
       const uint32_t compiled_swizzle = words[1] & 0xFFF;
       uint32_t swizzle = 0;
@@ -3590,12 +3651,13 @@ bool PatchVertexFetches(
     placed_any = true;
     XELOGI(
         "[xna] {}: fetch at instruction {} d3d usage {} index {} <- stream {} "
-        "offset {} xna format {} usage {}, stride {}, xenos format {} signed {} "
+        "offset {} xna format {} usage {}, stride {}, xenos format {} signed "
+        "{} "
         "integer {}, swizzle {:03X} -> {:03X}",
         origin, semantic.instruction, semantic.usage, semantic.usage_index,
-        match->stream, match->offset, match->format, match->usage,
-        stride_bytes, uint32_t(format), is_signed, is_integer,
-        original_swizzle, words[1] & 0xFFF);
+        match->stream, match->offset, match->format, match->usage, stride_bytes,
+        uint32_t(format), is_signed, is_integer, original_swizzle,
+        words[1] & 0xFFF);
   }
   return placed_any;
 }
@@ -3605,8 +3667,7 @@ bool PatchVertexFetches(
 std::vector<XnaVertexElement> CurrentVertexElements(uint32_t* handle_out) {
   std::vector<XnaVertexElement> elements;
   *handle_out = device_sink.VertexDeclaration();
-  const uint32_t handle =
-      xe::kernel::xna::XnaGuestResolveHandle(*handle_out);
+  const uint32_t handle = xe::kernel::xna::XnaGuestResolveHandle(*handle_out);
   if (!handle) {
     return elements;
   }
@@ -3801,10 +3862,15 @@ void BindPassShaders(uint32_t effect_handle, uint32_t pass) {
   static std::map<std::array<uint32_t, 9>,
                   std::pair<xe::gpu::Shader*, xe::gpu::Shader*>>
       bound_passes;
-  const std::array<uint32_t, 9> bound_key = {
-      effect_handle, pass, declaration_handle,
-      selected->vertex_shader_index, selected->pixel_shader_index,
-      strides[0], strides[1], strides[2], strides[3]};
+  const std::array<uint32_t, 9> bound_key = {effect_handle,
+                                             pass,
+                                             declaration_handle,
+                                             selected->vertex_shader_index,
+                                             selected->pixel_shader_index,
+                                             strides[0],
+                                             strides[1],
+                                             strides[2],
+                                             strides[3]};
   auto bound = bound_passes.find(bound_key);
   if (bound != bound_passes.end()) {
     last_bound_.vertex = bound->second.first;
@@ -3880,10 +3946,10 @@ void BindPassShaders(uint32_t effect_handle, uint32_t pass) {
     if (shader) {
       RegisterShaderData(
           shader->ucode_data_hash(), info,
-          fmt::format("effect {} pass {} {} at byte {}", effect_handle, pass,
-                      type == xe::gpu::xenos::ShaderType::kVertex ? "vertex"
-                                                                  : "pixel",
-                      info.dword_offset * 4));
+          fmt::format(
+              "effect {} pass {} {} at byte {}", effect_handle, pass,
+              type == xe::gpu::xenos::ShaderType::kVertex ? "vertex" : "pixel",
+              info.dword_offset * 4));
     }
   };
   load(selected->vertex_shader_index, xe::gpu::xenos::ShaderType::kVertex);
@@ -4024,10 +4090,9 @@ extern "C" void Nexia_XnaDraw(int32_t primitive_type, int32_t base_vertex,
       }
       // The parameters the title set, into the registers THIS shader's own
       // constant table gives them - and no others.
-      device_sink.ApplyStoredConstants(data->constant_registers,
-                                       data->constant_counts,
-                                       data->constant_defaults, bank,
-                                       effect_handle);
+      device_sink.ApplyStoredConstants(
+          data->constant_registers, data->constant_counts,
+          data->constant_defaults, bank, effect_handle);
 
       // THE TEST IS WHETHER THE REGISTERS THIS SHADER READS GOT FILLED.
       //
@@ -4141,8 +4206,7 @@ std::string xe::kernel::xna::DescribeXnaDeviceState() {
   return device_sink.Describe();
 }
 
-bool xe::kernel::xna::XnaAvatarCaptureTarget(
-    xe::kernel::xna::XnaGpuDraw* out) {
+bool xe::kernel::xna::XnaAvatarCaptureTarget(xe::kernel::xna::XnaGpuDraw* out) {
   xe::kernel::xna::XnaGpuTarget target;
   if (device_sink.CurrentRenderTarget(&target)) {
     out->target_width = target.width;
@@ -4163,7 +4227,8 @@ bool xe::kernel::xna::XnaAvatarCaptureTarget(
 }
 
 static void XnaDrawSpritesDirect(int32_t count, const void* sprites,
-                                 int32_t texture_width, int32_t texture_height) {
+                                 int32_t texture_width,
+                                 int32_t texture_height) {
   if (count <= 0 || !sprites) {
     return;
   }
@@ -4177,7 +4242,8 @@ static void XnaDrawSpritesDirect(int32_t count, const void* sprites,
   device_sink.DrawSprites(batch);
 }
 
-// InteropGetTexture(device, index, out TextureType, out TEXTURE_CREATION_PARAMS)
+// InteropGetTexture(device, index, out TextureType, out
+// TEXTURE_CREATION_PARAMS)
 //
 // THIS RETURNS THE HANDLE, NOT AN ERROR CODE.
 //
@@ -4339,7 +4405,8 @@ extern "C" uint32_t xna_D3D_D3D_Effect_CloneEffect(uint32_t device,
 extern "C" void xna_D3D_D3D_Effect_ReleaseHandle(uint32_t device,
                                                  uint32_t handle) {}
 
-// ---- effect reflection -------------------------------------------------------
+// ---- effect reflection
+// -------------------------------------------------------
 //
 // THE FIRST ARGUMENT IS THE DEVICE, NOT THE EFFECT. Read out of the callers:
 //
@@ -4393,13 +4460,20 @@ void WriteName(uint16_t* out, const std::string& name) {
 // "MatrixTransform" as an Object.
 uint32_t ToXnaParameterClass(uint32_t d3dx_class) {
   switch (d3dx_class) {
-    case 0: return 0;  // scalar
-    case 1: return 1;  // vector
-    case 2: return 2;  // matrix_rows    -> Matrix
-    case 3: return 2;  // matrix_columns -> Matrix
-    case 4: return 3;  // object
-    case 5: return 4;  // struct
-    default: return 3;
+    case 0:
+      return 0;  // scalar
+    case 1:
+      return 1;  // vector
+    case 2:
+      return 2;  // matrix_rows    -> Matrix
+    case 3:
+      return 2;  // matrix_columns -> Matrix
+    case 4:
+      return 3;  // object
+    case 5:
+      return 4;  // struct
+    default:
+      return 3;
   }
 }
 
@@ -4488,17 +4562,15 @@ extern "C" uint32_t xna_D3D_D3D_Effect_GetParameter(uint32_t device,
     const bool last = index + 1 == image->parameters.size();
     if (seen <= 2 || last) {
       XELOGI("[xna] GetParameter effect {} index {} -> \"{}\" (call {} of {})",
-             input[0], index, parameter.name, seen,
-             image->parameters.size());
+             input[0], index, parameter.name, seen, image->parameters.size());
     }
   }
   return index + 1;
 }
 
 extern "C" uint32_t xna_D3D_D3D_Effect_GetTexture(
-    uint32_t device, uint32_t effect, uint32_t parameter,
-    uint32_t* texture_out, uint32_t* type_out,
-    TextureCreationParams* params_out) {
+    uint32_t device, uint32_t effect, uint32_t parameter, uint32_t* texture_out,
+    uint32_t* type_out, TextureCreationParams* params_out) {
   if (texture_out) {
     *texture_out = UINT32_MAX;
   }
@@ -4512,9 +4584,8 @@ extern "C" uint32_t xna_D3D_D3D_Effect_GetTexture(
   if (!image || !parameter || parameter > image->parameters.size()) {
     return 0;
   }
-  const uint32_t handle =
-      device_sink.BoundEffectTexture(effect,
-                                     image->parameters[parameter - 1].name);
+  const uint32_t handle = device_sink.BoundEffectTexture(
+      effect, image->parameters[parameter - 1].name);
   if (!handle) {
     return 0;
   }
@@ -4545,8 +4616,7 @@ extern "C" uint32_t xna_D3D_D3D_Effect_GetValue(uint32_t device,
                                                 uint32_t effect,
                                                 uint32_t parameter,
                                                 uint32_t type, void* data,
-                                                uint32_t size,
-                                                uint32_t count) {
+                                                uint32_t size, uint32_t count) {
   if (!data || !size) {
     return 0;
   }
@@ -4627,9 +4697,8 @@ extern "C" uint32_t xna_D3D_D3D_Effect_GetPass(uint32_t device, uint32_t effect,
   // zero for every parameter and lands on element -1. The descriptor only has
   // to be non-zero so EffectPass records the stage as drawable; element 0
   // stands in, and the real per-draw selection happens at Apply.
-  const auto placeholder =
-      [](const xe::kernel::xna::EffectShaderSelector& sel,
-         uint32_t direct) -> uint32_t {
+  const auto placeholder = [](const xe::kernel::xna::EffectShaderSelector& sel,
+                              uint32_t direct) -> uint32_t {
     if (direct != UINT32_MAX) {
       return direct + 1;
     }

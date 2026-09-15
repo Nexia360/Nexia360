@@ -1000,14 +1000,14 @@ void DxbcShaderTranslator::StartTranslation() {
   // reaches, so a shader that hits it was never going to finish; it leaves
   // with whatever it has, drawing wrong pixels instead of killing the device.
   if (!is_depth_only_pixel_shader_ && cvars::shader_control_flow_limit > 0) {
-    a_.OpIAdd(dxbc::Dest::R(system_temp_control_flow_iterations_, 0b0001),
-              dxbc::Src::R(system_temp_control_flow_iterations_,
-                           dxbc::Src::kXXXX),
-              dxbc::Src::LU(1));
-    a_.OpUGE(dxbc::Dest::R(system_temp_control_flow_iterations_, 0b0010),
-             dxbc::Src::R(system_temp_control_flow_iterations_,
-                          dxbc::Src::kXXXX),
-             dxbc::Src::LU(uint32_t(cvars::shader_control_flow_limit)));
+    a_.OpIAdd(
+        dxbc::Dest::R(system_temp_control_flow_iterations_, 0b0001),
+        dxbc::Src::R(system_temp_control_flow_iterations_, dxbc::Src::kXXXX),
+        dxbc::Src::LU(1));
+    a_.OpUGE(
+        dxbc::Dest::R(system_temp_control_flow_iterations_, 0b0010),
+        dxbc::Src::R(system_temp_control_flow_iterations_, dxbc::Src::kXXXX),
+        dxbc::Src::LU(uint32_t(cvars::shader_control_flow_limit)));
     a_.OpIf(true, dxbc::Src::R(system_temp_control_flow_iterations_,
                                dxbc::Src::kYYYY));
     a_.OpBreak();

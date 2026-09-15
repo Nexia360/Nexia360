@@ -253,9 +253,9 @@ void ShowSystemUi(bool shown) {
   }
 }
 
-uint32_t GuideBeginMessageBox(uint32_t slot, const char* title, const char* text,
-                              const char* const* buttons, uint32_t button_count,
-                              uint32_t focus_button) {
+uint32_t GuideBeginMessageBox(uint32_t slot, const char* title,
+                              const char* text, const char* const* buttons,
+                              uint32_t button_count, uint32_t focus_button) {
   auto* drawer = imgui_drawer();
   if (!drawer) {
     return 0;
