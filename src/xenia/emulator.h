@@ -218,7 +218,7 @@ class Emulator {
           input_driver_factory);
 
   // Terminates the currently running title.
-  X_STATUS TerminateTitle();
+  X_STATUS TerminateTitle(bool clear_handles = true);
 
   const std::unique_ptr<vfs::Device> CreateVfsDevice(
       const std::filesystem::path& path, const std::string_view mount_path);
@@ -355,6 +355,7 @@ class Emulator {
   xe::Delegate<const kernel::XSESSION_INFO*, uint32_t, uint32_t, uint64_t>
       on_session_change;
   xe::Delegate<uint32_t> on_avatar_editor;
+  xe::Delegate<> on_title_switch;
 
  private:
   enum : uint64_t { EmulatorFlagDisclaimerAcknowledged = 1ULL << 0 };

@@ -96,7 +96,8 @@ union PageEntry {
     uint32_t current_protect : 4;
     // Allocation state of the page as a MemoryAllocationFlag bit mask.
     uint32_t state : 2;
-    uint32_t reserved : 14;
+    uint32_t system : 1;
+    uint32_t reserved : 13;
   };
 };
 
@@ -204,6 +205,11 @@ class BaseHeap {
   bool Restore(ByteStream* stream);
 
   void Reset();
+
+  void MarkSystem(uint32_t address, uint32_t size);
+  void MarkAllocationsSystem();
+  uint32_t ReleaseUnmarked(
+      const std::vector<std::pair<uint32_t, uint32_t>>& keep);
 
  protected:
   BaseHeap();
@@ -366,6 +372,10 @@ class Memory {
 
   // Resets all memory to zero and resets all allocations.
   void Reset();
+
+  void MarkAllocationsSystem();
+  uint32_t ReleaseTitleAllocations(
+      const std::vector<std::pair<uint32_t, uint32_t>>& keep);
 
   // Full file name and path of the memory-mapped file backing all memory.
   const std::filesystem::path& file_name() const { return file_name_; }

@@ -499,6 +499,19 @@ X_RESULT ContentManager::CloseContent(const std::string_view root_name) {
   return X_ERROR_SUCCESS;
 }
 
+void ContentManager::CloseAllContent() {
+  std::vector<std::string> roots;
+  {
+    auto global_lock = global_critical_region_.Acquire();
+    for (const auto& [key, package] : open_packages_) {
+      roots.emplace_back(key.view());
+    }
+  }
+  for (const std::string& root : roots) {
+    CloseContent(root);
+  }
+}
+
 X_RESULT ContentManager::GetContentThumbnail(
     const uint64_t xuid, const XCONTENT_AGGREGATE_DATA& data,
     std::vector<uint8_t>* buffer) {

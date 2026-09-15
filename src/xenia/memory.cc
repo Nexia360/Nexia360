@@ -394,6 +394,29 @@ void Memory::UnmapViews() {
   }
 }
 
+void Memory::MarkAllocationsSystem() {
+  heaps_.v00000000.MarkAllocationsSystem();
+  heaps_.v40000000.MarkAllocationsSystem();
+  heaps_.v80000000.MarkAllocationsSystem();
+  heaps_.v90000000.MarkAllocationsSystem();
+  heaps_.vA0000000.MarkAllocationsSystem();
+  heaps_.vC0000000.MarkAllocationsSystem();
+  heaps_.vE0000000.MarkAllocationsSystem();
+}
+
+uint32_t Memory::ReleaseTitleAllocations(
+    const std::vector<std::pair<uint32_t, uint32_t>>& keep) {
+  uint32_t released = 0;
+  released += heaps_.v00000000.ReleaseUnmarked(keep);
+  released += heaps_.v40000000.ReleaseUnmarked(keep);
+  released += heaps_.v80000000.ReleaseUnmarked(keep);
+  released += heaps_.v90000000.ReleaseUnmarked(keep);
+  released += heaps_.vA0000000.ReleaseUnmarked(keep);
+  released += heaps_.vC0000000.ReleaseUnmarked(keep);
+  released += heaps_.vE0000000.ReleaseUnmarked(keep);
+  return released;
+}
+
 void Memory::Reset() {
   heaps_.v00000000.Reset();
   heaps_.v40000000.Reset();
@@ -794,6 +817,7 @@ uint32_t Memory::SystemHeapAlloc(uint32_t size, uint32_t alignment,
           kMemoryProtectRead | kMemoryProtectWrite, false, &address)) {
     return 0;
   }
+  heap->MarkSystem(address, size);
   Zero(address, size);
   return address;
 }
@@ -1121,6 +1145,78 @@ void BaseHeap::InsertFreeBlock(uint32_t start_page, uint32_t page_count) {
   }
 
   free_blocks_[new_start] = new_count;
+}
+
+void BaseHeap::MarkSystem(uint32_t address, uint32_t size) {
+  auto global_lock = global_critical_region_.Acquire();
+  const uint32_t first = (address - heap_base_) / page_size_;
+  const uint32_t count = get_page_count(size, page_size_);
+  const uint32_t total = uint32_t(page_table_.size());
+  for (uint32_t page = first; page < first + count && page < total; ++page) {
+    page_table_[page].system = 1;
+  }
+}
+
+void BaseHeap::MarkAllocationsSystem() {
+  auto global_lock = global_critical_region_.Acquire();
+  for (auto& entry : page_table_) {
+    if (entry.state) {
+      entry.system = 1;
+    }
+  }
+}
+
+uint32_t BaseHeap::ReleaseUnmarked(
+    const std::vector<std::pair<uint32_t, uint32_t>>& keep) {
+  std::vector<uint32_t> regions;
+  {
+    auto global_lock = global_critical_region_.Acquire();
+    const uint32_t total = uint32_t(page_table_.size());
+    uint32_t page = 0;
+    while (page < total) {
+      const PageEntry entry = page_table_[page];
+      if (!entry.state || entry.base_address != page ||
+          !entry.region_page_count) {
+        ++page;
+        continue;
+      }
+      const uint32_t remaining = total - page;
+      const uint32_t region_pages = entry.region_page_count < remaining
+                                        ? uint32_t(entry.region_page_count)
+                                        : remaining;
+      bool release = true;
+      for (uint32_t i = page; i < page + region_pages; ++i) {
+        if (page_table_[i].system) {
+          release = false;
+          break;
+        }
+      }
+      const uint64_t low = uint64_t(heap_base_) + uint64_t(page) * page_size_;
+      const uint64_t high = low + uint64_t(region_pages) * page_size_;
+      for (const auto& range : keep) {
+        if (low < range.second && range.first < high) {
+          release = false;
+          break;
+        }
+      }
+      if (release) {
+        for (uint32_t i = page; i < page + region_pages; ++i) {
+          if (page_table_[i].state & kMemoryAllocationCommit) {
+            uint8_t* host = TranslateRelative(size_t(i) * page_size_);
+            xe::memory::Protect(host, page_size_,
+                                xe::memory::PageAccess::kReadWrite, nullptr);
+            std::memset(host, 0, page_size_);
+          }
+        }
+        regions.push_back(uint32_t(low));
+      }
+      page += region_pages;
+    }
+  }
+  for (uint32_t base : regions) {
+    Release(base);
+  }
+  return uint32_t(regions.size());
 }
 
 void BaseHeap::Reset() {

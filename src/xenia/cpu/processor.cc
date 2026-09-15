@@ -22,6 +22,7 @@
 #include "xenia/base/platform.h"
 #include "xenia/base/profiling.h"
 #include "xenia/base/threading.h"
+#include "xenia/cpu/backend/code_cache.h"
 #include "xenia/cpu/breakpoint.h"
 #include "xenia/cpu/cpu_flags.h"
 #include "xenia/cpu/export_resolver.h"
@@ -251,6 +252,22 @@ std::vector<Function*> Processor::FindFunctionsWithAddress(uint32_t address) {
 
 void Processor::RemoveFunctionByAddress(uint32_t address) {
   entry_table_.Delete(address);
+}
+
+void Processor::FlushCode() {
+  auto global_lock = global_critical_region_.Acquire();
+  entry_table_.Clear();
+  for (const auto& module : modules_) {
+    module->ForEachFunction([](Function* function) {
+      if (function->is_guest() &&
+          function->status() == Symbol::Status::kDefined) {
+        function->set_status(Symbol::Status::kDeclared);
+      }
+    });
+  }
+  auto* code_cache = backend_ ? backend_->code_cache() : nullptr;
+  const size_t flushed = code_cache ? code_cache->Flush() : 0;
+  XELOGI("Processor::FlushCode released {} bytes of generated code", flushed);
 }
 
 Function* Processor::ResolveFunction(uint32_t address) {

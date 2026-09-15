@@ -16,7 +16,11 @@
 #include "xenia/emulator.h"
 #include "xenia/hid/input_system.h"
 #include "xenia/kernel/user_module.h"
+#include "xenia/base/threading.h"
 #include "xenia/kernel/util/shim_utils.h"
+#include "xenia/kernel/xam/content_manager.h"
+#include "xenia/kernel/xam/xam_module.h"
+#include "xenia/kernel/xam/xam_private.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_memory.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_module.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_ob.h"
@@ -551,6 +555,11 @@ void KernelState::SetExecutableModule(object_ref<UserModule> module) {
     if (!cvars::cl.empty()) {
       module_name += " " + cvars::cl;
     }
+    auto xam = GetKernelModule<xam::XamModule>("xam.xex");
+    if (xam && !xam->loader_data().command_line.empty()) {
+      module_name += " " + xam->loader_data().command_line;
+      xam->loader_data().command_line.clear();
+    }
 
     xe::string_util::copy_truncating(
         variable_ptr, module_name,
@@ -983,7 +992,7 @@ void KernelState::InitXmpVolumePatch() {
   xmp_volume_patch_ = XmpVolumePatch::CreateForTitle(title_id(), this);
 }
 
-void KernelState::TerminateTitle() {
+void KernelState::TerminateTitle(bool clear_handles) {
   XELOGD("KernelState::TerminateTitle");
   xmp_volume_patch_.reset();
   // Emulator::TerminateTitle drops the UPDATE: mount right after this.
@@ -1006,38 +1015,43 @@ void KernelState::TerminateTitle() {
 
   // Kill all guest threads.
   for (auto it = threads_by_id_.begin(); it != threads_by_id_.end();) {
-    if (!XThread::IsInThread(it->second) && it->second->is_guest_thread()) {
-      auto thread = it->second;
+    if (!XThread::IsInThread(it->second) && it->second->is_guest_thread() &&
+        !IsSystemThread(it->first)) {
+      auto thread = retain_object(it->second);
+      it = threads_by_id_.erase(it);
 
       if (thread->is_running()) {
-        // Need to step the thread to a safe point (returns it to guest code
-        // so it's guaranteed to not be holding any locks / in host kernel
-        // code / etc). Can't do that properly if we have the lock.
         if (!emulator_->is_paused()) {
           thread->thread()->Suspend();
         }
-
-        global_lock.unlock();
-        processor_->StepToGuestSafePoint(thread->thread_id());
-        thread->Terminate(0);
-        global_lock.lock();
+        XELOGI("TerminateTitle: parking thread {:08X} (handle {:08X})",
+               thread->thread_id(), thread->handle());
+        thread->Abandon();
       }
-
-      // Erase it from the thread list.
-      it = threads_by_id_.erase(it);
     } else {
       ++it;
     }
   }
 
+  XELOGI("TerminateTitle: unloading {} user modules", user_modules_.size());
   // Third: Unload all user modules (including the executable).
   for (size_t i = 0; i < user_modules_.size(); i++) {
     user_modules_[i]->ReleaseHandle();
   }
   user_modules_.clear();
 
+  XELOGI("TerminateTitle: content roots");
+  xam::CloseOpenedContentFiles();
+  if (auto* manager = content_manager()) {
+    manager->CloseAllContent();
+  }
+
+  XELOGI("TerminateTitle: handles (clear {})", clear_handles);
   // Release all objects in the object table.
-  object_table_.PurgeAllObjects();
+  if (clear_handles) {
+    object_table_.PurgeAllObjects();
+  }
+  XELOGI("TerminateTitle: kernel done");
 
   // Unregister all notify listeners.
   notify_listeners_.clear();
@@ -1052,6 +1066,45 @@ void KernelState::TerminateTitle() {
     // code anymore).
     global_lock.unlock();
     XThread::GetCurrentThread()->Terminate(0);
+  }
+}
+
+void KernelState::ReleaseTitleMemory() {
+  std::vector<std::pair<uint32_t, uint32_t>> keep = {{0x80000000, 0x80400000}};
+  {
+    auto global_lock = global_critical_region_.Acquire();
+    for (const auto& [thread_id, thread] : threads_by_id_) {
+      const uint32_t base = thread->stack_alloc_base();
+      if (base) {
+        keep.emplace_back(base, base + thread->stack_alloc_size());
+      }
+    }
+  }
+  const uint32_t released = memory()->ReleaseTitleAllocations(keep);
+  XELOGI("KernelState::ReleaseTitleMemory released {} allocations", released);
+}
+
+void KernelState::MarkSystemThreads() {
+  auto global_lock = global_critical_region_.Acquire();
+  system_thread_ids_.clear();
+  for (const auto& [thread_id, thread] : threads_by_id_) {
+    system_thread_ids_.push_back(thread_id);
+  }
+  XELOGI("KernelState: {} threads predate the title", system_thread_ids_.size());
+}
+
+bool KernelState::IsSystemThread(uint32_t thread_id) const {
+  for (uint32_t id : system_thread_ids_) {
+    if (id == thread_id) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void KernelState::WaitForInterruptDispatch() {
+  for (uint32_t i = 0; i < 1000 && interrupt_dispatch_count_.load(); ++i) {
+    xe::threading::Sleep(std::chrono::milliseconds(1));
   }
 }
 
@@ -1562,6 +1615,7 @@ void KernelState::EmulateCPInterruptDPC(uint32_t interrupt_callback,
   if (!interrupt_callback) {
     return;
   }
+  interrupt_dispatch_count_.fetch_add(1);
 
   auto thread = kernel::XThread::GetCurrentThread();
   assert_not_null(thread);
@@ -1596,6 +1650,7 @@ void KernelState::EmulateCPInterruptDPC(uint32_t interrupt_callback,
   xboxkrnl::xeKeSetCurrentProcessType(X_PROCTYPE_IDLE, current_context);
 
   EndDPCImpersonation(current_context, dpc_scope);
+  interrupt_dispatch_count_.fetch_sub(1);
 }
 
 void KernelState::InitializeProcess(X_KPROCESS* process, uint32_t type,

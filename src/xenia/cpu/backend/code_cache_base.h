@@ -10,6 +10,7 @@
 #ifndef XENIA_CPU_BACKEND_CODE_CACHE_BASE_H_
 #define XENIA_CPU_BACKEND_CODE_CACHE_BASE_H_
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -127,6 +128,11 @@ class CodeCacheBase : public CodeCache {
   void CommitExecutableRange(uint32_t guest_low, uint32_t guest_high) {
     if (!indirection_table_base_) {
       return;
+    }
+    const std::pair<uint32_t, uint32_t> range(guest_low, guest_high);
+    if (std::find(committed_ranges_.begin(), committed_ranges_.end(), range) ==
+        committed_ranges_.end()) {
+      committed_ranges_.push_back(range);
     }
     xe::memory::AllocFixed(
         indirection_table_base_ + (guest_low - kIndirectionTableBase),
@@ -268,6 +274,53 @@ class CodeCacheBase : public CodeCache {
     }
   }
 
+  void MarkReserved() override {
+    auto global_lock = global_critical_region_.Acquire();
+    reserved_code_offset_ = generated_code_offset_;
+    reserved_map_size_ = generated_code_map_.size();
+    reserved_marked_ = true;
+    self().OnMarkReserved();
+  }
+
+  size_t Flush() override {
+    auto global_lock = global_critical_region_.Acquire();
+    if (!reserved_marked_) {
+      return 0;
+    }
+    const size_t flushed = generated_code_offset_ - reserved_code_offset_;
+    if (indirection_table_base_) {
+      const uint64_t low =
+          uint64_t(uintptr_t(generated_code_execute_base_)) +
+          reserved_code_offset_;
+      const uint64_t high =
+          uint64_t(uintptr_t(generated_code_execute_base_)) +
+          kGeneratedCodeSize;
+      for (const auto& range : committed_ranges_) {
+        uint32_t* slots = reinterpret_cast<uint32_t*>(
+            indirection_table_base_ + (range.first - kIndirectionTableBase));
+        const uint32_t count = (range.second - range.first) / 4;
+        for (uint32_t i = 0; i < count; ++i) {
+          if (slots[i] >= low && slots[i] < high) {
+            slots[i] = indirection_default_value_;
+          }
+        }
+      }
+    }
+    if (flushed) {
+      self().FillCode(generated_code_write_base_ + reserved_code_offset_,
+                      flushed);
+      self().FlushCodeRange(generated_code_write_base_ + reserved_code_offset_,
+                            flushed);
+    }
+    generated_code_offset_ = reserved_code_offset_;
+    generated_code_map_.resize(reserved_map_size_);
+    self().OnFlush();
+    return flushed;
+  }
+
+  void OnMarkReserved() {}
+  void OnFlush() {}
+
  protected:
   static constexpr size_t kIndirectionTableSize = 0x1FFFFFFF;
   static constexpr uintptr_t kIndirectionTableBase = 0x80000000;
@@ -366,6 +419,10 @@ class CodeCacheBase : public CodeCache {
   size_t generated_code_offset_ = 0;
   std::atomic<size_t> generated_code_commit_mark_ = {0};
   std::vector<std::pair<uint64_t, GuestFunction*>> generated_code_map_;
+  size_t reserved_code_offset_ = 0;
+  size_t reserved_map_size_ = 0;
+  bool reserved_marked_ = false;
+  std::vector<std::pair<uint32_t, uint32_t>> committed_ranges_;
 
  private:
   Derived& self() { return static_cast<Derived&>(*this); }

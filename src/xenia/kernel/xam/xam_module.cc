@@ -109,18 +109,15 @@ void XamModule::LoadLoaderData() {
     loader_data_.prior_title_id = prior_title_id;
   }
 
+  loader_data_.command_line = string_read();
+
   fclose(file);
   // We read launch data. Let's remove it till next request.
   std::filesystem::remove(kXamModuleLoaderDataFileName);
 }
 
-void XamModule::SaveLoaderData() {
-  FILE* file = xe::filesystem::OpenFile(kXamModuleLoaderDataFileName, "wb");
-
-  if (!file) {
-    return;
-  }
-
+std::pair<std::filesystem::path, std::string> XamModule::ResolveLaunchTarget()
+    const {
   std::filesystem::path host_path = loader_data_.host_path;
   std::string launch_path = loader_data_.launch_path;
 
@@ -139,6 +136,18 @@ void XamModule::SaveLoaderData() {
     host_path = host_path / launch_path;
     launch_path = "";
   }
+
+  return {host_path, launch_path};
+}
+
+void XamModule::SaveLoaderData() {
+  FILE* file = xe::filesystem::OpenFile(kXamModuleLoaderDataFileName, "wb");
+
+  if (!file) {
+    return;
+  }
+
+  const auto [host_path, launch_path] = ResolveLaunchTarget();
 
   const std::string host_path_as_string = xe::path_to_utf8(host_path);
   const uint16_t host_path_length =
@@ -173,6 +182,11 @@ void XamModule::SaveLoaderData() {
 
   fwrite(&loader_data_.prior_title_id, sizeof(loader_data_.prior_title_id), 1,
          file);
+
+  const uint16_t command_line_length =
+      static_cast<uint16_t>(loader_data_.command_line.size());
+  fwrite(&command_line_length, sizeof(command_line_length), 1, file);
+  fwrite(loader_data_.command_line.c_str(), command_line_length, 1, file);
 
   fclose(file);
 }

@@ -43,6 +43,8 @@ class X64CodeCache : public CodeCacheBase<X64CodeCache> {
                          const EmitFunctionInfo& func_info,
                          void* code_execute_address,
                          UnwindReservation unwind_reservation) {}
+  virtual void OnMarkReserved() {}
+  virtual void OnFlush() {}
 
  protected:
   X64CodeCache() = default;

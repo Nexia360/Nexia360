@@ -132,6 +132,7 @@ class EmulatorWindow {
   void ToggleFriendsDialog();
   void ToggleAvatarEditorDialog();
   void ShowAvatarEditorDialog();
+  void SwitchTitle();
 
   // True when this run should start a fresh instance as it goes away: the
   // user chose Exit, and the guest has left launch data behind. Called from

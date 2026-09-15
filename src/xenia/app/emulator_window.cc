@@ -35,6 +35,7 @@
 #include "xenia/base/profiling.h"
 #include "xenia/base/system.h"
 #include "xenia/base/threading.h"
+#include "xenia/config.h"
 #include "xenia/cpu/processor.h"
 #include "xenia/emulator.h"
 #include "xenia/gpu/command_processor.h"
@@ -82,6 +83,11 @@ DECLARE_string(api_list);
 DECLARE_bool(upnp);
 
 DECLARE_string(network_guid);
+
+DEFINE_bool(title_switch_clear_handles, true,
+            "Release the previous title's handles when a title switch happens "
+            "inside the running emulator.",
+            "General");
 
 DEFINE_bool(fullscreen, false, "Whether to launch the emulator in fullscreen.",
             "Display");
@@ -2183,11 +2189,22 @@ void EmulatorWindow::ToggleAvatarEditorDialog() {
 
   avatar_editor_dialog_ = new AvatarEditorDialog(imgui_drawer_.get(), this);
   avatar_editor_dialog_->set_closed_callback([this]() {
+    const uint32_t saved_users =
+        avatar_editor_dialog_ ? avatar_editor_dialog_->saved_user_mask() : 0;
     avatar_editor_dialog_ = nullptr;
     disable_hotkeys_ = false;
-    emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI,
-                                                     0);
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
+    auto* kernel = emulator_->kernel_state();
+    kernel->xam_state()->xam_dialogs_shown_--;
+    std::thread([kernel, saved_users]() {
+      xe::threading::Sleep(std::chrono::milliseconds(100));
+      if (saved_users) {
+        kernel->BroadcastNotification(kXNotificationSystemProfileSettingChanged,
+                                      saved_users);
+        kernel->BroadcastNotification(kXNotificationSystemAvatarChanged,
+                                      saved_users);
+      }
+      kernel->BroadcastNotification(kXNotificationSystemUI, 0);
+    }).detach();
   });
 }
 
@@ -2195,6 +2212,37 @@ void EmulatorWindow::ShowAvatarEditorDialog() {
   if (!avatar_editor_dialog_) {
     ToggleAvatarEditorDialog();
   }
+}
+
+void EmulatorWindow::SwitchTitle() {
+  auto xam =
+      emulator_->kernel_state()->GetKernelModule<kernel::xam::XamModule>(
+          "xam.xex");
+  if (!xam) {
+    return;
+  }
+  const auto [host_path, launch_path] = xam->ResolveLaunchTarget();
+  XELOGI("Switching title in place to {} '{}'", xe::path_to_utf8(host_path),
+         launch_path);
+  emulator_->TerminateTitle(cvars::title_switch_clear_handles);
+  xam->loader_data().host_path = xe::path_to_utf8(host_path);
+  xam->loader_data().launch_path = launch_path;
+  const X_STATUS result = RunTitle(host_path);
+  xam->loader_data().launch_path.clear();
+  if (XSUCCEEDED(result)) {
+    std::error_code error;
+    std::filesystem::remove(
+        std::filesystem::path(
+            std::string(kernel::xam::kXamModuleLoaderDataFileName)),
+        error);
+    return;
+  }
+  XELOGE("In-place title switch failed ({:08X}); restarting the emulator",
+         result);
+  config::SaveConfig();
+  xe::LaunchSelf();
+  xe::FlushLog();
+  std::quick_exit(0);
 }
 
 void EmulatorWindow::ToggleVoiceMessagesDialog() {

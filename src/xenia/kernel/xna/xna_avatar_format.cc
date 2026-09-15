@@ -2210,6 +2210,8 @@ Lighting DefaultLighting() {
   return light;
 }
 
+void UnpackNormal(uint32_t packed, float out[3]) { DecodeNormal(packed, out); }
+
 void SkinBatch(const Batch& batch, const Matrix* skin,
                std::vector<GpuVertex>* out, float inset) {
   out->resize(batch.vertices.size());

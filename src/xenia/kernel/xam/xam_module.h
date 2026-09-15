@@ -10,7 +10,10 @@
 #ifndef XENIA_KERNEL_XAM_XAM_MODULE_H_
 #define XENIA_KERNEL_XAM_XAM_MODULE_H_
 
+#include <filesystem>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "xenia/cpu/export_resolver.h"
 #include "xenia/kernel/kernel_module.h"
@@ -42,10 +45,12 @@ class XamModule : public KernelModule {
     uint64_t last_active_user = 0;
     uint32_t prior_title_id = 0;
     uint32_t launch_request_callback = 0;
+    std::string command_line;
   };
 
   void LoadLoaderData();
   void SaveLoaderData();
+  std::pair<std::filesystem::path, std::string> ResolveLaunchTarget() const;
 
   const LoaderData& loader_data() const { return loader_data_; }
   LoaderData& loader_data() { return loader_data_; }

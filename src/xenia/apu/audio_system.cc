@@ -132,6 +132,7 @@ void AudioSystem::WorkerThreadMain() {
       auto global_lock = global_critical_region_.Acquire();
       uint32_t client_callback = clients_[index].callback;
       uint32_t client_callback_arg = clients_[index].wrapped_callback_arg;
+      callback_active_ = client_callback != 0;
       global_lock.unlock();
 
       if (client_callback) {
@@ -139,6 +140,7 @@ void AudioSystem::WorkerThreadMain() {
         uint64_t args[] = {client_callback_arg};
         processor_->Execute(worker_thread_->thread_state(), client_callback,
                             args, xe::countof(args));
+        callback_active_ = false;
       }
 
       pumped = true;
@@ -278,6 +280,20 @@ void AudioSystem::UnregisterClient(size_t index) {
                                       std::chrono::milliseconds(0));
   } while (wait_result == xe::threading::WaitResult::kSuccess);
   assert_true(wait_result == xe::threading::WaitResult::kTimeout);
+}
+
+void AudioSystem::UnregisterAllClients() {
+  for (size_t index = 0; index < kMaximumClientCount; ++index) {
+    if (clients_[index].in_use) {
+      XELOGI("AudioSystem: unregistering client {}", index);
+      UnregisterClient(index);
+    }
+  }
+  XELOGI("AudioSystem: clients unregistered, callback active {}",
+         callback_active_.load());
+  for (uint32_t i = 0; i < 1000 && callback_active_.load(); ++i) {
+    xe::threading::Sleep(std::chrono::milliseconds(1));
+  }
 }
 
 bool AudioSystem::Save(ByteStream* stream) {

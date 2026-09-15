@@ -39,6 +39,8 @@ class AvatarEditorDialog final : public ui::ImGuiDialog {
 
   using ui::ImGuiDialog::Close;
 
+  uint32_t saved_user_mask() const { return saved_user_mask_; }
+
  protected:
   void OnDraw(ImGuiIO& io) override;
 
@@ -58,6 +60,9 @@ class AvatarEditorDialog final : public ui::ImGuiDialog {
   bool ColorEdit(const char* label, uint32_t* argb);
   void SetBody(uint8_t body);
   void Changed();
+  bool SaveCurrent();
+  void RequestExit();
+  void DrawConfirm();
 
   EmulatorWindow* emulator_window_;
   kernel::xna::avatar::Catalog* catalog_ = nullptr;
@@ -72,6 +77,10 @@ class AvatarEditorDialog final : public ui::ImGuiDialog {
   int pose_ = 0;
   std::mt19937 rng_{std::random_device{}()};
   std::function<void()> closed_callback_;
+  uint32_t saved_user_mask_ = 0;
+  bool confirm_requested_ = false;
+  bool pending_close_ = false;
+  bool back_blocked_ = true;
 };
 
 }  // namespace app

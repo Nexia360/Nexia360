@@ -390,12 +390,24 @@ X_STATUS Emulator::Setup(
   return result;
 }
 
-X_STATUS Emulator::TerminateTitle() {
+X_STATUS Emulator::TerminateTitle(bool clear_handles) {
   if (!is_title_open()) {
     return X_STATUS_UNSUCCESSFUL;
   }
 
-  kernel_state_->TerminateTitle();
+  XELOGI("TerminateTitle: audio clients");
+  if (audio_system()) {
+    audio_system()->UnregisterAllClients();
+  }
+  XELOGI("TerminateTitle: interrupt callback");
+  if (graphics_system()) {
+    graphics_system()->SetInterruptCallback(0, 0);
+  }
+
+  XELOGI("TerminateTitle: kernel");
+  kernel_state_->TerminateTitle(clear_handles);
+  XELOGI("TerminateTitle: interrupt dispatch");
+  kernel_state_->WaitForInterruptDispatch();
 
   // ApplyTitleUpdate mounts the active update as UPDATE: and leaves it
   // registered for the running title. The file system outlives the title, so
@@ -407,6 +419,16 @@ X_STATUS Emulator::TerminateTitle() {
     file_system_->UnregisterSymbolicLink("UPDATE:");
     file_system_->UnregisterDevice(kTitleUpdateMountPath);
   }
+
+  XELOGI("TerminateTitle: memory");
+  kernel_state_->ReleaseTitleMemory();
+  XELOGI("TerminateTitle: code");
+  processor()->FlushCode();
+  XELOGI("TerminateTitle: gpu caches");
+  if (graphics_system()) {
+    graphics_system()->ClearCaches();
+  }
+  XELOGI("TerminateTitle: done");
 
   title_id_ = std::nullopt;
   title_name_ = "";
@@ -1634,6 +1656,8 @@ X_STATUS Emulator::CompleteLaunch(const std::filesystem::path& path,
   title_version_ = "";
   media_id_ = "";
   display_window_->SetIcon(nullptr, 0);
+  memory()->MarkAllocationsSystem();
+  kernel_state_->MarkSystemThreads();
 
   // Allow xam to request module loads.
   auto xam = kernel_state()->GetKernelModule<kernel::xam::XamModule>("xam.xex");

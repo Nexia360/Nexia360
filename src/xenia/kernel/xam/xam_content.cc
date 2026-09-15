@@ -524,6 +524,19 @@ X_RESULT OpenContentFile(const std::string& root_name,
 
 }  // namespace
 
+void CloseOpenedContentFiles() {
+  std::vector<std::string> roots;
+  {
+    std::lock_guard<std::mutex> lock(opened_roots_mutex);
+    for (const auto& [root, device_path] : opened_roots) {
+      roots.push_back(root);
+    }
+  }
+  for (const std::string& root : roots) {
+    CloseOpenedRoot(root);
+  }
+}
+
 dword_result_t XamContentOpenFileInternal_entry(
     dword_t user_index, lpstring_t root_name_ptr, lpstring_t path_ptr,
     dword_t flags, dword_t unknown1, dword_t unknown2,
@@ -914,6 +927,7 @@ dword_result_t xeXamContentLaunchImage(dword_t user_index,
   auto& loader_data = xam->loader_data();
   loader_data.host_path = xe::path_to_utf8(host_path);
   loader_data.launch_path = xex_path.value();
+  loader_data.command_line.clear();
 
   xam->SaveLoaderData();
 

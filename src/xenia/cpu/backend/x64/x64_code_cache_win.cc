@@ -109,6 +109,8 @@ class Win32X64CodeCache : public X64CodeCache {
   void PlaceCode(uint32_t guest_address, void* machine_code,
                  const EmitFunctionInfo& func_info, void* code_execute_address,
                  UnwindReservation unwind_reservation) override;
+  void OnMarkReserved() override;
+  void OnFlush() override;
 
   void InitializeUnwindEntry(uint8_t* unwind_entry_address,
                              size_t unwind_table_slot,
@@ -121,6 +123,7 @@ class Win32X64CodeCache : public X64CodeCache {
   std::vector<RUNTIME_FUNCTION> unwind_table_;
   // Current number of entries in the table.
   std::atomic<uint32_t> unwind_table_count_ = {0};
+  uint32_t reserved_unwind_count_ = 0;
   // Does this version of Windows support growable funciton tables?
   bool supports_growable_table_ = false;
 
@@ -205,6 +208,29 @@ bool Win32X64CodeCache::Initialize() {
   }
 
   return true;
+}
+
+void Win32X64CodeCache::OnMarkReserved() {
+  reserved_unwind_count_ = unwind_table_count_;
+}
+
+void Win32X64CodeCache::OnFlush() {
+  unwind_table_count_ = reserved_unwind_count_;
+  if (!supports_growable_table_) {
+    return;
+  }
+  if (unwind_table_handle_) {
+    delete_growable_table_(unwind_table_handle_);
+    unwind_table_handle_ = nullptr;
+  }
+  if (add_growable_table_(
+          &unwind_table_handle_, unwind_table_.data(), unwind_table_count_,
+          DWORD(unwind_table_.size()),
+          reinterpret_cast<ULONG_PTR>(generated_code_execute_base_),
+          reinterpret_cast<ULONG_PTR>(generated_code_execute_base_ +
+                                      kGeneratedCodeSize))) {
+    XELOGE("Unable to recreate unwind function table after a code flush");
+  }
 }
 
 Win32X64CodeCache::UnwindReservation

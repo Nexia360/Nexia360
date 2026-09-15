@@ -22,6 +22,7 @@
 #include "xenia/base/string.h"
 #include "xenia/base/string_util.h"
 #include "xenia/base/system.h"
+#include "xenia/base/threading.h"
 #include "xenia/base/utf8.h"
 #include "xenia/config.h"
 #include "xenia/kernel/XLiveAPI.h"
@@ -47,6 +48,11 @@
 
 #include "third_party/fmt/include/fmt/format.h"
 #include "third_party/fmt/include/fmt/xchar.h"
+
+DEFINE_bool(title_switch_in_process, true,
+            "Switch titles inside the running emulator when a title launches "
+            "another one, instead of restarting the emulator.",
+            "General");
 
 DEFINE_int32(avpack, 8,
              "Video modes\n"
@@ -669,7 +675,14 @@ void RecordLaunchOrigin() {
 }
 
 void ReloadForLaunch() {
-  auto* display_window = kernel_state()->emulator()->display_window();
+  auto* emulator = kernel_state()->emulator();
+  auto* display_window = emulator->display_window();
+  if (cvars::title_switch_in_process && display_window) {
+    XThread* thread = XThread::GetCurrentThread();
+    kernel_state()->UnregisterThread(thread);
+    emulator->on_title_switch();
+    thread->Terminate(0);
+  }
   if (display_window) {
     display_window->app_context().CallInUIThread([]() {
       config::SaveConfig();
@@ -725,6 +738,7 @@ void LaunchTitle(const std::string& launch_path, const std::string& mount_path,
   loader_data.host_path = host;
   loader_data.launch_path = inner;
   loader_data.launch_flags = flags;
+  loader_data.command_line = cmd_line;
   xam->SaveLoaderData();
   ReloadForLaunch();
 }

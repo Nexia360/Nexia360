@@ -113,6 +113,7 @@ class Processor {
   Function* QueryFunction(uint32_t address);
   std::vector<Function*> FindFunctionsWithAddress(uint32_t address);
   void RemoveFunctionByAddress(uint32_t address);
+  void FlushCode();
 
   Function* LookupFunction(uint32_t address);
   Module* LookupModule(uint32_t address);

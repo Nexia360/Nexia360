@@ -278,9 +278,9 @@ void PutColorParam(uint8_t* p, uint32_t argb) {
 
 bool WriteModel(const avatar::RawModel& model,
                 const std::vector<const avatar::RawTexture*>& overrides,
-                const Palette& palette, bool mirror, uint8_t* cpu,
-                uint32_t cpu_guest, uint8_t* gpu, uint32_t gpu_guest,
-                uint8_t* record) {
+                const Palette& palette, bool mirror, float inset,
+                uint8_t* cpu, uint32_t cpu_guest, uint8_t* gpu,
+                uint32_t gpu_guest, uint8_t* record) {
   const size_t batches_end =
       size_t(model.batches_offset) + model.batches.size() * kBatchBytes;
   const size_t textures_end =
@@ -330,9 +330,18 @@ bool WriteModel(const avatar::RawModel& model,
     for (size_t v = 0; v < batch.vertices.size(); ++v) {
       const avatar::RawVertex& vertex = batch.vertices[v];
       uint8_t* dst = gpu + batch.vb_offset + v * stride;
-      PutFloat(dst, vertex.position[0]);
-      PutFloat(dst + 4, vertex.position[1]);
-      PutFloat(dst + 8, mirror ? -vertex.position[2] : vertex.position[2]);
+      float position[3] = {vertex.position[0], vertex.position[1],
+                           vertex.position[2]};
+      if (inset != 0.0f) {
+        float normal[3];
+        avatar::UnpackNormal(vertex.normal, normal);
+        for (int k = 0; k < 3; ++k) {
+          position[k] -= normal[k] * inset;
+        }
+      }
+      PutFloat(dst, position[0]);
+      PutFloat(dst + 4, position[1]);
+      PutFloat(dst + 8, mirror ? -position[2] : position[2]);
       Put32(dst + 0x0C, mirror ? MirrorNormal(vertex.normal) : vertex.normal);
       Put32(dst + 0x10, vertex.weights);
       Put32(dst + 0x14, vertex.bindings);
@@ -485,8 +494,10 @@ X_RESULT BuildAvatarAssets(const uint8_t* metadata, size_t metadata_size,
       }
     }
     uint8_t* record = result + models + written * kModelBytes;
+    const float inset =
+        (component.mask & kComponentMaskBody) ? avatar::kBodyInset : 0.0f;
     if (!WriteModel(*model, overrides, ComponentPalette(description, component),
-                    mirror, result + cpu_at,
+                    mirror, inset, result + cpu_at,
                     result_guest + cpu_at, gpu + gpu_at, gpu_guest + gpu_at,
                     record)) {
       XELOGW("XamAvatarGetAssets: asset {} does not fit its own layout",

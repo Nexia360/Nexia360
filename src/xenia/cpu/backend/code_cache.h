@@ -35,6 +35,9 @@ class CodeCache {
 
   // Finds platform-specific function unwind info for the given host PC.
   virtual void* LookupUnwindInfo(uint64_t host_pc) = 0;
+
+  virtual void MarkReserved() {}
+  virtual size_t Flush() { return 0; }
 };
 
 }  // namespace backend

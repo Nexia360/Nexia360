@@ -19,6 +19,7 @@
 #include "xenia/kernel/xam/user_profile.h"
 #include "xenia/kernel/xam/xam_state.h"
 #include "xenia/kernel/xna/xna_avatar.h"
+#include "xenia/ui/ui_focus_manager.h"
 #include "xenia/xbox.h"
 
 namespace xe {
@@ -43,6 +44,10 @@ constexpr uint32_t kPreviewWidth = 300;
 constexpr uint32_t kPreviewHeight = 450;
 constexpr float kComboWidth = 250.0f;
 
+constexpr char kFocusName[] = "AvatarEditor";
+constexpr char kConfirmFocusName[] = "AvatarEditorConfirm";
+constexpr char kConfirmPopup[] = "Unsaved Avatar##nexia_avatar_confirm";
+
 constexpr uint32_t kFaceColors[] = {
     avatar::kColorSkin,       avatar::kColorHair,    avatar::kColorEyebrow,
     avatar::kColorIris,       avatar::kColorLips,    avatar::kColorFacialHair,
@@ -64,6 +69,7 @@ AvatarEditorDialog::AvatarEditorDialog(ui::ImGuiDrawer* imgui_drawer,
 }
 
 AvatarEditorDialog::~AvatarEditorDialog() {
+  imgui_drawer()->GetFocusManager()->UIDropFocus(kFocusName);
   if (closed_callback_) {
     closed_callback_();
   }
@@ -316,16 +322,7 @@ void AvatarEditorDialog::DrawEditor() {
   }
   ImGui::SameLine();
   if (ImGui::Button(unsaved_ ? "Save *" : "Save")) {
-    if (kernel::xna::XnaAvatarSaveProfile(profiles_[selected_profile_].xuid,
-                                          description_)) {
-      unsaved_ = false;
-      status_ = "Saved. Titles started from now on use this avatar.";
-      kernel::kernel_state()->BroadcastNotification(
-          kXNotificationSystemAvatarChanged,
-          1u << profiles_[selected_profile_].slot);
-    } else {
-      status_ = "The avatar could not be saved - see the log.";
-    }
+    SaveCurrent();
   }
   ImGui::EndDisabled();
   if (!status_.empty()) {
@@ -334,7 +331,99 @@ void AvatarEditorDialog::DrawEditor() {
   ImGui::EndChild();
 }
 
+bool AvatarEditorDialog::SaveCurrent() {
+  if (selected_profile_ < 0) {
+    status_ = "Sign in a profile to save the avatar.";
+    return false;
+  }
+  if (!kernel::xna::XnaAvatarSaveProfile(profiles_[selected_profile_].xuid,
+                                         description_)) {
+    status_ = "The avatar could not be saved - see the log.";
+    return false;
+  }
+  unsaved_ = false;
+  status_ = "Saved. Titles started from now on use this avatar.";
+  saved_user_mask_ |= 1u << profiles_[selected_profile_].slot;
+  return true;
+}
+
+void AvatarEditorDialog::RequestExit() {
+  if (unsaved_ && catalog_) {
+    confirm_requested_ = true;
+    return;
+  }
+  pending_close_ = true;
+}
+
+void AvatarEditorDialog::DrawConfirm() {
+  auto* drawer = imgui_drawer();
+  auto* focus_manager = drawer->GetFocusManager();
+  if (confirm_requested_) {
+    confirm_requested_ = false;
+    ImGui::OpenPopup(kConfirmPopup);
+    focus_manager->UIChildFocus(kFocusName, kConfirmFocusName);
+  }
+  const ImGuiIO& io = ImGui::GetIO();
+  ImGui::SetNextWindowPos(
+      ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
+      ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+  if (!ImGui::BeginPopupModal(
+          kConfirmPopup, nullptr,
+          ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove)) {
+    return;
+  }
+  const ui::UIInput& input = focus_manager->XamInputFocus(kConfirmFocusName);
+  ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.0f);
+  ImGui::TextWrapped(
+      "Your avatar has been changed, if you exit without saving, those "
+      "changes will be lost, would you like to save them?");
+  ImGui::PopTextWrapPos();
+  ImGui::Spacing();
+  int choice = 0;
+  if (ImGui::IsWindowAppearing()) {
+    ImGui::SetKeyboardFocusHere();
+  }
+  if (ImGui::Button("Save and Exit") || drawer->GamepadButtonActivated()) {
+    choice = 1;
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Exit") || drawer->GamepadButtonActivated()) {
+    choice = 2;
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Cancel") || drawer->GamepadButtonActivated() ||
+      input.BClose()) {
+    choice = 3;
+  }
+  if (choice) {
+    ImGui::CloseCurrentPopup();
+    focus_manager->UIDropFocus(kConfirmFocusName);
+    back_blocked_ = true;
+    if (choice == 1) {
+      pending_close_ = SaveCurrent();
+    } else if (choice == 2) {
+      pending_close_ = true;
+    }
+  }
+  ImGui::EndPopup();
+}
+
 void AvatarEditorDialog::OnDraw(ImGuiIO& io) {
+  auto* drawer = imgui_drawer();
+  auto* focus_manager = drawer->GetFocusManager();
+  if (pending_close_) {
+    if (!drawer->IsAnyGamepadActionPressed()) {
+      focus_manager->UIDropFocus(kFocusName);
+      Close();
+    }
+    return;
+  }
+  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+  io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+  io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
+  if (!focus_manager->IsRegistered(kFocusName)) {
+    focus_manager->UISetFocus(kFocusName);
+  }
   if (dirty_ && !ImGui::IsAnyItemActive()) {
     RebuildPreview();
   }
@@ -343,8 +432,12 @@ void AvatarEditorDialog::OnDraw(ImGuiIO& io) {
       ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
   ImGui::SetNextWindowSize(ImVec2(880.0f, 640.0f), ImGuiCond_FirstUseEver);
   bool open = true;
+  bool window_focused = false;
   if (ImGui::Begin("Avatar Editor##nexia_avatar_editor", &open,
                    ImGuiWindowFlags_NoCollapse)) {
+    window_focused =
+        ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+    DrawConfirm();
     if (!catalog_) {
       ImGui::TextWrapped(
           "The avatar assets are not installed. Install the Xbox 360 Avatar "
@@ -364,8 +457,23 @@ void AvatarEditorDialog::OnDraw(ImGuiIO& io) {
     }
   }
   ImGui::End();
+
+  const bool popup_open = ImGui::IsPopupOpen(
+      "", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+  const ui::UIInput& input = focus_manager->XamInputFocus(kFocusName);
+  if (popup_open || !window_focused) {
+    back_blocked_ = true;
+  }
+  if (input.BClose()) {
+    if (!back_blocked_) {
+      RequestExit();
+    }
+  }
+  if (!drawer->IsAnyGamepadActionPressed() && !input.BClose()) {
+    back_blocked_ = popup_open || !window_focused;
+  }
   if (!open) {
-    Close();
+    RequestExit();
   }
 }
 

@@ -93,6 +93,8 @@ class PosixX64CodeCache : public X64CodeCache {
   void PlaceCode(uint32_t guest_address, void* machine_code,
                  const EmitFunctionInfo& func_info, void* code_execute_address,
                  UnwindReservation unwind_reservation) override;
+  void OnMarkReserved() override;
+  void OnFlush() override;
 
   void InitializeUnwindEntry(uint8_t* unwind_entry_address,
                              void* code_execute_address,
@@ -102,6 +104,8 @@ class PosixX64CodeCache : public X64CodeCache {
   std::vector<void*> registered_frames_;
   // Current number of unwind table entries.
   uint32_t unwind_table_count_ = 0;
+  uint32_t reserved_unwind_count_ = 0;
+  size_t reserved_frame_count_ = 0;
 };
 
 std::unique_ptr<X64CodeCache> X64CodeCache::Create() {
@@ -122,6 +126,19 @@ bool PosixX64CodeCache::Initialize() {
   }
   registered_frames_.reserve(kMaximumFunctionCount);
   return true;
+}
+
+void PosixX64CodeCache::OnMarkReserved() {
+  reserved_unwind_count_ = unwind_table_count_;
+  reserved_frame_count_ = registered_frames_.size();
+}
+
+void PosixX64CodeCache::OnFlush() {
+  for (size_t i = reserved_frame_count_; i < registered_frames_.size(); ++i) {
+    __deregister_frame(registered_frames_[i]);
+  }
+  registered_frames_.resize(reserved_frame_count_);
+  unwind_table_count_ = reserved_unwind_count_;
 }
 
 X64CodeCache::UnwindReservation PosixX64CodeCache::RequestUnwindReservation(

@@ -21,6 +21,7 @@ xe::cpu::Export* RegisterExport_xam(xe::cpu::Export* export_entry);
 
 void RecordLaunchOrigin();
 void ReloadForLaunch();
+void CloseOpenedContentFiles();
 
 // Registration functions, one per file.
 #define XE_MODULE_EXPORT_GROUP(m, n)                                  \

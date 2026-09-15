@@ -418,6 +418,8 @@ class XThread : public XObject, public cpu::Thread {
   uint32_t tls_ptr() const { return tls_static_address_; }
   uint32_t pcr_ptr() const { return pcr_address_; }
   uint32_t stack_base() const { return stack_base_; }
+  uint32_t stack_alloc_base() const { return stack_alloc_base_; }
+  uint32_t stack_alloc_size() const { return stack_alloc_size_; }
   uint32_t stack_limit() const { return stack_limit_; }
   // True if the thread is created by the guest app.
   bool is_guest_thread() const { return guest_thread_; }
@@ -432,6 +434,7 @@ class XThread : public XObject, public cpu::Thread {
   X_STATUS Create();
   X_STATUS Exit(int exit_code);
   X_STATUS Terminate(int exit_code);
+  void Abandon();
 
   virtual void Execute();
 

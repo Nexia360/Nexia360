@@ -371,6 +371,8 @@ struct Lighting {
 Lighting DefaultLighting();
 constexpr float kBodyInset = 0.008f;
 
+void UnpackNormal(uint32_t packed, float out[3]);
+
 void SkinBatch(const Batch& batch, const Matrix* skin,
                std::vector<GpuVertex>* out, float inset = 0.0f);
 void FillMaterialConstants(const Material& material, GpuConstants* out);

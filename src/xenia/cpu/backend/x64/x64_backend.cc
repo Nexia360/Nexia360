@@ -293,6 +293,7 @@ bool X64Backend::Initialize(Processor* processor) {
 
   // Allocate some special indirections.
   code_cache_->CommitExecutableRange(0x9FFF0000, 0x9FFFFFFF);
+  code_cache_->MarkReserved();
 
   // Setup exception callback
   ExceptionHandler::Install(&ExceptionCallbackThunk, this);

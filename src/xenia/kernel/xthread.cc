@@ -541,6 +541,15 @@ X_STATUS XThread::Terminate(int exit_code) {
   return X_STATUS_SUCCESS;
 }
 
+void XThread::Abandon() {
+  X_KTHREAD* thread = guest_object<X_KTHREAD>();
+  thread->header.signal_state = 1;
+  thread->exit_status = 0;
+  emulator()->processor()->OnThreadExit(thread_id_);
+  running_ = false;
+  ReleaseHandle();
+}
+
 void XThread::Execute() {
   XELOGKERNEL("XThread::Execute thid {} (handle={:08X}, '{}', native={:08X})",
               thread_id_, handle(), thread_name_, thread_->system_id());

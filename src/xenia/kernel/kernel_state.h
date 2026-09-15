@@ -279,7 +279,11 @@ class KernelState {
   X_RESULT ApplyTitleUpdate(const object_ref<UserModule> title_module);
   // Terminates a title: Unloads all modules, and kills all guest threads.
   // This DOES NOT RETURN if called from a guest thread!
-  void TerminateTitle();
+  void TerminateTitle(bool clear_handles = true);
+  void ReleaseTitleMemory();
+  void WaitForInterruptDispatch();
+  void MarkSystemThreads();
+  bool IsSystemThread(uint32_t thread_id) const;
 
   void RegisterThread(XThread* thread);
   void UnregisterThread(XThread* thread);
@@ -386,6 +390,7 @@ class KernelState {
   // Must be guarded by the global critical region.
   util::ObjectTable object_table_;
   std::unordered_map<uint32_t, XThread*> threads_by_id_;
+  std::vector<uint32_t> system_thread_ids_;
   std::vector<object_ref<XNotifyListener>> notify_listeners_;
   bool has_notified_startup_ = false;
   bool has_notified_live_startup_ = false;
@@ -399,6 +404,7 @@ class KernelState {
   uint32_t kernel_guest_globals_ = 0;
 
   std::atomic<bool> dispatch_thread_running_;
+  std::atomic<uint32_t> interrupt_dispatch_count_ = {0};
   object_ref<XHostThread> dispatch_thread_;
   // Must be guarded by the global critical region.
   util::NativeList dpc_list_;
