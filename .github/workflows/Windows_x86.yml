@@ -58,6 +58,11 @@ jobs:
             echo "Warning: fxc.exe not found in Windows SDK"
           }
 
+      - name: Setup .NET 9 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 9.0.x
+
       - name: Download submodules
         run: git submodule update --init --depth=1 -j $env:NUMBER_OF_PROCESSORS
 
