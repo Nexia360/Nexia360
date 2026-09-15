@@ -27,6 +27,7 @@
 #include "xenia/kernel/xam/user_settings.h"
 #include "xenia/kernel/xam/user_tracker.h"
 #include "xenia/kernel/xam/xdbf/gpd_info.h"
+#include "xenia/kernel/xna/xna_avatar.h"
 #include "xenia/ui/imgui_host_notification.h"
 
 DECLARE_int32(discord_presence_user_index);
@@ -54,6 +55,8 @@ bool UserTracker::AddUser(uint64_t xuid) {
   if (kernel_state()->emulator()->is_title_open()) {
     StartPeriodicMaintenance(xuid);
   }
+
+  xe::kernel::xna::XnaAvatarSyncProfileSetting(xuid);
 
   return true;
 }

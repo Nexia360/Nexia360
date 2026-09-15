@@ -497,6 +497,10 @@ void HlcbDecoder::Dispatch(HlcbPacketType type, uint32_t handle,
     case HlcbPacketType::kSetSamplerState:
       sink->SetState(type, handle, ReadWord(body, 4));
       break;
+    case HlcbPacketType::kSetHighFrequencyState:
+      sink->SetHighFrequencyState(PacketHandle(ReadWord(body, 0)),
+                                  ReadWord(body, 4));
+      break;
     case HlcbPacketType::kDrawPrimitives: {
       HlcbDraw draw;
       draw.primitive_type = ReadWord(body, 4);

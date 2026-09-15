@@ -37,6 +37,11 @@ class XamModule : public KernelModule {
 
     uint32_t launch_flags = 0;
     std::vector<uint8_t> launch_data;
+    std::string dashboard_path;
+    bool last_active_user_set = false;
+    uint64_t last_active_user = 0;
+    uint32_t prior_title_id = 0;
+    uint32_t launch_request_callback = 0;
   };
 
   void LoadLoaderData();

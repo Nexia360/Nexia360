@@ -703,6 +703,7 @@ int XSocket::Recv(uint8_t* buf, uint32_t buf_len, uint32_t flags) {
   // nothing - everything arrives on the transport's socket instead.
   if (IsTransportEligible() && buf && buf_len) {
     auto* transport = kernel_state()->GetXboxLiveAPI()->transport();
+    ClaimTransportPort();
 
     NexiaTransport::Datagram relayed;
     if (!transport->PopDatagram(TransportPort(), &relayed)) {
@@ -710,6 +711,7 @@ int XSocket::Recv(uint8_t* buf, uint32_t buf_len, uint32_t flags) {
       return -1;
     }
 
+    XLiveAPI::RegisterXuidHandle(relayed.xuid);
     const size_t copied =
         std::min(static_cast<size_t>(buf_len), relayed.payload_size());
     std::memcpy(buf, relayed.payload(), copied);
@@ -732,6 +734,7 @@ int XSocket::RecvFrom(uint8_t* buf, uint32_t buf_len, uint32_t flags,
   // socket, so this one carries nothing while relaying.
   if (IsTransportEligible() && buf && buf_len) {
     auto* transport = kernel_state()->GetXboxLiveAPI()->transport();
+    ClaimTransportPort();
 
     NexiaTransport::Datagram relayed;
     if (!transport->PopDatagram(TransportPort(), &relayed)) {
@@ -742,6 +745,7 @@ int XSocket::RecvFrom(uint8_t* buf, uint32_t buf_len, uint32_t flags,
     const size_t copied =
         std::min(static_cast<size_t>(buf_len), relayed.payload_size());
     std::memcpy(buf, relayed.payload(), copied);
+    XLiveAPI::RegisterXuidHandle(relayed.xuid);
 
     if (from) {
       // The wire carries no address, only the sender's XUID - so hand the guest
@@ -1140,6 +1144,7 @@ int XSocket::PushWSASendTo(bool wait, WSASendToData send_async_data) {
   // Relayed: flatten the scatter segments and hand the datagram to the relay,
   // which frames it as ChannelData and sends from its own socket.
   if (relay) {
+    ClaimTransportPort();
     // Sized once and filled, rather than grown segment by segment. This is the
     // path the title actually sends on - voice rides in the same datagram as
     // game data - so a reallocating vector here means the allocator is hit
@@ -1425,6 +1430,9 @@ int XSocket::PollWSARecvFrom(bool wait, WSARecvFromData receive_async_data) {
 
     auto* turn = kernel_state()->GetXboxLiveAPI()->transport();
     const bool relay = IsTransportEligible();
+    if (relay) {
+      ClaimTransportPort();
+    }
 
     // Deliberately NOT gated on `sa`: the from-address is optional to
     // WSARecvFrom, and requiring it meant a title that does not ask for the
@@ -1448,6 +1456,7 @@ int XSocket::PollWSARecvFrom(bool wait, WSARecvFromData receive_async_data) {
 
       win_bytes_received = static_cast<DWORD>(copied);
       ret = 0;
+      XLiveAPI::RegisterXuidHandle(relayed.xuid);
 
       // No address on the wire - the sender's handle is derived from the XUID
       // it identified itself with, which is the same handle the title already

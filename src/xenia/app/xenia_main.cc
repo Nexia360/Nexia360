@@ -852,6 +852,11 @@ void EmulatorApp::EmulatorThread() {
     app_context().CallInUIThread([this]() { emulator_window_->UpdateTitle(); });
   });
 
+  emulator_->on_avatar_editor.AddListener([this](uint32_t) {
+    app_context().CallInUIThread(
+        [this]() { emulator_window_->ShowAvatarEditorDialog(); });
+  });
+
   emulator_->on_terminate.AddListener([]() {
     if (cvars::discord) {
       discord::DiscordPresence::NotPlaying();

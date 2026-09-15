@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 
+#include "xenia/app/avatar_editor_dialog.h"
 #include "xenia/app/gamerpic_browser.h"
 #include "xenia/app/netplay_settings_dialog.h"
 #include "xenia/app/profile_dialogs.h"
@@ -129,6 +130,8 @@ class EmulatorWindow {
   void ToggleXMPConfigDialog();
   void ToggleConsoleSettingsDialog();
   void ToggleFriendsDialog();
+  void ToggleAvatarEditorDialog();
+  void ShowAvatarEditorDialog();
 
   // True when this run should start a fresh instance as it goes away: the
   // user chose Exit, and the guest has left launch data behind. Called from
@@ -374,6 +377,8 @@ class EmulatorWindow {
   void InstallXnaDependencies();
   void InstallXnaDependencyPackage();
   void ShowXnaDependencies();
+  void FindXnaDependencies();
+  void ScanXnaDependencies();
   void FillXnaTitlesMenu(xe::ui::MenuItem* xna_menu);
   std::filesystem::path GetXnaLibraryPath() const;
 
@@ -467,6 +472,7 @@ class EmulatorWindow {
   // was used. The dialog reports its own destruction and nulls these.
   MessagesDialog* text_messages_dialog_ = nullptr;
   MessagesDialog* voice_messages_dialog_ = nullptr;
+  AvatarEditorDialog* avatar_editor_dialog_ = nullptr;
 
   void OnMessagesDialogClosed(MessagesDialog** slot);
 

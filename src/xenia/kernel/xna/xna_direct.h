@@ -33,6 +33,8 @@ bool XnaDirectDraw(const XnaGpuDraw& draw, const XnaGpuStream* streams,
 void XnaDirectClear(const XnaGpuTarget& target, const float* color,
                     bool clear_color, bool clear_depth, float depth);
 
+void XnaDirectClearStencil(const XnaGpuTarget& target, uint32_t value);
+
 void XnaDirectPresent();
 
 bool XnaDirectReadBackBuffer(uint8_t* out, uint32_t bytes);

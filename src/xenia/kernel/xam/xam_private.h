@@ -19,6 +19,9 @@ namespace xam {
 
 xe::cpu::Export* RegisterExport_xam(xe::cpu::Export* export_entry);
 
+void RecordLaunchOrigin();
+void ReloadForLaunch();
+
 // Registration functions, one per file.
 #define XE_MODULE_EXPORT_GROUP(m, n)                                  \
   void Register##n##Exports(xe::cpu::ExportResolver* export_resolver, \

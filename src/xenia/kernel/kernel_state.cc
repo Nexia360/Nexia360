@@ -429,9 +429,11 @@ object_ref<XModule> KernelState::GetModule(const std::string_view name,
   auto path(name);
 
   // Resolve the path to an absolute path.
-  auto entry = file_system_->ResolvePath(name);
-  if (entry) {
-    path = entry->absolute_path();
+  if (name.find_first_of("\\:") != std::string_view::npos) {
+    auto entry = file_system_->ResolvePath(name);
+    if (entry) {
+      path = entry->absolute_path();
+    }
   }
 
   for (auto user_module : user_modules_) {

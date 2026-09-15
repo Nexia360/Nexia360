@@ -354,6 +354,7 @@ class Emulator {
       on_presence_change;
   xe::Delegate<const kernel::XSESSION_INFO*, uint32_t, uint32_t, uint64_t>
       on_session_change;
+  xe::Delegate<uint32_t> on_avatar_editor;
 
  private:
   enum : uint64_t { EmulatorFlagDisclaimerAcknowledged = 1ULL << 0 };

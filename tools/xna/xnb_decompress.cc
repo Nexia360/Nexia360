@@ -21,13 +21,54 @@ struct Context {
   size_t input_size = 0;
   size_t input_at = 0;
   size_t chunk_remaining = 0;
+  bool chunked = false;
   std::vector<uint8_t> output;
 };
+
+struct Chunk {
+  size_t data = 0;
+  uint32_t compressed = 0;
+  uint32_t uncompressed = 0;
+};
+
+std::vector<Chunk> ParseChunks(const uint8_t* input, size_t size) {
+  std::vector<Chunk> chunks;
+  size_t at = 0;
+  while (at + 2 <= size) {
+    Chunk chunk;
+    chunk.uncompressed = kFrameSize;
+    if (input[at] == 0xFF) {
+      if (at + 5 > size) {
+        break;
+      }
+      chunk.uncompressed = (uint32_t(input[at + 1]) << 8) | input[at + 2];
+      chunk.compressed = (uint32_t(input[at + 3]) << 8) | input[at + 4];
+      at += 5;
+    } else {
+      chunk.compressed = (uint32_t(input[at]) << 8) | input[at + 1];
+      at += 2;
+    }
+    if (!chunk.compressed || at + chunk.compressed > size) {
+      break;
+    }
+    chunk.data = at;
+    chunks.push_back(chunk);
+    at += chunk.compressed;
+  }
+  return chunks;
+}
 
 int Read(mspack_file* file, void* buffer, int bytes) {
   auto* c = reinterpret_cast<Context*>(file);
   auto* out = static_cast<uint8_t*>(buffer);
   int written = 0;
+  if (c->chunked) {
+    const size_t take = std::min<size_t>(c->chunk_remaining, size_t(bytes));
+    std::memcpy(out, c->input + c->input_at, take);
+    c->input_at += take;
+    c->chunk_remaining -= take;
+    return int(take);
+  }
   while (written < bytes) {
     if (!c->chunk_remaining) {
       if (c->input_at + 2 > c->input_size) {
@@ -77,9 +118,10 @@ void Copy(void* src, void* dst, size_t bytes) { std::memcpy(dst, src, bytes); }
 
 int main(int argc, char** argv) {
   if (argc < 3) {
-    std::printf("usage: xnb_decompress <in.xnb> <out.bin>\n");
+    std::printf("usage: xnb_decompress <in.xnb> <out.bin> [chunked]\n");
     return 1;
   }
+  const bool chunked = argc > 3 && std::strcmp(argv[3], "chunked") == 0;
   FILE* f = std::fopen(argv[1], "rb");
   if (!f) {
     std::printf("cannot open %s\n", argv[1]);
@@ -131,10 +173,38 @@ int main(int argc, char** argv) {
   }
   // The header's second size is what the whole file decompresses to; mspack
   // wants the real length, not an upper bound.
-  const int status = lzxd_decompress(lzx, off_t(decompressed_size));
-  if (status != MSPACK_ERR_OK) {
-    std::printf("lzxd_decompress returned %d after %zu bytes\n", status,
-                c.output.size());
+  if (!chunked) {
+    const int status = lzxd_decompress(lzx, off_t(decompressed_size));
+    if (status != MSPACK_ERR_OK) {
+      std::printf("lzxd_decompress returned %d after %zu bytes\n", status,
+                  c.output.size());
+    }
+  } else {
+    const std::vector<Chunk> chunks = ParseChunks(c.input, c.input_size);
+    c.chunked = true;
+    uint64_t target = 0;
+    uint64_t requested = 0;
+    for (size_t k = 0; k < chunks.size(); ++k) {
+      c.input_at = chunks[k].data;
+      c.chunk_remaining = chunks[k].compressed;
+      lzx->i_ptr = lzx->i_end = lzx->inbuf;
+      lzx->bit_buffer = 0;
+      lzx->bits_left = 0;
+      lzx->input_end = 0;
+      target += chunks[k].uncompressed;
+      const uint64_t goal = k + 1 < chunks.size() ? target - 1 : target;
+      const int status = lzxd_decompress(lzx, off_t(goal - requested));
+      requested = goal;
+      std::printf(
+          "chunk %zu: %u -> %u, %d byte(s) and %u bit(s) left unused, status "
+          "%d, output %zu\n",
+          k, chunks[k].compressed, chunks[k].uncompressed,
+          int(lzx->i_end - lzx->i_ptr) + int(c.chunk_remaining),
+          lzx->bits_left, status, c.output.size());
+      if (status != MSPACK_ERR_OK) {
+        break;
+      }
+    }
   }
   lzxd_free(lzx);
 

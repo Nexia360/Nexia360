@@ -42,8 +42,11 @@
 #include "xenia/ui/d3d12/d3d12_provider.h"
 #include "xenia/ui/d3d12/d3d12_util.h"
 
+#include "xenia/kernel/xna/shaders/xna_avatar_ps.h"
+#include "xenia/kernel/xna/shaders/xna_avatar_vs.h"
 #include "xenia/kernel/xna/shaders/xna_sprite_ps.h"
 #include "xenia/kernel/xna/shaders/xna_sprite_vs.h"
+#include "xenia/kernel/xna/xna_avatar.h"
 
 DEFINE_bool(xna_direct_d3d12, true,
             "Draw a hosted XNA title straight to D3D12 instead of through the "
@@ -118,6 +121,7 @@ struct PipelineKey {
   uint32_t depth_enable;
   uint32_t depth_write;
   uint32_t depth_function;
+  uint32_t stencil[7];
   uint32_t topology_type;
   bool operator<(const PipelineKey& other) const {
     return std::memcmp(this, &other, sizeof(*this)) < 0;
@@ -179,6 +183,11 @@ struct State {
   ComPtr<ID3D12PipelineState> blit_pipeline;
   ComPtr<ID3D12Resource> readback;
   uint64_t readback_bytes = 0;
+
+  ComPtr<ID3D12RootSignature> avatar_root_signature;
+  std::map<std::vector<uint32_t>, ComPtr<ID3D12PipelineState>>
+      avatar_pipelines;
+  std::unordered_map<uint64_t, HostTexture> avatar_textures;
 };
 
 State s;
@@ -834,6 +843,48 @@ D3D12_COMPARISON_FUNC CompareFor(uint32_t xna) {
   }
 }
 
+D3D12_STENCIL_OP StencilOpFor(uint32_t xna) {
+  switch (xna) {
+    case 1:  return D3D12_STENCIL_OP_ZERO;
+    case 2:  return D3D12_STENCIL_OP_REPLACE;
+    case 3:  return D3D12_STENCIL_OP_INCR;
+    case 4:  return D3D12_STENCIL_OP_DECR;
+    case 5:  return D3D12_STENCIL_OP_INCR_SAT;
+    case 6:  return D3D12_STENCIL_OP_DECR_SAT;
+    case 7:  return D3D12_STENCIL_OP_INVERT;
+    default: return D3D12_STENCIL_OP_KEEP;
+  }
+}
+
+void ApplyStencil(const uint32_t* stencil, D3D12_DEPTH_STENCIL_DESC* desc) {
+  desc->StencilEnable = stencil[0] ? TRUE : FALSE;
+  desc->StencilReadMask = UINT8(stencil[5]);
+  desc->StencilWriteMask = UINT8(stencil[6]);
+  D3D12_DEPTH_STENCILOP_DESC face;
+  face.StencilFunc = CompareFor(stencil[1]);
+  face.StencilPassOp = StencilOpFor(stencil[2]);
+  face.StencilFailOp = StencilOpFor(stencil[3]);
+  face.StencilDepthFailOp = StencilOpFor(stencil[4]);
+  desc->FrontFace = face;
+  desc->BackFace = face;
+}
+
+void StencilKey(const XnaGpuDraw& draw, uint32_t* stencil) {
+  if (!draw.stencil_enable) {
+    for (uint32_t i = 0; i < 7; ++i) {
+      stencil[i] = 0;
+    }
+    return;
+  }
+  stencil[0] = 1;
+  stencil[1] = draw.stencil_function & 7;
+  stencil[2] = draw.stencil_pass & 7;
+  stencil[3] = draw.stencil_fail & 7;
+  stencil[4] = draw.stencil_depth_fail & 7;
+  stencil[5] = draw.stencil_read_mask & 0xFF;
+  stencil[6] = draw.stencil_write_mask & 0xFF;
+}
+
 bool TopologyFor(xenos::PrimitiveType primitive,
                  D3D_PRIMITIVE_TOPOLOGY* topology,
                  D3D12_PRIMITIVE_TOPOLOGY_TYPE* topology_type) {
@@ -1003,7 +1054,7 @@ ID3D12PipelineState* PipelineFor(const PipelineKey& key,
       (key.depth_enable && key.depth_write) ? D3D12_DEPTH_WRITE_MASK_ALL
                                             : D3D12_DEPTH_WRITE_MASK_ZERO;
   desc.DepthStencilState.DepthFunc = CompareFor(key.depth_function);
-  desc.DepthStencilState.StencilEnable = FALSE;
+  ApplyStencil(key.stencil, &desc.DepthStencilState);
   desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE(key.topology_type);
   desc.NumRenderTargets = key.target_count;
   for (uint32_t i = 0; i < key.target_count; ++i) {
@@ -1465,6 +1516,7 @@ bool DrawLocked(const XnaGpuDraw& draw, const XnaGpuStream* streams,
   key.depth_enable = draw.depth_enable ? 1 : 0;
   key.depth_write = draw.depth_write_enable ? 1 : 0;
   key.depth_function = draw.depth_function;
+  StencilKey(draw, key.stencil);
   key.topology_type = uint32_t(topology_type);
   ID3D12PipelineState* pipeline =
       PipelineFor(key, vertex_translation, pixel_translation, root_signature);
@@ -1534,6 +1586,7 @@ bool DrawLocked(const XnaGpuDraw& draw, const XnaGpuStream* streams,
   s.list->OMSetBlendFactor(blend_factor);
   s.list->IASetPrimitiveTopology(topology);
   s.list->SetPipelineState(pipeline);
+  s.list->OMSetStencilRef(draw.stencil_reference & 0xFF);
   if (draw.indexed) {
     s.list->IASetIndexBuffer(&index_view);
     s.list->DrawIndexedInstanced(index_count, 1, 0, 0, 0);
@@ -1793,6 +1846,312 @@ bool CreateBlit() {
       &desc, IID_PPV_ARGS(&s.blit_pipeline)));
 }
 
+bool CreateAvatarRootSignature() {
+  if (s.avatar_root_signature) {
+    return true;
+  }
+  D3D12_DESCRIPTOR_RANGE range = {};
+  range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+  range.NumDescriptors = avatar::kLayerCount;
+  range.BaseShaderRegister = 0;
+  D3D12_ROOT_PARAMETER parameters[2] = {};
+  parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+  parameters[0].Descriptor.ShaderRegister = 0;
+  parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+  parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+  parameters[1].DescriptorTable.NumDescriptorRanges = 1;
+  parameters[1].DescriptorTable.pDescriptorRanges = &range;
+  parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+  D3D12_STATIC_SAMPLER_DESC samplers[2] = {};
+  for (uint32_t i = 0; i < 2; ++i) {
+    const D3D12_TEXTURE_ADDRESS_MODE mode =
+        i ? D3D12_TEXTURE_ADDRESS_MODE_CLAMP : D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    samplers[i].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    samplers[i].AddressU = mode;
+    samplers[i].AddressV = mode;
+    samplers[i].AddressW = mode;
+    samplers[i].ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+    samplers[i].MaxLOD = D3D12_FLOAT32_MAX;
+    samplers[i].ShaderRegister = i;
+    samplers[i].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+  }
+  D3D12_ROOT_SIGNATURE_DESC desc = {};
+  desc.NumParameters = 2;
+  desc.pParameters = parameters;
+  desc.NumStaticSamplers = 2;
+  desc.pStaticSamplers = samplers;
+  desc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+  ID3D12RootSignature* root_signature =
+      ui::d3d12::util::CreateRootSignature(*s.provider, desc);
+  if (!root_signature) {
+    XELOGE("[xna] direct: could not create the avatar root signature");
+    return false;
+  }
+  s.avatar_root_signature.Attach(root_signature);
+  return true;
+}
+
+ID3D12PipelineState* AvatarPipelineFor(DXGI_FORMAT format,
+                                       const XnaGpuDraw& state) {
+  uint32_t stencil[7];
+  StencilKey(state, stencil);
+  std::vector<uint32_t> key(stencil, stencil + 7);
+  key.push_back(uint32_t(format));
+  auto found = s.avatar_pipelines.find(key);
+  if (found != s.avatar_pipelines.end()) {
+    return found->second.Get();
+  }
+  if (!CreateAvatarRootSignature()) {
+    return nullptr;
+  }
+  D3D12_INPUT_ELEMENT_DESC elements[2 + avatar::kLayerCount] = {};
+  elements[0].SemanticName = "POSITION";
+  elements[0].Format = DXGI_FORMAT_R32G32B32_FLOAT;
+  elements[0].AlignedByteOffset = 0;
+  elements[1].SemanticName = "NORMAL";
+  elements[1].Format = DXGI_FORMAT_R32G32B32_FLOAT;
+  elements[1].AlignedByteOffset = 12;
+  for (uint32_t k = 0; k < avatar::kLayerCount; ++k) {
+    elements[2 + k].SemanticName = "TEXCOORD";
+    elements[2 + k].SemanticIndex = k;
+    elements[2 + k].Format = DXGI_FORMAT_R32G32_FLOAT;
+    elements[2 + k].AlignedByteOffset = 24 + 8 * k;
+  }
+  D3D12_GRAPHICS_PIPELINE_STATE_DESC desc = {};
+  desc.pRootSignature = s.avatar_root_signature.Get();
+  desc.VS.pShaderBytecode = kXnaAvatarVS;
+  desc.VS.BytecodeLength = sizeof(kXnaAvatarVS);
+  desc.PS.pShaderBytecode = kXnaAvatarPS;
+  desc.PS.BytecodeLength = sizeof(kXnaAvatarPS);
+  desc.BlendState.RenderTarget[0].RenderTargetWriteMask =
+      D3D12_COLOR_WRITE_ENABLE_ALL;
+  desc.SampleMask = UINT_MAX;
+  desc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+  desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+  desc.RasterizerState.DepthClipEnable = TRUE;
+  desc.DepthStencilState.DepthEnable = TRUE;
+  desc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+  desc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+  ApplyStencil(stencil, &desc.DepthStencilState);
+  desc.InputLayout.pInputElementDescs = elements;
+  desc.InputLayout.NumElements = 2 + avatar::kLayerCount;
+  desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+  desc.NumRenderTargets = 1;
+  desc.RTVFormats[0] = format;
+  desc.DSVFormat = kDepthFormat;
+  desc.SampleDesc.Count = 1;
+  ComPtr<ID3D12PipelineState> pipeline;
+  if (FAILED(s.device->CreateGraphicsPipelineState(&desc,
+                                                   IID_PPV_ARGS(&pipeline)))) {
+    XELOGE("[xna] direct: could not create the avatar pipeline for format {}",
+           uint32_t(format));
+  }
+  s.avatar_pipelines.emplace(key, pipeline);
+  return pipeline.Get();
+}
+
+uint32_t EnsureAvatarTexture(uint64_t id, const avatar::Texture& texture) {
+  HostTexture& host = s.avatar_textures[id];
+  if (host.resource && host.srv != UINT32_MAX) {
+    return host.srv;
+  }
+  if (!texture.width || !texture.height || !texture.slices ||
+      texture.rgba.size() <
+          size_t(texture.width) * texture.height * 4 * texture.slices) {
+    return UINT32_MAX;
+  }
+  D3D12_RESOURCE_DESC desc = {};
+  desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+  desc.Width = texture.width;
+  desc.Height = texture.height;
+  desc.DepthOrArraySize = UINT16(texture.slices);
+  desc.MipLevels = 1;
+  desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+  desc.SampleDesc.Count = 1;
+  std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> footprints(texture.slices);
+  std::vector<UINT> rows(texture.slices);
+  std::vector<UINT64> row_bytes(texture.slices);
+  UINT64 total = 0;
+  s.device->GetCopyableFootprints(&desc, 0, texture.slices, 0,
+                                  footprints.data(), rows.data(),
+                                  row_bytes.data(), &total);
+  if (!EnsureRoom(total + D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT, 0, 0)) {
+    XELOGW("[xna] direct: avatar texture {:X} needs {} upload bytes", id,
+           total);
+    return UINT32_MAX;
+  }
+  uint32_t offset = 0;
+  uint8_t* mapped = AllocateUpload(uint32_t(total),
+                                   D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT,
+                                   &offset);
+  if (!mapped) {
+    return UINT32_MAX;
+  }
+  ComPtr<ID3D12Resource> resource;
+  if (FAILED(s.device->CreateCommittedResource(
+          &ui::d3d12::util::kHeapPropertiesDefault, D3D12_HEAP_FLAG_NONE,
+          &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+          IID_PPV_ARGS(&resource)))) {
+    XELOGE("[xna] direct: could not create avatar texture {:X} {}x{}x{}", id,
+           texture.width, texture.height, texture.slices);
+    return UINT32_MAX;
+  }
+  const size_t source_row = size_t(texture.width) * 4;
+  const size_t source_slice = source_row * texture.height;
+  for (uint32_t slice = 0; slice < texture.slices; ++slice) {
+    for (UINT row = 0; row < rows[slice]; ++row) {
+      std::memcpy(mapped + footprints[slice].Offset +
+                      uint64_t(row) * footprints[slice].Footprint.RowPitch,
+                  texture.rgba.data() + slice * source_slice + row * source_row,
+                  source_row);
+    }
+    D3D12_TEXTURE_COPY_LOCATION destination = {};
+    destination.pResource = resource.Get();
+    destination.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    destination.SubresourceIndex = slice;
+    D3D12_TEXTURE_COPY_LOCATION source = {};
+    source.pResource = s.upload.Get();
+    source.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    source.PlacedFootprint = footprints[slice];
+    source.PlacedFootprint.Offset += offset;
+    s.list->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
+  }
+  D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COPY_DEST;
+  MoveTo(resource.Get(), state, kReadState);
+  if (host.srv == UINT32_MAX) {
+    host.srv = AllocateStaging();
+    if (host.srv == UINT32_MAX) {
+      return UINT32_MAX;
+    }
+  }
+  D3D12_SHADER_RESOURCE_VIEW_DESC view = {};
+  view.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+  view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+  view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+  view.Texture2DArray.MipLevels = 1;
+  view.Texture2DArray.ArraySize = texture.slices;
+  s.device->CreateShaderResourceView(resource.Get(), &view,
+                                     StagingCpu(host.srv));
+  host.resource = resource;
+  host.width = texture.width;
+  host.height = texture.height;
+  host.levels = 1;
+  host.format = DXGI_FORMAT_R8G8B8A8_UNORM;
+  return host.srv;
+}
+
+bool DrawAvatarLocked(const XnaGpuDraw& state,
+                      const XnaAvatarDrawBatch* batches, uint32_t count) {
+  if (!BeginRecording()) {
+    return false;
+  }
+  Target* target =
+      state.target_count && state.target_addresses[0]
+          ? EnsureTarget(state.target_addresses[0], state.target_width,
+                         state.target_height, state.target_formats[0])
+          : EnsureTarget(0, 0, 0, 0);
+  if (!target) {
+    return false;
+  }
+  ID3D12PipelineState* pipeline = AvatarPipelineFor(target->format, state);
+  if (!pipeline) {
+    return false;
+  }
+  for (uint32_t b = 0; b < count; ++b) {
+    const XnaAvatarDrawBatch& batch = batches[b];
+    if (!batch.vertex_count || !batch.index_count) {
+      continue;
+    }
+    uint32_t views[avatar::kLayerCount];
+    for (uint32_t i = 0; i < avatar::kLayerCount; ++i) {
+      views[i] = kNullSrv2DArray;
+      if (batch.textures[i]) {
+        const uint32_t srv =
+            EnsureAvatarTexture(batch.texture_ids[i], *batch.textures[i]);
+        if (srv != UINT32_MAX) {
+          views[i] = srv;
+        }
+      }
+    }
+    const uint32_t vertex_bytes =
+        batch.vertex_count * uint32_t(sizeof(avatar::GpuVertex));
+    const uint32_t index_bytes = batch.index_count * uint32_t(sizeof(uint16_t));
+    if (!EnsureRoom(uint64_t(vertex_bytes) + index_bytes +
+                        sizeof(avatar::GpuConstants) + 1024,
+                    avatar::kLayerCount, 0)) {
+      XELOGW("[xna] direct: avatar batch of {} vertices does not fit a frame",
+             batch.vertex_count);
+      continue;
+    }
+    uint32_t vertex_offset = 0;
+    uint8_t* vertex_out = AllocateUpload(vertex_bytes, 256, &vertex_offset);
+    uint32_t index_offset = 0;
+    uint8_t* index_out = AllocateUpload(index_bytes, 256, &index_offset);
+    uint32_t constant_offset = 0;
+    uint8_t* constant_out = AllocateUpload(
+        uint32_t(sizeof(avatar::GpuConstants)),
+        D3D12_CONSTANT_BUFFER_DATA_PLACEMENT_ALIGNMENT, &constant_offset);
+    if (!vertex_out || !index_out || !constant_out) {
+      return false;
+    }
+    std::memcpy(vertex_out, batch.vertices, vertex_bytes);
+    std::memcpy(index_out, batch.indices, index_bytes);
+    std::memcpy(constant_out, &batch.constants, sizeof(batch.constants));
+    const uint32_t view_base = s.view_used;
+    s.view_used += avatar::kLayerCount;
+    for (uint32_t i = 0; i < avatar::kLayerCount; ++i) {
+      s.device->CopyDescriptorsSimple(1, ViewCpu(view_base + i),
+                                      StagingCpu(views[i]),
+                                      D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    }
+    MoveTo(target->color.Get(), target->color_state,
+           D3D12_RESOURCE_STATE_RENDER_TARGET);
+    MoveTo(target->depth.Get(), target->depth_state,
+           D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    ID3D12DescriptorHeap* heaps[] = {s.view_heap.Get(), s.sampler_heap.Get()};
+    s.list->SetDescriptorHeaps(2, heaps);
+    s.list->SetGraphicsRootSignature(s.avatar_root_signature.Get());
+    s.list->SetPipelineState(pipeline);
+    s.list->OMSetStencilRef(state.stencil_reference & 0xFF);
+    s.list->SetGraphicsRootConstantBufferView(0,
+                                              s.upload_gpu + constant_offset);
+    s.list->SetGraphicsRootDescriptorTable(1, ViewGpu(view_base));
+    const D3D12_CPU_DESCRIPTOR_HANDLE rtv = RtvCpu(target->rtv);
+    const D3D12_CPU_DESCRIPTOR_HANDLE dsv = DsvCpu(target->dsv);
+    s.list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
+    D3D12_VIEWPORT viewport;
+    viewport.TopLeftX = float(state.viewport_x);
+    viewport.TopLeftY = float(state.viewport_y);
+    viewport.Width = state.viewport_width ? float(state.viewport_width)
+                                          : float(target->width);
+    viewport.Height = state.viewport_height ? float(state.viewport_height)
+                                            : float(target->height);
+    viewport.MinDepth = std::clamp(state.viewport_min_depth, 0.0f, 1.0f);
+    viewport.MaxDepth = std::clamp(state.viewport_max_depth, 0.0f, 1.0f);
+    if (viewport.MaxDepth <= viewport.MinDepth) {
+      viewport.MinDepth = 0.0f;
+      viewport.MaxDepth = 1.0f;
+    }
+    s.list->RSSetViewports(1, &viewport);
+    const D3D12_RECT scissor = {0, 0, LONG(target->width),
+                                LONG(target->height)};
+    s.list->RSSetScissorRects(1, &scissor);
+    s.list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    D3D12_VERTEX_BUFFER_VIEW vertex_view = {};
+    vertex_view.BufferLocation = s.upload_gpu + vertex_offset;
+    vertex_view.SizeInBytes = vertex_bytes;
+    vertex_view.StrideInBytes = UINT(sizeof(avatar::GpuVertex));
+    s.list->IASetVertexBuffers(0, 1, &vertex_view);
+    D3D12_INDEX_BUFFER_VIEW index_view = {};
+    index_view.BufferLocation = s.upload_gpu + index_offset;
+    index_view.SizeInBytes = index_bytes;
+    index_view.Format = DXGI_FORMAT_R16_UINT;
+    s.list->IASetIndexBuffer(&index_view);
+    s.list->DrawIndexedInstanced(batch.index_count, 1, 0, 0, 0);
+  }
+  return true;
+}
+
 bool Initialize() {
   auto* state = kernel_state();
   auto* emulator = state ? state->emulator() : nullptr;
@@ -2013,6 +2372,32 @@ bool XnaDirectReadBackBuffer(uint8_t* out, uint32_t bytes) {
     }
   }
   return XnaVulkanDirectReadBackBuffer(out, bytes);
+}
+
+bool XnaDirectDrawAvatar(const XnaGpuDraw& target,
+                         const XnaAvatarDrawBatch* batches, uint32_t count) {
+  std::lock_guard<std::mutex> lock(s.mutex);
+  if (!Ready()) {
+    XELOGD("[xna] avatar draw skipped: the direct D3D12 path is not active");
+    return false;
+  }
+  return DrawAvatarLocked(target, batches, count);
+}
+
+void XnaDirectClearStencil(const XnaGpuTarget& target, uint32_t value) {
+  std::lock_guard<std::mutex> lock(s.mutex);
+  if (!Ready() || !BeginRecording()) {
+    return;
+  }
+  Target* host = EnsureTarget(target.guest_address, target.width,
+                              target.height, target.format);
+  if (!host) {
+    return;
+  }
+  MoveTo(host->depth.Get(), host->depth_state,
+         D3D12_RESOURCE_STATE_DEPTH_WRITE);
+  s.list->ClearDepthStencilView(DsvCpu(host->dsv), D3D12_CLEAR_FLAG_STENCIL,
+                                1.0f, UINT8(value), 0, nullptr);
 }
 
 Shader* XnaDirectLoadShader(xenos::ShaderType type, const uint32_t* ucode,

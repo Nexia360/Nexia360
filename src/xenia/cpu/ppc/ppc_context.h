@@ -416,26 +416,6 @@ typedef struct alignas(64) PPCContext_s {
   // Used to shuttle data into externs. Contents volatile.
   uint64_t scratch;
 
-  // TEMPORARY INSTRUMENTATION - remove before release.
-  // Last milestone guest address this thread reached, and how many milestones
-  // it has hit. Written by code the JIT inserts at translate time (see
-  // PPCHIRBuilder::MaybeMilestone), so it costs one store per milestone and
-  // nothing anywhere else.
-  //
-  // It lives in the per-thread context rather than guest memory on purpose:
-  // no address to fault on, no risk of scribbling over the title's data, and
-  // it survives a hang -- a wedged thread keeps its last milestone, which is
-  // exactly the case worth reading. Enumerate threads to see where each one
-  // stopped.
-  uint32_t milestone;
-  uint32_t milestone_count;
-  // Sticky "ever reached" bits, one per entry in kMilestones. The single
-  // `milestone` slot above only ever holds the MOST RECENT address, so a
-  // milestone that is immediately superseded is invisible in any sample -- the
-  // first version of this read 0 hits for a function entry while showing a hit
-  // for a label INSIDE that same function. The mask cannot miss anything.
-  uint32_t milestone_mask;
-
   // Processor-specific data pointer. Used on callbacks to get access to the
   // current runtime and its data.
   Processor* processor;

@@ -173,7 +173,6 @@ bool PPCHIRBuilder::Emit(GuestFunction* function, uint32_t flags) {
     }
 
     MaybeBreakOnInstruction(address);
-    MaybeMilestone(address);
 
     InstrData i;
     i.address = address;
@@ -198,108 +197,6 @@ bool PPCHIRBuilder::Emit(GuestFunction* function, uint32_t flags) {
   }
 
   return Finalize();
-}
-
-// TEMPORARY INSTRUMENTATION - remove before release.
-//
-// Black Ops 1 (default_mp_tu11.xex) ffotd load path. Reading globals from a
-// kernel shim only shows state at whatever moment that shim happens to run; it
-// cannot say WHICH BRANCH executed. These are the branches worth knowing, so
-// the JIT drops a store at each one at translate time.
-//
-// Cost is one store per milestone hit and nothing at all anywhere else -- the
-// address test happens once, while the function is being compiled.
-// The lock happens with the MAIN thread inside sub_8226FCA0 (the decompressor)
-// and the DB thread inside sub_8226F958 (the ring reader): both were the last
-// milestone their thread recorded when the log stopped dead. Function-entry
-// granularity cannot say where inside, so these bisect both bodies.
-//
-// Coarse milestones that have already answered their question are dropped --
-// the mask is 32 bits and resolution here is worth more than breadth.
-//
-// The decompressor and ring-reader milestones are gone: gate 3 means none of
-// that code has ever run, so bisecting it was measuring nothing.
-//
-// THE QUESTION NOW. Live_ApplyFFOTD's third gate is
-//     WaitForSingleObject(*(0x834C03DC) /* hDbIdle */, 0) == WAIT_OBJECT_0
-// hDbIdle is MANUAL-reset and created SIGNALLED (0x823598CC), so polling it
-// cannot consume it; it is only clear because DB_LoadXAssets reset it and no
-// DB_SetIdle* followed. The path that sets it back for every zone except
-// code_post_gfx_mp is DB_SetIdleSynchronous (0x82358F70), which is
-//     idleFlag = 1; lwsync;
-//     if (hSvFrame) WaitForSingleObject(hSvFrame, INFINITE);   <- blocks
-//     SetEvent(hDbIdle);
-// and hSvFrame (0x834C044C) is created UNSIGNALLED by SV_Init and signalled
-// once per server frame by the server thread at 0x8236AB48.
-//
-// So: no server frames -> the DB never goes idle -> gate 3 never passes.
-// These milestones separate "the server thread never ran" from "the DB thread
-// is parked in that wait" from "gate 3 passes and something later is wrong".
-static const uint32_t kMilestones[] = {
-    // --- the gate itself -------------------------------------------------
-    0x824F0360,  // 0  Live_ApplyFFOTD entry
-    0x824F0390,  // 1  about to call DB_IsIdle -- gates 1 and 2 passed
-    0x824F039C,  // 2  GATE 3 PASSED (fell past the beq at 0x824F0398)
-    0x824F03B0,  // 3  gate 4: DB_AreBaseZonesLoaded call
-    0x824F03C0,  // 4  gate 4 passed, about to queue the zone
-    0x824F0408,  // 5  the already-loaded / exec-cfg path
-    0x82283628,  // 6  zone open took the memory-backed (-1) branch
-
-    // --- the server thread, which is what hSvFrame depends on ------------
-    0x8236AB50,  // 7  SV_Init entry (did it even run?)
-    0x823597B8,  // 8  ...creating the server events + thread
-    0x8236A7E8,  // 9  SERVER THREAD entry
-    0x8236A8B4,  // 10 server loop top
-    0x8236AB48,  // 11 SetEvent(hSvFrame) -- A SERVER FRAME COMPLETED
-    0x8236AB4C,  // 12 ...and branched back to the loop top
-
-    // --- the DB idle machinery -------------------------------------------
-    0x82358F70,  // 13 DB_SetIdleSynchronous entry
-    0x82358FA4,  // 14 ...the WaitForSingleObject(hSvFrame, INFINITE)
-    0x82358FAC,  // 15 ...PAST the wait: SetEvent(hDbIdle). 14 without 15 is
-                 //    the DB thread parked on the server thread.
-    0x82358FC8,  // 16 DB_SetIdle -- the unconditional path (group 4 only)
-    0x82359088,  // 17 DB_ClearIdle -- ResetEvent(hDbIdle)
-    0x82359098,  // 18 DB_SignalWork -- SetEvent(hDbWork)
-    0x82359030,  // 19 DB_WaitUntilIdle entry (DB_LoadXAssets blocks here)
-
-    // --- the DB worker ----------------------------------------------------
-    0x82283988,  // 20 DB_Thread entry
-    0x82283A04,  // 21 ...waiting for work
-    0x822838A8,  // 22 DB_LoadLevelZones entry
-    0x822838C4,  // 23 ...the pendingCount == 0 test. This fires either way --
-                 //    the early-out target is shared with the normal return,
-                 //    so infer it: 22 without 25 means it took the early-out
-                 //    and returned WITHOUT signalling idle.
-    0x822838F8,  // 24 ...a queued entry is being loaded
-    0x82283964,  // 25 ...batch done, about to pick an idle path
-};
-
-void PPCHIRBuilder::MaybeMilestone(uint32_t address) {
-  int index = -1;
-  for (int i = 0; i < (int)xe::countof(kMilestones); ++i) {
-    if (kMilestones[i] == address) {
-      index = i;
-      break;
-    }
-  }
-  if (index < 0) {
-    return;
-  }
-  static_assert(xe::countof(kMilestones) <= 32,
-                "milestone_mask holds one bit per entry");
-  Comment("--milestone");
-  // Sticky bit: `milestone` alone is useless for anything transient, because it
-  // only keeps the last address written. OR into a mask so "was this branch
-  // ever taken" survives no matter what runs afterwards.
-  StoreContext(offsetof(PPCContext, milestone_mask),
-               Or(LoadContext(offsetof(PPCContext, milestone_mask), INT32_TYPE),
-                  LoadConstantUint32(1u << index)));
-  StoreContext(offsetof(PPCContext, milestone), LoadConstantUint32(address));
-  StoreContext(
-      offsetof(PPCContext, milestone_count),
-      Add(LoadContext(offsetof(PPCContext, milestone_count), INT32_TYPE),
-          LoadConstantUint32(1)));
 }
 
 void PPCHIRBuilder::MaybeBreakOnInstruction(uint32_t address) {

@@ -89,10 +89,6 @@ class PPCHIRBuilder : public hir::HIRBuilder {
 
  private:
   void MaybeBreakOnInstruction(uint32_t address);
-  // TEMPORARY INSTRUMENTATION - remove before release. Emits a store of the
-  // guest address into PPCContext::milestone when `address` is one of the
-  // watched branches, so a wedged thread still shows where it stopped.
-  void MaybeMilestone(uint32_t address);
   void AnnotateLabel(uint32_t address, Label* label);
 
   PPCFrontend* frontend_;

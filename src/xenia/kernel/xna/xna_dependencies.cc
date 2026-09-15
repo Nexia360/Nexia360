@@ -11,6 +11,8 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
+#include <fstream>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -19,6 +21,8 @@
 #include "xenia/base/logging.h"
 #include "xenia/base/platform.h"
 #include "xenia/base/utf8.h"
+#include "xenia/kernel/xna/xna_host_payload.h"
+#include "xenia/kernel/xna/xna_runtime_install.h"
 
 #if XE_PLATFORM_WIN32
 #include "xenia/base/platform_win.h"
@@ -90,11 +94,12 @@ bool IsForThisMachine(const std::filesystem::path& path) {
 // Published by the build (see src/xenia/app/CMakeLists.txt), not by the user -
 // listed so a broken deployment is reported rather than guessed at.
 const WantedFile kProvidedByBuild[] = {
-    {"Nexia.Xna.Host.dll", nullptr, true, "published by the Nexia build"},
+    {"Nexia.Xna.Host.dll", nullptr, true,
+     "embedded in Nexia and written here when an XNA title launches"},
     {"Nexia.Xna.Host.runtimeconfig.json", nullptr, true,
-     "published beside the host; hostfxr will not start without it"},
+     "embedded with the host; hostfxr will not start without it"},
     {"Mono.Cecil.dll", nullptr, true,
-     "used to fabricate the XNA facades in memory"},
+     "embedded with the host; used to fabricate the XNA facades in memory"},
 };
 
 bool DotnetRuntimePresent(std::string* out_detail) {
@@ -236,6 +241,19 @@ std::vector<XnaDependency> CheckXnaDependencies() {
   runtime.present = DotnetRuntimePresent(&runtime.detail);
   results.push_back(std::move(runtime));
 
+  XnaDependency xna_runtime;
+  xna_runtime.name = "Microsoft XNA runtime";
+  xna_runtime.required = true;
+  std::string missing_runtime;
+  xna_runtime.present = XnaRuntimeInstalled(&missing_runtime);
+  xna_runtime.detail =
+      xna_runtime.present
+          ? "XNA Framework 3.1 and 4.0 Refresh, .NET Framework 3.5, .NET 9 "
+            "Runtime, DirectX June 2010"
+          : "missing " + missing_runtime +
+                " - launching an XNA title offers to install it";
+  results.push_back(std::move(xna_runtime));
+
   const auto overlay = XnaOverlayPath();
   for (const auto& wanted : kProvidedByBuild) {
     AppendCheck(&results, wanted, overlay);
@@ -253,9 +271,9 @@ std::vector<XnaDependency> CheckXnaDependencies() {
   console.detail =
       have_console
           ? xe::path_to_utf8(ConsoleRuntimePath())
-          : "MXF*.dlx from the XNA Indie Player title update (Runtime/v4.0). "
-            "This is the console's real XNA, so it reads the title's 360 "
-            "content natively and Nexia serves the hardware underneath it";
+          : "not embedded in this build - build Nexia with "
+            "XE_XNA_CONSOLE_RUNTIME_DIR pointing at the MXF*.dlx and "
+            "Compact Framework .dlx files";
   results.push_back(std::move(console));
 
   // MonoGame is the fallback for when the console runtime is absent: it can
@@ -265,10 +283,13 @@ std::vector<XnaDependency> CheckXnaDependencies() {
     XnaDependency fallback;
     fallback.name = wanted.name;
     fallback.required = wanted.required && !have_console;
-    fallback.present =
-        std::filesystem::exists(overlay / xe::to_path(wanted.name), ec) ||
-        (wanted.alternate &&
-         std::filesystem::exists(overlay / xe::to_path(wanted.alternate), ec));
+    const auto native_dir = overlay / "runtimes" / kHostRid / "native";
+    auto installed = [&](const char* name) {
+      return name &&
+             (std::filesystem::exists(overlay / xe::to_path(name), ec) ||
+              std::filesystem::exists(native_dir / xe::to_path(name), ec));
+    };
+    fallback.present = installed(wanted.name) || installed(wanted.alternate);
     fallback.detail = fallback.present ? xe::path_to_utf8(overlay)
                       : have_console   ? "not needed - the console runtime is "
                                          "installed and takes precedence"
@@ -300,12 +321,154 @@ std::string DescribeXnaDependencies() {
   }
   text += "\nOverlay: ";
   text += xe::path_to_utf8(XnaOverlayPath());
+  text += "\nEmbedded host: ";
+  text += kXnaHostPayloadCount ? kXnaHostPayloadVersion
+                               : "none (built without dotnet)";
   return text;
 }
 
 void LogXnaDependencies() {
   // XELOGE for now so it is visible whatever the log level is set to.
   XELOGE("XNA dependencies:\n{}", DescribeXnaDependencies());
+}
+
+namespace {
+
+bool FileMatches(const std::filesystem::path& path, const uint8_t* data,
+                 size_t size) {
+  std::error_code ec;
+  if (!std::filesystem::is_regular_file(path, ec) ||
+      std::filesystem::file_size(path, ec) != size || ec) {
+    return false;
+  }
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    return false;
+  }
+  std::vector<uint8_t> existing(size);
+  if (size && !in.read(reinterpret_cast<char*>(existing.data()),
+                       static_cast<std::streamsize>(size))) {
+    return false;
+  }
+  return !size || std::memcmp(existing.data(), data, size) == 0;
+}
+
+bool PayloadBytes(const XnaHostPayloadFile& file, const uint8_t** out_data,
+                  size_t* out_size) {
+  if (file.data) {
+    *out_data = file.data;
+    *out_size = file.size;
+    return true;
+  }
+#if XE_PLATFORM_WIN32
+  if (file.resource_id) {
+    HRSRC resource = FindResourceW(
+        nullptr, MAKEINTRESOURCEW(file.resource_id), MAKEINTRESOURCEW(10));
+    if (resource) {
+      HGLOBAL loaded = LoadResource(nullptr, resource);
+      const void* bytes = loaded ? LockResource(loaded) : nullptr;
+      const DWORD size = SizeofResource(nullptr, resource);
+      if (bytes && size == file.size) {
+        *out_data = static_cast<const uint8_t*>(bytes);
+        *out_size = size;
+        return true;
+      }
+    }
+  }
+#endif  // XE_PLATFORM_WIN32
+  return false;
+}
+
+std::string ReadInstalledHostVersion(const std::filesystem::path& path) {
+  std::ifstream in(path);
+  std::string version;
+  if (!in || !std::getline(in, version)) {
+    return "none";
+  }
+  return version;
+}
+
+}  // namespace
+
+bool DeployXnaHostPayload(std::string* out_message) {
+  if (!kXnaHostPayloadCount) {
+    *out_message =
+        "this build embeds no Nexia.Xna.Host; using whatever is installed";
+    return true;
+  }
+
+  std::error_code ec;
+  const auto overlay = XnaOverlayPath();
+  std::filesystem::create_directories(overlay, ec);
+  if (ec) {
+    *out_message =
+        "could not create " + xe::path_to_utf8(overlay) + ": " + ec.message();
+    return false;
+  }
+
+  const auto version_path = overlay / "Nexia.Xna.Host.version";
+  const std::string installed = ReadInstalledHostVersion(version_path);
+
+  size_t replaced = 0;
+  std::vector<std::string> failed;
+  for (size_t i = 0; i < kXnaHostPayloadCount; ++i) {
+    const auto& file = kXnaHostPayload[i];
+    const uint8_t* data = nullptr;
+    size_t size = 0;
+    if (!PayloadBytes(file, &data, &size)) {
+      failed.push_back(std::string(file.name) +
+                       " (not embedded in this executable)");
+      continue;
+    }
+    const auto target = overlay / xe::to_path(file.name);
+    if (FileMatches(target, data, size)) {
+      continue;
+    }
+    std::filesystem::create_directories(target.parent_path(), ec);
+    auto staging = target;
+    staging += ".new";
+    {
+      std::ofstream out(staging, std::ios::binary | std::ios::trunc);
+      if (out) {
+        out.write(reinterpret_cast<const char*>(data),
+                  static_cast<std::streamsize>(size));
+      }
+      if (!out) {
+        failed.push_back(std::string(file.name) + " (could not write " +
+                         xe::path_to_utf8(staging) + ")");
+        continue;
+      }
+    }
+    std::filesystem::rename(staging, target, ec);
+    if (ec) {
+      failed.push_back(std::string(file.name) + " (" + ec.message() + ")");
+      std::filesystem::remove(staging, ec);
+      continue;
+    }
+    XELOGI("XnaHost payload: wrote {} ({} bytes)", file.name, size);
+    ++replaced;
+  }
+
+  if (!failed.empty()) {
+    *out_message = fmt::format(
+        "could not replace Nexia.Xna.Host {} with {} in {}:", installed,
+        kXnaHostPayloadVersion, xe::path_to_utf8(overlay));
+    for (const auto& entry : failed) {
+      *out_message += "\n  " + entry;
+    }
+    return false;
+  }
+
+  if (replaced || installed != kXnaHostPayloadVersion) {
+    std::ofstream out(version_path, std::ios::trunc);
+    out << kXnaHostPayloadVersion << "\n";
+  }
+  *out_message =
+      replaced ? fmt::format("Nexia.Xna.Host {} -> {} ({} file(s) replaced)",
+                             installed, kXnaHostPayloadVersion, replaced)
+               : fmt::format("Nexia.Xna.Host {} is current",
+                             kXnaHostPayloadVersion);
+  return true;
 }
 
 bool InstallXnaDependenciesFrom(const std::filesystem::path& source_dir,
@@ -436,6 +599,188 @@ bool InstallXnaDependenciesFromArchive(const std::filesystem::path& archive,
   const bool installed = InstallXnaDependenciesFrom(staging, out_message);
   std::filesystem::remove_all(staging, ec);
   return installed;
+}
+
+namespace {
+
+struct PackageItem {
+  std::vector<std::string> names;
+  std::string destination_dir;
+  bool required;
+  bool native;
+  std::filesystem::path found;
+  std::string found_name;
+};
+
+bool InPreparedFolder(const std::filesystem::path& path) {
+  for (const auto& part : path.parent_path()) {
+    if (xe::utf8::lower_ascii(xe::path_to_utf8(part)) == "prepared") {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool CreateZipArchive(const std::filesystem::path& staging,
+                      const std::vector<std::string>& top_level,
+                      const std::filesystem::path& zip_path) {
+  std::wstring tar = L"tar -a -c -f \"" + zip_path.wstring() + L"\" -C \"" +
+                     staging.wstring() + L"\"";
+  for (const auto& item : top_level) {
+    tar += L" \"" + xe::to_path(item).wstring() + L"\"";
+  }
+  if (RunHidden(tar)) {
+    return true;
+  }
+  XELOGW("XnaDependencies: tar could not write {}, trying PowerShell",
+         xe::path_to_utf8(zip_path));
+  std::wstring powershell =
+      L"powershell -NoProfile -NonInteractive -Command "
+      L"\"Compress-Archive -Path '" +
+      (staging / "*").wstring() + L"' -DestinationPath '" +
+      zip_path.wstring() + L"' -Force\"";
+  return RunHidden(powershell);
+}
+
+}  // namespace
+
+bool BuildXnaDependencyZip(const std::filesystem::path& source_dir,
+                           const std::filesystem::path& zip_path,
+                           std::string* out_report) {
+  std::vector<PackageItem> items;
+  for (const char* name : kConsoleRuntime) {
+    items.push_back({{name}, "console", true, false, {}, {}});
+  }
+  for (const auto& wanted : kWanted) {
+    PackageItem item;
+    item.names.push_back(wanted.name);
+    if (wanted.alternate) {
+      item.names.push_back(wanted.alternate);
+    }
+    item.native = std::string(wanted.name) != "MonoGame.Framework.dll";
+    item.destination_dir =
+        item.native ? std::string("runtimes/") + kHostRid + "/native" : "";
+    item.required = item.native && wanted.required;
+    items.push_back(std::move(item));
+  }
+
+  std::error_code ec;
+  size_t scanned = 0;
+  auto it = std::filesystem::recursive_directory_iterator(
+      source_dir, std::filesystem::directory_options::skip_permission_denied,
+      ec);
+  for (; !ec && it != std::filesystem::recursive_directory_iterator();
+       it.increment(ec)) {
+    if (!it->is_regular_file(ec)) {
+      continue;
+    }
+    ++scanned;
+    const auto& path = it->path();
+    const std::string name =
+        xe::utf8::lower_ascii(xe::path_to_utf8(path.filename()));
+    for (auto& item : items) {
+      if (!item.found.empty()) {
+        continue;
+      }
+      bool match = false;
+      for (const auto& wanted : item.names) {
+        if (xe::utf8::lower_ascii(wanted) == name) {
+          match = true;
+          item.found_name = wanted;
+          break;
+        }
+      }
+      if (!match || InPreparedFolder(path) ||
+          (item.native && !IsForThisMachine(path))) {
+        continue;
+      }
+      item.found = path;
+    }
+  }
+
+  std::string found_text;
+  std::string missing_text;
+  size_t found_count = 0;
+  bool required_missing = false;
+  for (const auto& item : items) {
+    const std::string destination =
+        (item.destination_dir.empty() ? "" : item.destination_dir + "/") +
+        (item.found.empty() ? item.names[0] : item.found_name);
+    if (item.found.empty()) {
+      missing_text += "  " + destination +
+                      (item.required ? " (required)" : " (optional)") + "\n";
+      required_missing = required_missing || item.required;
+    } else {
+      found_text += "  " + destination + "  <-  " +
+                    xe::path_to_utf8(item.found) + "\n";
+      ++found_count;
+    }
+  }
+
+  *out_report = "Scanned " + std::to_string(scanned) + " file(s) under " +
+                xe::path_to_utf8(source_dir) + "\n";
+  if (!found_text.empty()) {
+    *out_report += "\nFound:\n" + found_text;
+  }
+  if (!missing_text.empty()) {
+    *out_report += "\nNot found:\n" + missing_text;
+  }
+  if (!found_count) {
+    *out_report += "\nNothing to package - no zip was written.";
+    return false;
+  }
+
+  const auto staging =
+      std::filesystem::temp_directory_path(ec) / "nexia-xna-dependency-zip";
+  std::filesystem::remove_all(staging, ec);
+  std::filesystem::create_directories(staging, ec);
+  if (ec) {
+    *out_report += "\nCould not create " + xe::path_to_utf8(staging) + ": " +
+                   ec.message();
+    return false;
+  }
+
+  std::vector<std::string> top_level;
+  for (const auto& item : items) {
+    if (item.found.empty()) {
+      continue;
+    }
+    const auto directory = item.destination_dir.empty()
+                               ? staging
+                               : staging / xe::to_path(item.destination_dir);
+    std::filesystem::create_directories(directory, ec);
+    std::filesystem::copy_file(
+        item.found, directory / xe::to_path(item.found_name),
+        std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) {
+      *out_report += "\nCould not copy " + xe::path_to_utf8(item.found) +
+                     ": " + ec.message();
+      std::filesystem::remove_all(staging, ec);
+      return false;
+    }
+    const std::string root =
+        item.destination_dir.empty()
+            ? item.found_name
+            : item.destination_dir.substr(0, item.destination_dir.find('/'));
+    if (std::find(top_level.begin(), top_level.end(), root) ==
+        top_level.end()) {
+      top_level.push_back(root);
+    }
+  }
+
+  std::filesystem::remove(zip_path, ec);
+  const bool written = CreateZipArchive(staging, top_level, zip_path);
+  std::filesystem::remove_all(staging, ec);
+  if (!written) {
+    *out_report += "\nCould not write " + xe::path_to_utf8(zip_path);
+    return false;
+  }
+  *out_report += "\nWrote " + xe::path_to_utf8(zip_path) + " with " +
+                 std::to_string(found_count) + " file(s).";
+  if (required_missing) {
+    *out_report += " Some required files were not found.";
+  }
+  return true;
 }
 
 }  // namespace xna

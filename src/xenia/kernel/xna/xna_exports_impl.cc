@@ -12,6 +12,7 @@
 // xna_exports_generated.cc.
 
 #include "xenia/kernel/xna/xna_exports.h"
+#include "xenia/kernel/xna/xna_avatar.h"
 #include "xenia/kernel/xna/xna_host.h"
 #include "xenia/kernel/xna/xna_launcher.h"
 #include "xenia/kernel/xna/xna_network_session.h"
@@ -550,7 +551,27 @@ constexpr uint32_t kStorageBeginShowSelector = 27;
 constexpr uint32_t kStorageEndShowSelector = 28;
 constexpr uint32_t kStorageBeginOpenContainer = 69;
 constexpr uint32_t kStorageEndOpenContainer = 70;
+constexpr uint32_t kAvatarRendererCreate = 77;
+constexpr uint32_t kAvatarRendererDispose = 78;
+constexpr uint32_t kAvatarRendererState = 79;
+constexpr uint32_t kAvatarRendererDraw = 80;
+constexpr uint32_t kAvatarRendererBindPose = 81;
 constexpr uint32_t kAvatarBeginGetFromGamer = 82;
+constexpr uint32_t kAvatarEndGetFromGamer = 83;
+constexpr uint32_t kAvatarCreateRandom = 84;
+constexpr uint32_t kAvatarHeight = 85;
+constexpr uint32_t kAvatarBodyType = 86;
+constexpr uint32_t kAvatarAnimationCreate = 87;
+constexpr uint32_t kAvatarAnimationDispose = 88;
+constexpr uint32_t kAvatarAnimationUpdate = 89;
+constexpr uint32_t kAvatarBoneCount = 71;
+constexpr size_t kAvatarDescriptionBytes = 1020;
+constexpr size_t kAvatarReplyCapacity = 4804;
+constexpr size_t kAvatarDrawMatrices = 16;
+constexpr size_t kAvatarDrawLights = 208;
+constexpr size_t kAvatarDrawExpression = 244;
+constexpr size_t kAvatarDrawBones = 264;
+constexpr size_t kAvatarDrawBytes = 4808;
 constexpr uint32_t kNetworkSessionBeginCreate = 43;
 constexpr uint32_t kNetworkSessionEndCreate = 44;
 constexpr uint32_t kNetworkSessionBeginJoinInvited = 45;
@@ -684,7 +705,43 @@ struct ReplyWriter {
     std::memset(at, 0, bytes);
     at += bytes;
   }
+  void Bytes(const uint8_t* data, size_t bytes) {
+    if (!Fits(bytes)) {
+      at = nullptr;
+      return;
+    }
+    std::memcpy(at, data, bytes);
+    at += bytes;
+  }
+  void Float(float value) {
+    uint32_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    Word(bits);
+  }
+  void IdentityMatrices(uint32_t count) {
+    for (uint32_t matrix = 0; matrix < count; ++matrix) {
+      for (uint32_t element = 0; element < 16; ++element) {
+        Float(element % 5 == 0 ? 1.0f : 0.0f);
+      }
+    }
+  }
 };
+
+std::mutex avatar_mutex;
+std::map<uint32_t, uint32_t> avatar_gamer_operations;
+
+size_t AvatarDescriptionSpan(const std::vector<uint8_t>& request,
+                             size_t offset) {
+  return offset < request.size()
+             ? std::min(request.size() - offset, kAvatarDescriptionBytes)
+             : 0;
+}
+
+const uint8_t* AvatarDescriptionAt(const std::vector<uint8_t>& request,
+                                   size_t offset) {
+  return AvatarDescriptionSpan(request, offset) ? request.data() + offset
+                                                : nullptr;
+}
 
 struct SlotUser {
   uint32_t signin_state = 0;
@@ -837,7 +894,152 @@ extern "C" uint32_t xna_Net_GamerServices_DispatchCommand_Entrypoint(
   }
 
   if (command == kAvatarBeginGetFromGamer) {
-    reply.Word(BeginCompletedAsyncOperation());
+    const uint32_t operation = BeginCompletedAsyncOperation();
+    {
+      std::lock_guard<std::mutex> lock(avatar_mutex);
+      avatar_gamer_operations[operation] = word_at(12);
+    }
+    reply.Word(operation);
+    return 0;
+  }
+
+  if (command == kAvatarEndGetFromGamer) {
+    uint32_t gamer = 0xFFFFFFFFu;
+    {
+      std::lock_guard<std::mutex> lock(avatar_mutex);
+      auto found = avatar_gamer_operations.find(word_at(8));
+      if (found != avatar_gamer_operations.end()) {
+        gamer = found->second;
+        avatar_gamer_operations.erase(found);
+      }
+    }
+    const auto description =
+        xe::kernel::xna::XnaAvatarDescriptionForGamer(gamer);
+    ReplyWriter avatar_reply{bytes + 4, bytes + 4 + kAvatarReplyCapacity};
+    avatar_reply.Bytes(description.data(), description.size());
+    avatar_reply.Word(gamer < 4 ? gamer : 0xFFFFFFFFu);
+    XELOGI("[xna] avatar: description for gamer {}", gamer);
+    return 0;
+  }
+
+  if (command == kAvatarCreateRandom) {
+    const auto description = xe::kernel::xna::XnaAvatarRandomDescription(
+        static_cast<int32_t>(word_at(12)));
+    ReplyWriter avatar_reply{bytes + 4, bytes + 4 + kAvatarReplyCapacity};
+    avatar_reply.Bytes(description.data(), description.size());
+    return 0;
+  }
+
+  if (command == kAvatarHeight) {
+    reply.Float(xe::kernel::xna::XnaAvatarHeight(
+        AvatarDescriptionAt(request_bytes, 12),
+        AvatarDescriptionSpan(request_bytes, 12)));
+    return 0;
+  }
+
+  if (command == kAvatarBodyType) {
+    reply.Word(xe::kernel::xna::XnaAvatarBodyType(
+        AvatarDescriptionAt(request_bytes, 12),
+        AvatarDescriptionSpan(request_bytes, 12)));
+    return 0;
+  }
+
+  if (command == kAvatarRendererCreate) {
+    const uint32_t handle = xe::kernel::xna::XnaAvatarCreateRenderer(
+        AvatarDescriptionAt(request_bytes, 16),
+        AvatarDescriptionSpan(request_bytes, 16));
+    const auto light = xe::kernel::xna::avatar::DefaultLighting();
+    reply.Word(handle);
+    for (float value : light.color) {
+      reply.Float(value);
+    }
+    for (float value : light.direction) {
+      reply.Float(value);
+    }
+    for (float value : light.ambient) {
+      reply.Float(value);
+    }
+    XELOGI("[xna] avatar: renderer {} created", handle);
+    return 0;
+  }
+
+  if (command == kAvatarRendererDispose) {
+    if (!xe::kernel::xna::XnaAvatarDestroyRenderer(word_at(8))) {
+      xe::kernel::xna::XnaAvatarDestroyRenderer(word_at(12));
+    }
+    return 0;
+  }
+
+  if (command == kAvatarRendererState) {
+    reply.Word(xe::kernel::xna::XnaAvatarRendererReady(word_at(8)) ? 1 : 0);
+    return 0;
+  }
+
+  if (command == kAvatarRendererBindPose) {
+    std::vector<float> bones(size_t(kAvatarBoneCount) * 16);
+    xe::kernel::xna::XnaAvatarBindPose(bones.data());
+    ReplyWriter avatar_reply{bytes + 4, bytes + 4 + kAvatarReplyCapacity};
+    avatar_reply.Bytes(reinterpret_cast<const uint8_t*>(bones.data()),
+                       bones.size() * sizeof(float));
+    return 0;
+  }
+
+  if (command == kAvatarRendererDraw) {
+    if (request_bytes.size() < kAvatarDrawBytes) {
+      XELOGW("[xna] avatar: draw request is {} bytes, {} expected",
+             request_bytes.size(), kAvatarDrawBytes);
+      return 0;
+    }
+    float matrices[3][16];
+    float lights[9];
+    uint32_t expression[5];
+    std::vector<float> bones(size_t(kAvatarBoneCount) * 16);
+    std::memcpy(matrices, request_bytes.data() + kAvatarDrawMatrices,
+                sizeof(matrices));
+    std::memcpy(lights, request_bytes.data() + kAvatarDrawLights,
+                sizeof(lights));
+    std::memcpy(expression, request_bytes.data() + kAvatarDrawExpression,
+                sizeof(expression));
+    std::memcpy(bones.data(), request_bytes.data() + kAvatarDrawBones,
+                bones.size() * sizeof(float));
+    xe::kernel::xna::XnaAvatarDraw(word_at(12), matrices[0], matrices[1],
+                                   matrices[2], lights, lights + 3,
+                                   lights + 6, expression, bones.data());
+    return 0;
+  }
+
+  if (command == kAvatarAnimationCreate) {
+    float length = 0.0f;
+    const uint32_t handle =
+        xe::kernel::xna::XnaAvatarCreateAnimation(word_at(12), &length);
+    reply.Word(handle);
+    reply.Float(length);
+    XELOGI("[xna] avatar: animation {} for preset {}, {} s", handle,
+           word_at(12), length);
+    return 0;
+  }
+
+  if (command == kAvatarAnimationDispose) {
+    if (!xe::kernel::xna::XnaAvatarDestroyAnimation(word_at(8))) {
+      xe::kernel::xna::XnaAvatarDestroyAnimation(word_at(12));
+    }
+    return 0;
+  }
+
+  if (command == kAvatarAnimationUpdate) {
+    const uint32_t seconds_bits = word_at(12);
+    float seconds = 0.0f;
+    std::memcpy(&seconds, &seconds_bits, sizeof(seconds));
+    uint32_t expression[5];
+    std::vector<float> bones(size_t(kAvatarBoneCount) * 16);
+    xe::kernel::xna::XnaAvatarUpdateAnimation(word_at(8), seconds, expression,
+                                              bones.data());
+    ReplyWriter avatar_reply{bytes + 4, bytes + 4 + kAvatarReplyCapacity};
+    for (uint32_t value : expression) {
+      avatar_reply.Word(value);
+    }
+    avatar_reply.Bytes(reinterpret_cast<const uint8_t*>(bones.data()),
+                       bones.size() * sizeof(float));
     return 0;
   }
 

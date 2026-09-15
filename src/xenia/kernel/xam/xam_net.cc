@@ -2705,76 +2705,15 @@ int_result_t NetDll_select_entry(dword_t caller, dword_t nfds,
         iname[i] = c;
       }
     }
-    // Milestones. The JIT stores the guest address into PPCContext::milestone
-    // at each watched branch (PPCHIRBuilder::MaybeMilestone), so this reports
-    // WHICH PATH each thread took rather than what some global happened to hold
-    // when this shim ran. Enumerating every thread is the point: the thread
-    // that wedges is never the one calling select(), and its context keeps its
-    // last milestone forever.
-    // Names for the mask bits, in the same order as kMilestones in
-    // ppc_hir_builder.cc. A bare hex mask is unreadable at 26 bits and the
-    // whole point of this probe is that one specific bit is missing.
-    static const char* kMilestoneNames[] = {
-        "apply",      "gate12ok", "GATE3OK",    "gate4call",  "gate4ok",
-        "already",    "memopen",  "svinit",     "svcreate",   "SVTHREAD",
-        "svloop",     "SVFRAME",  "svloopback", "setidlesyn", "svwait",
-        "SETIDLE",    "setidle4", "clearidle",  "signalwork", "waitidle",
-        "dbthread",   "dbwait",   "dblevel",    "dbpendtest", "dbloadone",
-        "dbbatchend",
-    };
-
-    std::string miles;
-    for (const auto& th :
-         kernel_state()->object_table()->GetObjectsByType<XThread>()) {
-      if (!th || !th->is_guest_thread() || !th->thread_state()) {
-        continue;
-      }
-      auto* c = th->thread_state()->context();
-      if (!c || !c->milestone) {
-        continue;
-      }
-      if (!miles.empty()) {
-        miles += " ";
-      }
-      // mask = every milestone this thread has EVER reached; last = where it is
-      // now. The mask is the one that answers "did this branch run", because
-      // `last` is overwritten by whatever came next.
-      std::string hit;
-      for (size_t i = 0; i < xe::countof(kMilestoneNames); ++i) {
-        if (!(c->milestone_mask & (1u << i))) {
-          continue;
-        }
-        if (!hit.empty()) {
-          hit += ",";
-        }
-        hit += kMilestoneNames[i];
-      }
-      miles += fmt::format("{}:[{}]/last{:08X}x{}", th->thread_id(), hit,
-                           c->milestone, c->milestone_count);
-    }
-
-    // The three readings this probe exists to separate, all from one line:
-    //   no SVTHREAD / no SVFRAME  -> the server thread never ran. That alone
-    //                               explains gate 3, because hSvFrame is
-    //                               created unsignalled and only the server
-    //                               thread ever sets it.
-    //   svwait without SETIDLE    -> the DB thread is parked in
-    //                               WaitForSingleObject(hSvFrame, INFINITE)
-    //                               inside DB_SetIdleSynchronous.
-    //   GATE3OK present           -> gate 3 is fine and the fault is later.
-    // clearidle without any SETIDLE/setidle4 afterwards means hDbIdle was
-    // reset and never restored, which is the same failure seen from the
-    // DB_LoadXAssets side.
-
     XELOGE(
         "[bo1-ffotd] dlsize={:08X} dldone={} zoned={} execd={} | ring={:08X} "
         "consumed={:08X} blocks={} off={:08X} | sptr={:08X} slen={:08X} "
         "nstream={} window={:08X} neg={} | waith={:08X} zcnt={:08X} "
         "zptr={:08X} zname='{}' | inflight='{}' pend={} outst={} idleflg={} "
-        "svfh={:08X} | miles[{}]",
+        "svfh={:08X}",
         dlsize, dldone, zoned, execd, ringbase, consumed, blocks, offset, sptr,
         slen, nstream, (uint32_t)window, window < 0 ? 1 : 0, waith, zcnt, zptr,
-        zname, iname, pend, outst, idleflg, svfh, miles);
+        zname, iname, pend, outst, idleflg, svfh);
   }
 
   // TODO(gibbed): modify ret to be what's actually copied to the guest
@@ -3092,6 +3031,90 @@ dword_result_t XamBackgroundDownloadItemGetHistoryStatus_entry(
   return X_ERROR_NOT_FOUND;
 }
 DECLARE_XAM_EXPORT1(XamBackgroundDownloadItemGetHistoryStatus, kMisc, kStub);
+
+namespace {
+
+constexpr uint32_t kKdcTimeoutBytes = 0x18;
+constexpr uint32_t kKdcTimeoutCount = kKdcTimeoutBytes / sizeof(uint32_t);
+constexpr uint32_t kKdcStoredCount = 4;
+constexpr uint32_t kKdcTimeoutLimit = 0x63FF;
+constexpr uint32_t kKdcTimeoutUnit = 100;
+constexpr uint32_t kKdcInvalidParameter = 0xC00000EF;
+constexpr uint32_t kNtFacilityBit = 0x10000000;
+
+struct KdcTimeouts {
+  uint32_t defaults[kKdcTimeoutCount];
+  uint8_t stored[kKdcStoredCount];
+};
+
+std::mutex kdc_timeouts_mutex;
+KdcTimeouts kerb_timeouts = {{4000, 6000, 8000, 8000, 8000, 8000}, {}};
+KdcTimeouts macs_timeouts = {{4000, 4000, 4000, 4000, 4000, 4000}, {}};
+
+uint32_t SetKdcTimeouts(KdcTimeouts& timeouts, const xe::be<uint32_t>* values,
+                        uint32_t size) {
+  if (size != kKdcTimeoutBytes || !values) {
+    return kKdcInvalidParameter | kNtFacilityBit;
+  }
+  uint8_t packed[kKdcStoredCount];
+  for (uint32_t i = 0; i < kKdcStoredCount; ++i) {
+    const uint32_t value = values[i];
+    if (value > kKdcTimeoutLimit) {
+      return kKdcInvalidParameter | kNtFacilityBit;
+    }
+    packed[i] = static_cast<uint8_t>(value / kKdcTimeoutUnit);
+  }
+  std::lock_guard<std::mutex> lock(kdc_timeouts_mutex);
+  for (uint32_t i = 0; i < kKdcStoredCount; ++i) {
+    timeouts.stored[i] = packed[i];
+  }
+  return kNtFacilityBit;
+}
+
+uint32_t GetKdcTimeouts(const KdcTimeouts& timeouts, xe::be<uint32_t>* values,
+                        uint32_t size) {
+  if (size != kKdcTimeoutBytes || !values) {
+    return kKdcInvalidParameter | kNtFacilityBit;
+  }
+  uint32_t result[kKdcTimeoutCount] = {};
+  {
+    std::lock_guard<std::mutex> lock(kdc_timeouts_mutex);
+    for (uint32_t i = 0; i < kKdcStoredCount; ++i) {
+      result[i] = uint32_t(timeouts.stored[i]) * kKdcTimeoutUnit;
+    }
+  }
+  if (!result[0]) {
+    for (uint32_t i = 0; i < kKdcTimeoutCount; ++i) {
+      result[i] = timeouts.defaults[i];
+    }
+  }
+  for (uint32_t i = 0; i < kKdcTimeoutCount; ++i) {
+    values[i] = result[i];
+  }
+  return kNtFacilityBit;
+}
+
+}  // namespace
+
+dword_result_t XamSetKerbTimeouts_entry(lpdword_t values, dword_t size) {
+  return SetKdcTimeouts(kerb_timeouts, values, size);
+}
+DECLARE_XAM_EXPORT1(XamSetKerbTimeouts, kNetworking, kImplemented);
+
+dword_result_t XamGetKerbTimeouts_entry(lpdword_t values, dword_t size) {
+  return GetKdcTimeouts(kerb_timeouts, values, size);
+}
+DECLARE_XAM_EXPORT1(XamGetKerbTimeouts, kNetworking, kImplemented);
+
+dword_result_t XamSetMacsTimeouts_entry(lpdword_t values, dword_t size) {
+  return SetKdcTimeouts(macs_timeouts, values, size);
+}
+DECLARE_XAM_EXPORT1(XamSetMacsTimeouts, kNetworking, kImplemented);
+
+dword_result_t XamGetMacsTimeouts_entry(lpdword_t values, dword_t size) {
+  return GetKdcTimeouts(macs_timeouts, values, size);
+}
+DECLARE_XAM_EXPORT1(XamGetMacsTimeouts, kNetworking, kImplemented);
 
 // Remove completed UPnP actions
 void CleanupUPnPActions() {

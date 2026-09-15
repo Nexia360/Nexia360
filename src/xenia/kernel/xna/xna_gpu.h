@@ -157,6 +157,14 @@ struct XnaGpuDraw {
   bool depth_enable = false;
   bool depth_write_enable = false;
   uint32_t depth_function = 0;
+  bool stencil_enable = false;
+  uint32_t stencil_function = 0;
+  uint32_t stencil_pass = 0;
+  uint32_t stencil_fail = 0;
+  uint32_t stencil_depth_fail = 0;
+  uint32_t stencil_read_mask = 0xFF;
+  uint32_t stencil_write_mask = 0xFF;
+  uint32_t stencil_reference = 0;
   // The title's BlendState, in XNA's own enums. The defaults describe Opaque
   // (source One, destination Zero, Add) - what the draw path hardcoded before
   // this travelled with the draw. An alpha-blended or additive object drawn

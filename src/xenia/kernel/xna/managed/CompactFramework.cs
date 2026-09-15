@@ -672,30 +672,36 @@ internal static class CompactFramework {
               called.FullName);
   }
 
-  // Method bodies replaced with a plain return, keyed
-  // "Assembly!Namespace.Type::Method".
-  //
   // SunBurn Pro checks a developer licence against SynapseGaming's activation
   // infrastructure, which no longer exists - there is no server to ask and no
   // activation file in the package, so the check cannot succeed and throws
   // "Product not activated" from a constructor. The licence was bought by the
   // studio and the game shipped on retail hardware; the check is simply
-  // unanswerable now. All three of these are internal static void and do
-  // nothing but throw.
-  //
-  // Deliberately a short list of named methods in a named assembly rather than
-  // anything that pattern-matches: this is one dead vendor, not a facility.
-  private static readonly HashSet<string> Neutralize =
-      new(StringComparer.Ordinal) {
-        "SynapseGaming-SunBurn-Pro!u.u::A",
-        "SynapseGaming-SunBurn-Pro!u.u::b",
-        "SynapseGaming-SunBurn-Pro!u.u::W",
-      };
+  // unanswerable now.
+  private const string ActivationVendorPrefix = "SynapseGaming-SunBurn";
+  private const string ActivationFailure =
+      "Product not activated, please run activation tool.";
+
+  private static bool IsActivationCheck(MethodDefinition method,
+                                        string assemblyName) {
+    if (!method.IsStatic || method.ReturnType.FullName != "System.Void" ||
+        !assemblyName.StartsWith(ActivationVendorPrefix,
+                                 StringComparison.OrdinalIgnoreCase)) {
+      return false;
+    }
+    foreach (var instruction in method.Body.Instructions) {
+      if (instruction.OpCode.Code == Code.Ldstr &&
+          instruction.Operand is string text && text == ActivationFailure) {
+        return true;
+      }
+    }
+    return false;
+  }
 
   /// <summary>
   /// Redirects any Compact Framework call in the assembly at
-  /// <paramref name="path"/>, and empties any method named in
-  /// <see cref="Neutralize"/>. Returns true if the file was rewritten.
+  /// <paramref name="path"/>, and empties SunBurn's activation checks.
+  /// Returns true if the file was rewritten.
   /// </summary>
   // Everything a rewrite does to a module, shared by the file path and the
   // in-memory one. Returns how many call sites and bodies were changed.
@@ -710,12 +716,7 @@ internal static class CompactFramework {
         if (!method.HasBody) continue;
 
         var identity = assemblyName + "!" + type.FullName + "::" + method.Name;
-        if (Neutralize.Contains(identity)) {
-          if (method.ReturnType.FullName != "System.Void") {
-            XnaOs.Log(XnaOs.Level.Warning,
-                      $"   cannot neutralize {identity}: it returns a value");
-            continue;
-          }
+        if (IsActivationCheck(method, assemblyName)) {
           method.Body.Instructions.Clear();
           method.Body.Variables.Clear();
           method.Body.ExceptionHandlers.Clear();
@@ -798,9 +799,10 @@ internal static class CompactFramework {
     }
   }
 
-  public static bool Rewrite(string path) {
+  public static bool Rewrite(string path, string stamp = null) {
     try {
-      if (!NeedsRewrite(path)) {
+      bool needs = NeedsRewrite(path);
+      if (!needs && stamp == null) {
         return false;
       }
 
@@ -817,15 +819,18 @@ internal static class CompactFramework {
             });
 
         var assemblyName = Path.GetFileNameWithoutExtension(path);
-        int rewritten = RewriteModule(module, assemblyName);
+        int rewritten = needs ? RewriteModule(module, assemblyName) : 0;
 
         // Console P/Invokes are NOT rewritten any more: the emulator exports
         // those entry points itself and a DllImportResolver points the module
         // names at it, so the calls bind natively. Stripping them here would
         // remove the very P/Invokes that binding needs. NativeRewriter is kept
         // for reference - see xna_exports_generated.cc for what replaced it.
-        if (rewritten == 0) {
+        if (rewritten == 0 && stamp == null) {
           return false;
+        }
+        if (stamp != null) {
+          RewriteStamp.Apply(module, stamp);
         }
 
         using var output = new MemoryStream();
@@ -1152,13 +1157,9 @@ internal static class CompactFramework {
         return true;
       }
     }
-    // Neutralize is keyed by assembly, so it is answered by the file's name
-    // rather than by looking inside it.
-    var assemblyName = Path.GetFileNameWithoutExtension(path) + "!";
-    foreach (var key in Neutralize) {
-      if (key.StartsWith(assemblyName, StringComparison.Ordinal)) {
-        return true;
-      }
+    if (Path.GetFileNameWithoutExtension(path).StartsWith(
+            ActivationVendorPrefix, StringComparison.OrdinalIgnoreCase)) {
+      return true;
     }
     // MXF.Graphics owns Effect..ctor, which is patched unconditionally.
     if (Path.GetFileName(path).Equals("MXF.Graphics.dlx",

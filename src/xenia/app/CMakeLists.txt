@@ -14,6 +14,7 @@ target_sources(xenia-app PRIVATE
 )
 
 # Other app sources (emulator_window, profile_dialogs, etc.)
+# touched to re-run the glob for avatar_editor_dialog.cc
 xe_platform_sources(xenia-app ${CMAKE_CURRENT_SOURCE_DIR})
 
 # Platform-specific entry points
@@ -24,6 +25,11 @@ if(WIN32)
     ${CMAKE_CURRENT_SOURCE_DIR}/main_resources.rc
     ${PROJECT_SOURCE_DIR}/src/xenia/base/app_win32.manifest
   )
+  get_property(XE_XNA_PAYLOAD_RC GLOBAL PROPERTY XE_XNA_PAYLOAD_RC)
+  if(XE_XNA_PAYLOAD_RC)
+    set_source_files_properties(${XE_XNA_PAYLOAD_RC} PROPERTIES GENERATED TRUE)
+    target_sources(xenia-app PRIVATE ${XE_XNA_PAYLOAD_RC})
+  endif()
   if(XE_TARGET_X86_64)
     # main_init_win.cc needs SSE2 only (not AVX)
     set_source_files_properties(
@@ -143,27 +149,4 @@ if(WIN32)
     "/DEF:${PROJECT_SOURCE_DIR}/src/xenia/kernel/xna/xna_exports.def")
   set_property(TARGET xenia-app APPEND PROPERTY LINK_DEPENDS
     ${PROJECT_SOURCE_DIR}/src/xenia/kernel/xna/xna_exports.def)
-endif()
-
-find_program(XE_DOTNET_EXECUTABLE dotnet)
-set(XE_XNA_MANAGED_DIR ${PROJECT_SOURCE_DIR}/src/xenia/kernel/xna/managed)
-if(XE_DOTNET_EXECUTABLE AND EXISTS ${XE_XNA_MANAGED_DIR}/Nexia.Xna.Host.csproj)
-  # A target of its own, in ALL, rather than a POST_BUILD on xenia-app. As a
-  # POST_BUILD it only ran when the executable relinked, so a change to nothing
-  # but C# published nothing and the emulator silently kept running the
-  # previous host - which looks exactly like the fix not working.
-  # dotnet decides for itself whether there is anything to do.
-  add_custom_target(nexia-xna-host ALL
-    COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:xenia-app>/xna
-    COMMAND ${XE_DOTNET_EXECUTABLE} publish
-            ${XE_XNA_MANAGED_DIR}/Nexia.Xna.Host.csproj
-            -c Release --nologo -v quiet
-            -o $<TARGET_FILE_DIR:xenia-app>/xna
-    COMMENT "Publishing Nexia.Xna.Host for XNA titles"
-    VERBATIM
-  )
-  add_dependencies(nexia-xna-host xenia-app)
-else()
-  message(STATUS
-    "dotnet not found - XNA titles will not be launchable from this build")
 endif()

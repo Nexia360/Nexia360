@@ -147,7 +147,7 @@ class XLiveAPI {
 
   void SetBindInterface(bool state) const;
 
-  void SetNexiaHubTransport(bool state) const;
+  void SetNexiaHubTransport(bool state);
   void SetNexiaHubTransportTcpFallback(bool state) const;
 
   // Brings up the Nexia Hub Transport relay. No-op unless

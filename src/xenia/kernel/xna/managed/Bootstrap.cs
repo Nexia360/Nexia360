@@ -56,7 +56,6 @@ internal sealed class TitleLoadContext : AssemblyLoadContext {
       // NativeRewriter routes into Nexia. MonoGame cannot read any of that.
       var console = ConsoleAssemblies.Stage(name.Name);
       if (console != null) {
-        Prepare(console);
         var loaded = LoadFromAssemblyPath(console);
         BindConsoleModules(loaded);
         facades[name.Name] = loaded;
@@ -72,7 +71,7 @@ internal sealed class TitleLoadContext : AssemblyLoadContext {
         // naming a type that was never going to be there. Say the real reason.
         throw new InvalidOperationException(
             "MonoGame is not installed in " + overlayDir +
-            " - use File > XNA Titles > Install Dependency Package...");
+            ", and this build of Nexia embeds no console XNA runtime");
       }
       providers.Add(framework);
       using var image = FacadeFactory.Build(name.Name, providers);
@@ -120,7 +119,6 @@ internal sealed class TitleLoadContext : AssemblyLoadContext {
         XnaOs.Log(XnaOs.Level.Warning,
                   $"   console BCL {name.Name} - the desktop runtime could not "
                   + "supply it");
-        Prepare(consoleCore);
         return LoadFromAssemblyPath(consoleCore);
       }
     }
@@ -151,8 +149,8 @@ internal sealed class TitleLoadContext : AssemblyLoadContext {
   /// re-emits the PE header, so the 32BITREQUIRED bit has to be cleared after
   /// it rather than before.
   /// </remarks>
-  internal static void Prepare(string path) {
-    CompactFramework.Rewrite(path);
+  internal static void Prepare(string path, string stamp = null) {
+    CompactFramework.Rewrite(path, stamp);
     AssemblyFlags.MakeLoadable(path);
   }
 
@@ -245,6 +243,7 @@ public static unsafe class Bootstrap {
       // Anything the title prints, and any stack trace the runtime writes,
       // would otherwise be discarded - this process has no console.
       XnaOs.CaptureConsole();
+      XnaOs.Log($"Nexia.Xna.Host {RewriteStamp.HostVersion} ({RewriteStamp.HostMvid})");
       AppDomain.CurrentDomain.FirstChanceException -= LogFirstChance;
       AppDomain.CurrentDomain.FirstChanceException += LogFirstChance;
       AssemblyLoadContext.Default.Resolving -= ResolveFromOverlay;
@@ -294,6 +293,60 @@ public static unsafe class Bootstrap {
   private static readonly HashSet<string> seenThrows =
       new(StringComparer.Ordinal);
 
+  private const int RecentThrowLimit = 8;
+  private static readonly Queue<string> recentThrows = new();
+
+  private static void RecordRecentThrow(Exception exception) {
+    string entry =
+        $"{DateTime.Now:HH:mm:ss.fff} thread {Environment.CurrentManagedThreadId} " +
+        $"{exception.GetType().FullName}: {exception.Message}\n" +
+        new System.Diagnostics.StackTrace(2, false);
+    lock (recentThrows) {
+      recentThrows.Enqueue(entry);
+      while (recentThrows.Count > RecentThrowLimit) {
+        recentThrows.Dequeue();
+      }
+    }
+  }
+
+  private static void LogRecentThrows() {
+    string[] entries;
+    lock (recentThrows) {
+      entries = recentThrows.ToArray();
+    }
+    if (entries.Length == 0) {
+      return;
+    }
+    XnaOs.Log(XnaOs.Level.Error,
+              $"the last {entries.Length} exception(s) thrown, oldest first:");
+    foreach (var entry in entries) {
+      XnaOs.Log(XnaOs.Level.Error, entry);
+    }
+  }
+
+  private static string ThrowSite() {
+    var names = new List<string>();
+    foreach (var stackFrame in new System.Diagnostics.StackTrace(1, false)
+                                   .GetFrames()) {
+      var method = stackFrame.GetMethod();
+      string type = method?.DeclaringType?.FullName ?? string.Empty;
+      if (method == null || method.DeclaringType == typeof(Bootstrap) ||
+          type.StartsWith("Internal.Runtime.", StringComparison.Ordinal) ||
+          type.StartsWith("System.Runtime.EH", StringComparison.Ordinal) ||
+          type.StartsWith("System.Runtime.ExceptionServices.",
+                          StringComparison.Ordinal) ||
+          type == "System.ThrowHelper" || type == "System.AppDomain" ||
+          type.StartsWith("System.EventHandler", StringComparison.Ordinal)) {
+        continue;
+      }
+      names.Add($"{type}.{method.Name}");
+      if (names.Count == 4) {
+        break;
+      }
+    }
+    return names.Count > 0 ? "at " + string.Join(" <- ", names) : string.Empty;
+  }
+
   private static void LogFirstChance(object sender,
                                      FirstChanceExceptionEventArgs e) {
     if (e.Exception is FileNotFoundException missing &&
@@ -301,8 +354,8 @@ public static unsafe class Bootstrap {
             missing.FileName?.Split(',')[0].Trim())) {
       return;
     }
-    string frame = (e.Exception.StackTrace ?? string.Empty)
-                       .Split('\n').FirstOrDefault()?.Trim() ?? string.Empty;
+    RecordRecentThrow(e.Exception);
+    string frame = ThrowSite();
     string key = e.Exception.GetType().FullName + "|" + e.Exception.Message +
                  "|" + frame;
     lock (seenThrows) {
@@ -497,14 +550,17 @@ public static unsafe class Bootstrap {
       XnaOs.Log($"invoking {entry.DeclaringType?.FullName}.{entry.Name}");
       entry.Invoke(null, arguments);
       XnaOs.Log("title returned");
+      LogRecentThrows();
       XnaOs.Log(ExportUsage());
     } catch (TargetInvocationException e) {
       // The useful exception is always the inner one; the wrapper says nothing.
       XnaOs.Log(XnaOs.Level.Error, $"title failed: {e.InnerException}");
+      LogRecentThrows();
       // What the title got through before it died is the list worth reading.
       XnaOs.Log(ExportUsage());
     } catch (Exception e) {
       XnaOs.Log(XnaOs.Level.Error, $"title failed: {e}");
+      LogRecentThrows();
     }
   }
 }

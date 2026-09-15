@@ -75,7 +75,7 @@ DEFINE_bool(
 
 DEFINE_bool(xhttp, false, "Toggles XHTTP.", "Live");
 
-DEFINE_bool(nexiahub_transport, false,
+DEFINE_bool(nexiahub_transport, true,
             "Relay netplay traffic through the Nexia Hub transport when a "
             "direct peer connection is not possible.",
             "Live");
@@ -390,8 +390,13 @@ void XLiveAPI::SetBindInterface(bool state) const {
   OVERRIDE_bool(bind_interface, state);
 }
 
-void XLiveAPI::SetNexiaHubTransport(bool state) const {
+void XLiveAPI::SetNexiaHubTransport(bool state) {
   OVERRIDE_bool(nexiahub_transport, state);
+  if (!state) {
+    transport_.Stop();
+  } else if (IsConnectedToServer()) {
+    StartTransport();
+  }
 }
 
 void XLiveAPI::SetNexiaHubTransportTcpFallback(bool state) const {

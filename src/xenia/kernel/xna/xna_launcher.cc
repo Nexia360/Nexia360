@@ -28,6 +28,7 @@
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xna/xna_dependencies.h"
 #include "xenia/kernel/xna/xna_host.h"
+#include "xenia/kernel/xna/xna_runtime_install.h"
 #include "xenia/vfs/devices/host_path_device.h"
 #include "xenia/vfs/devices/xcontent_devices/stfs_container_device.h"
 #include "xenia/vfs/entry.h"
@@ -582,6 +583,21 @@ bool LaunchXnaPackage(const std::filesystem::path& path) {
                                  : info.root_directory.size() + 1);
   XELOGI("XnaLauncher: mounted {}, running {} from inside it",
          xe::path_to_utf8(path), game_path);
+
+  std::string payload_message;
+  if (!DeployXnaHostPayload(&payload_message)) {
+    XELOGE("XnaLauncher: {}", payload_message);
+    return false;
+  }
+  XELOGI("XnaLauncher: {}", payload_message);
+
+  std::string missing_runtime;
+  if (!XnaRuntimeInstalled(&missing_runtime)) {
+    XELOGE("XnaLauncher: the Microsoft XNA runtime is not installed ({})",
+           missing_runtime);
+    RequestXnaRuntimeInstall(missing_runtime);
+    return false;
+  }
 
   // Say what is actually missing here, where the whole list is known - a
   // hostfxr failure three layers down names one file and explains nothing.

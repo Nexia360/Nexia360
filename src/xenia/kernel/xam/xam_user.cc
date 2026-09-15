@@ -1959,6 +1959,53 @@ X_HRESULT_result_t XamUserValidateAvatarManifest_entry() {
 }
 DECLARE_XAM_EXPORT1(XamUserValidateAvatarManifest, kUserProfiles, kStub);
 
+dword_result_t XamUserGetUserIndexMask_entry(dword_t flags) {
+  uint32_t mask = 0;
+  for (uint32_t user_index = 0; user_index < XUserMaxUserCount; ++user_index) {
+    if (!kernel_state()->xam_state()->IsUserSignedIn(user_index)) {
+      continue;
+    }
+    const auto& user_profile =
+        kernel_state()->xam_state()->GetUserProfile(user_index);
+    uint32_t state = 1;
+    if (user_profile->signin_state() == X_USER_SIGNIN_STATE::SignedInToLive) {
+      state |= 2;
+    }
+    if ((state & flags) == flags) {
+      mask |= 1u << user_index;
+    }
+  }
+  return mask;
+}
+DECLARE_XAM_EXPORT1(XamUserGetUserIndexMask, kUserProfiles, kImplemented);
+
+dword_result_t XamUserFlushLogonQueue_entry(
+    pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
+  if (overlapped_ptr) {
+    kernel_state()->CompleteOverlappedImmediate(overlapped_ptr,
+                                                X_ERROR_SUCCESS);
+    return X_ERROR_IO_PENDING;
+  }
+  return X_ERROR_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamUserFlushLogonQueue, kUserProfiles, kImplemented);
+
+dword_result_t XamUserReadUserPreference_entry(
+    dword_t user_index, dword_t preference, lpdword_t value_ptr,
+    pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
+  if (user_index >= XUserMaxUserCount || !value_ptr) {
+    return X_ERROR_INVALID_PARAMETER;
+  }
+  *value_ptr = 0;
+  if (overlapped_ptr) {
+    kernel_state()->CompleteOverlappedImmediate(overlapped_ptr,
+                                                X_ERROR_SUCCESS);
+    return X_ERROR_IO_PENDING;
+  }
+  return X_ERROR_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamUserReadUserPreference, kUserProfiles, kStub);
+
 }  // namespace xam
 }  // namespace kernel
 }  // namespace xe

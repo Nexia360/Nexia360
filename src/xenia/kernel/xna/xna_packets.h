@@ -134,6 +134,7 @@ class HlcbSink {
   // state objects that are not bound per slot.
   virtual void SetState(HlcbPacketType type, uint32_t handle,
                         uint32_t slot) {}
+  virtual void SetHighFrequencyState(uint32_t state, uint32_t value) {}
   // `handles` are the render target handles, `count` how many. Zero means the
   // title went back to the back buffer.
   virtual void SetRenderTargets(const uint32_t* handles, uint32_t count) {}

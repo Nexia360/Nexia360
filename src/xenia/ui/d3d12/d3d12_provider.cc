@@ -20,13 +20,11 @@
 DEFINE_bool(d3d12_debug, false, "Enable Direct3D 12 and DXGI debug layer.",
             "D3D12");
 DEFINE_bool(
-    d3d12_dred, true,
+    d3d12_dred, false,
     "Enable Direct3D 12 Device Removed Extended Data. On a lost device this "
     "reports the address that faulted and the last commands the GPU actually "
-    "ran, instead of only that the device is gone. On by default: a device "
-    "loss that explains itself is worth more than the small cost of the "
-    "breadcrumbs, and it costs nothing at all until something goes wrong. "
-    "Set to false if you suspect it of costing frames.",
+    "ran, instead of only that the device is gone. Costs frames on every "
+    "command list while enabled, so only turn it on to diagnose a device loss.",
     "D3D12");
 DEFINE_bool(d3d12_break_on_error, false,
             "Break on Direct3D 12 validation errors.", "D3D12");

@@ -8,6 +8,12 @@
     <!-- Emits the .runtimeconfig.json that hostfxr_initialize_for_runtime_config
          needs, and the deps file, for a library loaded by a native host. -->
     <EnableDynamicLoading>true</EnableDynamicLoading>
+    <Version>1.0.0</Version>
+    <NexiaShimRevision>2</NexiaShimRevision>
+    <FileVersion>$(Version).$(NexiaShimRevision)</FileVersion>
+    <InformationalVersion>$(Version)+shim.$(NexiaShimRevision)</InformationalVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <Deterministic>true</Deterministic>
   </PropertyGroup>
   <ItemGroup>
     <!-- Used to emit the XNA facade assemblies in memory; Reflection.Emit

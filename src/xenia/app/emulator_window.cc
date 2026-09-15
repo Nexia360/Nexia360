@@ -47,9 +47,11 @@
 #include "xenia/kernel/xam/profile_manager.h"
 #include "xenia/kernel/xam/xam_module.h"
 #include "xenia/kernel/xam/xam_state.h"
+#include "xenia/kernel/xam/xam_ui.h"
 #include "xenia/kernel/xconfig.h"
 #include "xenia/kernel/xna/xna_dependencies.h"
 #include "xenia/kernel/xna/xna_launcher.h"
+#include "xenia/kernel/xna/xna_runtime_install.h"
 #include "xenia/ui/file_picker.h"
 #include "xenia/ui/graphics_provider.h"
 #include "xenia/ui/imgui_dialog.h"
@@ -999,14 +1001,14 @@ bool EmulatorWindow::Initialize() {
         MenuItem::Type::kString, "Install XNA Package...",
         std::bind(&EmulatorWindow::InstallXnaPackage, this)));
     xna_menu->AddChild(MenuItem::Create(
-        MenuItem::Type::kString, "Install Dependency Package...",
-        std::bind(&EmulatorWindow::InstallXnaDependencyPackage, this)));
-    xna_menu->AddChild(MenuItem::Create(
-        MenuItem::Type::kString, "Install Dependencies from Folder...",
-        std::bind(&EmulatorWindow::InstallXnaDependencies, this)));
+        MenuItem::Type::kString, "Find XNA Dependencies...",
+        std::bind(&EmulatorWindow::FindXnaDependencies, this)));
     xna_menu->AddChild(MenuItem::Create(
         MenuItem::Type::kString, "Check Dependencies",
         std::bind(&EmulatorWindow::ShowXnaDependencies, this)));
+    xna_menu->AddChild(MenuItem::Create(
+        MenuItem::Type::kString, "Avatar Editor...",
+        std::bind(&EmulatorWindow::ToggleAvatarEditorDialog, this)));
     xna_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
     FillXnaTitlesMenu(xna_menu.get());
     file_menu->AddChild(std::move(xna_menu));
@@ -1039,6 +1041,9 @@ bool EmulatorWindow::Initialize() {
     profile_menu->AddChild(MenuItem::Create(
         MenuItem::Type::kString, "&Gamerpic Browser", "",
         std::bind(&EmulatorWindow::ToggleGamerpicBrowserDialog, this)));
+    profile_menu->AddChild(MenuItem::Create(
+        MenuItem::Type::kString, "&Avatar Editor", "",
+        std::bind(&EmulatorWindow::ToggleAvatarEditorDialog, this)));
   }
   main_menu->AddChild(std::move(profile_menu));
 
@@ -2166,6 +2171,32 @@ void EmulatorWindow::ToggleTextMessagesDialog() {
       [this]() { OnMessagesDialogClosed(&text_messages_dialog_); });
 }
 
+void EmulatorWindow::ToggleAvatarEditorDialog() {
+  if (avatar_editor_dialog_) {
+    avatar_editor_dialog_->Close();
+    return;
+  }
+
+  disable_hotkeys_ = true;
+  emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 1);
+  emulator_->kernel_state()->xam_state()->xam_dialogs_shown_++;
+
+  avatar_editor_dialog_ = new AvatarEditorDialog(imgui_drawer_.get(), this);
+  avatar_editor_dialog_->set_closed_callback([this]() {
+    avatar_editor_dialog_ = nullptr;
+    disable_hotkeys_ = false;
+    emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI,
+                                                     0);
+    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
+  });
+}
+
+void EmulatorWindow::ShowAvatarEditorDialog() {
+  if (!avatar_editor_dialog_) {
+    ToggleAvatarEditorDialog();
+  }
+}
+
 void EmulatorWindow::ToggleVoiceMessagesDialog() {
   if (voice_messages_dialog_) {
     voice_messages_dialog_->Close();
@@ -2970,9 +3001,11 @@ xe::X_STATUS EmulatorWindow::RunTitle(
   if (result) {
     XELOGE("Failed to launch target: {:08X}", result);
 
-    xe::ui::ImGuiDialog::ShowMessageBox(
-        imgui_drawer_.get(), "Title Launch Failed!",
-        "Failed to launch title.\n\nCheck xenia.log for technical details.");
+    if (!kernel::xna::XnaRuntimeInstallPending()) {
+      xe::ui::ImGuiDialog::ShowMessageBox(
+          imgui_drawer_.get(), "Title Launch Failed!",
+          "Failed to launch title.\n\nCheck xenia.log for technical details.");
+    }
 
     emulator_->file_system()->Clear();
   } else {
@@ -3099,6 +3132,67 @@ void EmulatorWindow::ShowXnaDependencies() {
   kernel::xna::LogXnaDependencies();
   new xe::ui::HostNotificationWindow(imgui_drawer(), "XNA Dependencies",
                                      kernel::xna::DescribeXnaDependencies(), 0);
+}
+
+void EmulatorWindow::FindXnaDependencies() {
+  std::string title = "Find XNA Dependencies";
+  std::string body =
+      "Xbox Live Indie Games need the Xbox 360's own XNA runtime to run in\n"
+      "Nexia. This finds those files on your PC and packs them into one zip.\n\n"
+      "It looks for:\n"
+      "  - the console XNA runtime: MXF.dlx, MXF.Graphics.dlx and the other\n"
+      "    MXF*.dlx files, plus mscorlib.dlx and the System*.dlx files\n"
+      "  - SDL2.dll and openal.dll\n"
+      "  - MonoGame.Framework.dll, if there is one\n\n"
+      "They usually come from the XNA Indie Player title update, or from the\n"
+      "xna folder of another Nexia install. Pick the folder that holds them;\n"
+      "every folder inside it is searched too.\n\n"
+      "The zip is saved as XNA_Dependencies.zip next to Nexia360.exe, and\n"
+      "that folder opens when it is done.";
+
+  auto* dialog = new kernel::xam::MessageBoxDialog(
+      imgui_drawer(), title, body, {"Find Files", "Cancel"}, 1);
+  dialog->set_close_callback([this, dialog]() {
+    if (dialog->chosen_button() != 0) {
+      return;
+    }
+    app_context().CallInUIThread([this]() { ScanXnaDependencies(); });
+  });
+}
+
+void EmulatorWindow::ScanXnaDependencies() {
+  auto folder_picker = xe::ui::FilePicker::Create();
+  folder_picker->set_mode(ui::FilePicker::Mode::kOpen);
+  folder_picker->set_type(ui::FilePicker::Type::kDirectory);
+  folder_picker->set_multi_selection(false);
+  folder_picker->set_title("Select the folder to search for XNA files");
+  if (!folder_picker->Show(window_.get())) {
+    return;
+  }
+  const auto folders = folder_picker->selected_files();
+  if (folders.empty()) {
+    return;
+  }
+  const auto source = folders[0];
+  const auto zip_path =
+      xe::filesystem::GetExecutableFolder() / "XNA_Dependencies.zip";
+
+  std::thread([this, source, zip_path]() {
+    std::string report;
+    const bool written =
+        kernel::xna::BuildXnaDependencyZip(source, zip_path, &report);
+    XELOGE("XNA dependency scan of {}:\n{}", xe::path_to_utf8(source), report);
+    app_context().CallInUIThread([this, written, report, zip_path]() {
+      new xe::ui::HostNotificationWindow(
+          imgui_drawer(),
+          written ? "XNA dependency package written"
+                  : "XNA dependency package not written",
+          report, 0);
+      if (written) {
+        std::thread(LaunchFileExplorer, zip_path.parent_path()).detach();
+      }
+    });
+  }).detach();
 }
 
 void EmulatorWindow::InstallXnaDependencyPackage() {

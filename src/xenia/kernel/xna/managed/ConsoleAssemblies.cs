@@ -101,25 +101,18 @@ internal static class ConsoleAssemblies {
     var working = Path.Combine(workingDirectory, Path.GetFileName(source));
     try {
       System.IO.Directory.CreateDirectory(workingDirectory);
-      // Refreshed when the master changes OR when this host is newer than the
-      // copy. The second half matters: a staged copy carries whatever the
-      // rewriter did at the time, so when the rules change - console P/Invokes
-      // are bound natively now rather than rewritten - a stale copy silently
-      // keeps the old behaviour, and the master has not been touched to say
-      // so.
-      var staleAfter = File.GetLastWriteTimeUtc(source);
-      var host = typeof(ConsoleAssemblies).Assembly.Location;
-      if (!string.IsNullOrEmpty(host) && File.Exists(host)) {
-        var hostTime = File.GetLastWriteTimeUtc(host);
-        if (hostTime > staleAfter) {
-          staleAfter = hostTime;
-        }
+      var expected = RewriteStamp.Expected(source);
+      var current = RewriteStamp.Read(working);
+      if (expected != null && current == expected) {
+        return working;
       }
-      if (!File.Exists(working) ||
-          staleAfter > File.GetLastWriteTimeUtc(working)) {
-        File.Copy(source, working, overwrite: true);
-        XnaOs.Log($"   staged {Path.GetFileName(source)}");
-      }
+      File.Copy(source, working, overwrite: true);
+      TitleLoadContext.Prepare(working, expected);
+      XnaOs.Log(current == null
+          ? $"   prepared {Path.GetFileName(source)} with host {RewriteStamp.HostVersion}"
+          : $"   replaced {Path.GetFileName(source)}: it was prepared by a " +
+            $"different host or from a different master (now host " +
+            $"{RewriteStamp.HostVersion})");
       return working;
     } catch (Exception e) {
       XnaOs.Log(XnaOs.Level.Warning,

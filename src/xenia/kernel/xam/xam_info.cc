@@ -10,8 +10,10 @@
 #include <cstddef>
 #include <cstring>
 #include <filesystem>
+#include <mutex>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include "xenia/base/clock.h"
 #include "xenia/base/cvar.h"
@@ -40,6 +42,7 @@
 #include "xenia/ui/imgui_drawer.h"
 #include "xenia/ui/window.h"
 #include "xenia/ui/windowed_app_context.h"
+#include "xenia/vfs/devices/host_path_entry.h"
 #include "xenia/xbox.h"
 
 #include "third_party/fmt/include/fmt/format.h"
@@ -73,6 +76,12 @@ DECLARE_XAM_EXPORT1(XamFeatureEnabled, kNone, kStub);
 
 dword_result_t XamGetStagingMode_entry() { return cvars::staging_mode; }
 DECLARE_XAM_EXPORT1(XamGetStagingMode, kNone, kStub);
+
+dword_result_t XamLogLocalizationEtx_entry(dword_t event_id,
+                                           lpvoid_t event_data) {
+  return X_E_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamLogLocalizationEtx, kNone, kStub);
 
 dword_result_t XamGetOnlineSchema_entry() {
   // Swap in the build-matched schema from the hub the first time the guest asks
@@ -594,96 +603,276 @@ dword_result_t XamLoaderGetLaunchData_entry(lpvoid_t buffer_ptr,
 }
 DECLARE_XAM_EXPORT1(XamLoaderGetLaunchData, kNone, kSketchy);
 
-// Is there launch data sitting next to the executable for the next run to
-// pick up? Matches launch*.bin rather than just the kernel's own
-// launch_data.bin, so a file dropped in by anything else driving a launch
-// counts too.
-static bool HasPendingLaunchData() {
-  std::error_code error;
-  const std::filesystem::path folder = xe::filesystem::GetExecutableFolder();
+namespace {
 
-  for (const auto& entry :
-       std::filesystem::directory_iterator(folder, error)) {
-    if (error) {
-      break;
+std::mutex last_active_user_mutex;
+
+std::string JoinGuestParts(const std::vector<std::string_view>& parts,
+                           size_t begin, size_t end) {
+  std::string joined;
+  for (size_t i = begin; i < end; ++i) {
+    if (!joined.empty()) {
+      joined.push_back('\\');
     }
+    joined.append(parts[i]);
+  }
+  return joined;
+}
 
-    if (!entry.is_regular_file(error) || error) {
+std::string LaunchHostPath(const std::string& guest_path, std::string* inner) {
+  auto* file_system = kernel_state()->file_system();
+  const std::vector<std::string_view> parts =
+      xe::utf8::split(guest_path, "\\/", true);
+  const bool rooted = !guest_path.empty() &&
+                      (guest_path.front() == '\\' || guest_path.front() == '/');
+  for (size_t count = parts.size(); count > 0; --count) {
+    std::string prefix = JoinGuestParts(parts, 0, count);
+    if (rooted) {
+      prefix.insert(prefix.begin(), '\\');
+    }
+    vfs::Entry* entry = file_system->ResolvePath(prefix);
+    if (!entry) {
       continue;
     }
+    const std::string rest = JoinGuestParts(parts, count, parts.size());
+    if (auto* host_entry = dynamic_cast<vfs::HostPathEntry*>(entry)) {
+      if (!rest.empty() &&
+          (entry->attributes() & vfs::kFileAttributeDirectory)) {
+        return {};
+      }
+      *inner = rest;
+      return xe::path_to_utf8(host_entry->host_path());
+    }
+    if (entry->path().empty()) {
+      *inner = rest;
+    } else if (rest.empty()) {
+      *inner = entry->path();
+    } else {
+      *inner = entry->path() + "\\" + rest;
+    }
+    auto xam = kernel_state()->GetKernelModule<XamModule>("xam.xex");
+    return xam->loader_data().host_path;
+  }
+  return {};
+}
 
-    const std::string name =
-        xe::utf8::lower_ascii(xe::path_to_utf8(entry.path().filename()));
+}  // namespace
 
-    if (name.starts_with("launch") && name.ends_with(".bin")) {
-      return true;
+void RecordLaunchOrigin() {
+  auto xam = kernel_state()->GetKernelModule<XamModule>("xam.xex");
+  auto& loader_data = xam->loader_data();
+  loader_data.prior_title_id = kernel_state()->title_id();
+  if (kernel_state()->title_id() == kDashboardID &&
+      !loader_data.host_path.empty()) {
+    loader_data.dashboard_path = loader_data.host_path;
+  }
+}
+
+void ReloadForLaunch() {
+  auto* display_window = kernel_state()->emulator()->display_window();
+  if (display_window) {
+    display_window->app_context().CallInUIThread([]() {
+      config::SaveConfig();
+      xe::LaunchSelf();
+      xe::FlushLog();
+      std::quick_exit(0);
+    });
+  }
+  kernel_state()->TerminateTitle();
+}
+
+namespace {
+
+void LaunchTitle(const std::string& launch_path, const std::string& mount_path,
+                 const std::string& cmd_line, uint32_t flags) {
+  RecordLaunchOrigin();
+  auto xam = kernel_state()->GetKernelModule<XamModule>("xam.xex");
+  auto& loader_data = xam->loader_data();
+
+  std::string host;
+  std::string inner;
+  if (launch_path.empty() || (flags & 2)) {
+    host = loader_data.dashboard_path;
+  } else {
+    if (!mount_path.empty() && launch_path.front() != '\\') {
+      host = LaunchHostPath(
+          xe::utf8::join_guest_paths(mount_path, launch_path), &inner);
+    }
+    if (host.empty()) {
+      host = LaunchHostPath(launch_path, &inner);
+    }
+    if (host.empty()) {
+      host = loader_data.host_path;
+      inner = launch_path;
     }
   }
 
-  return false;
+  const std::filesystem::path host_path = host;
+  if (!host.empty() && inner.empty() && host_path.extension() == ".xex") {
+    inner = xe::path_to_utf8(host_path.filename());
+  }
+
+  XELOGE(
+      "XamLoaderLaunchTitle: '{}' mount '{}' cmd '{}' flags {:08X} -> host "
+      "'{}' module '{}'",
+      launch_path, mount_path, cmd_line, flags, host, inner);
+
+  if (host.empty()) {
+    kernel_state()->TerminateTitle();
+    return;
+  }
+
+  loader_data.host_path = host;
+  loader_data.launch_path = inner;
+  loader_data.launch_flags = flags;
+  xam->SaveLoaderData();
+  ReloadForLaunch();
 }
+
+}  // namespace
 
 void XamLoaderLaunchTitle_entry(lpstring_t raw_name_ptr, dword_t flags) {
-  auto xam = kernel_state()->GetKernelModule<XamModule>("xam.xex");
-
-  auto& loader_data = xam->loader_data();
-  loader_data.launch_flags = flags;
-
-  std::string title;
-  std::string message;
-
-  // Translate the launch path to a full path.
-  if (raw_name_ptr && !raw_name_ptr.value().empty()) {
-    loader_data.launch_path = xe::path_to_utf8(raw_name_ptr.value());
-    xam->SaveLoaderData();
-    title = "Title was restarted";
-    message =
-        "Title closed with new launch data. \nPlease restart Xenia. "
-        "Game will be loaded automatically.";
-  } else {
-    title = "Title terminated";
-    message = "Game requested exit to dashboard.";
-    assert_always("Game requested exit to dashboard via XamLoaderLaunchTitle");
-  }
-
-  auto display_window = kernel_state()->emulator()->display_window();
-  auto imgui_drawer = kernel_state()->emulator()->imgui_drawer();
-
-  if (display_window && imgui_drawer) {
-    display_window->app_context().CallInUIThreadSynchronous(
-        [imgui_drawer, title, message]() {
-          auto dialog = xe::ui::ImGuiDialog::ShowMessageBox(
-              imgui_drawer, title.c_str(), message.c_str());
-
-          std::jthread([dialog]() {
-            while (!dialog->IsClosing()) {
-              std::this_thread::yield();
-            }
-
-            config::SaveConfig();
-
-            // The launch data written above is only read at startup, so the
-            // switch the guest asked for needs another run of the emulator.
-            // Start one before going away, so the user does not have to.
-            //
-            // This is the exit that actually happens for a title switch: the
-            // quick_exit below leaves from a detached thread, so none of the
-            // app's own shutdown - and nothing hooked into it - ever runs.
-            if (HasPendingLaunchData()) {
-              xe::LaunchSelf();
-            }
-
-            xe::FlushLog();
-
-            std::quick_exit(0);
-          }).detach();
-        });
-  }
-
-  // This function does not return.
-  kernel_state()->TerminateTitle();
+  const std::string launch_path =
+      raw_name_ptr ? std::string(raw_name_ptr.value()) : std::string();
+  LaunchTitle(launch_path, std::string(), std::string(), flags);
 }
-DECLARE_XAM_EXPORT1(XamLoaderLaunchTitle, kNone, kSketchy);
+DECLARE_XAM_EXPORT1(XamLoaderLaunchTitle, kNone, kImplemented);
+
+void XamLoaderLaunchTitleEx_entry(lpstring_t launch_path_ptr,
+                                  lpstring_t mount_path_ptr,
+                                  lpstring_t cmd_line_ptr, dword_t flags) {
+  const std::string launch_path =
+      launch_path_ptr ? std::string(launch_path_ptr.value()) : std::string();
+  const std::string mount_path =
+      mount_path_ptr ? std::string(mount_path_ptr.value()) : std::string();
+  const std::string cmd_line =
+      cmd_line_ptr ? std::string(cmd_line_ptr.value()) : std::string();
+  LaunchTitle(launch_path, mount_path, cmd_line, flags);
+}
+DECLARE_XAM_EXPORT1(XamLoaderLaunchTitleEx, kNone, kImplemented);
+
+dword_result_t XamSetLastActiveUserData_entry(lpqword_t data_ptr) {
+  auto xam = kernel_state()->GetKernelModule<XamModule>("xam.xex");
+  std::lock_guard<std::mutex> lock(last_active_user_mutex);
+  auto& loader_data = xam->loader_data();
+  loader_data.last_active_user_set = bool(data_ptr);
+  loader_data.last_active_user = data_ptr ? uint64_t(*data_ptr) : 0;
+  return 1;
+}
+DECLARE_XAM_EXPORT1(XamSetLastActiveUserData, kNone, kImplemented);
+
+dword_result_t XamGetLastActiveUserData_entry(lpqword_t data_ptr) {
+  auto xam = kernel_state()->GetKernelModule<XamModule>("xam.xex");
+  std::lock_guard<std::mutex> lock(last_active_user_mutex);
+  auto& loader_data = xam->loader_data();
+  if (!data_ptr || !loader_data.last_active_user_set) {
+    return 0;
+  }
+  *data_ptr = loader_data.last_active_user;
+  loader_data.last_active_user_set = false;
+  loader_data.last_active_user = 0;
+  return 1;
+}
+DECLARE_XAM_EXPORT1(XamGetLastActiveUserData, kNone, kImplemented);
+
+dword_result_t XamLoaderGetPriorTitleId_entry() {
+  auto xam = kernel_state()->GetKernelModule<XamModule>("xam.xex");
+  return xam->loader_data().prior_title_id;
+}
+DECLARE_XAM_EXPORT1(XamLoaderGetPriorTitleId, kNone, kImplemented);
+
+void XamLoaderRegisterLaunchRequestCallback_entry(dword_t callback) {
+  auto xam = kernel_state()->GetKernelModule<XamModule>("xam.xex");
+  xam->loader_data().launch_request_callback = callback;
+}
+DECLARE_XAM_EXPORT1(XamLoaderRegisterLaunchRequestCallback, kNone,
+                    kImplemented);
+
+dword_result_t XamPushBackURI_entry(lpstring_t uri, dword_t unknown1,
+                                    dword_t unknown2) {
+  XELOGI("XamPushBackURI: '{}'", uri ? std::string(uri.value()) : "");
+  return X_E_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamPushBackURI, kNone, kStub);
+
+dword_result_t XamFitnessClearBodyProfileRecords_entry(lpdword_t info_ptr) {
+  if (!info_ptr || info_ptr[0] != 0x10) {
+    return X_E_INVALIDARG;
+  }
+  info_ptr[1] = 0;
+  info_ptr[2] = 0;
+  info_ptr[3] = 0;
+  return X_E_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamFitnessClearBodyProfileRecords, kNone, kStub);
+
+dword_result_t
+XamBackgroundDownloadNetworkStorageRegisterChangeCallback_entry() {
+  return X_ERROR_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamBackgroundDownloadNetworkStorageRegisterChangeCallback,
+                    kNone, kStub);
+
+dword_result_t XamGetCurrencyFormat_entry(lpdword_t request_ptr,
+                                          lpvoid_t output_ptr) {
+  return X_E_FAIL;
+}
+DECLARE_XAM_EXPORT1(XamGetCurrencyFormat, kNone, kStub);
+
+dword_result_t XamGetUserBalance_entry(lpdword_t request_ptr,
+                                       pointer_t<XAM_OVERLAPPED> overlapped_ptr,
+                                       dword_t unknown) {
+  if (!request_ptr || request_ptr[0] != 0x20 || !request_ptr[7]) {
+    return X_E_INVALIDARG;
+  }
+  if (overlapped_ptr) {
+    kernel_state()->CompleteOverlappedImmediate(overlapped_ptr,
+                                                X_ERROR_FUNCTION_FAILED);
+    return X_ERROR_IO_PENDING;
+  }
+  return X_E_FAIL;
+}
+DECLARE_XAM_EXPORT1(XamGetUserBalance, kNone, kStub);
+
+dword_result_t XamOfflineTimerGetData_entry(lpvoid_t data_ptr) {
+  if (data_ptr) {
+    std::memset(data_ptr, 0, 2);
+  }
+  return X_E_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamOfflineTimerGetData, kNone, kImplemented);
+
+dword_result_t XamGetOnlineCountryFeatures_entry(dword_t country) {
+  return 0;
+}
+DECLARE_XAM_EXPORT1(XamGetOnlineCountryFeatures, kNone, kStub);
+
+dword_result_t XamNetworkStorageHasUserEnabledStorage_entry(
+    dword_t user_index) {
+  return 0;
+}
+DECLARE_XAM_EXPORT1(XamNetworkStorageHasUserEnabledStorage, kNone, kStub);
+
+dword_result_t XamPackageManagerFindPackageContainingIndexedXEX_entry(
+    dword_t unknown1, dword_t unknown2, dword_t unknown3, lpvoid_t result_ptr) {
+  if (!result_ptr) {
+    return X_E_INVALIDARG;
+  }
+  return X_HRESULT_FROM_WIN32(X_ERROR_NOT_FOUND);
+}
+DECLARE_XAM_EXPORT1(XamPackageManagerFindPackageContainingIndexedXEX, kNone,
+                    kStub);
+
+dword_result_t XamPackageManagerGetExperienceMode_entry(lpdword_t mode_ptr) {
+  if (mode_ptr) {
+    *mode_ptr = 1;
+  }
+  return X_ERROR_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamPackageManagerGetExperienceMode, kNone, kStub);
+
+dword_result_t XdfInitialize_entry() { return X_E_SUCCESS; }
+DECLARE_XAM_EXPORT1(XdfInitialize, kNone, kStub);
 
 void Mw3GametypeDumpTick();  // mw3_gametype_dump.cc
 

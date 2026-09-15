@@ -54,6 +54,7 @@
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xna/xna_exports.h"
 #include "xenia/kernel/xna/xna_effect.h"
+#include "xenia/kernel/xna/xna_avatar.h"
 #include "xenia/kernel/xna/xna_direct.h"
 #include "xenia/kernel/xna/xna_gpu.h"
 #include "xenia/kernel/xna/xna_guest_heap.h"
@@ -324,6 +325,14 @@ struct DepthStencilSettings {
   int32_t depth_enable;
   int32_t depth_write_enable;
   int32_t depth_function;
+  int32_t stencil_enable;
+  int32_t stencil_function;
+  int32_t stencil_pass;
+  int32_t stencil_fail;
+  int32_t stencil_depth_fail;
+  int32_t stencil_mask;
+  int32_t stencil_write_mask;
+  int32_t reference_stencil;
 };
 
 std::map<uint32_t, DepthStencilSettings> depth_states;
@@ -338,10 +347,23 @@ extern "C" uint32_t xna_D3D_D3D_Device_CreateDepthStencilState(
     state.depth_enable = words[0];
     state.depth_write_enable = words[1];
     state.depth_function = words[2];
+    state.stencil_enable = words[3];
+    state.stencil_function = words[4];
+    state.stencil_pass = words[5];
+    state.stencil_fail = words[6];
+    state.stencil_depth_fail = words[7];
+    state.stencil_mask = words[13];
+    state.stencil_write_mask = words[14];
+    state.reference_stencil = words[15];
   }
   depth_states[handle] = state;
-  XELOGD("[xna] depth stencil state {:08X}: enable {} write {} func {}", handle,
-         state.depth_enable, state.depth_write_enable, state.depth_function);
+  XELOGD(
+      "[xna] depth stencil state {:08X}: enable {} write {} func {} | stencil "
+      "{} func {} pass {} fail {} zfail {} mask {:X}/{:X} ref {}",
+      handle, state.depth_enable, state.depth_write_enable,
+      state.depth_function, state.stencil_enable, state.stencil_function,
+      state.stencil_pass, state.stencil_fail, state.stencil_depth_fail,
+      state.stencil_mask, state.stencil_write_mask, state.reference_stencil);
   return handle;
 }
 
@@ -1099,11 +1121,13 @@ uint32_t CreateBuffer(uint32_t type, uint32_t stride, uint32_t byte_size,
 
 uint32_t BufferCopyLocked(uint32_t handle, void* data, uint32_t offset,
                           uint32_t bytes, uint32_t element_size, uint8_t read,
+                          uint32_t stride, uint32_t element_bytes,
                           uint32_t* written_address, uint32_t* written_bytes);
 
 // Both buffer kinds copy the same way: a byte offset, a length, a direction.
 uint32_t BufferCopy(uint32_t handle, void* data, uint32_t offset,
-                    uint32_t bytes, uint32_t element_size, uint8_t read) {
+                    uint32_t bytes, uint32_t element_size, uint8_t read,
+                    uint32_t stride = 0, uint32_t element_bytes = 0) {
   if (!data) {
     return kInvalidArg;
   }
@@ -1114,8 +1138,8 @@ uint32_t BufferCopy(uint32_t handle, void* data, uint32_t offset,
   uint32_t written_address = 0;
   uint32_t written_bytes = 0;
   const uint32_t result =
-      BufferCopyLocked(handle, data, offset, bytes, element_size, read,
-                       &written_address, &written_bytes);
+      BufferCopyLocked(handle, data, offset, bytes, element_size, read, stride,
+                       element_bytes, &written_address, &written_bytes);
   if (written_bytes) {
     xe::kernel::xna::XnaGuestRangeWritten(written_address, written_bytes);
   }
@@ -1124,16 +1148,22 @@ uint32_t BufferCopy(uint32_t handle, void* data, uint32_t offset,
 
 uint32_t BufferCopyLocked(uint32_t handle, void* data, uint32_t offset,
                           uint32_t bytes, uint32_t element_size, uint8_t read,
+                          uint32_t stride, uint32_t element_bytes,
                           uint32_t* written_address, uint32_t* written_bytes) {
   std::lock_guard<std::mutex> lock(resource_mutex);
   auto* resource = xe::kernel::xna::XnaGuestResourceLookup(handle);
   if (!resource) {
     return kInvalidArg;
   }
+  const bool strided = stride != 0 && element_bytes != 0 &&
+                       stride != element_bytes && bytes >= element_bytes;
+  const uint32_t count = strided ? bytes / element_bytes : 0;
+  const uint32_t span =
+      strided ? (count - 1) * stride + element_bytes : bytes;
   // A buffer created with a size of zero is sized by its first write: XNA
   // computes the byte count from the element count and the element size, and
   // those two do not always reach the creation call together.
-  const uint32_t needed = offset + bytes;
+  const uint32_t needed = offset + span;
   if (resource->size < needed) {
     if (read) {
       return kInvalidArg;
@@ -1146,15 +1176,28 @@ uint32_t BufferCopyLocked(uint32_t handle, void* data, uint32_t offset,
   if (!storage) {
     return kInvalidArg;
   }
-  if (read) {
+  if (strided) {
+    auto* packed = static_cast<uint8_t*>(data);
+    for (uint32_t i = 0; i < count; ++i) {
+      uint8_t* element = storage + offset + size_t(i) * stride;
+      uint8_t* item = packed + size_t(i) * element_bytes;
+      if (read) {
+        CopyGuest(item, element, element_bytes, element_size);
+      } else {
+        CopyGuest(element, item, element_bytes, element_size);
+      }
+    }
+  } else if (read) {
     CopyGuest(data, storage + offset, bytes, element_size);
   } else {
     CopyGuest(storage + offset, data, bytes, element_size);
+  }
+  if (!read) {
     // The GPU learns a range is dirty from the invalidation callbacks, and a
     // write from here raises none - see XnaGuestRangeWritten. Recorded, not
     // raised: the caller does it once this mutex is gone.
     *written_address = resource->data + offset;
-    *written_bytes = bytes;
+    *written_bytes = span;
   }
   return 0;
 }
@@ -1177,9 +1220,7 @@ extern "C" void xna_D3D_D3D_VertexBuffer_ReleaseHandle(uint32_t device,
 
 // InteropCopyData(device, handle, data, offsetInBytes, info, isSet) - ERROR.
 // VERTEX_COPYDATA_INFO is four sequential 32-bit fields: stride, element count,
-// element size, options. The byte count is the count times the size; the stride
-// only differs from the element size for an interleaved copy, which no path
-// reached so far performs - so that case is refused rather than written wrong.
+// element size, options. The byte count is the count times the size.
 extern "C" uint32_t xna_D3D_D3D_VertexBuffer_CopyData(
     uint32_t device, uint32_t handle, void* data, uint32_t offset,
     const uint32_t* info, uint8_t read) {
@@ -1189,14 +1230,9 @@ extern "C" uint32_t xna_D3D_D3D_VertexBuffer_CopyData(
   const uint32_t stride = info[0];
   const uint32_t element_count = info[1];
   const uint32_t element_size = info[2];
-  if (stride != 0 && element_size != 0 && stride != element_size) {
-    xe::kernel::xna::XnaExportUnimplemented(
-        "D3D!D3D_VertexBuffer_CopyData with a stride that is not the element "
-        "size");
-    return kNotImplemented;
-  }
   return BufferCopy(handle, data, offset, element_count * element_size,
-                    GuestSwapWidth(element_size, 4), read);
+                    GuestSwapWidth(element_size, 4), read, stride,
+                    element_size);
 }
 
 // InteropCreateIndexBuffer(device, byteSize, sixteenBit, isDynamic) - HANDLE.
@@ -1651,7 +1687,8 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
   void ClearBoundTargetsLocked(const xe::kernel::xna::HlcbClear& clear) {
     const bool color = (clear.options & 1) != 0;
     const bool depth = (clear.options & 2) != 0;
-    if (!color && !depth) {
+    const bool stencil = (clear.options & 4) != 0;
+    if (!color && !depth && !stencil) {
       return;
     }
     if (!render_target_count_) {
@@ -1667,9 +1704,15 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
       XELOGD("[xna]    clearing the back buffer ({}x{}) at edram 0, depth {}",
              back.width, back.height,
              back_depth_fits ? int64_t(back_depth) : int64_t(-1));
-      xe::kernel::xna::XnaGpuClearTarget(
-          back, 0, back_depth_fits ? back_depth : 0, clear.color, color,
-          depth && back_depth_fits, clear.depth);
+      if (color || depth) {
+        xe::kernel::xna::XnaGpuClearTarget(
+            back, 0, back_depth_fits ? back_depth : 0, clear.color, color,
+            depth && back_depth_fits, clear.depth);
+      }
+      if (stencil) {
+        xe::kernel::xna::XnaDirectClearStencil(
+            back, static_cast<uint32_t>(clear.stencil));
+      }
       return;
     }
     const uint32_t count =
@@ -1698,9 +1741,15 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
           "[xna]    clearing slot {} ({}x{} format {}) at edram {}, depth {}",
           slot, target.width, target.height, target.format, edram,
           depth_fits ? int64_t(depth_edram) : int64_t(-1));
-      xe::kernel::xna::XnaGpuClearTarget(
-          target, edram, depth_fits ? depth_edram : 0, clear.color, color,
-          depth && depth_fits && slot == 0, clear.depth);
+      if (color || (depth && slot == 0)) {
+        xe::kernel::xna::XnaGpuClearTarget(
+            target, edram, depth_fits ? depth_edram : 0, clear.color, color,
+            depth && depth_fits && slot == 0, clear.depth);
+      }
+      if (stencil && slot == 0) {
+        xe::kernel::xna::XnaDirectClearStencil(
+            target, static_cast<uint32_t>(clear.stencil));
+      }
     }
   }
 
@@ -1919,9 +1968,13 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
       case xe::kernel::xna::HlcbPacketType::kSetBlendState:
         blend_state_ = handle;
         break;
-      case xe::kernel::xna::HlcbPacketType::kSetDepthStencilState:
+      case xe::kernel::xna::HlcbPacketType::kSetDepthStencilState: {
         depth_state_ = handle;
+        auto found = depth_states.find(handle);
+        reference_stencil_ =
+            found != depth_states.end() ? found->second.reference_stencil : 0;
         break;
+      }
       case xe::kernel::xna::HlcbPacketType::kSetRasterizerState:
         rasterizer_state_ = handle;
         break;
@@ -1930,6 +1983,13 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
           sampler_states_[slot] = handle;
         }
         break;
+    }
+  }
+
+  void SetHighFrequencyState(uint32_t state, uint32_t value) override {
+    std::lock_guard<std::mutex> lock(resource_mutex);
+    if (state == kHighFrequencyReferenceStencil) {
+      reference_stencil_ = static_cast<int32_t>(value);
     }
   }
 
@@ -2792,6 +2852,25 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
     *function_out = static_cast<uint32_t>(found->second.depth_function);
   }
 
+  void CurrentStencilState(xe::kernel::xna::XnaGpuDraw* out) {
+    std::lock_guard<std::mutex> lock(resource_mutex);
+    out->stencil_reference = static_cast<uint32_t>(reference_stencil_) & 0xFF;
+    auto found = depth_states.find(depth_state_);
+    if (found == depth_states.end() || !found->second.stencil_enable) {
+      out->stencil_enable = false;
+      return;
+    }
+    const DepthStencilSettings& state = found->second;
+    out->stencil_enable = true;
+    out->stencil_function = static_cast<uint32_t>(state.stencil_function);
+    out->stencil_pass = static_cast<uint32_t>(state.stencil_pass);
+    out->stencil_fail = static_cast<uint32_t>(state.stencil_fail);
+    out->stencil_depth_fail = static_cast<uint32_t>(state.stencil_depth_fail);
+    out->stencil_read_mask = static_cast<uint32_t>(state.stencil_mask) & 0xFF;
+    out->stencil_write_mask =
+        static_cast<uint32_t>(state.stencil_write_mask) & 0xFF;
+  }
+
   // The factors and functions of the currently bound BlendState, in XNA's own
   // enums. Defaults to Opaque (source One, destination Zero, Add) when no state
   // is bound, which is what the draw path used for everything before.
@@ -3112,6 +3191,8 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
   uint32_t declaration_ = 0;
   uint32_t blend_state_ = 0;
   uint32_t depth_state_ = 0;
+  int32_t reference_stencil_ = 0;
+  static constexpr uint32_t kHighFrequencyReferenceStencil = 2;
   static constexpr uint32_t kUserRingBytes = 8u * 1024u * 1024u;
   uint32_t user_stream_handle_ = 0;
   uint32_t user_ring_offset_ = 0;
@@ -4000,6 +4081,7 @@ extern "C" void Nexia_XnaDraw(int32_t primitive_type, int32_t base_vertex,
   }
   device_sink.CurrentDepthState(&gpu.depth_enable, &gpu.depth_write_enable,
                                 &gpu.depth_function);
+  device_sink.CurrentStencilState(&gpu);
   device_sink.CurrentBlendState(&gpu.color_src, &gpu.color_dst, &gpu.color_op,
                                 &gpu.alpha_src, &gpu.alpha_dst, &gpu.alpha_op);
   device_sink.CurrentColorWriteMasks(gpu.color_write);
@@ -4057,6 +4139,27 @@ extern "C" void Nexia_XnaDraw(int32_t primitive_type, int32_t base_vertex,
 
 std::string xe::kernel::xna::DescribeXnaDeviceState() {
   return device_sink.Describe();
+}
+
+bool xe::kernel::xna::XnaAvatarCaptureTarget(
+    xe::kernel::xna::XnaGpuDraw* out) {
+  xe::kernel::xna::XnaGpuTarget target;
+  if (device_sink.CurrentRenderTarget(&target)) {
+    out->target_width = target.width;
+    out->target_height = target.height;
+    out->target_count = device_sink.RenderTargetCount();
+    device_sink.RenderTargetFormats(out->target_formats, 4);
+    device_sink.RenderTargetAddresses(out->target_addresses, 4);
+  }
+  device_sink.CurrentStencilState(out);
+  out->viewport_width = device_sink.ViewportWidth();
+  out->viewport_height = device_sink.ViewportHeight();
+  const xe::kernel::xna::HlcbViewport viewport = device_sink.CurrentViewport();
+  out->viewport_x = viewport.x;
+  out->viewport_y = viewport.y;
+  out->viewport_min_depth = viewport.min_depth;
+  out->viewport_max_depth = viewport.max_depth;
+  return true;
 }
 
 static void XnaDrawSpritesDirect(int32_t count, const void* sprites,

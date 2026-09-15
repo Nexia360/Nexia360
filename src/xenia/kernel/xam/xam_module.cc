@@ -93,6 +93,22 @@ void XamModule::LoadLoaderData() {
     fread(loader_data_.launch_data.data(), launch_data_size, 1, file);
   }
 
+  loader_data_.dashboard_path = string_read();
+
+  uint8_t last_active_user_set = 0;
+  uint64_t last_active_user = 0;
+  if (fread(&last_active_user_set, sizeof(last_active_user_set), 1, file) ==
+          1 &&
+      fread(&last_active_user, sizeof(last_active_user), 1, file) == 1) {
+    loader_data_.last_active_user_set = last_active_user_set != 0;
+    loader_data_.last_active_user = last_active_user;
+  }
+
+  uint32_t prior_title_id = 0;
+  if (fread(&prior_title_id, sizeof(prior_title_id), 1, file) == 1) {
+    loader_data_.prior_title_id = prior_title_id;
+  }
+
   fclose(file);
   // We read launch data. Let's remove it till next request.
   std::filesystem::remove(kXamModuleLoaderDataFileName);
@@ -143,6 +159,20 @@ void XamModule::SaveLoaderData() {
   fwrite(&launch_data_size, sizeof(launch_data_size), 1, file);
 
   fwrite(loader_data_.launch_data.data(), launch_data_size, 1, file);
+
+  const uint16_t dashboard_path_length =
+      static_cast<uint16_t>(loader_data_.dashboard_path.size());
+  fwrite(&dashboard_path_length, sizeof(dashboard_path_length), 1, file);
+  fwrite(loader_data_.dashboard_path.c_str(), dashboard_path_length, 1, file);
+
+  const uint8_t last_active_user_set =
+      loader_data_.last_active_user_set ? 1 : 0;
+  fwrite(&last_active_user_set, sizeof(last_active_user_set), 1, file);
+  fwrite(&loader_data_.last_active_user,
+         sizeof(loader_data_.last_active_user), 1, file);
+
+  fwrite(&loader_data_.prior_title_id, sizeof(loader_data_.prior_title_id), 1,
+         file);
 
   fclose(file);
 }

@@ -141,6 +141,12 @@ dword_result_t XamProfileGetCreationStatus_entry(
 }
 DECLARE_XAM_EXPORT1(XamProfileGetCreationStatus, kNone, kSketchy);
 
+dword_result_t XamProfileHasWindowsLiveCredentials_entry(dword_t user_index) {
+  return 0;
+}
+DECLARE_XAM_EXPORT1(XamProfileHasWindowsLiveCredentials, kUserProfiles,
+                    kImplemented);
+
 }  // namespace xam
 }  // namespace kernel
 }  // namespace xe

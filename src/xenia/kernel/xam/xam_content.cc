@@ -22,7 +22,13 @@
 #include "xenia/kernel/xenumerator.h"
 #include "xenia/ui/imgui_dialog.h"
 #include "xenia/ui/imgui_drawer.h"
+#include "xenia/vfs/devices/host_path_device.h"
+#include "xenia/vfs/devices/host_path_entry.h"
 #include "xenia/vfs/devices/stfs_xbox.h"
+#include "xenia/vfs/devices/xcontent_container_device.h"
+
+#include <map>
+#include <mutex>
 #include "xenia/xbox.h"
 
 DEFINE_int32(
@@ -468,6 +474,88 @@ dword_result_t XamContentOpenFile_entry(
 }
 DECLARE_XAM_EXPORT1(XamContentOpenFile, kContent, kStub);
 
+namespace {
+
+std::mutex opened_roots_mutex;
+std::map<std::string, std::string> opened_roots;
+uint32_t opened_root_id = 0;
+
+bool CloseOpenedRoot(const std::string& root_name) {
+  std::lock_guard<std::mutex> lock(opened_roots_mutex);
+  auto it = opened_roots.find(root_name);
+  if (it == opened_roots.end()) {
+    return false;
+  }
+  auto* file_system = kernel_state()->file_system();
+  file_system->UnregisterSymbolicLink(root_name + ":");
+  file_system->UnregisterDevice(it->second);
+  opened_roots.erase(it);
+  return true;
+}
+
+X_RESULT OpenContentFile(const std::string& root_name,
+                         const std::string& path) {
+  auto* file_system = kernel_state()->file_system();
+  auto* entry =
+      dynamic_cast<vfs::HostPathEntry*>(file_system->ResolvePath(path));
+  if (!entry) {
+    return X_ERROR_FILE_NOT_FOUND;
+  }
+  CloseOpenedRoot(root_name);
+  std::lock_guard<std::mutex> lock(opened_roots_mutex);
+  const std::string device_path =
+      fmt::format("\\Device\\ContentFile\\{}\\", ++opened_root_id);
+  std::unique_ptr<vfs::Device> device;
+  if (entry->attributes() & vfs::kFileAttributeDirectory) {
+    device = std::make_unique<vfs::HostPathDevice>(device_path,
+                                                   entry->host_path(), true);
+  } else {
+    device = vfs::XContentContainerDevice::CreateContentDevice(
+        device_path, entry->host_path());
+  }
+  if (!device || !device->Initialize()) {
+    return X_ERROR_FILE_NOT_FOUND;
+  }
+  file_system->RegisterDevice(std::move(device));
+  file_system->RegisterSymbolicLink(root_name + ":", device_path);
+  opened_roots[root_name] = device_path;
+  return X_ERROR_SUCCESS;
+}
+
+}  // namespace
+
+dword_result_t XamContentOpenFileInternal_entry(
+    dword_t user_index, lpstring_t root_name_ptr, lpstring_t path_ptr,
+    dword_t flags, dword_t unknown1, dword_t unknown2,
+    lpdword_t license_mask_ptr, pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
+  if (license_mask_ptr) {
+    *license_mask_ptr = 0;
+  }
+  const std::string root_name =
+      root_name_ptr ? std::string(root_name_ptr.value()) : std::string();
+  const std::string path =
+      path_ptr ? std::string(path_ptr.value()) : std::string();
+  X_RESULT result = X_ERROR_INVALID_NAME;
+  if (!root_name.empty() && !path.empty()) {
+    result = OpenContentFile(root_name, path);
+  }
+  if (result == X_ERROR_SUCCESS) {
+    if (license_mask_ptr) {
+      *license_mask_ptr = static_cast<uint32_t>(cvars::license_mask);
+    }
+    XELOGI("XamContentOpenFileInternal: '{}' as {}:", path, root_name);
+  } else {
+    XELOGE("XamContentOpenFileInternal: '{}' as {}: failed {:08X}", path,
+           root_name, result);
+  }
+  if (overlapped_ptr) {
+    kernel_state()->CompleteOverlappedImmediate(overlapped_ptr, result);
+    return X_ERROR_IO_PENDING;
+  }
+  return result;
+}
+DECLARE_XAM_EXPORT1(XamContentOpenFileInternal, kContent, kImplemented);
+
 dword_result_t XamContentFlush_entry(lpstring_t root_name,
                                      pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
   X_RESULT result = X_ERROR_SUCCESS;
@@ -483,8 +571,11 @@ DECLARE_XAM_EXPORT1(XamContentFlush, kContent, kStub);
 dword_result_t XamContentClose_entry(lpstring_t root_name,
                                      pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
   // Closes a previously opened root from XamContentCreate*.
-  auto result =
-      kernel_state()->content_manager()->CloseContent(root_name.value());
+  const std::string root = std::string(root_name.value());
+  const X_RESULT result =
+      CloseOpenedRoot(root)
+          ? X_RESULT(X_ERROR_SUCCESS)
+          : X_RESULT(kernel_state()->content_manager()->CloseContent(root));
 
   if (overlapped_ptr) {
     kernel_state()->CompleteOverlappedImmediate(overlapped_ptr, result);
@@ -816,6 +907,8 @@ dword_result_t xeXamContentLaunchImage(dword_t user_index,
         entry, kernel_state()->emulator()->content_root(), progress, true);
   }
 
+  RecordLaunchOrigin();
+
   auto xam = kernel_state()->GetKernelModule<XamModule>("xam.xex");
 
   auto& loader_data = xam->loader_data();
@@ -824,19 +917,10 @@ dword_result_t xeXamContentLaunchImage(dword_t user_index,
 
   xam->SaveLoaderData();
 
-  auto display_window = kernel_state()->emulator()->display_window();
-  auto imgui_drawer = kernel_state()->emulator()->imgui_drawer();
+  XELOGE("XamContentLaunchImage: host '{}' module '{}'",
+         loader_data.host_path, loader_data.launch_path);
 
-  if (display_window && imgui_drawer) {
-    display_window->app_context().CallInUIThreadSynchronous([imgui_drawer]() {
-      xe::ui::ImGuiDialog::ShowMessageBox(
-          imgui_drawer, "Launching new title!",
-          "Launching new title. \nPlease close Xenia and launch it again. Game "
-          "should load automatically.");
-    });
-  }
-
-  kernel_state()->TerminateTitle();
+  ReloadForLaunch();
   return X_ERROR_SUCCESS;
 }
 

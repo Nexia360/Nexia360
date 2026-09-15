@@ -62,6 +62,12 @@ bool InstallXnaDependenciesFromArchive(const std::filesystem::path& archive,
 bool ExtractZipArchive(const std::filesystem::path& archive,
                        const std::filesystem::path& destination);
 
+bool DeployXnaHostPayload(std::string* out_message);
+
+bool BuildXnaDependencyZip(const std::filesystem::path& source_dir,
+                           const std::filesystem::path& zip_path,
+                           std::string* out_report);
+
 }  // namespace xna
 }  // namespace kernel
 }  // namespace xe
