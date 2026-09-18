@@ -21,6 +21,44 @@
 namespace xe {
 namespace ui {
 
+// An alternative presentation for the on-screen keyboard. The kernel installs
+// one that draws the console's own XUI scene when the dashboard assets have
+// been imported; with none installed the ImGui keyboard below is used.
+class KeyboardBackend {
+ public:
+  enum class Action {
+    kLeft,
+    kRight,
+    kUp,
+    kDown,
+    // The shoulders walk the caret through the text, not the key grid.
+    kCursorLeft,
+    kCursorRight,
+    kActivate,
+    kBackspace,
+    kSpace,
+    kCaps,
+    kSymbols,
+    kAccents,
+    kDone,
+    kCancel,
+  };
+
+  virtual ~KeyboardBackend() = default;
+
+  // False when it cannot present, and the ImGui keyboard is used instead.
+  virtual bool Open(const std::string& title, const std::string& description,
+                    const std::string& initial_text) = 0;
+  virtual void Close() = 0;
+  virtual void Perform(Action action) = 0;
+  virtual void Append(const std::string& utf8) = 0;
+  virtual std::string text() const = 0;
+  virtual bool finished(bool* out_cancelled) const = 0;
+};
+
+void SetKeyboardBackend(KeyboardBackend* backend);
+KeyboardBackend* GetKeyboardBackend();
+
 class KeyboardDialog : public ImGuiDialog {
  public:
   enum class InputType {
@@ -76,6 +114,10 @@ class KeyboardDialog : public ImGuiDialog {
   void DrawKeyboardLayout();
   void DrawTextInput();
   void ProcessKeyInput(const std::string& key);
+  // Returns true when the backend owns this keyboard and OnDraw is done.
+  bool DriveBackend(ImGuiIO& io, bool ignore_inputs);
+
+  KeyboardBackend* backend_ = nullptr;
 
   std::string title_;
   std::string input_text_;

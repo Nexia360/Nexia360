@@ -1051,6 +1051,7 @@ void ImGuiDrawer::PollXInput() {
     }
 
     const XINPUT_GAMEPAD& pad = state.Gamepad;
+    gamepad_buttons_ = pad.wButtons;
 
     // Guide button handling (0x0400) - only works with XInputGetStateEx
     if (XInputGetStateEx) {
@@ -1197,6 +1198,16 @@ void ImGuiDrawer::PollXInput() {
       lstick_up = lstick_down = lstick_left = lstick_right = false;
     }
 
+    gamepad_left_trigger_ = lt_pressed;
+    gamepad_right_trigger_ = rt_pressed;
+
+    // Both sticks, for dialogs that want the analog reading rather than the
+    // edges - the avatar editor turns its avatar with one.
+    gamepad_left_stick_x_ = gate_suppressing_ ? 0.0f : lx;
+    gamepad_left_stick_y_ = gate_suppressing_ ? 0.0f : ly;
+    gamepad_right_stick_x_ = gate_suppressing_ ? 0.0f : pad.sThumbRX / 32767.0f;
+    gamepad_right_stick_y_ = gate_suppressing_ ? 0.0f : pad.sThumbRY / 32767.0f;
+
     // Update the focus manager with all input state
     // UIFocusManager handles A, B, X, Y, Start, Back, LB, RB, D-pad
     focus_manager_.UpdateInput(
@@ -1281,6 +1292,13 @@ void ImGuiDrawer::PollXInput() {
     gamepad_b_pressed_ = false;
     gamepad_back_pressed_ = false;
     gamepad_start_pressed_ = false;
+    gamepad_buttons_ = 0;
+    gamepad_left_trigger_ = false;
+    gamepad_right_trigger_ = false;
+    gamepad_left_stick_x_ = 0.0f;
+    gamepad_left_stick_y_ = 0.0f;
+    gamepad_right_stick_x_ = 0.0f;
+    gamepad_right_stick_y_ = 0.0f;
     gamepad_a_just_released_ = false;
     gamepad_b_just_released_ = false;
     gamepad_back_just_released_ = false;

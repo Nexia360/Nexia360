@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 
+#include "xenia/kernel/xam/xui_avatar.h"
 #include "xenia/kernel/xna/xna_avatar_format.h"
 #include "xenia/ui/imgui_dialog.h"
 #include "xenia/ui/imgui_drawer.h"
@@ -64,6 +65,8 @@ class AvatarEditorDialog final : public ui::ImGuiDialog {
   void RequestExit();
   void DrawConfirm();
 
+  void DrawPreview(const char* id, float width, float height);
+
   EmulatorWindow* emulator_window_;
   kernel::xna::avatar::Catalog* catalog_ = nullptr;
   std::vector<ProfileChoice> profiles_;
@@ -81,6 +84,29 @@ class AvatarEditorDialog final : public ui::ImGuiDialog {
   bool confirm_requested_ = false;
   bool pending_close_ = false;
   bool back_blocked_ = true;
+
+  // This dialog keeps the profile list and the save; presentation and input
+  // belong to the XUI screen, and while one is up no ImGui is drawn at all.
+  // The translated editor drives that screen when a session is running.
+  bool DriveOverlay(ImGuiIO& io);
+  void OpenOverlay();
+  void CloseOverlay();
+
+  std::unique_ptr<kernel::xam::xui::EditorScreenBase> overlay_screen_;
+  std::string overlay_status_;
+  bool overlay_tried_ = false;
+
+  // Start commits on release, so the press cannot carry into whatever is
+  // underneath as the editor closes. The shoulders arrive held rather than
+  // edged, so their previous state is kept here.
+  bool start_held_ = false;
+  bool lb_held_ = false;
+  bool rb_held_ = false;
+  bool lt_held_ = false;
+  bool rt_held_ = false;
+  // The session the screen currently up was built for, so that an editor
+  // starting or ending swaps the screen rather than leaving a stale one.
+  const void* overlay_session_ = nullptr;
 };
 
 }  // namespace app

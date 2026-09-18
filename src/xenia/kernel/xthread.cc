@@ -19,6 +19,7 @@
 #include "xenia/base/platform.h"
 #include "xenia/base/profiling.h"
 #include "xenia/base/threading.h"
+#include "xenia/cpu/guest_write_watch.h"
 #include "xenia/cpu/processor.h"
 #include "xenia/emulator.h"
 #include "xenia/kernel/kernel_state.h"
@@ -555,6 +556,10 @@ void XThread::Execute() {
               thread_id_, handle(), thread_name_, thread_->system_id());
   // Let the kernel know we are starting.
   kernel_state()->OnThreadExecute(this);
+
+  // TEMPORARY: --guest_write_watch logs every write to one guest address.
+  // Debug registers are per-thread, so each guest thread arms itself here.
+  cpu::ArmGuestWriteWatchForCurrentThread();
 
   // Dispatch any APCs that were queued before the thread was created first.
   DeliverAPCs();

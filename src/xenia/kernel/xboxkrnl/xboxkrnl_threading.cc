@@ -12,6 +12,7 @@
 #include "xenia/base/clock.h"
 #include "xenia/base/platform.h"
 #include "xenia/cpu/processor.h"
+#include "xenia/cpu/thread_state.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_private.h"
 #include "xenia/kernel/xsemaphore.h"
@@ -487,6 +488,23 @@ DECLARE_XBOXKRNL_EXPORT3(KeDelayExecutionThread, kThreading, kImplemented,
                          kBlocking, kHighFrequency);
 
 dword_result_t NtYieldExecution_entry() {
+  // A guest busy-wait calls no export except this one, and this export is
+  // kHighFrequency so it never prints - which is precisely how a spinning guest
+  // thread looks identical to a dead one in the log. Count yields per thread
+  // and speak up periodically with the caller's return address: during healthy
+  // running this is rare, and during a spin it repeats with a constant address
+  // that names the loop (feed it to XEXMagic).
+  static thread_local uint64_t yield_count = 0;
+  if (++yield_count >= 0x40000) {
+    yield_count = 0;
+    auto* state = cpu::ThreadState::Get();
+    const uint32_t caller =
+        state ? static_cast<uint32_t>(state->context()->lr) : 0;
+    XELOGW(
+        "NtYieldExecution: 0x40000 yields from caller {:08X} - this thread "
+        "is busy-waiting",
+        caller);
+  }
   xe::threading::MaybeYield();
   return 0;
 }
@@ -1066,6 +1084,25 @@ dword_result_t KeWaitForMultipleObjects_entry(
 
       objects[n] = std::move(object_ref);
     }
+  }
+  // A guest thread parked here forever is exactly what the Avatar Editor's
+  // lock-up looks like in a debugger, and a wait that never returns logs
+  // nothing on its own. Name the objects and the caller BEFORE blocking, or a
+  // thread that never comes back leaves no evidence at all. Feed the caller to
+  // XEXMagic (AvatarEditor.xex loads at 0x92000000).
+  if (!timeout_ptr) {
+    auto* state = cpu::ThreadState::Get();
+    std::string list;
+    for (uint32_t n = 0; n < count; n++) {
+      list +=
+          fmt::format("{}{:08X}:t{}", n ? " " : "", uint32_t(objects_ptr[n]),
+                      static_cast<uint32_t>(objects[n]->type()));
+    }
+    XELOGW(
+        "KeWaitForMultipleObjects: INFINITE wait-{} on {} object(s) [{}] from "
+        "caller {:08X}",
+        wait_type == 1 ? "any" : "all", uint32_t(count), list,
+        state ? static_cast<uint32_t>(state->context()->lr) : 0);
   }
   uint64_t timeout = timeout_ptr ? static_cast<uint64_t>(*timeout_ptr) : 0u;
   X_STATUS result = XObject::WaitMultiple(

@@ -67,6 +67,10 @@ class ImGuiDrawer : public WindowInputListener, public UIDrawer {
 
   void Draw(UIDrawContext& ui_draw_context) override;
 
+  // So another UI drawer can be attached to the same surface.
+  Presenter* presenter() const { return presenter_; }
+  ImmediateDrawer* immediate_drawer() const { return immediate_drawer_; }
+
   void ClearDialogs();
   void EnableNotifications(bool enable) { are_notifications_enabled_ = enable; }
 
@@ -275,6 +279,23 @@ class ImGuiDrawer : public WindowInputListener, public UIDrawer {
   bool prev_lstick_left_ = false;
   bool prev_lstick_right_ = false;
 
+  // The sticks as this frame's poll saw them, so a dialog that wants an
+  // analog value has it without opening its own connection to the pad. Zeroed
+  // while the gate is shut, like everything else.
+  // The raw button word this frame's poll read, so a dialog can tell a button
+  // the pad never sent from one something else swallowed.
+  uint16_t gamepad_buttons_ = 0;
+
+  // The triggers as this frame's poll saw them; the focus manager carries the
+  // buttons and the d-pad but not these.
+  bool gamepad_left_trigger_ = false;
+  bool gamepad_right_trigger_ = false;
+
+  float gamepad_left_stick_x_ = 0.0f;
+  float gamepad_left_stick_y_ = 0.0f;
+  float gamepad_right_stick_x_ = 0.0f;
+  float gamepad_right_stick_y_ = 0.0f;
+
   // Close request - set when Back/B pressed, cleared when all buttons released
   bool gamepad_close_requested_ = false;
 
@@ -293,6 +314,19 @@ class ImGuiDrawer : public WindowInputListener, public UIDrawer {
   bool IsGamepadBPressed() const { return gamepad_b_pressed_; }
   bool IsGamepadBackPressed() const { return gamepad_back_pressed_; }
   bool IsGamepadStartPressed() const { return gamepad_start_pressed_; }
+
+  // The sticks, -1 to 1, y positive upwards. A dialog that needs an analog
+  // reading takes it from here rather than polling the pad itself; a second
+  // reader sees none of the gating this one applies.
+  uint16_t GamepadButtons() const { return gamepad_buttons_; }
+
+  bool IsGamepadLeftTriggerPressed() const { return gamepad_left_trigger_; }
+  bool IsGamepadRightTriggerPressed() const { return gamepad_right_trigger_; }
+
+  float GamepadLeftStickX() const { return gamepad_left_stick_x_; }
+  float GamepadLeftStickY() const { return gamepad_left_stick_y_; }
+  float GamepadRightStickX() const { return gamepad_right_stick_x_; }
+  float GamepadRightStickY() const { return gamepad_right_stick_y_; }
   bool IsAnyGamepadActionPressed() const {
     return gamepad_a_pressed_ || gamepad_b_pressed_ || gamepad_back_pressed_ ||
            gamepad_start_pressed_;

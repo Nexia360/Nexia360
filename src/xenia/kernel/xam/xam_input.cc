@@ -199,6 +199,9 @@ dword_result_t XamInputGetKeystrokeEx_entry(
   keystroke.Zero();
 
   if (kernel_state()->xam_state()->IsUIActive()) {
+    // A title that IS the UI (the flash system titles run as titles here) gets
+    // its input swallowed by this gate, which looks exactly like a lock-up.
+    XELOGW("XamInputGetKeystrokeEx: withheld - a XAM dialog is up");
     return X_ERROR_SUCCESS;
   }
 
@@ -220,6 +223,9 @@ dword_result_t XamInputGetKeystrokeEx_entry(
       // Return result from first user that have pending request
       if (result == X_ERROR_SUCCESS) {
         *user_index_ptr = keystroke->user_index;
+        XELOGW("XamInputGetKeystrokeEx: any-user {} vk {:04X} flags {:04X}",
+               uint32_t(keystroke->user_index),
+               uint16_t(keystroke->virtual_key), uint16_t(keystroke->flags));
         return result;
       }
     }
@@ -230,6 +236,9 @@ dword_result_t XamInputGetKeystrokeEx_entry(
 
   if (XSUCCEEDED(result)) {
     *user_index_ptr = keystroke->user_index;
+    XELOGW("XamInputGetKeystrokeEx: user {} vk {:04X} flags {:04X}",
+           uint32_t(keystroke->user_index), uint16_t(keystroke->virtual_key),
+           uint16_t(keystroke->flags));
   }
   return result;
 }

@@ -732,6 +732,13 @@ dword_result_t _snwprintf_entry(dword_t buffer_ptr, dword_t buffer_count,
   char16_t* buffer = kernel_memory()->TranslateVirtual<char16_t*>(buffer_ptr);
 
   int32_t count = format_core(ctx, data, args, true);
+  // The Avatar Editor names every scene it loads through this one format
+  // ("section://%X,%s#%s"), and the names are the only visible record of what
+  // it is trying to open - the format string alone says nothing. Warning level
+  // because log_level 2 drops XELOGD, and narrow enough not to flood.
+  if (count >= 0 && data.wstr().compare(0, 10, u"section://") == 0) {
+    XELOGW("section load: {}", xe::to_utf8(data.wstr()));
+  }
   if (count < 0) {
     if (buffer_count > 0) {
       buffer[0] = '\0';  // write a null, just to be safe

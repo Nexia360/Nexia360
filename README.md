@@ -37,6 +37,19 @@ Beyond upstream Xenia Canary, Nexia360 adds:
   a UI (`Ctrl+Shift+M`) and stored in `mousehook.json`. Toggle in-game with `Ctrl+M`.
 * **Title Update manager** — install multiple title updates per game into a library
   and pick which one to apply, without re-installing content.
+* **XNA / XBLIG titles run** — Xbox Live Indie Games are recompiled onto a managed
+  host rather than interpreted, so they render, play sound and take input. The XNA
+  runtime they need is installed for you from **File → XNA Titles → Setup XNA…**.
+* **Seamless title transitions** — a title that launches another one switches in
+  place, without restarting the emulator: game to dashboard, dashboard to the
+  Avatar Editor, a demo to the full game. The previous title is torn down and the
+  next one mounted in its stead, and the launch data it was given is carried
+  across.
+* **Avatars** — avatars render for XNA titles and for Xbox 360 games that ask XAM
+  for them, and there is a built-in avatar editor. With the console's own system
+  update installed, **Profile → Avatar Editor** runs the real Xbox 360 Avatar
+  Editor instead, with the full asset catalogue: every garment, the face textures,
+  and the chin, nose and ear shapes.
 
 ## Downloads
 

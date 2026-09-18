@@ -21,6 +21,7 @@
 #include "xenia/app/profile_dialogs.h"
 #include "xenia/app/updater.h"
 #include "xenia/app/updater_dialog.h"
+#include "xenia/app/xui_scene_dialog.h"
 #include "xenia/emulator.h"
 #include "xenia/gpu/command_processor.h"
 #include "xenia/ui/imgui_dialog.h"
@@ -97,6 +98,7 @@ class EmulatorWindow {
 
   ui::Presenter* GetGraphicsSystemPresenter() const;
   void SetupGraphicsSystemPresenterPainting();
+  void ReloadDashboardUIAssets();
   void ShutdownGraphicsSystemPresenterPainting();
 
   void OnEmulatorInitialized();
@@ -130,8 +132,11 @@ class EmulatorWindow {
   void ToggleXMPConfigDialog();
   void ToggleConsoleSettingsDialog();
   void ToggleFriendsDialog();
+  std::filesystem::path AvatarEditorTitlePath() const;
+  void OpenAvatarEditorDialog();
   void ToggleAvatarEditorDialog();
   void ShowAvatarEditorDialog();
+  void ToggleXuiSceneDialog();
   void SwitchTitle();
 
   // True when this run should start a fresh instance as it goes away: the
@@ -475,6 +480,7 @@ class EmulatorWindow {
   MessagesDialog* text_messages_dialog_ = nullptr;
   MessagesDialog* voice_messages_dialog_ = nullptr;
   AvatarEditorDialog* avatar_editor_dialog_ = nullptr;
+  XuiSceneDialog* xui_scene_dialog_ = nullptr;
 
   void OnMessagesDialogClosed(MessagesDialog** slot);
 

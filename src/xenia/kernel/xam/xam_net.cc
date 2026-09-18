@@ -2047,6 +2047,84 @@ dword_result_t NetDll_XHttpCrackUrl_entry(
 }
 DECLARE_XAM_EXPORT1(NetDll_XHttpCrackUrl, kNetworking, kImplemented);
 
+// The wide form. AvatarEditor.xex calls this on startup for its marketplace
+// URLs; with no HTTP behind it the honest answer is failure, which sends the
+// title down its offline path rather than leaving it waiting.
+dword_result_t NetDll_XHttpCrackUrlW_entry(dword_t caller, lpvoid_t url,
+                                           dword_t url_length, dword_t flags,
+                                           lpvoid_t components) {
+  XThread::SetLastError(X_ERROR_INVALID_PARAMETER);
+  return 0;
+}
+DECLARE_XAM_EXPORT1(NetDll_XHttpCrackUrlW, kNetworking, kStub);
+
+dword_result_t NetDll_XHttpOpen_entry(dword_t caller, lpvoid_t agent,
+                                      dword_t access_type, lpvoid_t proxy,
+                                      lpvoid_t proxy_bypass, dword_t flags) {
+  XThread::SetLastError(X_ERROR_SUCCESS);
+  return 0;
+}
+DECLARE_XAM_EXPORT1(NetDll_XHttpOpen, kNetworking, kStub);
+
+dword_result_t NetDll_XHttpCloseHandle_entry(dword_t caller, dword_t handle) {
+  XThread::SetLastError(X_ERROR_SUCCESS);
+  return 1;
+}
+DECLARE_XAM_EXPORT1(NetDll_XHttpCloseHandle, kNetworking, kStub);
+
+dword_result_t NetDll_XHttpOpenRequestUsingMemory_entry(
+    dword_t caller, dword_t connect_handle, lpvoid_t verb, lpvoid_t path,
+    lpvoid_t version, lpvoid_t referrer, lpvoid_t buffer, dword_t buffer_size,
+    dword_t flags) {
+  XThread::SetLastError(X_ERROR_SUCCESS);
+  return 0;
+}
+DECLARE_XAM_EXPORT1(NetDll_XHttpOpenRequestUsingMemory, kNetworking, kStub);
+
+dword_result_t NetDll_XHttpReceiveResponse_entry(dword_t caller,
+                                                 dword_t request_handle,
+                                                 lpvoid_t reserved) {
+  XThread::SetLastError(X_ERROR_SUCCESS);
+  return 0;
+}
+DECLARE_XAM_EXPORT1(NetDll_XHttpReceiveResponse, kNetworking, kStub);
+
+dword_result_t NetDll_XHttpQueryHeaders_entry(
+    dword_t caller, dword_t request_handle, dword_t info_level, lpvoid_t name,
+    lpvoid_t buffer, lpdword_t buffer_length, lpdword_t index) {
+  XThread::SetLastError(X_ERROR_SUCCESS);
+  return 0;
+}
+DECLARE_XAM_EXPORT1(NetDll_XHttpQueryHeaders, kNetworking, kStub);
+
+dword_result_t NetDll_XHttpReadData_entry(dword_t caller,
+                                          dword_t request_handle,
+                                          lpvoid_t buffer, dword_t size,
+                                          lpdword_t out_read) {
+  if (out_read) {
+    *out_read = 0;
+  }
+  XThread::SetLastError(X_ERROR_SUCCESS);
+  return 0;
+}
+DECLARE_XAM_EXPORT1(NetDll_XHttpReadData, kNetworking, kStub);
+
+dword_result_t NetDll_XHttpQueryOption_entry(dword_t caller, dword_t handle,
+                                             dword_t option, lpvoid_t buffer,
+                                             lpdword_t buffer_length) {
+  XThread::SetLastError(X_ERROR_SUCCESS);
+  return 0;
+}
+DECLARE_XAM_EXPORT1(NetDll_XHttpQueryOption, kNetworking, kStub);
+
+dword_result_t NetDll_XHttpSetOption_entry(dword_t caller, dword_t handle,
+                                           dword_t option, lpvoid_t buffer,
+                                           dword_t buffer_length) {
+  XThread::SetLastError(X_ERROR_SUCCESS);
+  return 1;
+}
+DECLARE_XAM_EXPORT1(NetDll_XHttpSetOption, kNetworking, kStub);
+
 dword_result_t NetDll_XHttpDoWork_entry(dword_t caller, dword_t handle,
                                         dword_t unk) {
   XThread::SetLastError(X_ERROR_SUCCESS);

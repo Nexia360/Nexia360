@@ -1,4 +1,4 @@
-/**
+﻿/**
  ******************************************************************************
  * Xenia : Xbox 360 Emulator Research Project                                 *
  ******************************************************************************
@@ -11,7 +11,14 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <utility>
+
+#include "third_party/imgui/imgui.h"
+#include "xenia/base/logging.h"
+#include "xenia/kernel/xam/avatar_editor/editor_session.h"
+#include "xenia/kernel/xam/xui_overlay.h"
 
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/shim_utils.h"
@@ -21,6 +28,14 @@
 #include "xenia/kernel/xna/xna_avatar.h"
 #include "xenia/ui/ui_focus_manager.h"
 #include "xenia/xbox.h"
+
+DEFINE_double(
+    avatar_editor_turn_speed, 180.0,
+    "How fast the avatar turns in the avatar editor, in degrees per second at\n"
+    "a full stick deflection or a held arrow key.\n"
+    "The console turns at about 180; raise it to spin faster, lower it for a\n"
+    "slower look around. Zero stops the avatar turning at all.",
+    "UI");
 
 namespace xe {
 namespace app {
@@ -69,6 +84,7 @@ AvatarEditorDialog::AvatarEditorDialog(ui::ImGuiDrawer* imgui_drawer,
 }
 
 AvatarEditorDialog::~AvatarEditorDialog() {
+  CloseOverlay();
   imgui_drawer()->GetFocusManager()->UIDropFocus(kFocusName);
   if (closed_callback_) {
     closed_callback_();
@@ -242,9 +258,9 @@ void AvatarEditorDialog::DrawColors() {
   }
 }
 
-void AvatarEditorDialog::DrawEditor() {
-  ImGui::BeginChild("##preview", ImVec2(float(kPreviewWidth) + 16.0f, 0.0f),
-                    true);
+void AvatarEditorDialog::DrawPreview(const char* id, float width,
+                                     float height) {
+  ImGui::BeginChild(id, ImVec2(width, height), true);
   if (preview_) {
     ImGui::Image(reinterpret_cast<ImTextureID>(preview_.get()),
                  ImVec2(float(kPreviewWidth), float(kPreviewHeight)));
@@ -264,6 +280,10 @@ void AvatarEditorDialog::DrawEditor() {
     ImGui::EndCombo();
   }
   ImGui::EndChild();
+}
+
+void AvatarEditorDialog::DrawEditor() {
+  DrawPreview("##manual_preview", float(kPreviewWidth) + 16.0f, 0.0f);
   ImGui::SameLine();
   ImGui::BeginChild("##controls", ImVec2(0.0f, 0.0f), false);
   if (profiles_.empty()) {
@@ -342,6 +362,173 @@ void AvatarEditorDialog::DrawEditor() {
     ImGui::TextWrapped("%s", status_.c_str());
   }
   ImGui::EndChild();
+}
+
+// The editor's own XUR scenes are the UI. A translated session drives them when
+// one is running; otherwise the same scenes are driven from the host catalog.
+void AvatarEditorDialog::OpenOverlay() {
+  auto* session = kernel::xam::avatar_editor::EditorSession::Current();
+  overlay_tried_ = true;
+  overlay_session_ = session;
+  overlay_status_.clear();
+
+  auto* overlay = kernel::xam::xui::SharedOverlay();
+  // Say which gate rejected it, in the window as well as the log - otherwise
+  // "it fell back" is indistinguishable between these causes.
+  if (!overlay) {
+    overlay_status_ = "no XUI overlay (dashboard assets not installed)";
+  } else if (!overlay->ready()) {
+    overlay_status_ = "XUI overlay has no assets (skin.xur or a font missing)";
+  } else if (!catalog_) {
+    overlay_status_ = "no avatar catalog";
+  } else {
+    std::unique_ptr<kernel::xam::xui::EditorScreenBase> screen;
+    if (session) {
+      screen =
+          std::make_unique<kernel::xam::xui::TranslatedEditorScreen>(catalog_);
+    } else {
+      screen = std::make_unique<kernel::xam::xui::AvatarEditorScreen>(
+          catalog_, description_);
+    }
+    if (overlay->Push(screen.get())) {
+      overlay_screen_ = std::move(screen);
+      start_held_ = false;
+      return;
+    }
+    overlay_status_ = "the Avatar Editor's XUR assets are not installed";
+  }
+  XELOGW("avatar editor: no XUI editor - {}", overlay_status_);
+}
+
+void AvatarEditorDialog::CloseOverlay() {
+  if (!overlay_screen_) {
+    return;
+  }
+  if (auto* overlay = kernel::xam::xui::SharedOverlay()) {
+    overlay->Remove(overlay_screen_.get());
+  }
+  overlay_screen_.reset();
+}
+
+// The overlay's scenes are the whole screen, so this dialog draws nothing and
+// only forwards input to them.
+bool AvatarEditorDialog::DriveOverlay(ImGuiIO&) {
+  if (!overlay_screen_) {
+    return false;
+  }
+  auto& screen = *overlay_screen_;
+  // Input comes from the focus manager, which is how every dialog here takes
+  // it: the drawer polls the pad once a frame, gates the press that opened
+  // this dialog, turns it into press and release events and hands it to
+  // whichever dialog holds focus. A dialog that never registers is handed
+  // nothing at all, which is why this one heard only the keyboard.
+  auto* drawer = imgui_drawer();
+  auto* focus_manager = drawer->GetFocusManager();
+  // Being registered is not the same as being fed: GetInput answers only the
+  // dialog at the END of the focus path, and a node registered into another
+  // chain stays registered forever while receiving nothing. While these
+  // scenes own the whole screen, this dialog takes the focus back - dropping
+  // first, because re-setting an existing node only rebuilds the path and
+  // leaves it where it was.
+  if (!focus_manager->IsFocused(kFocusName) &&
+      !focus_manager->IsRegistered(kConfirmFocusName)) {
+    focus_manager->UIDropFocus(kFocusName);
+    focus_manager->UISetFocus(kFocusName);
+  }
+  const ui::UIInput& pad = focus_manager->GetInput(kFocusName);
+  const float elapsed = ImGui::GetIO().DeltaTime;
+
+  // The d-pad and the left stick arrive already edged, one event per push.
+  if (pad.dpad_left_pressed || pad.lstick_left_pressed ||
+      ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true)) {
+    screen.MoveFocus(-1, 0);
+  }
+  if (pad.dpad_right_pressed || pad.lstick_right_pressed ||
+      ImGui::IsKeyPressed(ImGuiKey_RightArrow, true)) {
+    screen.MoveFocus(1, 0);
+  }
+  if (pad.dpad_up_pressed || pad.lstick_up_pressed ||
+      ImGui::IsKeyPressed(ImGuiKey_UpArrow, true)) {
+    screen.MoveFocus(0, -1);
+  }
+  if (pad.dpad_down_pressed || pad.lstick_down_pressed ||
+      ImGui::IsKeyPressed(ImGuiKey_DownArrow, true)) {
+    screen.MoveFocus(0, 1);
+  }
+
+  // A and B act on RELEASE, so the press that opened something cannot also
+  // act inside it.
+  if (pad.Activated() || ImGui::IsKeyPressed(ImGuiKey_Enter) ||
+      ImGui::IsKeyPressed(ImGuiKey_KeypadEnter)) {
+    screen.Activate();
+  }
+  if (pad.b_released || pad.back_released ||
+      ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+    screen.Back();
+  }
+
+  // The shoulders are handed over held, so their edges are taken here.
+  const bool lb = pad.lb_pressed;
+  const bool rb = pad.rb_pressed;
+  if ((lb && !lb_held_) || ImGui::IsKeyPressed(ImGuiKey_PageUp, true)) {
+    screen.ChangeCategory(-1);
+  }
+  if ((rb && !rb_held_) || ImGui::IsKeyPressed(ImGuiKey_PageDown, true)) {
+    screen.ChangeCategory(1);
+  }
+  lb_held_ = lb;
+  rb_held_ = rb;
+
+  // The triggers page, and they are not part of what the focus manager
+  // carries, so they come from the drawer's own poll.
+  const bool lt = drawer->IsGamepadLeftTriggerPressed();
+  const bool rt = drawer->IsGamepadRightTriggerPressed();
+  if (lt && !lt_held_) {
+    screen.ChangePage(-1);
+  }
+  if (rt && !rt_held_) {
+    screen.ChangePage(1);
+  }
+  lt_held_ = lt;
+  rt_held_ = rt;
+
+  // Turning is analog and continuous: the right stick's deflection sets the
+  // rate, in degrees per second so it does not follow the frame rate. Q and E
+  // stand in for a full push.
+  const float turn_rate = float(cvars::avatar_editor_turn_speed) * elapsed;
+  const float turn = drawer->GamepadRightStickX();
+  constexpr float kTurnDeadzone = 0.2f;
+  if (turn > kTurnDeadzone || turn < -kTurnDeadzone) {
+    screen.Rotate(turn * turn_rate);
+  }
+  if (ImGui::IsKeyDown(ImGuiKey_Q)) {
+    screen.Rotate(-turn_rate);
+  }
+  if (ImGui::IsKeyDown(ImGuiKey_E)) {
+    screen.Rotate(turn_rate);
+  }
+
+  // Start commits on release for the same reason A does.
+  if (pad.start_pressed) {
+    start_held_ = true;
+  } else if (start_held_) {
+    start_held_ = false;
+    screen.Commit();
+  }
+  if (ImGui::IsKeyPressed(ImGuiKey_S)) {
+    screen.Commit();
+  }
+
+  description_ = screen.description();
+  if (screen.committed()) {
+    SaveCurrent();
+    CloseOverlay();
+    Close();
+  } else if (screen.cancelled()) {
+    CloseOverlay();
+    Close();
+  }
+  return true;
 }
 
 bool AvatarEditorDialog::SaveCurrent() {
@@ -431,6 +618,25 @@ void AvatarEditorDialog::OnDraw(ImGuiIO& io) {
     }
     return;
   }
+  // The editor's own XUR scenes draw the whole screen. This dialog's job while
+  // they are up is to tick the translated editor behind them and forward input.
+  // The console's own editor is a title now, not an overlay: the Avatar Editor
+  // menu runs AvatarEditor.xex when the system update has been imported, and
+  // this dialog is the editor for every tree that has not. It only ticks and
+  // draws the translated editor while a session is actually open, which is
+  // nothing this dialog starts.
+  auto* session = kernel::xam::avatar_editor::EditorSession::Current();
+  if (session) {
+    session->Tick();
+    if (catalog_ && (!overlay_tried_ || session != overlay_session_)) {
+      CloseOverlay();
+      OpenOverlay();
+    }
+    if (DriveOverlay(io)) {
+      return;
+    }
+  }
+
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
   io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
@@ -443,7 +649,7 @@ void AvatarEditorDialog::OnDraw(ImGuiIO& io) {
   ImGui::SetNextWindowPos(
       ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
       ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
-  ImGui::SetNextWindowSize(ImVec2(880.0f, 640.0f), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(1100.0f, 760.0f), ImGuiCond_FirstUseEver);
   bool open = true;
   bool window_focused = false;
   if (ImGui::Begin("Avatar Editor##nexia_avatar_editor", &open,
@@ -451,6 +657,13 @@ void AvatarEditorDialog::OnDraw(ImGuiIO& io) {
     window_focused =
         ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
     DrawConfirm();
+    if (!overlay_status_.empty()) {
+      ImGui::TextWrapped(
+          "The Xbox 360 Avatar Editor UI is not available: %s. These controls "
+          "edit the same avatar directly.",
+          overlay_status_.c_str());
+      ImGui::Separator();
+    }
     if (!catalog_) {
       ImGui::TextWrapped(
           "The avatar assets are not installed. Install the Xbox 360 Avatar "
@@ -464,6 +677,7 @@ void AvatarEditorDialog::OnDraw(ImGuiIO& io) {
           SelectProfile(selected_profile_);
         }
         dirty_ = true;
+        overlay_tried_ = false;
       }
     } else {
       DrawEditor();

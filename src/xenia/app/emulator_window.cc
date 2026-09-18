@@ -48,11 +48,14 @@
 #include "xenia/kernel/title_id_utils.h"
 #include "xenia/kernel/util/title_update_downloader.h"
 #include "xenia/kernel/util/title_update_manager.h"
+#include "xenia/kernel/xam/avatar_editor/editor_session.h"
 #include "xenia/kernel/xam/profile_manager.h"
 #include "xenia/kernel/xam/xam_module.h"
 #include "xenia/kernel/xam/xam_private.h"
 #include "xenia/kernel/xam/xam_state.h"
 #include "xenia/kernel/xam/xam_ui.h"
+#include "xenia/kernel/xam/xui_assets.h"
+#include "xenia/kernel/xam/xui_keyboard_backend.h"
 #include "xenia/kernel/xconfig.h"
 #include "xenia/kernel/xna/xna_avatar_format.h"
 #include "xenia/kernel/xna/xna_dependencies.h"
@@ -289,10 +292,27 @@ void EmulatorWindow::SetupGraphicsSystemPresenterPainting() {
                                                   immediate_drawer_.get());
     Profiler::SetUserIO(kZOrderProfiler, window_.get(), presenter,
                         immediate_drawer_.get());
+    // With the console's UI assets imported, text entry uses the 360's own
+    // keyboard; without them the ImGui one stays.
+    kernel::xam::xui::InstallKeyboardBackend(
+        presenter, immediate_drawer_.get(),
+        kernel::xam::xui::DefaultAssetDirectory());
   }
 }
 
+// Picks up assets imported while the emulator is already running, so an
+// Install Content run does not need a restart to take effect.
+void EmulatorWindow::ReloadDashboardUIAssets() {
+  if (!immediate_drawer_) {
+    return;
+  }
+  kernel::xam::xui::InstallKeyboardBackend(
+      GetGraphicsSystemPresenter(), immediate_drawer_.get(),
+      kernel::xam::xui::DefaultAssetDirectory());
+}
+
 void EmulatorWindow::ShutdownGraphicsSystemPresenterPainting() {
+  kernel::xam::xui::UninstallKeyboardBackend();
   Profiler::SetUserIO(kZOrderProfiler, window_.get(), nullptr, nullptr);
   imgui_drawer_->SetPresenterAndImmediateDrawer(nullptr, nullptr);
   immediate_drawer_.reset();
@@ -1060,6 +1080,9 @@ bool EmulatorWindow::Initialize() {
     profile_menu->AddChild(MenuItem::Create(
         MenuItem::Type::kString, "&Avatar Editor", "",
         std::bind(&EmulatorWindow::ToggleAvatarEditorDialog, this)));
+    profile_menu->AddChild(MenuItem::Create(
+        MenuItem::Type::kString, "&Dashboard Scene...", "",
+        std::bind(&EmulatorWindow::ToggleXuiSceneDialog, this)));
   }
   main_menu->AddChild(std::move(profile_menu));
 
@@ -1657,6 +1680,14 @@ void EmulatorWindow::InstallContent() {
   InstallContentPackages(paths);
 }
 
+namespace {
+// Defined with the rest of the setup helpers, below.
+bool IsSystemUpdateTree(const std::filesystem::path& staging);
+std::string InstallSystemUpdateTree(const std::filesystem::path& staging);
+std::string ReplaceDashboardFontsFromFlash(
+    const std::filesystem::path& dashboard);
+}  // namespace
+
 // The install half of InstallContent, without the file picker, so a package
 // obtained some other way - a downloaded title update - goes through exactly
 // the same path: header scan, DLC/TU targeting, then the install dialog.
@@ -1672,6 +1703,25 @@ void EmulatorWindow::InstallContentPackages(
   std::string archive_report;
 
   for (const auto& path : paths) {
+    // A raw NAND dump is not an XContent package; it is where the 360 UI
+    // assets come from. Recognise it here and route it to the extractor,
+    // which runs synchronously so the report below is the real outcome.
+    if (CanonicalizeFileExtension(path) != ".zip" &&
+        kernel::xam::xui::IsFlashImage(path)) {
+      const auto report = kernel::xam::xui::InstallFromFlashImage(
+          path, kernel::xam::xui::DefaultAssetDirectory());
+      archive_report += report.text;
+      if (report.ok) {
+        // A system title loads its typefaces off media:, so the flash ones go
+        // into the Dashboard folder as well - whichever order the two installs
+        // happen in, the flash faces are the ones left standing.
+        archive_report += ReplaceDashboardFontsFromFlash(
+            xe::filesystem::GetExecutableFolder() / "Dashboard");
+        ReloadDashboardUIAssets();
+      }
+      continue;
+    }
+
     if (CanonicalizeFileExtension(path) != ".zip") {
       packages.push_back(path);
       continue;
@@ -1689,6 +1739,26 @@ void EmulatorWindow::InstallContentPackages(
       continue;
     }
     staging_dirs->push_back(staging);
+
+    // The USB system update: no XContent anywhere in it, just the console's
+    // own modules. It is where the avatar UI packages and AvatarEditor.xex
+    // come from, so install it here rather than reporting nothing was found.
+    if (IsSystemUpdateTree(staging)) {
+      archive_report += InstallSystemUpdateTree(staging);
+      ReloadDashboardUIAssets();
+      continue;
+    }
+
+    // A zip made by the UI asset packager carries nexia-ui.json, not XContent.
+    if (kernel::xam::xui::IsAssetArchiveRoot(staging)) {
+      const auto report = kernel::xam::xui::InstallFromArchiveRoot(
+          staging, kernel::xam::xui::DefaultAssetDirectory());
+      archive_report += report.text;
+      if (report.ok) {
+        ReloadDashboardUIAssets();
+      }
+      continue;
+    }
 
     size_t found = 0;
     for (const auto& file : std::filesystem::recursive_directory_iterator(
@@ -2184,12 +2254,37 @@ void EmulatorWindow::ToggleTextMessagesDialog() {
       [this]() { OnMessagesDialogClosed(&text_messages_dialog_); });
 }
 
+// The console's own editor, installed whole from the system update. Empty when
+// the update has not been imported, which is the normal case.
+std::filesystem::path EmulatorWindow::AvatarEditorTitlePath() const {
+  std::error_code ec;
+  const auto path =
+      xe::filesystem::GetExecutableFolder() / "Dashboard" / "AvatarEditor.xex";
+  return std::filesystem::exists(path, ec) ? path : std::filesystem::path();
+}
+
 void EmulatorWindow::ToggleAvatarEditorDialog() {
   if (avatar_editor_dialog_) {
     avatar_editor_dialog_->Close();
     return;
   }
 
+  // With the system update imported, run the real thing. There is no launch
+  // blob to carry here - the menu is not a guest launch - so RunTitle's own
+  // switch-in-place path does the work.
+  const auto title = AvatarEditorTitlePath();
+  if (!title.empty()) {
+    XELOGI("Avatar Editor: running {}", xe::path_to_utf8(title));
+    RunTitle(title);
+    return;
+  }
+  OpenAvatarEditorDialog();
+}
+
+void EmulatorWindow::OpenAvatarEditorDialog() {
+  if (avatar_editor_dialog_) {
+    return;
+  }
   disable_hotkeys_ = true;
   emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 1);
   emulator_->kernel_state()->xam_state()->xam_dialogs_shown_++;
@@ -2215,10 +2310,51 @@ void EmulatorWindow::ToggleAvatarEditorDialog() {
   });
 }
 
+// What a guest asks for through XamLaunchAvatarEditor - the dashboard's Avatar
+// Editor tile, among others. It is a LAUNCH: the caller expects to be replaced
+// by AvatarEditor.xex carrying the blob XamLaunchAvatarEditor just packed, and
+// to be brought back afterwards. Only a tree without the system update gets the
+// built-in dialog instead.
 void EmulatorWindow::ShowAvatarEditorDialog() {
-  if (!avatar_editor_dialog_) {
-    ToggleAvatarEditorDialog();
+  const auto title = AvatarEditorTitlePath();
+  if (title.empty()) {
+    OpenAvatarEditorDialog();
+    return;
   }
+  auto xam = emulator_->kernel_state()->GetKernelModule<kernel::xam::XamModule>(
+      "xam.xex");
+  // RunTitle clears the loader data when it finds a title open, so the blob is
+  // carried across the teardown by hand and the title is stopped here first -
+  // the same order SwitchTitle uses.
+  std::vector<uint8_t> launch_data;
+  if (xam) {
+    launch_data = xam->loader_data().launch_data;
+  }
+  if (emulator_->is_title_open()) {
+    kernel::xam::RecordLaunchOrigin();
+    emulator_->TerminateTitle(cvars::title_switch_clear_handles);
+  }
+  if (xam) {
+    auto& loader_data = xam->loader_data();
+    loader_data.host_path = xe::path_to_utf8(std::filesystem::absolute(title));
+    loader_data.launch_path.clear();
+    loader_data.launch_flags = 0;
+    loader_data.launch_data = std::move(launch_data);
+    loader_data.command_line.clear();
+  }
+  XELOGI("Avatar Editor: the guest asked for it; running {}",
+         xe::path_to_utf8(title));
+  RunTitle(title);
+}
+
+void EmulatorWindow::ToggleXuiSceneDialog() {
+  if (xui_scene_dialog_) {
+    xui_scene_dialog_->Close();
+    return;
+  }
+  xui_scene_dialog_ = new XuiSceneDialog(imgui_drawer_.get(), this);
+  xui_scene_dialog_->set_closed_callback(
+      [this]() { xui_scene_dialog_ = nullptr; });
 }
 
 void EmulatorWindow::SwitchTitle() {
@@ -3226,8 +3362,13 @@ struct XnaSetupState {
   }
 };
 
+// What has to be on disk for the dashboard to count as installed. The whole
+// update is copied, not just these - a system title loads its own modules and
+// fonts off media:, which is this folder - but these are the ones worth
+// naming: dash.xex, and AvatarEditor.xex so the Avatar Editor menu can run the
+// console's own editor instead of the built-in one.
 constexpr const char* kXnaSetupDashboardFiles[] = {"dash.xex",
-                                                   "XenonSCLatin.xtt"};
+                                                   "AvatarEditor.xex"};
 
 std::string LowerAscii(std::string text) {
   for (char& c : text) {
@@ -3238,10 +3379,109 @@ std::string LowerAscii(std::string text) {
   return text;
 }
 
+// The typefaces XamGetLanguageTypeface hands a system title, by the exact
+// names it returns. They are loaded off media:, which is the folder the title
+// runs from.
+constexpr const char* kDashboardTypefaces[] = {
+    "SegoeXbox-Light.xtt", "xenonclatin.xtt", "xenonjklatin.xtt"};
+
+// The update ships its own copies of those faces and they render wrong. The
+// flash image's are the ones the console actually draws with, and the UI
+// installer has already put them next door under the name each font carries in
+// its own sfnt table - so whatever it extracted wins over what the zip held.
+std::string ReplaceDashboardFontsFromFlash(
+    const std::filesystem::path& dashboard) {
+  std::error_code ec;
+  const auto ui = kernel::xam::xui::DefaultAssetDirectory();
+  std::string report;
+  for (const char* name : kDashboardTypefaces) {
+    const auto flash = ui / name;
+    if (!std::filesystem::exists(flash, ec)) {
+      continue;
+    }
+    std::filesystem::copy_file(
+        flash, dashboard / name,
+        std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) {
+      ec.clear();
+      continue;
+    }
+    report +=
+        std::string("Dashboard: ") + name + " taken from the flash image\n";
+  }
+  return report;
+}
+
+// The whole extracted system update, flattened into the Dashboard folder. A
+// system title run from there reads its modules, its .lex overlays and its
+// typefaces off media:, which IS this folder, so cherry-picking three files
+// left it short.
+std::string CopyDashboardModules(const std::filesystem::path& staging) {
+  std::error_code ec;
+  const auto dashboard = xe::filesystem::GetExecutableFolder() / "Dashboard";
+  std::filesystem::create_directories(dashboard, ec);
+  size_t copied = 0;
+  size_t failed = 0;
+  for (const auto& file : std::filesystem::recursive_directory_iterator(
+           staging, std::filesystem::directory_options::skip_permission_denied,
+           ec)) {
+    if (!file.is_regular_file(ec)) {
+      continue;
+    }
+    std::filesystem::copy_file(
+        file.path(), dashboard / file.path().filename(),
+        std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec) {
+      ec.clear();
+      ++failed;
+      continue;
+    }
+    ++copied;
+  }
+  std::string report = fmt::format("Dashboard: {} file(s) -> {}\n", copied,
+                                   xe::path_to_utf8(dashboard));
+  if (failed) {
+    report +=
+        fmt::format("Dashboard: {} file(s) could not be copied\n", failed);
+  }
+  for (const char* name : kXnaSetupDashboardFiles) {
+    if (!std::filesystem::exists(dashboard / name, ec)) {
+      report += std::string("Dashboard: FAILED - ") + name +
+                " is not in the system update\n";
+    }
+  }
+  return report + ReplaceDashboardFontsFromFlash(dashboard);
+}
+
+// An extracted USB system update holds the console's modules and no XContent.
+// dash.xex is the one that is always there and never anywhere else.
+bool IsSystemUpdateTree(const std::filesystem::path& staging) {
+  std::error_code ec;
+  for (const auto& file : std::filesystem::recursive_directory_iterator(
+           staging, std::filesystem::directory_options::skip_permission_denied,
+           ec)) {
+    if (!file.is_regular_file(ec)) {
+      continue;
+    }
+    const std::string name =
+        LowerAscii(xe::path_to_utf8(file.path().filename()));
+    if (name == "dash.xex" || name == "avatareditor.xex") {
+      return true;
+    }
+  }
+  return false;
+}
+
+std::string InstallSystemUpdateTree(const std::filesystem::path& staging) {
+  std::string report = CopyDashboardModules(staging);
+  const auto ui = kernel::xam::xui::InstallFromSystemUpdate(
+      staging, kernel::xam::xui::DefaultAssetDirectory());
+  return report + "Avatar UI: " + ui.text;
+}
+
 void InstallXnaSetupDashboard(XnaSetupState* state,
                               const std::filesystem::path& zip,
-                              const std::filesystem::path& staging,
-                              const std::filesystem::path& dashboard) {
+                              const std::filesystem::path& staging) {
   std::error_code ec;
   std::filesystem::remove_all(staging, ec);
   std::filesystem::create_directories(staging, ec);
@@ -3252,35 +3492,10 @@ void InstallXnaSetupDashboard(XnaSetupState* state,
     return;
   }
 
-  std::filesystem::create_directories(dashboard, ec);
-  for (const char* name : kXnaSetupDashboardFiles) {
-    const std::string wanted = LowerAscii(name);
-    std::filesystem::path found;
-    for (const auto& file : std::filesystem::recursive_directory_iterator(
-             staging,
-             std::filesystem::directory_options::skip_permission_denied, ec)) {
-      if (file.is_regular_file(ec) &&
-          LowerAscii(xe::path_to_utf8(file.path().filename())) == wanted) {
-        found = file.path();
-        break;
-      }
-    }
-    if (found.empty()) {
-      state->AddReport(std::string("Dashboard: FAILED - ") + name +
-                       " is not in the system update");
-      continue;
-    }
-    const auto target = dashboard / name;
-    std::filesystem::copy_file(
-        found, target, std::filesystem::copy_options::overwrite_existing, ec);
-    if (ec) {
-      state->AddReport(std::string("Dashboard: FAILED - could not copy ") +
-                       name + " (" + ec.message() + ")");
-    } else {
-      state->AddReport(std::string("Dashboard: ") + name + " -> " +
-                       xe::path_to_utf8(target));
-    }
-  }
+  // The Avatar Editor's XUI packages ride in the same update, inside
+  // AvatarEditor.xex and Guide.AvatarMiniCreator.xex.
+  state->AddReport(InstallSystemUpdateTree(staging));
+
   std::filesystem::remove_all(staging, ec);
 }
 
@@ -3325,6 +3540,14 @@ void RunXnaSetup(std::shared_ptr<XnaSetupState> state,
       dashboard_installed = false;
     }
   }
+  // The avatar UI packages come out of the same update, so a tree that has
+  // dash.xex but not them still needs this step.
+  const auto ui_directory = kernel::xam::xui::DefaultAssetDirectory();
+  for (const std::string& name : kernel::xam::xui::SystemUpdatePackageNames()) {
+    if (!std::filesystem::exists(ui_directory / name, ec)) {
+      dashboard_installed = false;
+    }
+  }
   if (avatars_installed) {
     state->AddReport("Avatar data: already installed");
   }
@@ -3361,8 +3584,7 @@ void RunXnaSetup(std::shared_ptr<XnaSetupState> state,
     } else {
       if (!dashboard_installed) {
         state->SetStage("Copying the dashboard...");
-        InstallXnaSetupDashboard(state.get(), zip, directory / "extract",
-                                 dashboard);
+        InstallXnaSetupDashboard(state.get(), zip, directory / "extract");
       }
       if (!avatars_installed) {
         state->AddReport("Avatar data: downloaded, installs when you press OK");

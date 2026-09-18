@@ -418,6 +418,16 @@ void XmaDecoder::Pause() {
   }
   paused_ = true;
 
+  // Wake the worker or this deadlocks. It only tests paused_ at the top of its
+  // loop, and it parks in Wait(work_event_) with no timeout - so if no further
+  // XMA work arrives it never notices, never signals pause_fence_, and we wait
+  // here forever. That is exactly what happens when Pause() is called from the
+  // guest exception handler: the thread that would have kicked XMA is the one
+  // that just crashed, so a guest access violation turned into a silent
+  // permanent freeze with no crash report at all. AudioSystem::Pause sets its
+  // shutdown_event_ for the same reason.
+  work_event_->Set();
+
   pause_fence_.Wait();
 }
 

@@ -59,6 +59,36 @@ static qword_result_t KeQueryInterruptTime_entry(const ppc_context_t& ctx) {
   return xe::load_and_swap<uint64_t>(&bundle->interrupt_time);
 }
 DECLARE_XBOXKRNL_EXPORT1(KeQueryInterruptTime, kNone, kImplemented);
+
+// Event tracing. System titles register a producer on startup and log to it;
+// nothing consumes the logs here, so the whole family is inert. Returning
+// success keeps AvatarEditor.xex past its first calls.
+dword_result_t EtxProducerRegister_entry(lpvoid_t descriptor,
+                                         lpdword_t out_handle) {
+  if (out_handle) {
+    *out_handle = 0;
+  }
+  return X_ERROR_SUCCESS;
+}
+DECLARE_XBOXKRNL_EXPORT1(EtxProducerRegister, kNone, kStub);
+
+dword_result_t EtxProducerUnregister_entry(dword_t handle) {
+  return X_ERROR_SUCCESS;
+}
+DECLARE_XBOXKRNL_EXPORT1(EtxProducerUnregister, kNone, kStub);
+
+dword_result_t EtxProducerLog_entry(dword_t handle, dword_t type, lpvoid_t data,
+                                    dword_t length) {
+  return X_ERROR_SUCCESS;
+}
+DECLARE_XBOXKRNL_EXPORT1(EtxProducerLog, kNone, kStub);
+
+dword_result_t EtxProducerLogV_entry(dword_t handle, dword_t type,
+                                     lpvoid_t data, dword_t length) {
+  return X_ERROR_SUCCESS;
+}
+DECLARE_XBOXKRNL_EXPORT1(EtxProducerLogV, kNone, kStub);
+
 }  // namespace xboxkrnl
 }  // namespace kernel
 }  // namespace xe

@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstdlib>
 
 #include "third_party/imgui/imgui.h"
 #include "third_party/imgui/imgui_internal.h"
@@ -241,6 +242,11 @@ static const std::vector<std::vector<KeyDef>> kNumberLayout = {
      {"Cancel", nullptr, 1.0f, kDangerColor},
      {"Done", nullptr, 1.0f, kAccentColor}}};
 
+namespace {
+// Defined with the rest of the pad helpers below.
+void ResetPadState();
+}  // namespace
+
 KeyboardDialog* KeyboardDialog::ShowKeyboard(
     ImGuiDrawer* imgui_drawer, const std::string& title,
     const std::string& initial_text, InputType type, InputCallback callback,
@@ -290,9 +296,245 @@ KeyboardDialog::KeyboardDialog(ImGuiDrawer* imgui_drawer,
   open_time_ = std::chrono::duration_cast<std::chrono::milliseconds>(
                    std::chrono::steady_clock::now().time_since_epoch())
                    .count();
+
+  if (KeyboardBackend* backend = GetKeyboardBackend()) {
+    if (backend->Open(title_, "", input_text_)) {
+      backend_ = backend;
+      ResetPadState();
+    }
+  }
 }
 
 KeyboardDialog::~KeyboardDialog() {}
+
+namespace {
+
+KeyboardBackend* keyboard_backend = nullptr;
+
+// Edge detection for the pad buttons ImGui does not forward. Shared across
+// keyboards because only one can be up at a time.
+struct PadEdges {
+  uint16_t buttons = 0;
+  bool left_trigger = false;
+  bool right_trigger = false;
+  int16_t thumb_x = 0;
+  int16_t thumb_y = 0;
+};
+
+PadEdges previous_pad;
+
+PadEdges ReadPad() {
+  PadEdges pad;
+#if XE_PLATFORM_WIN32
+  for (DWORD i = 0; i < XUSER_MAX_COUNT; ++i) {
+    XINPUT_STATE state;
+    if (XInputGetState(i, &state) == ERROR_SUCCESS) {
+      pad.buttons = state.Gamepad.wButtons;
+      pad.left_trigger = state.Gamepad.bLeftTrigger > 64;
+      pad.right_trigger = state.Gamepad.bRightTrigger > 64;
+      pad.thumb_x = state.Gamepad.sThumbLX;
+      pad.thumb_y = state.Gamepad.sThumbLY;
+      break;
+    }
+  }
+#endif
+  return pad;
+}
+
+// Held navigation: nothing for the first 500 ms, then four steps a second
+// until release. The left stick drives it exactly as the d-pad does.
+constexpr uint64_t kNavRepeatDelayMs = 500;
+constexpr uint64_t kNavRepeatIntervalMs = 250;
+
+enum NavDirection {
+  kNavLeft,
+  kNavRight,
+  kNavUp,
+  kNavDown,
+  kNavCount,
+};
+
+struct NavRepeat {
+  bool held[kNavCount] = {};
+  uint64_t pressed_at[kNavCount] = {};
+  uint64_t fired_at[kNavCount] = {};
+};
+
+NavRepeat nav_repeat;
+
+void ResetPadState() {
+  previous_pad = PadEdges();
+  nav_repeat = NavRepeat();
+}
+
+// True for each direction the d-pad or the left stick is currently asking
+// for. The stick resolves to its dominant axis so a diagonal does not step
+// twice.
+void ReadNavDirections(const PadEdges& pad, bool held[kNavCount]) {
+  for (int i = 0; i < kNavCount; ++i) {
+    held[i] = false;
+  }
+#if XE_PLATFORM_WIN32
+  held[kNavLeft] = (pad.buttons & XINPUT_GAMEPAD_DPAD_LEFT) != 0;
+  held[kNavRight] = (pad.buttons & XINPUT_GAMEPAD_DPAD_RIGHT) != 0;
+  held[kNavUp] = (pad.buttons & XINPUT_GAMEPAD_DPAD_UP) != 0;
+  held[kNavDown] = (pad.buttons & XINPUT_GAMEPAD_DPAD_DOWN) != 0;
+
+  constexpr int32_t kDeadzone = XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE;
+  const int32_t x = pad.thumb_x;
+  const int32_t y = pad.thumb_y;
+  const bool past_x = x > kDeadzone || x < -kDeadzone;
+  const bool past_y = y > kDeadzone || y < -kDeadzone;
+  if (past_x || past_y) {
+    if (std::abs(x) >= std::abs(y)) {
+      held[x > 0 ? kNavRight : kNavLeft] = true;
+    } else {
+      held[y > 0 ? kNavUp : kNavDown] = true;
+    }
+  }
+#endif
+}
+
+}  // namespace
+
+void SetKeyboardBackend(KeyboardBackend* backend) {
+  keyboard_backend = backend;
+}
+
+KeyboardBackend* GetKeyboardBackend() { return keyboard_backend; }
+
+bool KeyboardDialog::DriveBackend(ImGuiIO& io, bool ignore_inputs) {
+  if (!backend_) {
+    return false;
+  }
+  using Action = KeyboardBackend::Action;
+
+  const PadEdges pad = ReadPad();
+  const PadEdges previous = previous_pad;
+  previous_pad = pad;
+
+  const uint64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                           std::chrono::steady_clock::now().time_since_epoch())
+                           .count();
+  bool nav_held[kNavCount];
+  ReadNavDirections(pad, nav_held);
+  // Host arrows go through the same repeat, so the rate is one behaviour
+  // rather than ImGui's much faster key repeat on one path only.
+  nav_held[kNavLeft] |= ImGui::IsKeyDown(ImGuiKey_LeftArrow);
+  nav_held[kNavRight] |= ImGui::IsKeyDown(ImGuiKey_RightArrow);
+  nav_held[kNavUp] |= ImGui::IsKeyDown(ImGuiKey_UpArrow);
+  nav_held[kNavDown] |= ImGui::IsKeyDown(ImGuiKey_DownArrow);
+  static const Action kNavActions[kNavCount] = {Action::kLeft, Action::kRight,
+                                                Action::kUp, Action::kDown};
+  for (int i = 0; i < kNavCount; ++i) {
+    if (!nav_held[i]) {
+      nav_repeat.held[i] = false;
+      continue;
+    }
+    const bool first = !nav_repeat.held[i];
+    if (first) {
+      nav_repeat.held[i] = true;
+      nav_repeat.pressed_at[i] = now;
+      nav_repeat.fired_at[i] = now;
+    }
+    if (ignore_inputs) {
+      // Held through the opening delay: start the clock when it expires
+      // rather than firing the moment it does.
+      nav_repeat.pressed_at[i] = now;
+      nav_repeat.fired_at[i] = now;
+      continue;
+    }
+    if (first) {
+      backend_->Perform(kNavActions[i]);
+      continue;
+    }
+    if (now - nav_repeat.pressed_at[i] >= kNavRepeatDelayMs &&
+        now - nav_repeat.fired_at[i] >= kNavRepeatIntervalMs) {
+      nav_repeat.fired_at[i] = now;
+      backend_->Perform(kNavActions[i]);
+    }
+  }
+
+  if (!ignore_inputs) {
+#if XE_PLATFORM_WIN32
+    auto pressed = [&](uint16_t mask) {
+      return (pad.buttons & mask) && !(previous.buttons & mask);
+    };
+    if (pressed(XINPUT_GAMEPAD_A)) {
+      backend_->Perform(Action::kActivate);
+    }
+    if (pressed(XINPUT_GAMEPAD_X)) {
+      backend_->Perform(Action::kBackspace);
+    }
+    if (pressed(XINPUT_GAMEPAD_Y)) {
+      backend_->Perform(Action::kSpace);
+    }
+    if (pressed(XINPUT_GAMEPAD_LEFT_SHOULDER)) {
+      backend_->Perform(Action::kCursorLeft);
+    }
+    if (pressed(XINPUT_GAMEPAD_RIGHT_SHOULDER)) {
+      backend_->Perform(Action::kCursorRight);
+    }
+    if (pressed(XINPUT_GAMEPAD_LEFT_THUMB)) {
+      backend_->Perform(Action::kCaps);
+    }
+    if (pad.left_trigger && !previous.left_trigger) {
+      backend_->Perform(Action::kSymbols);
+    }
+    if (pad.right_trigger && !previous.right_trigger) {
+      backend_->Perform(Action::kAccents);
+    }
+    // Start commits on RELEASE, so the press does not bleed through to the
+    // title the moment the keyboard closes.
+    if (!(pad.buttons & XINPUT_GAMEPAD_START) &&
+        (previous.buttons & XINPUT_GAMEPAD_START)) {
+      backend_->Perform(Action::kDone);
+    }
+    if (pressed(XINPUT_GAMEPAD_BACK) || pressed(XINPUT_GAMEPAD_B)) {
+      backend_->Perform(Action::kCancel);
+    }
+#endif
+
+    // A real keyboard still types straight into the field.
+    for (int i = 0; i < io.InputQueueCharacters.Size; ++i) {
+      const ImWchar character = io.InputQueueCharacters[i];
+      if (character < 32 || character >= 127) {
+        continue;
+      }
+      if (input_type_ == InputType::kNumber &&
+          !((character >= '0' && character <= '9') || character == '.')) {
+        continue;
+      }
+      backend_->Append(std::string(1, static_cast<char>(character)));
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_Backspace)) {
+      backend_->Perform(Action::kBackspace);
+    }
+    // Enter is the console's A: it activates whatever the grid has focus on,
+    // which is the only way a host keyboard can reach Symbols and Accents.
+    // Typing directly parks focus on Done (Append does that), so Enter after
+    // typing still commits.
+    if (ImGui::IsKeyPressed(ImGuiKey_Enter) ||
+        ImGui::IsKeyPressed(ImGuiKey_KeypadEnter)) {
+      backend_->Perform(Action::kActivate);
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+      backend_->Perform(Action::kCancel);
+    }
+  }
+
+  input_text_ = backend_->text();
+
+  bool backend_cancelled = false;
+  if (backend_->finished(&backend_cancelled)) {
+    cancelled_ = backend_cancelled;
+    if (cancelled_) {
+      input_text_.clear();
+    }
+    Close();
+  }
+  return true;
+}
 
 void KeyboardDialog::OnDraw(ImGuiIO& io) {
   // Get current time
@@ -305,6 +547,12 @@ void KeyboardDialog::OnDraw(ImGuiIO& io) {
   // handled by the drawer's input gate, which withholds everything until the
   // controller goes idle; this timer only covers the mouse/keyboard path.
   bool ignore_inputs = (current_time - open_time_) < kInputIgnoreDelayMs;
+
+  // With the console's own keyboard installed, this dialog still owns the
+  // result and the XAM dispatch but draws nothing itself.
+  if (DriveBackend(io, ignore_inputs)) {
+    return;
+  }
 
   // Handle actual keyboard input
   if (!ignore_inputs) {
@@ -543,6 +791,11 @@ void KeyboardDialog::OnDraw(ImGuiIO& io) {
 }
 
 void KeyboardDialog::OnClose() {
+  if (backend_) {
+    backend_->Close();
+    backend_ = nullptr;
+  }
+
   // Call pre-close callback FIRST - allows parent to clear keyboard_has_focus
   if (pre_close_callback_) {
     pre_close_callback_();
