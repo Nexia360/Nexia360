@@ -577,6 +577,46 @@ dword_result_t XamLoaderSetLaunchData_entry(lpvoid_t data, dword_t size) {
 }
 DECLARE_XAM_EXPORT1(XamLoaderSetLaunchData, kNone, kSketchy);
 
+// The Avatar Editor is normally started BY another title, which hands it a
+// launch blob. Started on its own it gets nothing and its init
+// (sub_920C43A0 in AvatarEditor.xex) memsets the whole 0x10C structure.
+//
+// The layout is not guesswork - it is what the real XamLaunchAvatarEditor in
+// the 17559 xam.xex builds before XdfLaunchNewImageFromCache:
+//
+//   memset(blob, 0, 0x10C);
+//   *(u32*)(blob + 0) = 'EPIX';
+//   if (item) { wcsncpy(blob + 0xC, item, 0x80); blob[0x10A] = 0; }
+//
+//   +0x00  signature 'EPIX' (the editor also accepts 'CDX1')
+//   +0x04  read back by init as a user index, but the real launcher never
+//          writes it - it stays zero, so do not invent one here
+//   +0x0C  UTF-16 item string, up to 0x80 wchars, filling the rest of the blob
+//
+// The item string is the only meaningful payload, and it is exactly what
+// XamLaunchAvatarEditor's third argument carries.
+std::vector<uint8_t> BuildAvatarEditorLaunchData(const std::u16string& item) {
+  constexpr size_t kLaunchDataSize = 0x10C;
+  constexpr size_t kItemOffset = 0x0C;
+  constexpr size_t kItemChars = 0x80;
+  std::vector<uint8_t> data(kLaunchDataSize, 0);
+  xe::store_and_swap<uint32_t>(data.data() + 0, 0x45504958);  // 'EPIX'
+  const size_t count = std::min(item.size(), kItemChars - 1);
+  for (size_t i = 0; i < count; ++i) {
+    xe::store_and_swap<uint16_t>(data.data() + kItemOffset + i * 2, item[i]);
+  }
+  return data;
+}
+
+static std::vector<uint8_t> SynthesizeAvatarEditorLaunchData() {
+  // Launched directly, so there is no item to open - an empty string is what
+  // the real launcher produces when its item argument is null.
+  XELOGW(
+      "XamLoaderGetLaunchData: synthesized an EPIX blob for the Avatar "
+      "Editor - it was launched directly, so nothing set one");
+  return BuildAvatarEditorLaunchData(std::u16string());
+}
+
 dword_result_t XamLoaderGetLaunchDataSize_entry(lpdword_t size_ptr) {
   if (!size_ptr) {
     return X_ERROR_INVALID_PARAMETER;
@@ -584,6 +624,10 @@ dword_result_t XamLoaderGetLaunchDataSize_entry(lpdword_t size_ptr) {
 
   auto xam = kernel_state()->GetKernelModule<XamModule>("xam.xex");
   auto& loader_data = xam->loader_data();
+  if (loader_data.launch_data.empty() &&
+      kernel_state()->title_id() == kAvatarEditorID) {
+    loader_data.launch_data = SynthesizeAvatarEditorLaunchData();
+  }
   if (loader_data.launch_data.empty()) {
     *size_ptr = 0;
     return X_ERROR_NOT_FOUND;
@@ -598,6 +642,10 @@ dword_result_t XamLoaderGetLaunchData_entry(lpvoid_t buffer_ptr,
                                             dword_t buffer_size) {
   auto xam = kernel_state()->GetKernelModule<XamModule>("xam.xex");
   auto& loader_data = xam->loader_data();
+  if (loader_data.launch_data.empty() &&
+      kernel_state()->title_id() == kAvatarEditorID) {
+    loader_data.launch_data = SynthesizeAvatarEditorLaunchData();
+  }
   if (loader_data.launch_data.empty()) {
     return X_ERROR_NOT_FOUND;
   }

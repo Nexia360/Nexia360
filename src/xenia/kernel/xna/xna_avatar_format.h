@@ -95,6 +95,7 @@ constexpr uint32_t kKindHidingTemplate = 0x01000000;
 uint32_t SlotBit(uint32_t slot);
 int32_t PrimarySlot(uint32_t kind);
 uint32_t SlotCoverage(uint32_t kind);
+int32_t BlendShapeSlot(uint32_t kind);
 const char* SlotName(uint32_t slot);
 const char* ColorName(uint32_t color);
 
@@ -126,8 +127,20 @@ struct Entry {
   uint32_t blob = 0;
   uint32_t size = 0;
   std::string name;
+  // NOT this asset's identity. For a pack entry these sixteen bytes name the
+  // asset that REPLACES this one: a hat-compatible hair for a hairstyle, a
+  // hiding template for clothing, an animation for a carryable, an eye shadow
+  // for an eye texture. Only installed content (external != 0) stores its own
+  // id here. Two thirds of the pack leaves it zero. Use ManifestAssetId() to
+  // get an id that names one entry and survives a round trip.
   std::array<uint8_t, 16> asset_id = {};
   uint32_t external = 0;
+  // The two ends of a same-kind substitution, resolved at load. A hairstyle's
+  // `substitute` is the version worn under a hat; that version's
+  // `substitute_for` points back, and it is never offered as a choice.
+  uint32_t substitute = UINT32_MAX;
+  uint32_t substitute_for = UINT32_MAX;
+  bool is_substitute() const { return substitute_for != UINT32_MAX; }
   uint32_t BodyMask() const { return flags >> 24; }
 };
 
@@ -168,6 +181,22 @@ struct Batch {
 struct Model {
   std::vector<Batch> batches;
   std::vector<std::shared_ptr<const Texture>> textures;
+};
+
+// One vertex a blend shape moves. `offset` is a BYTE offset into the model's
+// vertex buffer, exactly as the pack states it - the batch it lands in decides
+// the stride, so nothing here assumes one.
+struct ShapeVertex {
+  uint32_t offset = 0;
+  float position[3] = {};
+  uint32_t packed_normal = 0;
+};
+
+// A chin, a nose or a pair of ears. The pack ships the deformation twice, once
+// for each head, so the vertices split into two runs a fixed number of
+// vertices apart and only the run that lands inside the model is used.
+struct Shape {
+  std::vector<ShapeVertex> vertices;
 };
 
 struct RawVertex {
@@ -287,6 +316,7 @@ class Catalog {
                 std::vector<uint8_t> blob);
   bool Records(uint32_t index, std::vector<Record>* out) const;
   std::shared_ptr<const Model> LoadModel(uint32_t index);
+  std::shared_ptr<const Shape> LoadShape(uint32_t index);
   std::shared_ptr<const Texture> LoadFeature(uint32_t index);
   std::shared_ptr<const Clip> LoadClip(uint32_t index);
   std::shared_ptr<const Carryable> LoadCarryable(uint32_t index);
@@ -300,6 +330,7 @@ class Catalog {
   std::vector<Entry> entries_;
   std::mutex mutex_;
   std::map<uint32_t, std::shared_ptr<const Model>> models_;
+  std::map<uint32_t, std::shared_ptr<const Shape>> shapes_;
   std::map<uint32_t, std::shared_ptr<const Texture>> features_;
   std::map<uint32_t, std::shared_ptr<const Clip>> clips_;
   std::map<uint32_t, std::shared_ptr<const RawModel>> raw_models_;
@@ -330,6 +361,12 @@ Description RandomDescription(const Catalog& catalog, std::mt19937& rng,
                               int32_t body);
 Description DescriptionFromBytes(const Catalog* catalog, const uint8_t* bytes,
                                  size_t size);
+std::array<uint8_t, 16> ManifestAssetId(const Entry& entry);
+// The chin, nose and ears a description names, written into a head's vertices.
+// The console does this inside XamAvatarGetAssets, so it has to happen on the
+// raw model a title is handed as well as on the one we draw ourselves.
+bool ReshapeRawHead(Catalog& catalog, const Description& description,
+                    RawModel* head);
 bool HasManifestLayout(const uint8_t* bytes, size_t size);
 bool ParseManifest(const Catalog* catalog, const uint8_t* bytes, size_t size,
                    Description* out);

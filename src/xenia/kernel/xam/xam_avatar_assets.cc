@@ -10,6 +10,7 @@
 #include "xenia/kernel/xam/xam_avatar_assets.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstring>
 #include <memory>
@@ -484,6 +485,15 @@ X_RESULT BuildAvatarAssets(const uint8_t* metadata, size_t metadata_size,
       XELOGW("XamAvatarGetAssets: asset {} did not decode", component.entry);
       continue;
     }
+    // The chin, nose and ears are not components - they move the head's own
+    // vertices, which is what the console does here too. The catalogue's copy
+    // is shared and cached, so the deformation goes on a copy.
+    if (component.mask & kComponentMaskHead) {
+      auto reshaped = std::make_shared<avatar::RawModel>(*model);
+      if (avatar::ReshapeRawHead(*catalog, description, reshaped.get())) {
+        model = reshaped;
+      }
+    }
     const uint32_t cpu_at = cpu.Take(model->cpu_size, 16);
     const uint32_t gpu_at = video.Take(model->gpu_size, kTextureAlignment);
     if (cpu_at == UINT32_MAX || gpu_at == UINT32_MAX) {
@@ -528,9 +538,12 @@ X_RESULT BuildAvatarAssets(const uint8_t* metadata, size_t metadata_size,
       continue;
     }
     uint8_t* info = result + infos + written * kInfoBytes;
+    // The same id XamAvatarEnumAssets gives out, so a title can match what it
+    // is wearing against what it listed.
     const avatar::Entry* entry = catalog->Find(component.entry);
     if (entry) {
-      std::memcpy(info, entry->asset_id.data(), entry->asset_id.size());
+      const std::array<uint8_t, 16> asset_id = avatar::ManifestAssetId(*entry);
+      std::memcpy(info, asset_id.data(), asset_id.size());
     }
     Put16(info + 0x10, uint16_t(component.mask));
     ++written;
@@ -570,7 +583,9 @@ X_RESULT BuildAvatarAssets(const uint8_t* metadata, size_t metadata_size,
       Put32(carry, result_guest + carry_skeleton);
       const avatar::Entry* entry = catalog->Find(carried.entry);
       if (entry) {
-        std::memcpy(carry + 4, entry->asset_id.data(), entry->asset_id.size());
+        const std::array<uint8_t, 16> asset_id =
+            avatar::ManifestAssetId(*entry);
+        std::memcpy(carry + 4, asset_id.data(), asset_id.size());
       }
       Put16(carry + 4 + 0x10, uint16_t(kComponentMaskCarryable));
       const std::vector<const avatar::RawTexture*> overrides(

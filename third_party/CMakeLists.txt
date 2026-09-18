@@ -185,6 +185,50 @@ target_include_directories(mspack PUBLIC mspack)
 target_link_libraries(mspack PUBLIC xenia-base)
 
 # ==============================================================================
+# lua
+# ==============================================================================
+# Lua 5.1.5, the interpreter the 17559 dashboard's scene scripts were compiled
+# for. lundump.c is modified to load the console's big-endian 32-bit chunks on
+# this host; nothing else is changed.
+add_library(lua STATIC
+  lua/src/lapi.c
+  lua/src/lauxlib.c
+  lua/src/lbaselib.c
+  lua/src/lcode.c
+  lua/src/ldblib.c
+  lua/src/ldebug.c
+  lua/src/ldo.c
+  lua/src/ldump.c
+  lua/src/lfunc.c
+  lua/src/lgc.c
+  lua/src/linit.c
+  lua/src/liolib.c
+  lua/src/llex.c
+  lua/src/lmathlib.c
+  lua/src/lmem.c
+  lua/src/loadlib.c
+  lua/src/lobject.c
+  lua/src/lopcodes.c
+  lua/src/loslib.c
+  lua/src/lparser.c
+  lua/src/lstate.c
+  lua/src/lstring.c
+  lua/src/lstrlib.c
+  lua/src/ltable.c
+  lua/src/ltablib.c
+  lua/src/ltm.c
+  lua/src/lundump.c
+  lua/src/lvm.c
+  lua/src/lzio.c
+)
+target_include_directories(lua PUBLIC lua/src)
+if(MSVC)
+  # Lua is C89 and uses the POSIX names MSVC deprecates.
+  target_compile_definitions(lua PRIVATE _CRT_SECURE_NO_WARNINGS)
+  target_compile_options(lua PRIVATE /wd4244 /wd4267 /wd4310 /wd4334 /WX-)
+endif()
+
+# ==============================================================================
 # pugixml
 # ==============================================================================
 add_library(pugixml STATIC

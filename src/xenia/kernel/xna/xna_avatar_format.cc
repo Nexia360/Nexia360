@@ -15,9 +15,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <string>
 
 #include "third_party/mspack/lzx.h"
 #include "third_party/mspack/mspack.h"
+#include "xenia/base/logging.h"
 
 namespace xe {
 namespace kernel {
@@ -814,19 +816,18 @@ uint32_t FindHead(const Catalog& catalog) {
   return UINT32_MAX;
 }
 
+// The pack names each hairstyle's under-a-hat version outright, so take it
+// from there. Matching on the name plus " (Hat)" got nine of the ninety wrong -
+// The Captain Cut wears Old Hair (Hat), both Comb Overs share Left Comb Over
+// (Hat), both Partings share Parting (Hat) - and it only ever worked in
+// English.
 uint32_t HatVariantOf(const Catalog& catalog, uint32_t hair) {
   const Entry* entry = catalog.Find(hair);
-  if (!entry) {
+  if (!entry || entry->substitute == UINT32_MAX) {
     return hair;
   }
-  const std::string wanted = entry->name + " (Hat)";
-  for (const Entry& candidate : catalog.entries()) {
-    if (candidate.kind == entry->kind && candidate.blob &&
-        candidate.name == wanted) {
-      return candidate.index;
-    }
-  }
-  return hair;
+  const Entry* worn = catalog.Find(entry->substitute);
+  return worn && worn->blob ? worn->index : hair;
 }
 
 int32_t FeatureForSlot(uint32_t slot) {
@@ -998,6 +999,21 @@ int32_t PrimarySlot(uint32_t kind) {
 
 uint32_t SlotCoverage(uint32_t kind) { return kind & kCoverageMask; }
 
+// Chin, nose and ears are not worn in a slot - they are the three blend shapes
+// at manifest + 0xC, indexed by Shape::Type_e.
+int32_t BlendShapeSlot(uint32_t kind) {
+  switch (kind) {
+    case 0x00100000:
+      return 0;
+    case 0x00080000:
+      return 1;
+    case 0x00200000:
+      return 2;
+    default:
+      return -1;
+  }
+}
+
 const char* SlotName(uint32_t slot) {
   return slot < kSlotCount ? kSlotNames[slot] : "";
 }
@@ -1088,6 +1104,110 @@ bool DecodeTexture(const std::vector<uint8_t>& data, Texture* out) {
     return false;
   }
   *out = *texture;
+  return true;
+}
+
+// STRB record tag 4: Avatars::ShapeOverrides_c. Every offset below was read out
+// of xam.xex - ShapeOverrides_c::Read at 0x81975D80 and the chain under
+// VertexOverrides_c::Read at 0x8197A710 - and then checked against all 36 blend
+// shapes in the shipping pack.
+//
+// The record opens with two 32-byte descriptors, triangle overrides then vertex
+// overrides. A blend shape has no triangle overrides, so the vertex header is
+// the second one and every bit offset here is relative to RECORD BYTE 32. The
+// header is 658 bits and the item stream follows it, starting two bits into
+// its last byte - record byte 114, bit 2.
+//
+// An item is: vertex, then x, y, z, then four more fields whose widths the
+// header carries (in this pack the second and third are always zero bits). The
+// three components are a HEXAGONAL CLOSE-PACKED lattice: odd y shifts z by a
+// third of a step and odd (y^z) shifts x by half a step, which is what the
+// constants 0.3333333 and 0.5 at 0x8163338C are for.
+bool DecodeShape(const std::vector<uint8_t>& d, Shape* out) {
+  constexpr size_t kHeaderAt = 32;
+  constexpr size_t kStreamBit = (kHeaderAt + 82) * 8 + 2;
+  // The pack states a vertex as a byte offset into the model's vertex buffer,
+  // and the greatest common divisor of every offset in every shape is 52.
+  constexpr uint32_t kVertexStride = 52;
+  if (d.size() <= kHeaderAt + 83) {
+    return false;
+  }
+  const Bits h{d.data() + kHeaderAt, d.size() - kHeaderAt};
+  const uint32_t count = h.Get(0, 32);
+  if (!count || count > 4096) {
+    return false;
+  }
+  const uint32_t index_bias = h.Get(192, 32);
+  const uint32_t index_width = h.Get(224, 32);
+  // The vector packer's context, 0x92 bits at bit 256: a step, an origin and
+  // three six-bit component widths.
+  constexpr uint32_t kPacker = 256;
+  const float step = h.Float(kPacker);
+  const float origin[3] = {h.Float(kPacker + 0x20), h.Float(kPacker + 0x40),
+                           h.Float(kPacker + 0x60)};
+  const uint32_t width[3] = {h.Get(kPacker + 0x80, 6), h.Get(kPacker + 0x86, 6),
+                             h.Get(kPacker + 0x8C, 6)};
+  struct Field {
+    uint32_t bias;
+    uint32_t width;
+  };
+  const Field extra[4] = {
+      {h.Get(kPacker + 0x92, 32), h.Get(kPacker + 0xB2, 32)},
+      {h.Get(kPacker + 0xD2, 32), h.Get(kPacker + 0xF2, 32)},
+      {h.Get(kPacker + 0x112, 32), h.Get(kPacker + 0x132, 32)},
+      {h.Get(594, 32), h.Get(626, 32)},
+  };
+  uint64_t item_bits = index_width;
+  for (uint32_t k = 0; k < 3; ++k) {
+    if (width[k] > 32) {
+      return false;
+    }
+    item_bits += width[k];
+  }
+  for (const Field& field : extra) {
+    if (field.width > 32) {
+      return false;
+    }
+    item_bits += field.width;
+  }
+  if (!index_width || index_width > 32 || !item_bits) {
+    return false;
+  }
+  const Bits b{d.data(), d.size()};
+  if (!b.Holds(kStreamBit + item_bits * count)) {
+    return false;
+  }
+  // Two thirds of a step in z and half a step in x, the HCP layer offsets.
+  const float axis[3] = {step * 2.0f, step * 1.7320508f, step * 1.6329932f};
+  Shape shape;
+  shape.vertices.reserve(count);
+  for (uint32_t k = 0; k < count; ++k) {
+    uint64_t at = kStreamBit + item_bits * k;
+    const uint32_t offset = b.Get(at, index_width) + index_bias;
+    at += index_width;
+    uint32_t raw[3] = {};
+    for (uint32_t c = 0; c < 3; ++c) {
+      raw[c] = b.Get(at, width[c]);
+      at += width[c];
+    }
+    ShapeVertex vertex;
+    if (offset % kVertexStride) {
+      return false;
+    }
+    vertex.offset = offset;
+    vertex.position[1] = float(raw[1]) * axis[1] + origin[1];
+    vertex.position[2] = float(raw[2]) * axis[2] + origin[2];
+    if (raw[1] & 1) {
+      vertex.position[2] += axis[2] * (1.0f / 3.0f);
+    }
+    vertex.position[0] = float(raw[0]) * axis[0] + origin[0];
+    if ((raw[2] ^ raw[1]) & 1) {
+      vertex.position[0] += axis[0] * 0.5f;
+    }
+    vertex.packed_normal = b.Get(at, extra[0].width) + extra[0].bias;
+    shape.vertices.push_back(vertex);
+  }
+  *out = std::move(shape);
   return true;
 }
 
@@ -1591,9 +1711,12 @@ bool WriteAnimationObject(const std::vector<uint8_t>& stream, bool mirror,
 int32_t FindAnimation(const Catalog& catalog, const uint8_t* asset_id) {
   std::array<uint8_t, 16> id;
   std::memcpy(id.data(), asset_id, id.size());
+  // Only installed content stores its own id there; a pack entry stores the
+  // asset that replaces it, so matching those would answer with whatever
+  // happens to point at this one.
   if (id != std::array<uint8_t, 16>{}) {
     for (const Entry& entry : catalog.entries()) {
-      if (entry.asset_id == id) {
+      if (entry.external && entry.asset_id == id) {
         return int32_t(entry.index);
       }
     }
@@ -1645,7 +1768,13 @@ bool Catalog::Load(const std::filesystem::path& path) {
     if (name_at && name_at < data.size()) {
       entry.name = Utf16BeName(data, name_at);
     }
-    std::memcpy(entry.asset_id.data(), data.data() + base + 8 + 0x90,
+    // +0x94 into the record's block, not +0x90. Measured over the whole pack:
+    // at +0x94 all 405 assets that carry an id end in the eight-byte stock
+    // suffix, and their first dword is the kind; at +0x90 not one of them does,
+    // because the four bytes before the id are a separate offer number. Reading
+    // it four bytes early shifted every id the editor hands out, so nothing the
+    // player picked could ever be looked up again.
+    std::memcpy(entry.asset_id.data(), data.data() + base + 8 + 0x94,
                 entry.asset_id.size());
     if (blob && blob_size > 0x3C && size_t(blob) + blob_size <= data.size() &&
         std::memcmp(data.data() + blob, "STRB", 4) == 0) {
@@ -1653,6 +1782,25 @@ bool Catalog::Load(const std::filesystem::path& path) {
       entry.size = blob_size;
     }
     entries.push_back(std::move(entry));
+  }
+  // Resolve the substitutions the pack states in that reference. Measured over
+  // the shipping pack: every one that points at an entry of its own kind is a
+  // hairstyle pointing at its "(Hat)" version - all 88 of them, and nothing
+  // else - so this is exactly the set that must not be offered as a choice.
+  // The names do not pair up (The Captain Cut wears Old Hair (Hat), and both
+  // Comb Overs share one), so matching on " (Hat)" got nine of them wrong.
+  for (Entry& entry : entries) {
+    if (entry.asset_id == std::array<uint8_t, 16>{}) {
+      continue;
+    }
+    const uint32_t target =
+        (uint32_t(entry.asset_id[4]) << 8) | uint32_t(entry.asset_id[5]);
+    if (target >= entries.size() || target == entry.index ||
+        entries[target].kind != entry.kind) {
+      continue;
+    }
+    entry.substitute = target;
+    entries[target].substitute_for = entry.index;
   }
   std::lock_guard<std::mutex> lock(mutex_);
   data_ = std::move(data);
@@ -1669,6 +1817,9 @@ const Entry* Catalog::Find(uint32_t index) const {
   return index < entries_.size() ? &entries_[index] : nullptr;
 }
 
+// Installed content only. The pack's own entries carry an id as well, but it
+// is shared between an asset's variant rows - measured, eleven entries answer
+// to 0100000003550001C1C8F109A19CB2E0 - so it cannot name one of them.
 const Entry* Catalog::FindAsset(const uint8_t* asset_id) const {
   for (const Entry& entry : entries_) {
     if (entry.external && std::memcmp(entry.asset_id.data(), asset_id,
@@ -1829,6 +1980,29 @@ std::shared_ptr<const Model> Catalog::LoadModel(uint32_t index) {
     }
   }
   models_[index] = result;
+  return result;
+}
+
+std::shared_ptr<const Shape> Catalog::LoadShape(uint32_t index) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto found = shapes_.find(index);
+  if (found != shapes_.end()) {
+    return found->second;
+  }
+  std::shared_ptr<const Shape> result;
+  std::vector<Record> records;
+  if (Records(index, &records)) {
+    for (const Record& record : records) {
+      if (record.type == 4) {
+        auto shape = std::make_shared<Shape>();
+        if (DecodeShape(record.data, shape.get())) {
+          result = shape;
+        }
+        break;
+      }
+    }
+  }
+  shapes_[index] = result;
   return result;
 }
 
@@ -2110,7 +2284,10 @@ std::vector<uint32_t> ItemsForSlot(const Catalog& catalog, uint32_t slot,
                                    uint32_t body) {
   std::vector<uint32_t> items;
   for (const Entry& entry : catalog.entries()) {
-    if (PrimarySlot(entry.kind) == int32_t(slot) && Wearable(entry, body)) {
+    // A hat version of a hairstyle is not a hairstyle you can pick; it goes on
+    // by itself when a hat does.
+    if (PrimarySlot(entry.kind) == int32_t(slot) && !entry.is_substitute() &&
+        Wearable(entry, body)) {
       items.push_back(entry.index);
     }
   }
@@ -2228,6 +2405,15 @@ constexpr size_t kManifestEntryMaskOffset = 0x10;
 constexpr size_t kManifestXuidOffset = 0x380;
 constexpr uint8_t kStockAssetSuffix[8] = {0xC1, 0xC8, 0xF1, 0x09,
                                           0xA1, 0x9C, 0xB2, 0xE0};
+// Avatars::Manifest::Version0::Shape::Type_e, read out of xam.xex: the writer
+// at 0x8196C500 stores at manifest + 0xC + (type << 4), and its caller passes
+// type 1 with kind 0x80000 and type 2 with 0x200000, leaving 0x100000 for type
+// 0.
+//
+// XAvatarMetadataGetBlendShapeIDs lists its out-parameters chin, ear, nose,
+// which is NOT this order - the asset pack settles it: every one of the 18
+// assets of kind 0x80000 is named "... Nose" and all 9 of kind 0x200000 are
+// named "... Ears".
 enum ShapeType : uint32_t { kShapeChin, kShapeNose, kShapeEars };
 enum TextureType : uint32_t {
   kTextureMouth,
@@ -2284,6 +2470,22 @@ uint32_t ManifestAmountBits(uint8_t value, uint32_t original) {
 }
 
 int32_t ManifestAssetEntry(const Catalog& catalog, const uint8_t* id);
+bool NullAsset(const uint8_t* id);
+
+// A face slot does not hold an XAVATAR_COMPONENT_INFO. xam's writer
+// (Avatars::ManifestReaderWriter::SetReplacementTexture, 0x8196C550) copies a
+// 0x20-byte ReplacementTexture_c to manifest + 0x3C + type * 0x20, and its
+// caller fills that struct with the asset id and a float 1.0f at +0x10 - where
+// a component entry keeps its mask. An empty slot stays all zero.
+void PutTextureWeight(uint8_t* out) {
+  if (NullAsset(out)) {
+    return;
+  }
+  const float one = 1.0f;
+  uint32_t bits;
+  std::memcpy(&bits, &one, sizeof(bits));
+  ManifestPut32(out + kManifestEntryMaskOffset, bits);
+}
 
 void PutStockAsset(uint8_t* out, uint32_t kind, uint16_t index, uint16_t body) {
   ManifestPut32(out, kind);
@@ -2340,6 +2542,27 @@ int32_t ManifestAssetEntry(const Catalog& catalog, const uint8_t* id) {
 }
 
 }  // namespace
+
+// The one id an item is known by, whoever asks - and the id has to name this
+// entry and no other, because everything downstream turns it back into an
+// index. Only installed content owns an id that does that; the pack's own id
+// is shared between variant rows and two thirds of its entries have none at
+// all, so for those the id is built from the entry's kind and index, which is
+// exactly what ManifestAssetEntry decodes.
+//
+// Handing out the pack's bytes instead is what made a chosen item vanish: for
+// an entry with no id it was sixteen zeroes, which the manifest writer reads
+// as "take it off", and for the rest it was an id no lookup could resolve.
+std::array<uint8_t, 16> ManifestAssetId(const Entry& entry) {
+  if (entry.external && !NullAsset(entry.asset_id.data())) {
+    return entry.asset_id;
+  }
+  std::array<uint8_t, 16> id = {};
+  const uint32_t body = entry.BodyMask() & 3;
+  PutStockAsset(id.data(), entry.kind, uint16_t(entry.index),
+                uint16_t(body ? body : 3));
+  return id;
+}
 
 bool HasManifestLayout(const uint8_t* bytes, size_t size) {
   if (!bytes || size < kManifestBytes || HasDescriptionMagic(bytes, size)) {
@@ -2456,15 +2679,15 @@ std::array<uint8_t, kManifestBytes> SerializeManifest(
   for (uint32_t i = 0; i < kManifestFaceCount; ++i) {
     uint8_t* out = bytes + kManifestFaceOffset + i * kManifestEntryBytes;
     const int32_t slot = PrimarySlot(kTextureKinds[i]);
-    if (slot >= 0 && description.items[slot] != kNoItem &&
-        PutStockEntry(catalog, out, description.items[slot])) {
-      continue;
+    if (!(slot >= 0 && description.items[slot] != kNoItem &&
+          PutStockEntry(catalog, out, description.items[slot]))) {
+      if (i < kRequiredTextureCount) {
+        PutStockAsset(
+            out, kTextureKinds[i],
+            male ? kMaleTextureDefaults[i] : kFemaleTextureDefaults[i], 3);
+      }
     }
-    if (i < kRequiredTextureCount) {
-      PutStockAsset(out, kTextureKinds[i],
-                    male ? kMaleTextureDefaults[i] : kFemaleTextureDefaults[i],
-                    3);
-    }
+    PutTextureWeight(out);
   }
   for (uint32_t color = 0; color < kColorCount; ++color) {
     ManifestPut32(bytes + kManifestColorsOffset + color * 4,
@@ -2681,6 +2904,144 @@ void SampleCarryable(const Carryable& carryable, float seconds, Matrix* local) {
   }
 }
 
+// The shapes a description names, in manifest order. Empty when it wears none.
+std::vector<std::shared_ptr<const Shape>> HeadShapes(
+    Catalog& catalog, const Description& description) {
+  std::vector<std::shared_ptr<const Shape>> shapes;
+  for (uint32_t i = 0; i < kManifestBlendCount; ++i) {
+    if (NullAsset(description.blend_shapes[i].data())) {
+      continue;
+    }
+    const int32_t entry =
+        ManifestAssetEntry(catalog, description.blend_shapes[i].data());
+    if (entry < 0) {
+      continue;
+    }
+    if (auto shape = catalog.LoadShape(uint32_t(entry))) {
+      shapes.push_back(std::move(shape));
+    }
+  }
+  return shapes;
+}
+
+// A shape states ABSOLUTE positions for the vertices it moves, keyed by their
+// BYTE OFFSET in the vertex buffer - so the batch that owns the offset decides
+// the stride. The offsets come in two runs 324 vertices apart: measured, those
+// are the left and the right side of the head, mirrored exactly across x = 0 -
+// Large Chin moves v341 to (-0.09642, 1.20610, 0.05333) and v17 to
+// (+0.09641, 1.20610, 0.05333), with v641 on the midline. Both runs are this
+// head's, so both are applied.
+template <typename Batches, typename Place>
+uint32_t PlaceShapeVertices(const Shape& shape, const Batches& layout,
+                            uint32_t vb_offset, const Place& place) {
+  uint32_t missed = 0;
+  for (const ShapeVertex& moved : shape.vertices) {
+    bool placed = false;
+    for (size_t index = 0; index < layout.size(); ++index) {
+      const RawBatch& batch = layout[index];
+      // A batch that does not state a stride uses the fixed fields plus one
+      // dword per UV set: 28 + 4 * uv_sets, which is the 52 the blend shapes
+      // are keyed on when all six sets are present.
+      const uint32_t stride =
+          batch.stride ? batch.stride : 28 + 4 * batch.uv_sets;
+      // A batch states where it sits in the whole GPU buffer, which also holds
+      // the indices and the textures. A shape counts from the start of the
+      // VERTEX buffer - Model_c::field_24 in xam, the pointer the offset is
+      // added to - so the model's own vb_offset comes off first.
+      const uint32_t base =
+          batch.vb_offset >= vb_offset ? batch.vb_offset - vb_offset : 0;
+      if (!stride || moved.offset < base) {
+        continue;
+      }
+      const uint32_t at = moved.offset - base;
+      if (at % stride || at / stride >= batch.vertices.size()) {
+        continue;
+      }
+      place(index, at / stride, moved);
+      placed = true;
+      break;
+    }
+    missed += placed ? 0 : 1;
+  }
+  return missed;
+}
+
+bool ReshapeRawHead(Catalog& catalog, const Description& description,
+                    RawModel* head) {
+  const auto shapes = HeadShapes(catalog, description);
+  if (shapes.empty() || !head) {
+    return false;
+  }
+  for (const auto& shape : shapes) {
+    const uint32_t missed = PlaceShapeVertices(
+        *shape, head->batches, head->vb_offset,
+        [&](size_t batch, uint32_t vertex, const ShapeVertex& moved) {
+          RawVertex& out = head->batches[batch].vertices[vertex];
+          out.position[0] = moved.position[0];
+          out.position[1] = moved.position[1];
+          out.position[2] = moved.position[2];
+        });
+    // A tripwire: every offset a shape names should land in one of the head's
+    // batches. Silent when it does; when it is not, say what the head's own
+    // layout is, because that is the only thing that can explain it.
+    if (missed) {
+      std::string layout;
+      for (const RawBatch& batch : head->batches) {
+        layout +=
+            fmt::format(" [vb {:X} stride {} uv {} n {}]", batch.vb_offset,
+                        batch.stride, batch.uv_sets, batch.vertices.size());
+      }
+      XELOGW(
+          "avatar: a blend shape names {} of {} vertices this head has not; "
+          "head vb {:X} size {}, batches{}",
+          missed, shape->vertices.size(), head->vb_offset, head->vb_size,
+          layout);
+    }
+  }
+  return true;
+}
+
+// The same deformation on the model our own renderer draws. The decoded model
+// and the raw one come out of the same record in the same order, so the raw
+// one's batch layout is what resolves an offset for both.
+void ReshapeHead(Catalog& catalog, const Description& description,
+                 Scene* scene) {
+  Part* head = nullptr;
+  for (Part& part : scene->parts) {
+    if (part.kind == kKindHead) {
+      head = &part;
+      break;
+    }
+  }
+  if (!head || !head->model) {
+    return;
+  }
+  const auto shapes = HeadShapes(catalog, description);
+  if (shapes.empty()) {
+    return;
+  }
+  auto layout = catalog.LoadRawModel(head->entry);
+  if (!layout) {
+    return;
+  }
+  auto reshaped = std::make_shared<Model>(*head->model);
+  for (const auto& shape : shapes) {
+    PlaceShapeVertices(
+        *shape, layout->batches, layout->vb_offset,
+        [&](size_t batch, uint32_t vertex, const ShapeVertex& moved) {
+          if (batch >= reshaped->batches.size() ||
+              vertex >= reshaped->batches[batch].vertices.size()) {
+            return;
+          }
+          Vertex& out = reshaped->batches[batch].vertices[vertex];
+          out.position[0] = moved.position[0];
+          out.position[1] = moved.position[1];
+          out.position[2] = moved.position[2];
+        });
+  }
+  head->model = reshaped;
+}
+
 Scene BuildScene(Catalog& catalog, const Description& description) {
   Scene scene;
   scene.body = description.body;
@@ -2710,6 +3071,7 @@ Scene BuildScene(Catalog& catalog, const Description& description) {
   const uint32_t hair = description.colors[kColorHair];
   add(FindBody(catalog, description.body), kKindBody, {skin, skin, skin});
   add(FindHead(catalog), kKindHead, {skin, skin, skin});
+  ReshapeHead(catalog, description, &scene);
   const bool hat = description.items[kSlotHat] != kNoItem;
   for (uint32_t slot = 0; slot < kSlotCount; ++slot) {
     const uint16_t item = description.items[slot];

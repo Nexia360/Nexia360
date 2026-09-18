@@ -3,7 +3,13 @@ add_library(xenia-kernel STATIC)
 # runs at CONFIGURE time, not build time. Adding a file does not re-run CMake
 # by itself; touching this file does.
 xe_platform_sources(xenia-kernel ${CMAKE_CURRENT_SOURCE_DIR} RECURSIVE)
-# touched to re-run the glob for xam/xam_avatar_assets.cc
+# touched to re-run the glob for xam/xui_font.cc, xui_runtime.cc, xui_draw.cc,
+# xui_overlay.cc, xui_assets.cc, xui_keyboard.cc, xui_keyboard_backend.cc,
+# xui_avatar.cc, xui_scene_draw.cc, xam/xam_system_title.cc, xam_ui_new.cc and
+# xam/avatar_editor/ - navigation, scene, component_collection, asset_tile and
+# editor_app, plus editor_session, editor_render and editor_input - added
+# 2026-09-17, plus editor_render.cc, xam/xui_timeline.cc, xam/xui_lua.cc and
+# xam/xui_scene_screen.cc
 
 set(XE_XNA_MANAGED_DIR ${CMAKE_CURRENT_SOURCE_DIR}/xna/managed)
 set(XE_XNA_HOST_CSPROJ ${XE_XNA_MANAGED_DIR}/Nexia.Xna.Host.csproj)
@@ -164,7 +170,7 @@ if(XE_TARGET_X86_64)
   )
 endif()
 target_link_libraries(xenia-kernel PUBLIC
-  aes_128 fmt sqlite zlib-ng pugixml libcurl miniupnp xenia-apu xenia-base xenia-cpu xenia-gpu xenia-hid xenia-vfs xenia-app-discord
+  aes_128 fmt lua sqlite zlib-ng pugixml libcurl miniupnp xenia-apu xenia-base xenia-cpu xenia-gpu xenia-hid xenia-vfs xenia-app-discord
   # A hosted XNA title never touches the guest GPU, so its frames are put on the
   # screen by talking to the presenter directly - see xna/xna_present.cc. That
   # needs the D3D12 presenter's declarations and the COM GUIDs IID_PPV_ARGS
