@@ -107,6 +107,10 @@ class Exception {
     kInvalidException = 0,
     kAccessViolation,
     kIllegalInstruction,
+    // Raised after an instruction when a hardware data breakpoint (debug
+    // register) matches, which is how guest_write_watch catches every write to
+    // a guest address. Temporary instrumentation - see guest_write_watch.cc.
+    kSingleStep,
   };
 
   enum class AccessViolationOperation {
@@ -125,6 +129,10 @@ class Exception {
   }
   void InitializeIllegalInstruction(HostThreadContext* thread_context) {
     code_ = Code::kIllegalInstruction;
+    thread_context_ = thread_context;
+  }
+  void InitializeSingleStep(HostThreadContext* thread_context) {
+    code_ = Code::kSingleStep;
     thread_context_ = thread_context;
   }
 

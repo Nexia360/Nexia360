@@ -520,6 +520,15 @@ X_STATUS Emulator::MountPath(const std::filesystem::path& path,
         "corrupted.");
     return X_STATUS_NO_SUCH_FILE;
   }
+  // The previous title's device is still registered here - TerminateTitle only
+  // drops UPDATE: - and RegisterDevice appends without replacing while
+  // ResolvePath takes the FIRST device whose mount path matches. So mounting
+  // the next title left the old device in front of the new one and every
+  // lookup went to the title that had just been torn down: launching an xex
+  // from anywhere but the previous title's own folder failed with
+  // "File not found: GAME:\<name>". The title is already gone by the time
+  // anything reaches here, so the stale mount goes with it.
+  file_system_->UnregisterDevice(mount_path);
   if (!file_system_->RegisterDevice(std::move(device))) {
     XELOGE("Unable to register the input file to {}.", mount_path);
     return X_STATUS_NO_SUCH_FILE;
@@ -1419,6 +1428,14 @@ bool Emulator::ExceptionCallbackThunk(Exception* ex, void* data) {
 }
 
 bool Emulator::ExceptionCallback(Exception* ex) {
+  // A single step is a hardware data breakpoint (guest_write_watch), not a
+  // fault. Claiming it here would dump it as a crash and kill the title on the
+  // first watched write - and the dump would have no access violation line,
+  // because there was no access violation.
+  if (ex->code() == Exception::Code::kSingleStep) {
+    return false;
+  }
+
   // Check to see if the exception occurred in guest code.
   auto code_cache = processor()->backend()->code_cache();
   auto code_base = code_cache->execute_base_address();
@@ -1639,17 +1656,17 @@ X_STATUS Emulator::CompleteLaunch(const std::filesystem::path& path,
   // By using a NullDevice that just returns success to all IO requests it
   // should allow games to believe cache/raw disk was accessed successfully
 
-  // NOTE: this should probably be moved to xenia_main.cc, but right now we
-  // need to register the \Device\Harddisk0\ NullDevice _after_ the
-  // \Device\Harddisk0\Partition1 HostPathDevice, otherwise requests to
-  // Partition1 will go to this. Registering during CompleteLaunch allows us
-  // to make sure any HostPathDevices are ready beforehand. (see comment above
-  // cache:\ device registration for more info about why)
+  // This used to have to be registered AFTER the \Device\Harddisk0\Partition1
+  // HostPathDevice or requests for Partition1 would land here instead, because
+  // a lookup took the first mount that matched. ResolvePath takes the longest
+  // one now, so the order no longer decides it - but this still runs once per
+  // launch, and without dropping the previous one they pile up.
   auto null_paths = {std::string("\\Partition0"), std::string("\\Cache0"),
                      std::string("\\Cache1")};
   auto null_device =
       std::make_unique<vfs::NullDevice>("\\Device\\Harddisk0", null_paths);
   if (null_device->Initialize()) {
+    file_system_->UnregisterDevice("\\Device\\Harddisk0");
     file_system_->RegisterDevice(std::move(null_device));
   }
 

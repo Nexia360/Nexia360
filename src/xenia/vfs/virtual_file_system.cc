@@ -200,24 +200,43 @@ Entry* VirtualFileSystem::ResolvePath(const std::string_view path) {
   // shorter mount does not swallow a request for a longer one whose name
   // merely starts with it. Either the prefix consumes the whole path (exact
   // match) or the character following the prefix is a path separator.
-  auto it =
-      std::find_if(devices_.cbegin(), devices_.cend(), [&](const auto& d) {
-        const auto& mount = d->mount_path();
-        if (!xe::utf8::starts_with(normalized_path, mount)) {
-          return false;
-        }
-        if (normalized_path.size() == mount.size()) {
-          return true;  // exact device-root match
-        }
-        // A mount that already ends in a separator is itself a component
-        // boundary - content mounts carry a trailing separator.
-        const char mount_last = mount.back();
-        if (mount_last == '\\' || mount_last == '/') {
-          return true;
-        }
-        const char next = normalized_path[mount.size()];
-        return next == '\\' || next == '/';
-      });
+  //
+  // The LONGEST matching mount wins, not the first one registered. Both are
+  // registered: the \Device\Harddisk0 NullDevice that answers raw partition
+  // and cache reads sits over the \Device\Harddisk0\Partition1 the title was
+  // mounted on, and which of them a lookup reached used to depend purely on
+  // the order CompleteLaunch happened to register them in. Re-mounting
+  // Partition1 for a second title put it behind that NullDevice and every
+  // GAME:\ lookup fell into the null one, so an xex launched from a running
+  // title could not find itself.
+  auto matches = [&](const auto& d) {
+    const auto& mount = d->mount_path();
+    if (!xe::utf8::starts_with(normalized_path, mount)) {
+      return false;
+    }
+    if (normalized_path.size() == mount.size()) {
+      return true;  // exact device-root match
+    }
+    // A mount that already ends in a separator is itself a component
+    // boundary - content mounts carry a trailing separator.
+    const char mount_last = mount.back();
+    if (mount_last == '\\' || mount_last == '/') {
+      return true;
+    }
+    const char next = normalized_path[mount.size()];
+    return next == '\\' || next == '/';
+  };
+  auto it = devices_.cend();
+  for (auto candidate = devices_.cbegin(); candidate != devices_.cend();
+       ++candidate) {
+    if (!matches(*candidate)) {
+      continue;
+    }
+    if (it == devices_.cend() ||
+        (*candidate)->mount_path().size() > (*it)->mount_path().size()) {
+      it = candidate;
+    }
+  }
   if (it == devices_.cend()) {
     if (overlay_directory) {
       return overlay_directory;

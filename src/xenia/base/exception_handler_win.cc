@@ -96,6 +96,12 @@ LONG CALLBACK ExceptionHandlerCallback(PEXCEPTION_POINTERS ex_info) {
     case STATUS_ILLEGAL_INSTRUCTION:
       ex.InitializeIllegalInstruction(&thread_context);
       break;
+    case STATUS_SINGLE_STEP:
+      // A hardware data breakpoint reports through this, one exception per
+      // matching store. Nothing else in the emulator single-steps, so an
+      // unclaimed one simply falls through to EXCEPTION_CONTINUE_SEARCH below.
+      ex.InitializeSingleStep(&thread_context);
+      break;
     case STATUS_ACCESS_VIOLATION: {
       Exception::AccessViolationOperation access_violation_operation;
       switch (ex_info->ExceptionRecord->ExceptionInformation[0]) {
