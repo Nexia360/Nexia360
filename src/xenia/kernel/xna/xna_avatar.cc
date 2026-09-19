@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -125,6 +126,14 @@ bool ReadPackageFile(const std::filesystem::path& package,
   return !out->empty();
 }
 
+// Every item the scan accepted, in the order it found them. Written once
+// under the same call_once that builds the catalogue and only read after, so
+// it needs no lock of its own.
+std::vector<XnaInstalledAvatarAsset>& InstalledAvatarAssets() {
+  static std::vector<XnaInstalledAvatarAsset> assets;
+  return assets;
+}
+
 void AddAvatarAssetPackage(avatar::Catalog* catalog,
                            const std::filesystem::path& path) {
   const auto header = vfs::XContentContainerDevice::ReadContainerHeader(path);
@@ -132,22 +141,97 @@ void AddAvatarAssetPackage(avatar::Catalog* catalog,
       header->content_metadata.content_type != XContentType::kAvatarItem) {
     return;
   }
+  const auto& asset_data =
+      header->content_metadata.metadata_v2.avatar_asset_data;
   std::array<uint8_t, 16> asset_id;
-  std::memcpy(asset_id.data(),
-              header->content_metadata.metadata_v2.avatar_asset_data.asset_id,
-              asset_id.size());
-  const std::string name =
-      xe::to_utf8(header->content_metadata.display_name(XLanguage::kEnglish));
+  std::memcpy(asset_id.data(), asset_data.asset_id, asset_id.size());
+  const std::u16string display =
+      header->content_metadata.display_name(XLanguage::kEnglish);
+  const std::string name = xe::to_utf8(display);
   std::vector<uint8_t> blob;
   if (!ReadPackageFile(path, "asset_v2.bin", &blob)) {
     XELOGW("[xna] avatar: {} ('{}') has no asset_v2.bin",
            xe::path_to_utf8(path), name);
     return;
   }
+  XnaInstalledAvatarAsset installed;
+  installed.asset_id = asset_id;
+  // The last four bytes of the asset id ARE the awarding title id - that is
+  // how the editor builds the enumerator's title argument, so taking it from
+  // anywhere else would answer a different question.
+  installed.title_id = (uint32_t(asset_id[12]) << 24) |
+                       (uint32_t(asset_id[13]) << 16) |
+                       (uint32_t(asset_id[14]) << 8) | uint32_t(asset_id[15]);
+  installed.sub_category = asset_data.sub_category;
+  installed.colorizable = asset_data.colorizable;
+  installed.skeleton_version_mask = asset_data.skeleton_version_mask;
+  installed.name = display;
+  installed.path = path;
+  InstalledAvatarAssets().push_back(std::move(installed));
   if (catalog->AddAsset(asset_id, name, std::move(blob))) {
     XELOGI("[xna] avatar: added '{}' from {}", name, xe::path_to_utf8(path));
   } else {
     XELOGW("[xna] avatar: '{}' in {} is not a usable avatar asset", name,
+           xe::path_to_utf8(path));
+  }
+}
+
+// The unpacked form: <asset id in 32 hex digits>/asset_v2.bin, with icon.png
+// beside it. There is no container header to read, so the folder name is the
+// only statement of identity - which is exactly what the packaged form puts in
+// its metadata, so nothing is lost but the display name.
+void AddAvatarAssetFolder(avatar::Catalog* catalog,
+                          const std::filesystem::path& path) {
+  const std::string folder = xe::path_to_utf8(path.filename());
+  if (folder.size() != 32) {
+    return;
+  }
+  std::array<uint8_t, 16> asset_id = {};
+  for (size_t i = 0; i < asset_id.size(); ++i) {
+    const auto digit = [&](size_t at) -> int {
+      const char c = folder[at];
+      if (c >= '0' && c <= '9') {
+        return c - '0';
+      }
+      if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+      }
+      if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+      }
+      return -1;
+    };
+    const int hi = digit(i * 2);
+    const int lo = digit(i * 2 + 1);
+    if (hi < 0 || lo < 0) {
+      return;
+    }
+    asset_id[i] = uint8_t((hi << 4) | lo);
+  }
+  std::vector<uint8_t> blob;
+  {
+    std::ifstream file(path / "asset_v2.bin", std::ios::binary);
+    if (!file) {
+      return;
+    }
+    blob.assign(std::istreambuf_iterator<char>(file),
+                std::istreambuf_iterator<char>());
+  }
+  if (blob.empty()) {
+    return;
+  }
+  XnaInstalledAvatarAsset installed;
+  installed.asset_id = asset_id;
+  installed.title_id = (uint32_t(asset_id[12]) << 24) |
+                       (uint32_t(asset_id[13]) << 16) |
+                       (uint32_t(asset_id[14]) << 8) | uint32_t(asset_id[15]);
+  installed.name = xe::to_utf16(folder);
+  installed.path = path;
+  InstalledAvatarAssets().push_back(std::move(installed));
+  if (catalog->AddAsset(asset_id, folder, std::move(blob))) {
+    XELOGI("[xna] avatar: added unpacked {}", xe::path_to_utf8(path));
+  } else {
+    XELOGW("[xna] avatar: unpacked {} is not a usable avatar asset",
            xe::path_to_utf8(path));
   }
 }
@@ -163,6 +247,13 @@ void AddInstalledAvatarAssets(avatar::Catalog* catalog,
       std::error_code file_ec;
       if (file.is_regular_file(file_ec)) {
         AddAvatarAssetPackage(catalog, file.path());
+      } else if (file.is_directory(file_ec)) {
+        // An item installed by unpacking rather than by keeping the package:
+        // the folder is named with the asset id and holds the same files the
+        // container would have. Only the regular-file form was handled, so
+        // the one avatar item on this machine was invisible to every export
+        // that asks what the user owns.
+        AddAvatarAssetFolder(catalog, file.path());
       }
     }
   };
@@ -207,6 +298,43 @@ avatar::Catalog* XnaAvatarCatalog() {
     });
   }
   return catalog;
+}
+
+const std::vector<XnaInstalledAvatarAsset>& XnaInstalledAvatarAssets() {
+  // Going through the catalogue is what makes the scan run; the list is empty
+  // until it has.
+  XnaAvatarCatalog();
+  return InstalledAvatarAssets();
+}
+
+const XnaInstalledAvatarAsset* XnaFindInstalledAvatarAsset(
+    const uint8_t* asset_id) {
+  if (!asset_id) {
+    return nullptr;
+  }
+  for (const auto& asset : XnaInstalledAvatarAssets()) {
+    if (std::memcmp(asset.asset_id.data(), asset_id, asset.asset_id.size()) ==
+        0) {
+      return &asset;
+    }
+  }
+  return nullptr;
+}
+
+bool XnaReadInstalledAvatarAssetFile(const XnaInstalledAvatarAsset& asset,
+                                     std::string_view file_name,
+                                     std::vector<uint8_t>* out) {
+  std::error_code ec;
+  if (std::filesystem::is_directory(asset.path, ec)) {
+    std::ifstream file(asset.path / xe::to_path(file_name), std::ios::binary);
+    if (!file) {
+      return false;
+    }
+    out->assign(std::istreambuf_iterator<char>(file),
+                std::istreambuf_iterator<char>());
+    return !out->empty();
+  }
+  return ReadPackageFile(asset.path, file_name, out);
 }
 
 std::filesystem::path XnaAvatarProfilePath(uint64_t xuid) {
@@ -494,9 +622,7 @@ void XnaAvatarDraw(uint32_t handle, const float* world, const float* view,
   for (const avatar::Part& part : scene->parts) {
     for (const avatar::Batch& batch : part.model->batches) {
       std::vector<avatar::GpuVertex>& skinned = vertices[slot++];
-      avatar::SkinBatch(
-          batch, part.carried ? carry_skin : skin, &skinned,
-          part.kind == avatar::kKindBody ? avatar::kBodyInset : 0.0f);
+      avatar::SkinBatch(batch, part.carried ? carry_skin : skin, &skinned);
       if (skinned.empty() || batch.indices.empty()) {
         continue;
       }

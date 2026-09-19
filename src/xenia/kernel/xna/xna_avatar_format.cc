@@ -1112,27 +1112,79 @@ bool DecodeTexture(const std::vector<uint8_t>& data, Texture* out) {
 // VertexOverrides_c::Read at 0x8197A710 - and then checked against all 36 blend
 // shapes in the shipping pack.
 //
-// The record opens with two 32-byte descriptors, triangle overrides then vertex
-// overrides. A blend shape has no triangle overrides, so the vertex header is
-// the second one and every bit offset here is relative to RECORD BYTE 32. The
-// header is 658 bits and the item stream follows it, starting two bits into
-// its last byte - record byte 114, bit 2.
+// The record is two halves, triangle overrides then vertex overrides, each a
+// 32-byte descriptor followed by its own item stream. A blend shape's triangle
+// count is zero, so its vertex descriptor sits on record byte 32; a hiding
+// template's sits after the triangles. Every bit offset below is relative to
+// that descriptor. The vertex header is 658 bits and its item stream follows
+// it, starting two bits into its last byte - descriptor byte 82, bit 2.
 //
 // An item is: vertex, then x, y, z, then four more fields whose widths the
 // header carries (in this pack the second and third are always zero bits). The
 // three components are a HEXAGONAL CLOSE-PACKED lattice: odd y shifts z by a
 // third of a step and odd (y^z) shifts x by half a step, which is what the
 // constants 0.3333333 and 0.5 at 0x8163338C are for.
-bool DecodeShape(const std::vector<uint8_t>& d, Shape* out) {
-  constexpr size_t kHeaderAt = 32;
-  constexpr size_t kStreamBit = (kHeaderAt + 82) * 8 + 2;
+// The triangle half, Avatars::TriangleOverrides_c::Read at 0x8197A078. Its
+// descriptor is the record's FIRST 32 bytes and its item stream starts at byte
+// 32, bit 0 - no packer context, because a hidden triangle carries no payload:
+//
+//   +0x00 u32 count    triangles this template hides
+//   +0x04 u32 total    the target model's ib_size; xam refuses the record
+//                      unless it equals Model_c+0x10, read at header bit 0x80
+//   +0x08     16 bytes the target model's asset id, _GUID order (little endian
+//                      fields) where the TOC keeps the same id big endian
+//   +0x18 u32 bias     added to every index; zero throughout this pack
+//   +0x1C u32 width    bits per index; twelve throughout this pack
+//
+// xam then does, per index (0x8197A1F0):  tri = indices + idx * 6;
+// tri[1] = tri[2] = tri[0] - it COLLAPSES the triangle, it does not remove it.
+//
+// Checked against all 231 templates in the shipping pack: every index lands
+// inside the stated total, none repeats, and the vertex descriptor falls
+// exactly on byte 32 + ceil(count * width / 8), which is where this leaves off.
+bool DecodeHidden(const std::vector<uint8_t>& d, Shape* out,
+                  size_t* header_at) {
+  *header_at = 32;
+  if (d.size() < 32) {
+    return false;
+  }
+  const Bits t{d.data(), d.size()};
+  const uint32_t count = t.Get(0, 32);
+  const uint32_t total = t.Get(32, 32);
+  const uint32_t bias = t.Get(192, 32);
+  const uint32_t width = t.Get(224, 32);
+  // The GUID's body field, the third little-endian member: 1 male, 2 female.
+  out->body = uint32_t(d[14]) | (uint32_t(d[15]) << 8);
+  if (!count) {
+    return true;
+  }
+  if (!width || width > 32 || count > (1u << 20) ||
+      !t.Holds(256 + uint64_t(count) * width)) {
+    return false;
+  }
+  out->hidden.reserve(count);
+  for (uint32_t k = 0; k < count; ++k) {
+    const uint32_t index = t.Get(256 + uint64_t(k) * width, width) + bias;
+    if (uint64_t(index) * 6 + 6 > total) {
+      out->hidden.clear();
+      return false;
+    }
+    out->hidden.push_back(index);
+  }
+  *header_at = 32 + size_t((uint64_t(count) * width + 7) / 8);
+  return true;
+}
+
+bool DecodeShapeVertices(const std::vector<uint8_t>& d, size_t header_at,
+                         Shape* out) {
+  const uint64_t stream_bit = uint64_t(header_at + 82) * 8 + 2;
   // The pack states a vertex as a byte offset into the model's vertex buffer,
   // and the greatest common divisor of every offset in every shape is 52.
   constexpr uint32_t kVertexStride = 52;
-  if (d.size() <= kHeaderAt + 83) {
+  if (d.size() <= header_at + 83) {
     return false;
   }
-  const Bits h{d.data() + kHeaderAt, d.size() - kHeaderAt};
+  const Bits h{d.data() + header_at, d.size() - header_at};
   const uint32_t count = h.Get(0, 32);
   if (!count || count > 4096) {
     return false;
@@ -1174,15 +1226,15 @@ bool DecodeShape(const std::vector<uint8_t>& d, Shape* out) {
     return false;
   }
   const Bits b{d.data(), d.size()};
-  if (!b.Holds(kStreamBit + item_bits * count)) {
+  if (!b.Holds(stream_bit + item_bits * count)) {
     return false;
   }
   // Two thirds of a step in z and half a step in x, the HCP layer offsets.
   const float axis[3] = {step * 2.0f, step * 1.7320508f, step * 1.6329932f};
-  Shape shape;
-  shape.vertices.reserve(count);
+  std::vector<ShapeVertex> vertices;
+  vertices.reserve(count);
   for (uint32_t k = 0; k < count; ++k) {
-    uint64_t at = kStreamBit + item_bits * k;
+    uint64_t at = stream_bit + item_bits * k;
     const uint32_t offset = b.Get(at, index_width) + index_bias;
     at += index_width;
     uint32_t raw[3] = {};
@@ -1205,10 +1257,90 @@ bool DecodeShape(const std::vector<uint8_t>& d, Shape* out) {
       vertex.position[0] += axis[0] * 0.5f;
     }
     vertex.packed_normal = b.Get(at, extra[0].width) + extra[0].bias;
-    shape.vertices.push_back(vertex);
+    vertices.push_back(vertex);
+  }
+  out->vertices = std::move(vertices);
+  return true;
+}
+
+bool DecodeShape(const std::vector<uint8_t>& d, Shape* out) {
+  Shape shape;
+  size_t header_at = 32;
+  if (!DecodeHidden(d, &shape, &header_at)) {
+    return false;
+  }
+  // A hiding template's vertex half moves body vertices, and a body's stride
+  // is not the head's 52, so that read is allowed to fail: the triangles are
+  // the part that stops skin coming through and they stand on their own.
+  if (!DecodeShapeVertices(d, header_at, &shape) && shape.hidden.empty()) {
+    return false;
   }
   *out = std::move(shape);
   return true;
+}
+
+uint32_t HidingTemplateOf(const Catalog& catalog, uint32_t entry_index) {
+  const Entry* entry = catalog.Find(entry_index);
+  if (!entry || entry->asset_id == std::array<uint8_t, 16>{}) {
+    return UINT32_MAX;
+  }
+  const uint32_t target =
+      (uint32_t(entry->asset_id[4]) << 8) | uint32_t(entry->asset_id[5]);
+  const Entry* template_entry = catalog.Find(target);
+  if (!template_entry || template_entry->kind != kKindHidingTemplate ||
+      !template_entry->blob) {
+    return UINT32_MAX;
+  }
+  return target;
+}
+
+namespace {
+
+// A triangle's number is its position in the model's one index buffer, so the
+// batch that owns it is the one whose run covers it.
+bool Collapse(std::vector<uint16_t>& indices, uint32_t first,
+              uint32_t triangle) {
+  const size_t count = indices.size() / 3;
+  if (triangle < first || triangle - first >= count) {
+    return false;
+  }
+  uint16_t* tri = indices.data() + size_t(triangle - first) * 3;
+  tri[1] = tri[0];
+  tri[2] = tri[0];
+  return true;
+}
+
+}  // namespace
+
+uint32_t HideTriangles(Model* model, const std::vector<uint32_t>& triangles) {
+  uint32_t missed = 0;
+  for (const uint32_t triangle : triangles) {
+    bool placed = false;
+    for (Batch& batch : model->batches) {
+      placed |= Collapse(batch.indices, batch.first_triangle, triangle);
+    }
+    missed += !placed;
+  }
+  return missed;
+}
+
+uint32_t HideTriangles(RawModel* model,
+                       const std::vector<uint32_t>& triangles) {
+  uint32_t missed = 0;
+  for (const uint32_t triangle : triangles) {
+    bool placed = false;
+    for (RawBatch& batch : model->batches) {
+      // Both offsets are into the model's whole gpu buffer, so the index
+      // buffer's own base has to come off before this is a triangle number.
+      if (batch.ib_offset < model->ib_offset) {
+        continue;
+      }
+      placed |= Collapse(batch.indices,
+                         (batch.ib_offset - model->ib_offset) / 6, triangle);
+    }
+    missed += !placed;
+  }
+  return missed;
 }
 
 bool DecodeModel(const std::vector<uint8_t>& d, Model* out) {
@@ -1218,6 +1350,9 @@ bool DecodeModel(const std::vector<uint8_t>& d, Model* out) {
   Bits b{d.data(), d.size()};
   const uint32_t batch_count = b.Get(5 * 32, 32);
   const uint32_t texture_count = b.Get(6 * 32, 32);
+  // Where the model's one index buffer starts inside its gpu buffer; a batch
+  // states its own start the same way, so the difference is a triangle number.
+  const uint32_t ib_offset = b.Get(256, 32);
   if (!batch_count || batch_count > 64 || texture_count > 64) {
     return false;
   }
@@ -1233,6 +1368,12 @@ bool DecodeModel(const std::vector<uint8_t>& d, Model* out) {
     const uint32_t params = b.Get(bb + 32, 5);
     const uint32_t triangles = b.Get(bb + 37, 32);
     batch.uv_sets = b.Get(bb + 101, 32);
+    // The batch's own index-buffer start, six bytes to the triangle. A hiding
+    // template numbers triangles across the whole model and nothing else here
+    // would say where a batch's run begins.
+    const uint32_t batch_ib = b.Get(bb + 229, 32);
+    batch.first_triangle =
+        batch_ib >= ib_offset ? (batch_ib - ib_offset) / 6 : 0;
     at += 0x21;
     if (!batch.uv_sets || batch.uv_sets > kLayerCount ||
         at + size_t(params) * 0x18 > d.size()) {
@@ -1258,22 +1399,21 @@ bool DecodeModel(const std::vector<uint8_t>& d, Model* out) {
       return false;
     }
     at += used;
-    if (batch.indices.size() > size_t(triangles) * 3) {
-      batch.indices.resize(size_t(triangles) * 3);
-    }
-    batch.indices.resize(batch.indices.size() / 3 * 3);
+    // Exactly the triangles the batch states, so a triangle's position in here
+    // is its position in the model's index buffer. An unusable triangle is
+    // COLLAPSED, never dropped: dropping one shifted every triangle after it
+    // and a hiding template addresses them by number.
+    batch.indices.resize(size_t(triangles) * 3, 0);
     const size_t vertex_count = batch.vertices.size();
-    std::vector<uint16_t> kept;
-    kept.reserve(batch.indices.size());
     for (size_t t = 0; t < batch.indices.size(); t += 3) {
-      if (batch.indices[t] < vertex_count &&
-          batch.indices[t + 1] < vertex_count &&
-          batch.indices[t + 2] < vertex_count) {
-        kept.insert(kept.end(), batch.indices.begin() + t,
-                    batch.indices.begin() + t + 3);
+      if (batch.indices[t] >= vertex_count ||
+          batch.indices[t + 1] >= vertex_count ||
+          batch.indices[t + 2] >= vertex_count) {
+        batch.indices[t] = 0;
+        batch.indices[t + 1] = 0;
+        batch.indices[t + 2] = 0;
       }
     }
-    batch.indices = std::move(kept);
     model.batches.push_back(std::move(batch));
   }
   for (uint32_t index = 0; index < texture_count; ++index) {
@@ -1776,6 +1916,38 @@ bool Catalog::Load(const std::filesystem::path& path) {
     // player picked could ever be looked up again.
     std::memcpy(entry.asset_id.data(), data.data() + base + 8 + 0x94,
                 entry.asset_id.size());
+    // The colour table, at the very front of the same record block: nine slots
+    // of three RGB triples, ending well before the asset id at +0x94. Measured
+    // over the whole pack, exactly two shapes occur - 36 entries fill one slot
+    // and three fill nine, all of them kind 0x08 - and every other entry leaves
+    // all 81 bytes zero. A slot's three triples are the colour CHANNELS of one
+    // colourway: the Sport Tops state red, green and blue, and the Power Tee
+    // repeats one hue across all three.
+    std::memcpy(entry.colours.data(), data.data() + base + 8,
+                entry.colours.size());
+    // And the same region as XAM takes it: one byte earlier and 0x91 long, so
+    // the colour layout byte at +0x07 leads it. `first + count * stride` was
+    // already bounds checked and 0x07 + 0x91 is well inside the 0x10C stride.
+    std::memcpy(entry.record_block.data(), data.data() + base + 7,
+                entry.record_block.size());
+    for (uint32_t slot = 0; slot < Entry::kColourSlots; ++slot) {
+      const uint8_t* cell = entry.colours.data() + slot * 9;
+      uint32_t filled = 0;
+      for (uint32_t colour = 0; colour < Entry::kColoursPerSlot; ++colour) {
+        const uint8_t* rgb = cell + colour * 3;
+        if (rgb[0] || rgb[1] || rgb[2]) {
+          filled = colour + 1;
+        }
+      }
+      if (filled) {
+        entry.colour_count = uint8_t(slot + 1);
+        entry.colours_per_slot =
+            std::max(entry.colours_per_slot, uint8_t(filled));
+      }
+    }
+    if (!entry.colour_count) {
+      entry.colours = {};
+    }
     if (blob && blob_size > 0x3C && size_t(blob) + blob_size <= data.size() &&
         std::memcmp(data.data() + blob, "STRB", 4) == 0) {
       entry.blob = blob;
@@ -2472,20 +2644,32 @@ uint32_t ManifestAmountBits(uint8_t value, uint32_t original) {
 int32_t ManifestAssetEntry(const Catalog& catalog, const uint8_t* id);
 bool NullAsset(const uint8_t* id);
 
-// A face slot does not hold an XAVATAR_COMPONENT_INFO. xam's writer
-// (Avatars::ManifestReaderWriter::SetReplacementTexture, 0x8196C550) copies a
-// 0x20-byte ReplacementTexture_c to manifest + 0x3C + type * 0x20, and its
-// caller fills that struct with the asset id and a float 1.0f at +0x10 - where
-// a component entry keeps its mask. An empty slot stays all zero.
-void PutTextureWeight(uint8_t* out) {
-  if (NullAsset(out)) {
-    return;
-  }
-  const float one = 1.0f;
-  uint32_t bits;
-  std::memcpy(&bits, &one, sizeof(bits));
-  ManifestPut32(out + kManifestEntryMaskOffset, bits);
-}
+// NOTHING goes here.
+//
+// The claim this replaces - that xam's caller puts a float 1.0f at +0x10 - is
+// wrong, and it was never checked. `SetReplacementTexture` (0x8196C550) is six
+// instructions: `memcpy(this[0x3EC] + 0x3C + type * 0x20, src, 0x20)`. It
+// copies whatever it is handed and writes no float anywhere, so the only thing
+// that can say what a real entry holds is a real entry. +0x10 of a manifest
+// entry is the XAVATAR_COMPONENT_INFO ComponentMask - a WORD - and the real
+// console leaves it, and the whole sixteen bytes after it, ZERO on every face
+// texture entry. Checked against a genuine console profile (E00013258D7953EE,
+// manifest at +0x1C5218):
+//
+//   0 id 0000800002EA0003C1C8F109A19CB2E0 mask 0000 tail 00000000...
+//   1 id 00002000029E0003C1C8F109A19CB2E0 mask 0000 tail 00000000...
+//   2 id 00004000026D0003C1C8F109A19CB2E0 mask 0000 tail 00000000...
+//
+// This used to write float 1.0 there as a "texture weight", so the editor read
+// a ComponentMask of 0x3F80 for the mouth, the eyes and the eyebrows. That is
+// not a component bit at all, and the editor keys its component collection by
+// that value - a bad key drops the entry and aborts the rest of the insert
+// loop, which leaves the collection empty. An empty collection is exactly what
+// makes the six guarded Colour tiles ghost, because their enable is
+// sub_920E1ED8 -> the scene's vtbl+0x30 walk over items that were never added.
+// Skin and Eye Shadow are built from the base class with no such check, which
+// is why those two open regardless.
+void PutTextureWeight(uint8_t* out) { (void)out; }
 
 void PutStockAsset(uint8_t* out, uint32_t kind, uint16_t index, uint16_t body) {
   ManifestPut32(out, kind);
@@ -3042,6 +3226,53 @@ void ReshapeHead(Catalog& catalog, const Description& description,
   head->model = reshaped;
 }
 
+// Collect the hiding templates of everything the avatar has on and collapse
+// the body triangles they name. This is what stops skin coming through
+// clothing: every template in the pack targets the body (kind 2), male or
+// female, and nothing else.
+void HideCoveredBody(Catalog& catalog, const Description& description,
+                     Scene* scene) {
+  Part* body = nullptr;
+  for (Part& part : scene->parts) {
+    if (part.kind == kKindBody) {
+      body = &part;
+      break;
+    }
+  }
+  if (!body || !body->model) {
+    return;
+  }
+  std::vector<uint32_t> hidden;
+  for (const Part& part : scene->parts) {
+    const uint32_t index = HidingTemplateOf(catalog, part.entry);
+    if (index == UINT32_MAX) {
+      continue;
+    }
+    auto shape = catalog.LoadShape(index);
+    // A template is authored against one body, so refuse the other one's -
+    // its triangle numbers mean something else entirely there. The template
+    // states the body the way BodyMask does, 1 male and 2 female, not the way
+    // Description does.
+    if (!shape || shape->hidden.empty() ||
+        shape->body != BodyBit(description.body)) {
+      continue;
+    }
+    hidden.insert(hidden.end(), shape->hidden.begin(), shape->hidden.end());
+  }
+  if (hidden.empty()) {
+    return;
+  }
+  auto edited = std::make_shared<Model>(*body->model);
+  const uint32_t missed = HideTriangles(edited.get(), hidden);
+  if (missed) {
+    XELOGW(
+        "avatar: {} of {} hidden body triangles fell outside every batch - "
+        "the batch index-buffer offsets do not line up with the template",
+        missed, hidden.size());
+  }
+  body->model = std::move(edited);
+}
+
 Scene BuildScene(Catalog& catalog, const Description& description) {
   Scene scene;
   scene.body = description.body;
@@ -3097,6 +3328,7 @@ Scene BuildScene(Catalog& catalog, const Description& description) {
       }
     }
   }
+  HideCoveredBody(catalog, description, &scene);
   return scene;
 }
 
@@ -3268,8 +3500,7 @@ void RenderPreview(const Scene& scene, const Matrix* local,
       Prepared entry;
       entry.batch = &batch;
       entry.material = BuildMaterial(scene, part, batch, expression);
-      SkinBatch(batch, part.carried ? carry_skin : skin, &entry.vertices,
-                part.kind == kKindBody ? kBodyInset : 0.0f);
+      SkinBatch(batch, part.carried ? carry_skin : skin, &entry.vertices);
       for (GpuVertex& vertex : entry.vertices) {
         const float x = vertex.position[0];
         const float z = vertex.position[2];
@@ -3414,6 +3645,216 @@ std::vector<uint8_t> EncodePng(uint32_t width, uint32_t height,
   PngChunk(&png, "IDAT", z);
   PngChunk(&png, "IEND", {});
   return png;
+}
+
+// ---- mip generation --------------------------------------------------------
+//
+// XamAvatarGenerateMipMaps has to fill the mip chain of every texture in the
+// asset buffer, in that texture's OWN format - xam's sub_8196B1E8 walks the
+// models at stride 0x34 and their textures at 0x2C and does exactly that. So a
+// DXT level has to come back out as DXT, which needs an encoder as well as the
+// decoder the pack loader already has.
+
+uint32_t TextureSliceBytes(uint32_t format, uint32_t width, uint32_t height,
+                           uint32_t* out_pitch) {
+  const uint32_t kind = format & 0x3F;
+  uint32_t block = 1;
+  uint32_t bytes = 4;
+  if (kind == 0x12) {
+    block = 4;
+    bytes = 8;
+  } else if (kind == 0x13 || kind == 0x14) {
+    block = 4;
+    bytes = 16;
+  } else if (kind != 0x06) {
+    return 0;
+  }
+  const uint32_t wide = (std::max(width, 1u) + block - 1) / block;
+  const uint32_t high = (std::max(height, 1u) + block - 1) / block;
+  const uint32_t pitch = wide * bytes;
+  if (out_pitch) {
+    *out_pitch = pitch;
+  }
+  return pitch * high;
+}
+
+bool DecodeTextureSlice(const uint8_t* data, size_t size, uint32_t format,
+                        uint32_t width, uint32_t height, uint32_t pitch,
+                        uint8_t* rgba) {
+  return DecodeSlice(data, size, format, width, height, pitch, rgba);
+}
+
+namespace {
+
+// One 4x4 block, endpoints from the bounding box of its colours. Good enough
+// for a mip level and entirely deterministic, which matters more here than
+// squeezing the last bit of quality out of the fit.
+void EncodeColorBlock(const uint8_t pixels[16][4], bool opaque, uint8_t* out) {
+  uint8_t low[3] = {255, 255, 255};
+  uint8_t high[3] = {0, 0, 0};
+  for (int i = 0; i < 16; ++i) {
+    for (int k = 0; k < 3; ++k) {
+      low[k] = std::min(low[k], pixels[i][k]);
+      high[k] = std::max(high[k], pixels[i][k]);
+    }
+  }
+  const auto pack = [](const uint8_t* rgb) -> uint16_t {
+    return uint16_t(((rgb[0] >> 3) << 11) | ((rgb[1] >> 2) << 5) |
+                    (rgb[2] >> 3));
+  };
+  uint16_t c0 = pack(high);
+  uint16_t c1 = pack(low);
+  // c0 > c1 selects the four-colour block; DXT1 uses the other ordering to mean
+  // "one index is transparent", which a mip of an opaque surface must not say.
+  if (opaque && c0 <= c1) {
+    if (c1 == 0xFFFF) {
+      c0 = c1;
+      c1 = 0;
+    } else {
+      c0 = uint16_t(c1 + 1);
+    }
+  }
+  uint8_t ends[4][3];
+  const auto unpack = [](uint16_t c, uint8_t* rgb) {
+    rgb[0] = uint8_t(((c >> 11) & 31) * 255 / 31);
+    rgb[1] = uint8_t(((c >> 5) & 63) * 255 / 63);
+    rgb[2] = uint8_t((c & 31) * 255 / 31);
+  };
+  unpack(c0, ends[0]);
+  unpack(c1, ends[1]);
+  for (int k = 0; k < 3; ++k) {
+    ends[2][k] = uint8_t((2 * ends[0][k] + ends[1][k]) / 3);
+    ends[3][k] = uint8_t((ends[0][k] + 2 * ends[1][k]) / 3);
+  }
+  uint32_t indices = 0;
+  for (int i = 0; i < 16; ++i) {
+    uint32_t best = 0;
+    int32_t best_error = INT32_MAX;
+    for (uint32_t e = 0; e < 4; ++e) {
+      int32_t error = 0;
+      for (int k = 0; k < 3; ++k) {
+        const int32_t d = int32_t(pixels[i][k]) - int32_t(ends[e][k]);
+        error += d * d;
+      }
+      if (error < best_error) {
+        best_error = error;
+        best = e;
+      }
+    }
+    indices |= best << (2 * i);
+  }
+  out[0] = uint8_t(c0);
+  out[1] = uint8_t(c0 >> 8);
+  out[2] = uint8_t(c1);
+  out[3] = uint8_t(c1 >> 8);
+  for (int k = 0; k < 4; ++k) {
+    out[4 + k] = uint8_t(indices >> (8 * k));
+  }
+}
+
+void EncodeAlphaBlock(const uint8_t pixels[16][4], uint8_t* out) {
+  uint8_t low = 255;
+  uint8_t high = 0;
+  for (int i = 0; i < 16; ++i) {
+    low = std::min(low, pixels[i][3]);
+    high = std::max(high, pixels[i][3]);
+  }
+  out[0] = high;
+  out[1] = low;
+  uint64_t indices = 0;
+  for (int i = 0; i < 16; ++i) {
+    uint32_t best = 0;
+    int32_t best_error = INT32_MAX;
+    for (uint32_t e = 0; e < 8; ++e) {
+      int32_t value;
+      if (e == 0) {
+        value = high;
+      } else if (e == 1) {
+        value = low;
+      } else if (high > low) {
+        value = (int32_t(high) * (8 - e) + int32_t(low) * (int32_t(e) - 1)) / 7;
+      } else {
+        value = low;
+      }
+      const int32_t error = std::abs(int32_t(pixels[i][3]) - value);
+      if (error < best_error) {
+        best_error = error;
+        best = e;
+      }
+    }
+    indices |= uint64_t(best) << (3 * i);
+  }
+  for (int k = 0; k < 6; ++k) {
+    out[2 + k] = uint8_t(indices >> (8 * k));
+  }
+}
+
+}  // namespace
+
+bool EncodeTextureSlice(const uint8_t* rgba, uint32_t format, uint32_t width,
+                        uint32_t height, uint32_t pitch, uint8_t* out,
+                        size_t size) {
+  const uint32_t kind = format & 0x3F;
+  if (kind == 0x06) {
+    for (uint32_t y = 0; y < height; ++y) {
+      for (uint32_t x = 0; x < width; ++x) {
+        const size_t d = size_t(y) * pitch + size_t(x) * 4;
+        if (d + 4 > size) {
+          return false;
+        }
+        const uint8_t* s = rgba + (size_t(y) * width + x) * 4;
+        // The same ARGB order DecodeSlice reads back.
+        out[d + 0] = s[3];
+        out[d + 1] = s[0];
+        out[d + 2] = s[1];
+        out[d + 3] = s[2];
+      }
+    }
+    return true;
+  }
+  const bool dxt1 = kind == 0x12;
+  const bool dxt3 = kind == 0x13;
+  const bool dxt5 = kind == 0x14;
+  if (!dxt1 && !dxt3 && !dxt5) {
+    return false;
+  }
+  const uint32_t block = dxt1 ? 8 : 16;
+  const uint32_t blocks_wide = (width + 3) / 4;
+  const uint32_t blocks_high = (height + 3) / 4;
+  for (uint32_t by = 0; by < blocks_high; ++by) {
+    for (uint32_t bx = 0; bx < blocks_wide; ++bx) {
+      uint8_t pixels[16][4] = {};
+      for (int i = 0; i < 16; ++i) {
+        const uint32_t x = std::min(bx * 4 + (i & 3), width - 1);
+        const uint32_t y = std::min(by * 4 + uint32_t(i >> 2), height - 1);
+        std::memcpy(pixels[i], rgba + (size_t(y) * width + x) * 4, 4);
+      }
+      uint8_t packed[16] = {};
+      if (dxt1) {
+        EncodeColorBlock(pixels, true, packed);
+      } else {
+        EncodeColorBlock(pixels, true, packed + 8);
+        if (dxt5) {
+          EncodeAlphaBlock(pixels, packed);
+        } else {
+          for (int i = 0; i < 16; i += 2) {
+            packed[i / 2] =
+                uint8_t((pixels[i][3] >> 4) | ((pixels[i + 1][3] >> 4) << 4));
+          }
+        }
+      }
+      // Stored byte-swapped in halfwords, exactly as DecodeSlice un-swaps it.
+      for (uint32_t k = 0; k + 1 < block; k += 2) {
+        std::swap(packed[k], packed[k + 1]);
+      }
+      const size_t d = size_t(by) * pitch + size_t(bx) * block;
+      if (d + block > size) {
+        return false;
+      }
+      std::memcpy(out + d, packed, block);
+    }
+  }
+  return true;
 }
 
 }  // namespace avatar

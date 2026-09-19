@@ -11,8 +11,10 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstring>
+#include <iterator>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -27,6 +29,7 @@
 #include "xenia/kernel/xam/xam_module.h"
 #include "xenia/kernel/xam/xam_private.h"
 #include "xenia/kernel/xna/xna_avatar.h"
+#include "xenia/memory.h"
 
 DEFINE_bool(allow_avatar_initialization, false,
             "Enable Avatar Initialization\n"
@@ -103,6 +106,10 @@ void XamAvatarShutdown_entry() {
 DECLARE_XAM_EXPORT1(XamAvatarShutdown, kAvatars, kStub);
 
 // Get & Set
+// Defined below, beside the enumeration it filters.
+static bool AvatarAssetMatches(const xe::kernel::xna::avatar::Entry& entry,
+                               uint32_t kind_mask, uint32_t body);
+
 dword_result_t XamAvatarGetManifestLocalUser_entry(
     dword_t user_index, pointer_t<X_AVATAR_METADATA> avatar_metadata_ptr,
     pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
@@ -149,17 +156,48 @@ dword_result_t XamAvatarGetManifestLocalUser_entry(
                       [](uint16_t item) {
                         return item != xe::kernel::xna::avatar::kNoItem;
                       }));
-    // The editor inserts each component into its collection keyed by the type
-    // at +0x10 of the 32-byte record, and a failed insert aborts the whole
-    // loop - so a zero or bogus type there leaves the collection empty even
-    // though the manifest looks populated.
-    for (size_t i = 0; i < parsed.components.size(); ++i) {
-      const uint8_t* raw = parsed.components[i].data();
+    // The editor has no catalogue of its own. Every id we put in the manifest
+    // it resolves against the records XamAvatarEnumAssets handed it, so an id
+    // that is not in that enumeration names an asset the editor does not
+    // believe exists - and a category it cannot find an asset for is a
+    // category it will not let you colour. This prints, for every id in the
+    // manifest, whether it is in the catalogue at all and whether our own
+    // enumeration filter would have shown it to the editor.
+    auto* catalog = xe::kernel::xna::XnaAvatarCatalog();
+    const auto check = [&](const char* what, size_t index, const uint8_t* raw) {
+      const auto* entry = catalog ? catalog->FindAsset(raw) : nullptr;
       XELOGW(
-          "[avatar]   component {}: id {:02X}{:02X}{:02X}{:02X}... type "
-          "{:02X}{:02X}{:02X}{:02X}",
-          i, raw[0], raw[1], raw[2], raw[3], raw[0x10], raw[0x11], raw[0x12],
-          raw[0x13]);
+          "[avatar]   {} {}: id {:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}"
+          "{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X} mask "
+          "{:02X}{:02X} -> {}",
+          what, index, raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6],
+          raw[7], raw[8], raw[9], raw[10], raw[11], raw[12], raw[13], raw[14],
+          raw[15], raw[0x10], raw[0x11],
+          entry ? fmt::format("catalogue entry {} kind {:08X} enumerated={}",
+                              entry->index, entry->kind,
+                              AvatarAssetMatches(*entry, 0x01FFFFFF, 1))
+                : std::string("NOT IN THE CATALOGUE"));
+    };
+    const uint8_t* manifest_bytes = manifest.data();
+    static constexpr const char* kFaceNames[6] = {
+        "face mouth", "face eyes",   "face eyebrows",
+        "face fhair", "face shadow", "face paint"};
+    for (size_t i = 0; i < 6; ++i) {
+      const uint8_t* raw = manifest_bytes + 0x3C + i * 0x20;
+      bool empty = true;
+      for (size_t k = 0; k < 16; ++k) {
+        empty = empty && raw[k] == 0;
+      }
+      if (empty) {
+        XELOGW("[avatar]   {} {}: empty", kFaceNames[i], i);
+        continue;
+      }
+      check(kFaceNames[i], i, raw);
+    }
+    check("body", 0, manifest_bytes + 0x120);
+    check("head", 0, manifest_bytes + 0x140);
+    for (size_t i = 0; i < parsed.components.size(); ++i) {
+      check("component", i, parsed.components[i].data());
     }
     TraceAvatarDone("XamAvatarGetManifestLocalUser",
                     overlapped_ptr.guest_address(), X_ERROR_SUCCESS);
@@ -260,11 +298,44 @@ DECLARE_XAM_EXPORT1(XamAvatarGetAssets, kAvatars, kStub);
 // 0x60000A) - there is no overlapped, it is synchronous. Declaring five here
 // shifted every parameter after the missing one onto the wrong register.
 dword_result_t XamAvatarSetCustomAsset_entry(
-    dword_t buffer_size, lpdword_t asset_data_ptr, dword_t custom_color_count,
+    dword_t buffer_size, lpvoid_t asset_data_ptr, dword_t custom_color_count,
     lpdword_t custom_colors_ptr, dword_t unknown,
     pointer_t<X_AVATAR_METADATA> avatar_metadata_ptr) {
   TraceAvatar("XamAvatarSetCustomAsset", 0);
-  return X_STATUS_SUCCESS;
+  // The SDK wrapper (XAvatarSetCustomAsset, 0x92143058 in the editor) checks
+  // all of this before it ever reaches the export, so a call that fails here
+  // came from something that did not go through the wrapper.
+  if (!buffer_size || buffer_size > 0xFFFFFF || !asset_data_ptr ||
+      custom_color_count > 3 || (custom_color_count && !custom_colors_ptr) ||
+      !avatar_metadata_ptr) {
+    return X_E_INVALIDARG;
+  }
+  const uint8_t* blob = asset_data_ptr.as<const uint8_t*>();
+  const bool is_strb = buffer_size >= 4 && std::memcmp(blob, "STRB", 4) == 0;
+  XELOGW(
+      "[avatar] XamAvatarSetCustomAsset: {} bytes at {:08X} ({}), {} custom "
+      "colour(s), metadata {:08X} - accepted and ignored",
+      uint32_t(buffer_size), asset_data_ptr.guest_address(),
+      is_strb ? "STRB" : "not an asset blob", uint32_t(custom_color_count),
+      avatar_metadata_ptr.guest_address());
+  // NOT applied, and not faked either.
+  //
+  // The export packs its six arguments into a 0x18 block and makes a
+  // synchronous in-process call to app 0xF2 message 0x60000A; the handler is
+  // not in xam's exported code, and what it writes into the metadata - the
+  // SDK says the metadata ends up holding a POINTER to this very buffer - is
+  // a layout nothing on this image states. The one thing the blob cannot tell
+  // us is which component it replaces: the catalogue takes an asset's kind
+  // from the first dword of its asset id, and a title-supplied buffer has no
+  // id. The sample item on disk has no tag 8 record either, so the body/type
+  // metadata is not always there to fall back on.
+  //
+  // Succeeding without applying it means the avatar draws with its own items
+  // instead of the title's custom one, which is what happens today anyway;
+  // failing would send callers that check the result down an error path for a
+  // feature that was never there. The log line above is what a run needs to
+  // take this further.
+  return X_ERROR_SUCCESS;
 }
 DECLARE_XAM_EXPORT1(XamAvatarSetCustomAsset, kAvatars, kStub)
 
@@ -388,61 +459,116 @@ dword_result_t XamAvatarGetMetadataSignedOutProfile_entry(
 }
 DECLARE_XAM_EXPORT1(XamAvatarGetMetadataSignedOutProfile, kAvatars, kStub);
 
+// XAM does not parse anything here. 0x816753C8 wraps the manifest in a reader
+// and tail-calls 0x8196CA80, which is two sixteen-byte memcmps of the BODY
+// ENTRY at manifest+0x120 against two constants in its own .rdata:
+//
+//   0x81632E68  00 00 00 02 00 00 00 01 C1 C8 F1 09 A1 9C B2 E0  -> 1 male
+//   0x81632E78  00 00 00 02 00 01 00 02 C1 C8 F1 09 A1 9C B2 E0  -> 2 female
+//
+// and ZERO for anything else. Deriving the answer from our own description
+// parser instead could never return that zero, and it answered Male for a
+// manifest whose body entry says nothing of the kind. Our own writer emits
+// exactly these two ids, so the value does not change for a manifest we built
+// - but one we did not now gets the console's answer instead of a guess.
 dword_result_t XamAvatarManifestGetBodyType_entry(
     pointer_t<X_AVATAR_METADATA> avatar_metadata_ptr) {
   TraceAvatar("XamAvatarManifestGetBodyType", 0);
+  static constexpr uint8_t kMaleBodyId[16] = {
+      0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01,
+      0xC1, 0xC8, 0xF1, 0x09, 0xA1, 0x9C, 0xB2, 0xE0};
+  static constexpr uint8_t kFemaleBodyId[16] = {
+      0x00, 0x00, 0x00, 0x02, 0x00, 0x01, 0x00, 0x02,
+      0xC1, 0xC8, 0xF1, 0x09, 0xA1, 0x9C, 0xB2, 0xE0};
+  constexpr uint32_t kManifestBodyOffset = 0x120;
   const uint32_t address = avatar_metadata_ptr.guest_address();
   const uint8_t* bytes =
       address ? kernel_memory()->TranslateVirtual<const uint8_t*>(address)
               : nullptr;
   if (!bytes) {
+    return static_cast<uint8_t>(X_AVATAR_BODY_TYPE::Unknown);
+  }
+  const uint8_t* body = bytes + kManifestBodyOffset;
+  if (std::memcmp(body, kMaleBodyId, sizeof(kMaleBodyId)) == 0) {
     return static_cast<uint8_t>(X_AVATAR_BODY_TYPE::Male);
   }
-  return xe::kernel::xna::XnaAvatarBodyType(bytes, sizeof(X_AVATAR_METADATA))
-             ? static_cast<uint8_t>(X_AVATAR_BODY_TYPE::Male)
-             : static_cast<uint8_t>(X_AVATAR_BODY_TYPE::Female);
+  if (std::memcmp(body, kFemaleBodyId, sizeof(kFemaleBodyId)) == 0) {
+    return static_cast<uint8_t>(X_AVATAR_BODY_TYPE::Female);
+  }
+  XELOGW(
+      "[avatar] ManifestGetBodyType: body entry {:02X}{:02X}{:02X}{:02X} "
+      "{:02X}{:02X} {:02X}{:02X} {:02X}{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}"
+      "{:02X} matches neither stock body - XAM answers UNKNOWN",
+      body[0], body[1], body[2], body[3], body[4], body[5], body[6], body[7],
+      body[8], body[9], body[10], body[11], body[12], body[13], body[14],
+      body[15]);
+  return static_cast<uint8_t>(X_AVATAR_BODY_TYPE::Unknown);
 }
-DECLARE_XAM_EXPORT1(XamAvatarManifestGetBodyType, kAvatars, kStub);
+DECLARE_XAM_EXPORT1(XamAvatarManifestGetBodyType, kAvatars, kImplemented);
 
-dword_result_t XamAvatarGetInstrumentation_entry(qword_t unk1, lpdword_t unk2) {
-  /* Notes:
-     - unk1 not used?
-     - unk1 recieves values of 1, 2, and 6
-     - mark implemented once confirmed first param not used and params named
-  */
+// Complete, not a stub: the real export at 0x816755D0 is six instructions -
+// it writes zero through its second argument when that is non-null, ignores
+// the first entirely, and returns 1. Instrumentation is off on a retail
+// console and this is what "off" looks like.
+dword_result_t XamAvatarGetInstrumentation_entry(dword_t counter,
+                                                 lpdword_t out_value) {
   TraceAvatar("XamAvatarGetInstrumentation", 0);
-  if (unk2) {
-    *unk2 = 0;
+  if (out_value) {
+    *out_value = 0;
   }
   return 1;
 }
-DECLARE_XAM_EXPORT1(XamAvatarGetInstrumentation, kAvatars, kStub);
+DECLARE_XAM_EXPORT1(XamAvatarGetInstrumentation, kAvatars, kImplemented);
 
-dword_result_t XamAvatarGetAssetIcon_entry(
-    lpqword_t unk1, dword_t unk2, lpqword_t unk3, lpqword_t unk4,
-    pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
-  TraceAvatar("XamAvatarGetAssetIcon", overlapped_ptr.guest_address());
+// These two are the same shim twice over: r3 is a pointer to the sixteen-byte
+// XAVATAR_ASSET_ID, r7 is the overlapped, and r4/r5/r6 go into a 0x1C message
+// for app 0xF2 - 0x60000B for the icon, 0x600008 for the binary.
+//
+// What the three middle arguments MEAN is not decided here, and deliberately:
+// no module on this console image calls either export (AvatarEditor.xex
+// imports both and never reaches them; dash.xex imports neither), xam itself
+// never references its own "icon.png" string, and the public XAvatar SDK has
+// no wrapper for them. So the ordering of buffer, size and out-size would be
+// an invention, and a wrong one writes over the caller's memory.
+//
+// They therefore report "nothing here" and complete cleanly, and print the
+// three dwords so the first real caller settles it in one line of log rather
+// than another read of the disassembly.
+static dword_result_t AvatarAssetFileStub(
+    const char* name, uint32_t message, lpvoid_t asset_id_ptr, dword_t a2,
+    dword_t a3, dword_t a4, pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
+  TraceAvatar(name, overlapped_ptr.guest_address());
+  const uint8_t* asset_id =
+      asset_id_ptr ? asset_id_ptr.as<const uint8_t*>() : nullptr;
+  const auto* installed =
+      asset_id ? xna::XnaFindInstalledAvatarAsset(asset_id) : nullptr;
+  XELOGW(
+      "[avatar] {} msg {:06X} id {:08X} args {:08X} {:08X} {:08X} - {}; the "
+      "argument roles are unknown, so nothing is written",
+      name, message, asset_id_ptr.guest_address(), uint32_t(a2), uint32_t(a3),
+      uint32_t(a4),
+      installed ? "the asset IS installed" : "no such installed asset");
+  const X_RESULT result = X_ERROR_FUNCTION_FAILED;
   if (overlapped_ptr) {
-    kernel_state()->CompleteOverlappedImmediate(overlapped_ptr,
-                                                X_ERROR_SUCCESS);
+    kernel_state()->CompleteOverlappedImmediate(overlapped_ptr, result);
     return X_ERROR_IO_PENDING;
   }
+  return result;
+}
 
-  return X_STATUS_SUCCESS;
+dword_result_t XamAvatarGetAssetIcon_entry(
+    lpvoid_t asset_id_ptr, dword_t a2, dword_t a3, dword_t a4,
+    pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
+  return AvatarAssetFileStub("XamAvatarGetAssetIcon", 0x60000B, asset_id_ptr,
+                             a2, a3, a4, overlapped_ptr);
 }
 DECLARE_XAM_EXPORT1(XamAvatarGetAssetIcon, kAvatars, kStub);
 
 dword_result_t XamAvatarGetAssetBinary_entry(
-    lpvoid_t asset_metadata, dword_t unk2, dword_t unk3, dword_t unk4,
+    lpvoid_t asset_id_ptr, dword_t a2, dword_t a3, dword_t a4,
     pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
-  TraceAvatar("XamAvatarGetAssetBinary", overlapped_ptr.guest_address());
-  if (overlapped_ptr) {
-    kernel_state()->CompleteOverlappedImmediate(overlapped_ptr,
-                                                X_ERROR_SUCCESS);
-    return X_ERROR_IO_PENDING;
-  }
-
-  return X_STATUS_SUCCESS;
+  return AvatarAssetFileStub("XamAvatarGetAssetBinary", 0x600008, asset_id_ptr,
+                             a2, a3, a4, overlapped_ptr);
 }
 DECLARE_XAM_EXPORT1(XamAvatarGetAssetBinary, kAvatars, kStub);
 
@@ -567,15 +693,17 @@ dword_result_t XamAvatarGenerateMipMaps_entry(
   // stores the result into its own status field, so a miss here stalls the
   // avatar's load state machine.
   TraceAvatar("XamAvatarGenerateMipMaps", overlapped_ptr.guest_address());
+  const X_RESULT result =
+      GenerateAvatarMipMaps(avatar_assets_ptr.guest_address(),
+                            mip_map_buffer_ptr.guest_address(), buffer_size);
   if (overlapped_ptr) {
-    kernel_state()->CompleteOverlappedImmediate(overlapped_ptr,
-                                                X_ERROR_SUCCESS);
+    kernel_state()->CompleteOverlappedImmediate(overlapped_ptr, result);
     return X_ERROR_IO_PENDING;
   }
 
-  return X_STATUS_SUCCESS;
+  return result;
 }
-DECLARE_XAM_EXPORT1(XamAvatarGenerateMipMaps, kAvatars, kStub);
+DECLARE_XAM_EXPORT1(XamAvatarGenerateMipMaps, kAvatars, kImplemented);
 
 dword_result_t XamLaunchAvatarEditor_entry(dword_t user_index, dword_t flags,
                                            lpu16string_t item_ptr) {
@@ -634,14 +762,17 @@ struct X_AVATAR_ASSET_RECORD {
   // count is what the tile builder turns into a button class, so zero here
   // leaves a tile with no class at all.
   uint8_t colour_layout;
-  // +0x01D. Three bytes per colour group, `record + 0x1D + group * 3`, which
-  // the enumerator packs into one dword per group. Nine groups fit before the
-  // next field, and a group is skipped entirely if colours_per_group > 3.
-  uint8_t colour_groups[9][3];  // +0x01D .. +0x037
+  // +0x01D. The colour table: `colour_layout >> 4` groups of
+  // `colour_layout & 0xF` RGB triples, packed back to back from here. The
+  // editor reads triple `k` for k in [0, 3 * groups) as the three bytes at
+  // +0x1D + k*3 and packs each into a dword (0x92217638..0x92217664), so three
+  // groups of three colours is 27 bytes and fills this field EXACTLY. Three
+  // groups is therefore the most the record can carry, whatever the pack holds.
+  uint8_t colour_table[27];  // +0x01D .. +0x037
   // +0x038 onwards. The tile builder's copies from "+0x28" and "+0x38" that
   // this struct used to describe belong to the editor's own 0x198-byte record,
   // not to this buffer - it builds that from this one and the tile reads that.
-  // The old component_type at +0x28 sat inside the colour groups above, so it
+  // The old component_type at +0x28 sat inside the colour table above, so it
   // was never a field here at all.
   //
   // What this region really is has not been read. It is left unnamed rather
@@ -676,7 +807,8 @@ static_assert(sizeof(X_AVATAR_ASSET_RECORD) == 0x2C4,
               "the editor steps its enumeration buffer by 0x2C4");
 static_assert(offsetof(X_AVATAR_ASSET_RECORD, flags) == 0x18, "");
 static_assert(offsetof(X_AVATAR_ASSET_RECORD, colour_layout) == 0x1C, "");
-static_assert(offsetof(X_AVATAR_ASSET_RECORD, colour_groups) == 0x1D, "");
+static_assert(offsetof(X_AVATAR_ASSET_RECORD, colour_table) == 0x1D, "");
+static_assert(offsetof(X_AVATAR_ASSET_RECORD, unknown_038) == 0x38, "");
 static_assert(offsetof(X_AVATAR_ASSET_RECORD, name) == 0xE4, "");
 static_assert(offsetof(X_AVATAR_ASSET_RECORD, type_mask) == 0x10, "");
 static_assert(offsetof(X_AVATAR_ASSET_RECORD, package_id) == 0x234, "");
@@ -764,22 +896,37 @@ static void WriteAvatarAssetRecord(
   // it, which is exactly what the old slot number did.
   out->body_type_primary = 0;
   out->body_type_fallback = static_cast<uint8_t>(entry.BodyMask());
-  // Bit 0 is not decoration: the editor drops every record that lacks it.
-  out->flags = 1;
+  // The PACK's flags byte, zero extended, exactly as XAM's record filler does
+  // it (0x8197E300: `record[0x18] = *(u8*)(entry + 0x06)`). Bit 0 is the one
+  // the editor's enumerator tests before it keeps a record, and bit 3 is half
+  // of what decides whether a Colour tile lights up - see the colour layout
+  // below. Forcing this to 1 cleared bit 3 on every asset in the pack.
+  out->flags = entry.flags_byte();
 
-  // Colour layout. The enumerator reads `>> 4` as the number of colour groups
-  // and `& 0xF` as the colours in each, and the tile builder turns that second
-  // number into the button class it uses - 1, 2 or 3 give
-  // Grid1x1{One,Two,Three}ColourButton. Leaving this zero, which is what we did
-  // before, gives a tile with no class.
+  // The colour layout and the table behind it are the PACK's, copied whole.
+  // XAM does not compute them: `sub_8197E300` is
+  // `memcpy(record + 0x1C, entry + 0x07, 0x91)`, so byte +0x07 of the pack
+  // entry lands on colour_layout and the rest follows it verbatim.
   //
-  // The catalogue carries no colour data for an asset, so there is nothing
-  // truthful to put in the groups themselves: one group of one colour is the
-  // least we can say that still produces a usable tile. That is OUR choice, not
-  // the console's data, and it is the thing to revisit when the asset pack's
-  // per-item colour table is parsed.
-  out->colour_layout = (1 << 4) | 1;
-  std::memset(out->colour_groups, 0, sizeof(out->colour_groups));
+  // This decides the Colour menu. `sub_920E9F60` in the editor sets a colour
+  // tile's enable byte (+0x20C) from +0x30 of the asset record for whatever
+  // the avatar is wearing in that category, and +0x30 is computed at
+  // 0x922175B4 as:
+  //
+  //     groups = record[0x1C] >> 4
+  //     colourable = groups > 1 || (groups == 0 && (record[0x18] & 8))
+  //
+  // The pack answers that per asset: every hairstyle, eyebrow, eye, facial
+  // hair and eye shadow carries groups 0 with flags bit 3 set, and the 36
+  // shirts with colourways carry groups 1. The old placeholder wrote
+  // `(1 << 4) | 1` for everything the pack gave no table, which is groups == 1
+  // - neither branch - so every Colour tile but Skin and Eye Shadow, the two
+  // the editor never gates, greyed out.
+  static_assert(offsetof(X_AVATAR_ASSET_RECORD, colour_layout) + 0x91 <=
+                    sizeof(X_AVATAR_ASSET_RECORD),
+                "the pack block has to fit from colour_layout on");
+  std::memcpy(&out->colour_layout, entry.record_block.data(),
+              entry.record_block.size());
 
   // The manifest component that matches this asset is deliberately NOT copied
   // in here any more. The 12-byte payload and the count this used to write went
@@ -938,36 +1085,61 @@ dword_result_t XamAvatarEndEnumAssets_entry(
 DECLARE_XAM_EXPORT1(XamAvatarEndEnumAssets, kAvatars, kStub);
 
 // Other
+// The eight-slot ring the notification data lives in.
+//
+// The console does NOT broadcast a copy: XamAvatarWearNow hands listeners a
+// POINTER to a 0x14 block in xam's own data at 0x81A9B188, cycling a counter
+// at 0x81A9B228 through eight slots so a listener that reads late still finds
+// something valid. Broadcasting a host address instead would hand the guest a
+// number it cannot dereference, so this allocates the ring out of guest memory
+// once and keeps the console's shape - eight slots, 0x14 each, round robin.
+static uint32_t WearNowMessageSlot() {
+  static std::mutex mutex;
+  static uint32_t ring = 0;
+  static uint32_t counter = 0;
+  constexpr uint32_t kSlots = 8;
+  constexpr uint32_t kSlotSize = 0x14;
+  std::lock_guard<std::mutex> lock(mutex);
+  if (!ring) {
+    ring = kernel_memory()->SystemHeapAlloc(kSlots * kSlotSize);
+    if (!ring) {
+      return 0;
+    }
+    std::memset(kernel_memory()->TranslateVirtual<uint8_t*>(ring), 0,
+                kSlots * kSlotSize);
+  }
+  return ring + (++counter & (kSlots - 1)) * kSlotSize;
+}
+
+// (user index, XAVATAR_ASSET_ID*, overlapped). Inside the Avatar Editor the
+// console never leaves the process: it fills a slot with {user index, the
+// sixteen id bytes}, tells the loaded apps and the notification listeners
+// about it, and completes the overlapped itself. Every other title posts the
+// same 0x14 block to app 0xF3 as message 0x600018 instead.
 dword_result_t XamAvatarWearNow_entry(
-    qword_t unk1, lpdword_t unk2, pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
+    dword_t user_index, lpvoid_t asset_id_ptr,
+    pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
   TraceAvatar("XamAvatarWearNow", overlapped_ptr.guest_address());
-  X_RESULT result = X_ERROR_SUCCESS;
-  if (kernel_state()->title_id() == kAvatarEditorID) {
-    /*
-      - ops
-    XamSendMessageToLoadedApps(0xffffffff8000000e,0xffffffff80050018,lVar5);
-    XNotifyBroadcast(0xffffffff80050018,lVar5);
-    if (overlapped_ptr) {
-      XMsgCompleteIORequest(overlapped_ptr,0,0,0);
+  const X_RESULT result = X_ERROR_SUCCESS;
+  const uint32_t slot = WearNowMessageSlot();
+  if (slot) {
+    uint8_t* block = kernel_memory()->TranslateVirtual<uint8_t*>(slot);
+    xe::store_and_swap<uint32_t>(block, user_index);
+    if (asset_id_ptr) {
+      std::memcpy(block + 4, asset_id_ptr.as<const uint8_t*>(), 0x10);
+    } else {
+      std::memset(block + 4, 0, 0x10);
     }
-    */
-    // The console completes it here too (see XMsgCompleteIORequest above);
-    // dropping it left a caller that polls this overlapped pending forever.
-    if (overlapped_ptr) {
-      kernel_state()->CompleteOverlappedImmediate(overlapped_ptr, result);
-      return X_ERROR_IO_PENDING;
-    }
-  } else {
-    // buffer_ptr = concat(unk1, *unk2);
-    //  XMsgStartIORequestEx(0xf3,0x600018,overlapped_ptr,&buffer_ptr,0x14,0);
-    if (overlapped_ptr) {
-      kernel_state()->CompleteOverlappedImmediate(overlapped_ptr, result);
-      return X_ERROR_IO_PENDING;
-    }
+    kernel_state()->BroadcastNotification(kXNotificationSystemAvatarWearNow,
+                                          slot);
+  }
+  if (overlapped_ptr) {
+    kernel_state()->CompleteOverlappedImmediate(overlapped_ptr, result);
+    return X_ERROR_IO_PENDING;
   }
   return result;
 }
-DECLARE_XAM_EXPORT1(XamAvatarWearNow, kAvatars, kStub);
+DECLARE_XAM_EXPORT1(XamAvatarWearNow, kAvatars, kImplemented);
 
 dword_result_t XamAvatarReinstallAwardedAsset_entry(lpstring_t string_out_ptr,
                                                     dword_t string_size,

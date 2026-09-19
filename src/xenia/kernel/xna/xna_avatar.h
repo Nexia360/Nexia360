@@ -14,6 +14,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <string>
+#include <string_view>
+#include <vector>
 
 #include "xenia/kernel/xna/xna_avatar_format.h"
 #include "xenia/kernel/xna/xna_gpu.h"
@@ -37,6 +40,39 @@ bool XnaDirectDrawAvatar(const XnaGpuDraw& target,
                          const XnaAvatarDrawBatch* batches, uint32_t count);
 
 avatar::Catalog* XnaAvatarCatalog();
+
+// One avatar item the user actually owns, as the content scan found it.
+//
+// The catalogue keeps the decoded asset blob and nothing else, but the two
+// XAM exports that answer questions ABOUT an item - XamAvatarGetAssetIcon and
+// XamUserCreateAvatarAssetEnumerator - need the package's own metadata and, in
+// the icon's case, a file the catalogue never reads. So the scan records this
+// alongside, and the package stays on disk until something asks for it.
+struct XnaInstalledAvatarAsset {
+  std::array<uint8_t, 16> asset_id = {};
+  // The title that awarded the item. The Avatar Editor asks for exactly this
+  // set when it checks whether a worn award is still owned, and it takes the
+  // id out of the asset id's own last four bytes.
+  uint32_t title_id = 0;
+  uint32_t sub_category = 0;
+  uint32_t colorizable = 0;
+  uint8_t skeleton_version_mask = 0;
+  std::u16string name;
+  std::filesystem::path path;
+};
+
+// Both walk the same list the catalogue was built from, so neither triggers a
+// second scan; the first call to either loads it exactly as XnaAvatarCatalog
+// does.
+const std::vector<XnaInstalledAvatarAsset>& XnaInstalledAvatarAssets();
+const XnaInstalledAvatarAsset* XnaFindInstalledAvatarAsset(
+    const uint8_t* asset_id);
+// Reads one file out of an installed item's package ("icon.png",
+// "asset_v2.bin"). Returns false when the package or the file is gone.
+bool XnaReadInstalledAvatarAssetFile(const XnaInstalledAvatarAsset& asset,
+                                     std::string_view file_name,
+                                     std::vector<uint8_t>* out);
+
 std::filesystem::path XnaAvatarProfilePath(uint64_t xuid);
 bool XnaAvatarLoadProfile(uint64_t xuid, avatar::Description* out);
 bool XnaAvatarSaveProfile(uint64_t xuid,

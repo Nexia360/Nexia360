@@ -13,6 +13,7 @@
 #include "xenia/hid/input_system.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/shim_utils.h"
+#include "xenia/kernel/xam/xam_avatar.h"
 #include "xenia/kernel/xam/xam_private.h"
 #include "xenia/xbox.h"
 

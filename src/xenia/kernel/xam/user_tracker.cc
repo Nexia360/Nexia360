@@ -1227,6 +1227,16 @@ bool UserTracker::UpdateUserIcon(uint64_t xuid,
   return true;
 }
 
+bool UserTracker::WriteUserTile(uint64_t xuid, XTileType tile_type,
+                                std::span<const uint8_t> icon_data) {
+  auto user = kernel_state()->xam_state()->GetUserProfile(xuid);
+  if (!user || icon_data.empty()) {
+    return false;
+  }
+  user->WriteProfileIcon(tile_type, icon_data);
+  return true;
+}
+
 void UserTracker::UpdateGamerpicSetting(uint64_t xuid, uint32_t title_id,
                                         uint32_t big_tile_id,
                                         uint32_t small_tile_id) {

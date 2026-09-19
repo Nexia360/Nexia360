@@ -53,6 +53,14 @@ struct XnaTextureView {
 // the level was never filled.
 bool XnaLookupTexture(uint32_t handle, uint32_t level, XnaTextureView* out);
 
+// The same, for one face of a cube map. A cube's six faces each carry the whole
+// mip chain and they share one guest allocation, so the mip number alone does
+// not name a face's pixels - TextureCube_CreateHandle stores them at
+// `face * levels + level`. Face 0 of a 2D texture is the texture itself, which
+// is why XnaLookupTexture is this with face 0.
+bool XnaLookupTextureFace(uint32_t handle, uint32_t face, uint32_t level,
+                          XnaTextureView* out);
+
 // Frames presented, and command packets accepted - reported alongside the
 // entry-point usage so a run says whether the title is actually drawing.
 void CountPresent();

@@ -10,6 +10,7 @@
 #include "xenia/app/emulator_window.h"
 
 #include <mutex>
+#include <set>
 
 #include "third_party/imgui/imgui.h"
 #include "third_party/stb/stb_image_write.h"
@@ -3387,27 +3388,63 @@ constexpr const char* kDashboardTypefaces[] = {
 
 // The update ships its own copies of those faces and they render wrong. The
 // flash image's are the ones the console actually draws with, and the UI
-// installer has already put them next door under the name each font carries in
-// its own sfnt table - so whatever it extracted wins over what the zip held.
+// installer has already put them next door - so whatever it extracted wins
+// over what the zip held.
+//
+// BY WHAT IS INSIDE THE FILE, NOT BY ITS NAME. The extractor names a font from
+// its own sfnt table, and two of the three faces call themselves "Xbox TC" and
+// "Xbox JK" there, so they landed as font1.xtt and font2.xtt and this matched
+// nothing but Segoe. Every .xtt in the asset folder is opened and asked which
+// typeface it is.
 std::string ReplaceDashboardFontsFromFlash(
     const std::filesystem::path& dashboard) {
   std::error_code ec;
   const auto ui = kernel::xam::xui::DefaultAssetDirectory();
   std::string report;
-  for (const char* name : kDashboardTypefaces) {
-    const auto flash = ui / name;
-    if (!std::filesystem::exists(flash, ec)) {
+  std::set<std::string> placed;
+  size_t seen = 0;
+  // The two installs happen in either order, and on a clean machine the flash
+  // image is often first - so the folder the faces go into may not exist yet.
+  std::filesystem::create_directories(dashboard, ec);
+  ec.clear();
+  for (const auto& file : std::filesystem::directory_iterator(
+           ui, std::filesystem::directory_options::skip_permission_denied,
+           ec)) {
+    if (ec) {
+      break;
+    }
+    if (!file.is_regular_file(ec) || file.path().extension() != ".xtt") {
+      continue;
+    }
+    ++seen;
+    const std::string name =
+        kernel::xam::xui::DashboardTypefaceFor(file.path());
+    if (name.empty() || placed.count(name)) {
       continue;
     }
     std::filesystem::copy_file(
-        flash, dashboard / name,
+        file.path(), dashboard / name,
         std::filesystem::copy_options::overwrite_existing, ec);
     if (ec) {
       ec.clear();
       continue;
     }
-    report +=
-        std::string("Dashboard: ") + name + " taken from the flash image\n";
+    placed.insert(name);
+    report += fmt::format("Dashboard: {} taken from the flash image ({})\n",
+                          name, xe::path_to_utf8(file.path().filename()));
+  }
+  // Only worth saying once there ARE flash assets to have missed it in. A user
+  // who has installed the system update and not a NAND dump yet gets the
+  // one line that tells them what to do, not three failures.
+  if (!seen) {
+    return "Dashboard: no flash typefaces installed - install a NAND dump "
+           "through Install Content for the console's own fonts\n";
+  }
+  for (const char* name : kDashboardTypefaces) {
+    if (!placed.count(name)) {
+      report += std::string("Dashboard: ") + name +
+                " is not in the extracted flash assets\n";
+    }
   }
   return report;
 }

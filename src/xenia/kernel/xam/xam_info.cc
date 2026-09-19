@@ -210,6 +210,12 @@ dword_result_t XamQueryLiveHiveA_entry(
 }
 DECLARE_XAM_EXPORT1(XamQueryLiveHiveA, kMisc, kStub);
 
+// 0x8000000A. XAM returns this - not IO_PENDING - from the in-process hive
+// lookup, and its callers treat it as success: the Avatar Editor's
+// sub_920D57F8 records an error only for a negative result that is not this
+// one.
+constexpr X_RESULT X_E_HIVE_ANSWERED_IN_PROCESS = 0x8000000A;
+
 dword_result_t XamGetLiveHiveValueA_entry(
     lpstring_t feature_name, lpstring_t value_ptr, dword_t value_buffer_size,
     dword_t unk, pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
@@ -255,10 +261,31 @@ dword_result_t XamGetLiveHiveValueA_entry(
     return result == X_ERROR_SUCCESS ? result : extended_error;
   }
 
+  // A fourth argument of -1 asks for the IN-PROCESS answer, and XAM gives it
+  // straight back: 0x8169AF50 routes that case to 0x8169AD08, which looks the
+  // value up, writes ZERO to both the overlapped's result and its extended
+  // error - so the request reads as already complete, never as 997 - and
+  // returns 0x8000000A.
+  //
+  // Deferring it instead is what turned the Avatar Editor's photo booth off.
+  // It reads the flag through sub_920FC798 -> sub_920D5918 -> sub_920D58B8,
+  // and that last one hands back the value buffer only when the overlapped is
+  // NOT pending; twenty-five milliseconds on a worker thread is far too late,
+  // and the flag object is never asked again, so "AvatarPhotoBoothEnabled"
+  // stayed empty and Gamer Picture reported itself as Live-only.
+  if (unk == 0xFFFFFFFF) {
+    uint32_t extended_error = 0;
+    uint32_t length = 0;
+    const X_RESULT result = run(extended_error, length);
+    kernel_state()->CompleteOverlappedImmediateEx(
+        overlapped_ptr.guest_address(), result, extended_error, length);
+    return X_E_HIVE_ANSWERED_IN_PROCESS;
+  }
+
   kernel_state()->CompleteOverlappedDeferredEx(run, overlapped_ptr);
   return X_ERROR_IO_PENDING;
 }
-DECLARE_XAM_EXPORT1(XamGetLiveHiveValueA, kMisc, kStub);
+DECLARE_XAM_EXPORT1(XamGetLiveHiveValueA, kMisc, kImplemented);
 
 dword_result_t XamGetLiveHiveValueW_entry(
     lpu16string_t feature_name, lpu16string_t value_ptr,
@@ -319,10 +346,21 @@ dword_result_t XamGetLiveHiveValueW_entry(
     return result == X_ERROR_SUCCESS ? result : extended_error;
   }
 
+  // Same in-process answer as the A form - XamGetLiveHiveValueW reaches the
+  // same 0x8169AD08 when its fourth argument is -1.
+  if (unk == 0xFFFFFFFF) {
+    uint32_t extended_error = 0;
+    uint32_t length = 0;
+    const X_RESULT result = run(extended_error, length);
+    kernel_state()->CompleteOverlappedImmediateEx(
+        overlapped_ptr.guest_address(), result, extended_error, length);
+    return X_E_HIVE_ANSWERED_IN_PROCESS;
+  }
+
   kernel_state()->CompleteOverlappedDeferredEx(run, overlapped_ptr);
   return X_ERROR_IO_PENDING;
 }
-DECLARE_XAM_EXPORT1(XamGetLiveHiveValueW, kMisc, kStub);
+DECLARE_XAM_EXPORT1(XamGetLiveHiveValueW, kMisc, kImplemented);
 
 dword_result_t XamGetErrorStringFromWebService_entry(
     dword_t status_code_desc_address, dword_t buffer_size, dword_t status_code,

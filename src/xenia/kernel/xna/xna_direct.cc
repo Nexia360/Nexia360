@@ -107,6 +107,9 @@ struct HostTexture {
   uint32_t width = 0;
   uint32_t height = 0;
   uint32_t levels = 0;
+  // Six for a cube map, one for everything else. Part of the shape, because a
+  // handle that changes face count has to be recreated, not re-uploaded.
+  uint32_t faces = 1;
   DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
   uint32_t srv = UINT32_MAX;
 };
@@ -404,15 +407,24 @@ bool IsBlockCompressed(DXGI_FORMAT format) {
 }
 
 void WriteTextureSrv(ID3D12Resource* resource, DXGI_FORMAT format,
-                     uint32_t levels, uint32_t index) {
+                     uint32_t levels, uint32_t index, uint32_t faces = 1) {
   D3D12_SHADER_RESOURCE_VIEW_DESC desc = {};
   desc.Format = format;
-  desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
   desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-  desc.Texture2DArray.MostDetailedMip = 0;
-  desc.Texture2DArray.MipLevels = levels;
-  desc.Texture2DArray.FirstArraySlice = 0;
-  desc.Texture2DArray.ArraySize = 1;
+  // The shader declares TextureCube for a tfetchCube and Texture2DArray for a
+  // tfetch, and the view has to agree with the declaration or the sample is
+  // undefined. DrawLocked picks the slot by the same rule.
+  if (faces == 6) {
+    desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+    desc.TextureCube.MostDetailedMip = 0;
+    desc.TextureCube.MipLevels = levels;
+  } else {
+    desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+    desc.Texture2DArray.MostDetailedMip = 0;
+    desc.Texture2DArray.MipLevels = levels;
+    desc.Texture2DArray.FirstArraySlice = 0;
+    desc.Texture2DArray.ArraySize = 1;
+  }
   s.device->CreateShaderResourceView(resource, &desc, StagingCpu(index));
 }
 
@@ -511,28 +523,56 @@ uint32_t EnsureTexture(const XnaGpuTextureBinding& binding) {
   if (!binding.handle) {
     return UINT32_MAX;
   }
+  // XNA texture types: 0 Texture2D, 1 Texture3D, 2 TextureCube. Only a cube has
+  // more than one face, and its faces share a single mip chain.
+  const uint32_t faces = binding.type == 2 ? 6u : 1u;
   XnaTextureView base;
-  if (!XnaLookupTexture(binding.handle, 0, &base) || !base.width ||
+  if (!XnaLookupTextureFace(binding.handle, 0, 0, &base) || !base.width ||
       !base.height || !base.data) {
     return UINT32_MAX;
   }
-  std::vector<XnaTextureView> views(1, base);
+  // How many mips every face actually carries. Taken from face 0 and then
+  // required of the rest, so a partially filled cube uploads the levels all six
+  // faces have rather than leaving a subresource unwritten.
   const uint32_t wanted_levels = std::max<uint32_t>(binding.levels, 1);
-  for (uint32_t level = 1; level < wanted_levels; ++level) {
-    XnaTextureView view;
-    if (!XnaLookupTexture(binding.handle, level, &view) || !view.width ||
-        !view.height || !view.data) {
+  uint32_t levels = 1;
+  while (levels < wanted_levels) {
+    bool complete = true;
+    for (uint32_t face = 0; face < faces && complete; ++face) {
+      XnaTextureView view;
+      complete = XnaLookupTextureFace(binding.handle, face, levels, &view) &&
+                 view.width && view.height && view.data;
+    }
+    if (!complete) {
       break;
     }
-    views.push_back(view);
+    ++levels;
   }
-  const uint32_t levels = uint32_t(views.size());
+  // One entry per D3D12 subresource, in subresource order: for an array or a
+  // cube that is slice * MipLevels + mip, which is exactly how the guest
+  // allocation is laid out.
+  std::vector<XnaTextureView> views;
+  views.reserve(size_t(faces) * levels);
+  for (uint32_t face = 0; face < faces; ++face) {
+    for (uint32_t level = 0; level < levels; ++level) {
+      XnaTextureView view;
+      if (!XnaLookupTextureFace(binding.handle, face, level, &view) ||
+          !view.width || !view.height || !view.data) {
+        XELOGW("[xna] direct: texture {:08X} has no face {} level {}",
+               binding.handle, face, level);
+        return UINT32_MAX;
+      }
+      views.push_back(view);
+    }
+  }
+  const uint32_t subresources = uint32_t(views.size());
   const DXGI_FORMAT format = TextureFormatFor(base.format);
 
   HostTexture& texture = s.textures[binding.handle];
   const bool same_shape = texture.resource && texture.width == base.width &&
                           texture.height == base.height &&
-                          texture.levels == levels && texture.format == format;
+                          texture.levels == levels && texture.faces == faces &&
+                          texture.format == format;
   if (same_shape && texture.version == base.version) {
     return texture.srv;
   }
@@ -548,15 +588,15 @@ uint32_t EnsureTexture(const XnaGpuTextureBinding& binding) {
   desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
   desc.Width = base.width;
   desc.Height = base.height;
-  desc.DepthOrArraySize = 1;
+  desc.DepthOrArraySize = UINT16(faces);
   desc.MipLevels = UINT16(levels);
   desc.Format = format;
   desc.SampleDesc.Count = 1;
-  std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> footprints(levels);
-  std::vector<UINT> rows(levels);
-  std::vector<UINT64> row_bytes(levels);
+  std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> footprints(subresources);
+  std::vector<UINT> rows(subresources);
+  std::vector<UINT64> row_bytes(subresources);
   UINT64 total = 0;
-  s.device->GetCopyableFootprints(&desc, 0, levels, 0, footprints.data(),
+  s.device->GetCopyableFootprints(&desc, 0, subresources, 0, footprints.data(),
                                   rows.data(), row_bytes.data(), &total);
   if (!EnsureRoom(total + D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT, 0, 0)) {
     XELOGW("[xna] direct: texture {:08X} needs {} upload bytes", binding.handle,
@@ -589,24 +629,24 @@ uint32_t EnsureTexture(const XnaGpuTextureBinding& binding) {
   }
 
   const uint32_t unit = XnaTextureSwapUnit(base.format);
-  for (uint32_t level = 0; level < levels; ++level) {
-    const XnaTextureView& view = views[level];
-    const uint64_t source_pitch = view.size / (rows[level] ? rows[level] : 1);
-    for (UINT row = 0; row < rows[level]; ++row) {
-      const uint64_t copy = std::min<uint64_t>(row_bytes[level], source_pitch);
-      XnaCopyTextureRow(
-          mapped + footprints[level].Offset +
-              uint64_t(row) * footprints[level].Footprint.RowPitch,
-          view.data + uint64_t(row) * source_pitch, size_t(copy), unit);
+  for (uint32_t sub = 0; sub < subresources; ++sub) {
+    const XnaTextureView& view = views[sub];
+    const uint64_t source_pitch = view.size / (rows[sub] ? rows[sub] : 1);
+    for (UINT row = 0; row < rows[sub]; ++row) {
+      const uint64_t copy = std::min<uint64_t>(row_bytes[sub], source_pitch);
+      XnaCopyTextureRow(mapped + footprints[sub].Offset +
+                            uint64_t(row) * footprints[sub].Footprint.RowPitch,
+                        view.data + uint64_t(row) * source_pitch, size_t(copy),
+                        unit);
     }
     D3D12_TEXTURE_COPY_LOCATION destination = {};
     destination.pResource = texture.resource.Get();
     destination.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-    destination.SubresourceIndex = level;
+    destination.SubresourceIndex = sub;
     D3D12_TEXTURE_COPY_LOCATION source = {};
     source.pResource = s.upload.Get();
     source.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-    source.PlacedFootprint = footprints[level];
+    source.PlacedFootprint = footprints[sub];
     source.PlacedFootprint.Offset += offset;
     s.list->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
   }
@@ -619,11 +659,12 @@ uint32_t EnsureTexture(const XnaGpuTextureBinding& binding) {
       return UINT32_MAX;
     }
   }
-  WriteTextureSrv(texture.resource.Get(), format, levels, texture.srv);
+  WriteTextureSrv(texture.resource.Get(), format, levels, texture.srv, faces);
   texture.version = base.version;
   texture.width = base.width;
   texture.height = base.height;
   texture.levels = levels;
+  texture.faces = faces;
   texture.format = format;
   return texture.srv;
 }
@@ -1270,7 +1311,24 @@ bool DrawLocked(const XnaGpuDraw& draw, const XnaGpuStream* streams,
                    ? kNullSrvCube
                    : kNullSrv2DArray);
     const XnaGpuTextureBinding& texture = texture_for(binding.fetch_constant);
-    if (!texture.guest_address || null_view != kNullSrv2DArray) {
+    if (!texture.guest_address) {
+      return null_view;
+    }
+    // WHAT THE SHADER DECLARED HAS TO BE WHAT IS BOUND. A tfetchCube declares a
+    // TextureCube and a tfetch a Texture2DArray, so a cube can only be served
+    // by a cube resource - CastleMiner Z's sky blends two TextureCubes, and
+    // refusing every cube here left it sampling a null descriptor.
+    if (binding.dimension == xenos::FetchOpDimension::kCube) {
+      if (texture.type != 2) {
+        return null_view;
+      }
+      // A render target is always a plain 2D surface; nothing resolves into a
+      // cube face, so this never looks at s.targets.
+      const uint32_t srv = EnsureTexture(texture);
+      return srv != UINT32_MAX ? srv : null_view;
+    }
+    // Volume textures still have no host resource behind them.
+    if (null_view != kNullSrv2DArray) {
       return null_view;
     }
     auto target = s.targets.find(texture.guest_address);

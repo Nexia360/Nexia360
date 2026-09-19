@@ -7,10 +7,14 @@
  ******************************************************************************
  */
 
+#include <cstring>
+
 #include "xenia/base/logging.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xam/xam_private.h"
+#include "xenia/kernel/xenumerator.h"
+#include "xenia/kernel/xna/xna_avatar.h"
 #include "xenia/xbox.h"
 
 // Exports the flash system titles call that a game never does. AvatarEditor.xex
@@ -349,22 +353,10 @@ dword_result_t XamWriteTile_entry(dword_t a, dword_t b, qword_t c, dword_t d,
 }
 DECLARE_XAM_EXPORT1(XamWriteTile, kNone, kStub);
 
-dword_result_t XamWriteGamerTileEx_entry(dword_t a, dword_t b, dword_t c,
-                                         dword_t d,
-                                         pointer_t<XAM_OVERLAPPED> overlapped) {
-  return CompleteStub(X_ERROR_FUNCTION_FAILED, overlapped);
-}
-DECLARE_XAM_EXPORT1(XamWriteGamerTileEx, kNone, kStub);
-
-dword_result_t XamPngEncodeEx_entry(lpvoid_t source, dword_t width,
-                                    dword_t height, dword_t pitch,
-                                    lpvoid_t target, lpdword_t out_size) {
-  if (out_size) {
-    *out_size = 0;
-  }
-  return X_ERROR_FUNCTION_FAILED;
-}
-DECLARE_XAM_EXPORT1(XamPngEncodeEx, kNone, kStub);
+// XamWriteGamerTileEx and XamPngEncodeEx live in xam_user.cc, beside
+// XamWriteGamerTile and the rest of the tile exports they share their storage
+// with. Both used to fail here, which is what put "Can't save your gamer
+// picture" on screen, and both were declared with the wrong arity.
 
 dword_result_t XamFormatMessage_entry(dword_t flags, lpvoid_t source,
                                       dword_t message_id, dword_t language_id,
@@ -386,23 +378,75 @@ dword_result_t XamShowPasscodeVerifyUIEx_entry(
 }
 DECLARE_XAM_EXPORT1(XamShowPasscodeVerifyUIEx, kUI, kStub);
 
-// Avatar asset enumeration has a real implementation path through
-// XamAvatarBeginEnumAssets; this entry point is the user-scoped wrapper and
-// is not wired to it yet, so it reports an empty enumerator.
-dword_result_t XamUserCreateAvatarAssetEnumerator_entry(dword_t user_index,
-                                                        dword_t a, dword_t b,
-                                                        dword_t c, dword_t d,
-                                                        lpdword_t out_count,
-                                                        lpdword_t out_handle) {
-  if (out_count) {
-    *out_count = 0;
+// The awarded-asset enumerator: which avatar items this user OWNS, not which
+// ones the asset pack can draw. That distinction is the whole point of the
+// export, and returning a failure here is not neutral.
+//
+// The one caller that matters is the Avatar Editor's sub_920C3D50, reached
+// from sub_920C3E90 whenever a worn component's source byte says "awarded".
+// It creates this enumerator for the id's own title, enumerates once, looks
+// for the id, and if it does not find it - or if the create fails at all -
+// answers "not owned", and the caller then STRIPS that item off the avatar.
+// So the old empty-and-fail stub silently threw every DLC item out of the
+// manifest the moment the editor opened.
+//
+// Record shape, read off that caller (0x34 bytes):
+//   +0x00  dword, unread
+//   +0x04  XAVATAR_ASSET_ID, the 16 bytes it matches on
+//   +0x14  0x18 bytes, unread
+//   +0x2C  flags; bit 0x20000 is the one it tests, and an item that does not
+//          set it is treated as not owned
+//   +0x30  dword, unread
+// The console's own fields come out of the XONLINE_AVATAR_ASSET record that
+// service 0x714 returns (_XProfileEnumAvatarAssets), which is not something
+// an offline console ever sees, so everything no caller reads stays zero
+// rather than being invented.
+//
+// The 0x204 stride the real export switches to for (flags & 7) carries more
+// per item - a name, most likely - but the only known consumer asks for the
+// short form, so the long one is sized correctly and left blank.
+constexpr uint32_t kAvatarAssetRecordSize = 0x34;
+constexpr uint32_t kAvatarAssetRecordSizeExtended = 0x204;
+constexpr uint32_t kAvatarAssetOwnedFlag = 0x20000;
+
+dword_result_t XamUserCreateAvatarAssetEnumerator_entry(
+    dword_t user_index, dword_t title_id, dword_t a3, dword_t flags, dword_t a5,
+    dword_t item_count, lpdword_t out_buffer_size, lpdword_t out_handle) {
+  if (user_index >= XUserMaxUserCount || !item_count || !out_buffer_size ||
+      !out_handle) {
+    return X_ERROR_INVALID_PARAMETER;
   }
-  if (out_handle) {
-    *out_handle = 0;
+  const uint32_t record_size =
+      (flags & 7) ? kAvatarAssetRecordSizeExtended : kAvatarAssetRecordSize;
+
+  auto e = object_ref<XStaticUntypedEnumerator>(
+      new XStaticUntypedEnumerator(kernel_state(), item_count, record_size));
+  X_STATUS result = e->Initialize(user_index, 0xFB, 0xB0070, 0xB000B, 0);
+  if (XFAILED(result)) {
+    return X_ERROR_FUNCTION_FAILED;
   }
-  return X_ERROR_FUNCTION_FAILED;
+
+  for (const auto& asset : xna::XnaInstalledAvatarAssets()) {
+    // Title 0 means "everything this user owns"; the editor always names one.
+    if (title_id && asset.title_id != title_id) {
+      continue;
+    }
+    uint8_t* record = e->AppendItem();
+    if (!record) {
+      break;
+    }
+    std::memset(record, 0, record_size);
+    std::memcpy(record + 0x04, asset.asset_id.data(), asset.asset_id.size());
+    xe::store_and_swap<uint32_t>(record + 0x2C, kAvatarAssetOwnedFlag);
+  }
+
+  *out_buffer_size = record_size * item_count;
+  *out_handle = e->handle();
+  XELOGD("XamUserCreateAvatarAssetEnumerator({:08X}): {} owned asset(s)",
+         uint32_t(title_id), e->item_count());
+  return X_ERROR_SUCCESS;
 }
-DECLARE_XAM_EXPORT1(XamUserCreateAvatarAssetEnumerator, kAvatars, kStub);
+DECLARE_XAM_EXPORT1(XamUserCreateAvatarAssetEnumerator, kAvatars, kImplemented);
 
 }  // namespace xam
 }  // namespace kernel

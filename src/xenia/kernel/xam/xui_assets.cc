@@ -597,14 +597,53 @@ std::map<std::string, Candidate> ScanModules(
   return best;
 }
 
+// How far an object at `at` reaches ON THE FLASH: to the first cluster that is
+// erased, zeroed, or starts another object. Exact only when free space or the
+// next object follows, which on a NAND it does.
+size_t ObjectExtent(const std::vector<uint8_t>& image, size_t at) {
+  static const char* kMagics[] = {"XEX2", "xttf", "XTAF",
+                                  "CON ", "LIVE", "PIRS"};
+  size_t end = at + kClusterSize;
+  while (end + kClusterSize <= image.size()) {
+    const uint8_t* cluster = image.data() + end;
+    bool bounded = false;
+    for (const char* magic : kMagics) {
+      if (!std::memcmp(cluster, magic, 4)) {
+        bounded = true;
+        break;
+      }
+    }
+    if (!bounded) {
+      bounded = true;
+      for (size_t i = 0; i < kClusterSize; ++i) {
+        if (cluster[i] != 0x00) {
+          bounded = false;
+          break;
+        }
+      }
+      if (!bounded) {
+        bounded = true;
+        for (size_t i = 0; i < kClusterSize; ++i) {
+          if (cluster[i] != 0xFF) {
+            bounded = false;
+            break;
+          }
+        }
+      }
+    }
+    if (bounded) {
+      break;
+    }
+    end += kClusterSize;
+  }
+  return end - at;
+}
+
 // Flash fonts are loose files with no directory entry we can read, so the
-// extent runs to the first cluster that is erased, zeroed, or starts another
-// object. That is exact only when free space follows.
+// extent is whatever the object reaches to.
 void ScanFonts(const std::vector<uint8_t>& image,
                const std::vector<std::pair<size_t, size_t>>& claimed,
                std::vector<std::pair<size_t, size_t>>* out) {
-  static const char* kMagics[] = {"XEX2", "xttf", "XTAF",
-                                  "CON ", "LIVE", "PIRS"};
   for (size_t at = 0; at + kClusterSize <= image.size(); at += kClusterSize) {
     if (std::memcmp(image.data() + at, "xttf", 4) != 0) {
       continue;
@@ -619,41 +658,47 @@ void ScanFonts(const std::vector<uint8_t>& image,
     if (inside) {
       continue;
     }
-    size_t end = at + kClusterSize;
-    while (end + kClusterSize <= image.size()) {
-      const uint8_t* cluster = image.data() + end;
-      bool bounded = false;
-      for (const char* magic : kMagics) {
-        if (!std::memcmp(cluster, magic, 4)) {
-          bounded = true;
-          break;
-        }
-      }
-      if (!bounded) {
-        bounded = true;
-        for (size_t i = 0; i < kClusterSize; ++i) {
-          if (cluster[i] != 0x00) {
-            bounded = false;
-            break;
-          }
-        }
-        if (!bounded) {
-          bounded = true;
-          for (size_t i = 0; i < kClusterSize; ++i) {
-            if (cluster[i] != 0xFF) {
-              bounded = false;
-              break;
-            }
-          }
-        }
-      }
-      if (bounded) {
-        break;
-      }
-      end += kClusterSize;
-    }
-    out->push_back({at, end});
+    out->push_back({at, at + ObjectExtent(image, at)});
   }
+}
+
+// The three file names XamGetLanguageTypeface hands a system title, against
+// what each face calls itself in its own sfnt name table. Nothing about
+// "Xbox TC" or "Xbox JK" resembles the names the console asks for, and only
+// Segoe carries a PostScript name at all - the other two have a family name
+// and nothing else. TC is the Chinese Latin face (xenonclatin, which the
+// dashboard also uses as its CJK and symbol fallback) and JK the
+// Japanese/Korean one.
+std::string TypefaceFileFor(const Font& font) {
+  static const struct {
+    const char* identity;
+    const char* file;
+  } kFaces[] = {
+      {"SegoeXbox-Light", "SegoeXbox-Light.xtt"},
+      {"Segoe Xbox Light", "SegoeXbox-Light.xtt"},
+      {"Xbox TC", "xenonclatin.xtt"},
+      {"Xbox JK", "xenonjklatin.xtt"},
+  };
+  std::string file;
+  for (const auto& face : kFaces) {
+    if (font.name() == face.identity) {
+      file = face.file;
+      break;
+    }
+  }
+  if (file.empty()) {
+    return {};
+  }
+  // THE CHIP CARRIES TWO FACES PER FAMILY. "Xbox TC" is both a 1.1 MB face
+  // covering 5806 codepoints including the CJK ideographs and a 96 KB one
+  // covering 790 with none; "Xbox JK" is 1.7 MB against 28 KB the same way.
+  // The console asks for xenonCLATIN and xenonJKLATIN - the Latin subsets - so
+  // the full face keeps its own name and does not overwrite them.
+  if (font.GlyphIndex(U'一') || font.GlyphIndex(U'あ') ||
+      font.GlyphIndex(U'가')) {
+    return {};
+  }
+  return file;
 }
 
 std::string SafeFileName(const std::string& name) {
@@ -671,6 +716,18 @@ std::string SafeFileName(const std::string& name) {
 
 std::filesystem::path DefaultAssetDirectory() {
   return xe::filesystem::GetExecutableFolder() / "Dashboard" / "UI";
+}
+
+std::string DashboardTypefaceFor(const std::filesystem::path& path) {
+  std::vector<uint8_t> data;
+  if (!ReadWholeFile(path, &data) || data.empty()) {
+    return {};
+  }
+  Font font;
+  if (!font.Load(data.data(), data.size())) {
+    return {};
+  }
+  return TypefaceFileFor(font);
 }
 
 bool IsFlashImage(const std::filesystem::path& path) {
@@ -756,8 +813,17 @@ AssetInstallReport InstallFromFlashImage(
     }
 
     report.build = std::max(report.build, candidate.build);
+    // WHAT THE MODULE OCCUPIES ON THE CHIP, NOT HOW BIG IT LOADS. image_size
+    // is the DECOMPRESSED size: dash.xex reports 0x1028000 against a few
+    // hundred KB of flash, so claiming that much from its offset covered the
+    // whole rest of the NAND and hid every loose font behind it - the console's
+    // own typefaces sit past the dashboard, and the extractor reported
+    // "0 font(s)" on any image laid out that way.
     claimed.push_back(
-        {candidate.offset, candidate.offset + candidate.header.image_size});
+        {candidate.offset,
+         candidate.offset +
+             std::min<size_t>(candidate.header.image_size,
+                              ObjectExtent(image, candidate.offset))});
 
     for (const ResourceSpec& take : spec.take) {
       const XexResource* resource = nullptr;
@@ -811,7 +877,13 @@ AssetInstallReport InstallFromFlashImage(
     Font font;
     std::string name;
     if (font.Load(data, size)) {
-      name = SafeFileName(font.name());
+      // Under the name the console asks for when this is one of the three it
+      // asks for, so an end user ends up with xenonclatin.xtt rather than a
+      // file called after the face inside it. XamGetLanguageTypeface names
+      // these by file, and the update does not ship two of them at all.
+      const std::string typeface = TypefaceFileFor(font);
+      name = typeface.empty() ? SafeFileName(font.name())
+                              : typeface.substr(0, typeface.size() - 4);
     }
     if (name.empty()) {
       name = fmt::format("font{}", i);

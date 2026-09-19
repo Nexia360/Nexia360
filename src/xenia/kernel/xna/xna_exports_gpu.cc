@@ -1637,6 +1637,12 @@ uint32_t xe::kernel::xna::XnaAllocateHandle() {
 
 bool xe::kernel::xna::XnaLookupTexture(uint32_t handle, uint32_t level,
                                        XnaTextureView* out) {
+  return xe::kernel::xna::XnaLookupTextureFace(handle, 0, level, out);
+}
+
+bool xe::kernel::xna::XnaLookupTextureFace(uint32_t handle, uint32_t face,
+                                           uint32_t level,
+                                           XnaTextureView* out) {
   if (!out) {
     return false;
   }
@@ -1646,10 +1652,17 @@ bool xe::kernel::xna::XnaLookupTexture(uint32_t handle, uint32_t level,
     return false;
   }
   const Texture& texture = found->second;
-  if (level >= texture.level_data.size()) {
+  // The same arithmetic TextureCube_CopyData writes with. A 2D texture has one
+  // face, so face 0 leaves this as the mip number it always was.
+  const uint32_t levels = texture.levels ? texture.levels : 1;
+  if (level >= levels) {
     return false;
   }
-  const TextureLevel& stored = texture.level_data[level];
+  const uint32_t slot = face * levels + level;
+  if (slot >= texture.level_data.size()) {
+    return false;
+  }
+  const TextureLevel& stored = texture.level_data[slot];
   const auto* base = xe::kernel::xna::XnaGuestResourceData(texture.handle);
   if (!base || !stored.size) {
     return false;

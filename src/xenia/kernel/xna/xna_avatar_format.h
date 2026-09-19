@@ -135,6 +135,35 @@ struct Entry {
   // get an id that names one entry and survives a round trip.
   std::array<uint8_t, 16> asset_id = {};
   uint32_t external = 0;
+  // The colours this item can be worn in, as the pack states them: nine slots
+  // of three RGB triples, at the very front of the entry's record block. Only
+  // shirts carry any in the shipping pack - 36 with one slot and three with
+  // nine - and the rest of the catalogue leaves the whole region zero, which is
+  // what `colour_count` being zero means.
+  //
+  // `colour_count` is how many slots are populated and `colours_per_slot` how
+  // many triples of the first slot are, which is exactly the pair the editor's
+  // asset record packs into one byte as `(count << 4) | per`. The second number
+  // picks the tile's widget class, so it is not decoration.
+  static constexpr uint32_t kColourSlots = 9;
+  static constexpr uint32_t kColoursPerSlot = 3;
+  std::array<uint8_t, kColourSlots * kColoursPerSlot * 3> colours = {};
+  uint8_t colour_count = 0;
+  uint8_t colours_per_slot = 0;
+  // The pack's own bytes from the entry's +0x07, kept verbatim because XAM
+  // hands them to a title verbatim: its record filler (0x8197E300) is
+  // `memcpy(record + 0x1C, entry + 0x07, 0x91)`. The first of them is the
+  // colour layout the Avatar Editor reads as `groups = byte >> 4`, and the
+  // rest are the colour table. Nothing here may be synthesised - see
+  // `flags_byte()`.
+  static constexpr size_t kRecordBlockBytes = 0x91;
+  std::array<uint8_t, kRecordBlockBytes> record_block = {};
+  // The pack's flags BYTE, at entry +0x06 - the third byte of `flags`, which
+  // reads the dword at +0x04. XAM writes exactly this byte, zero extended,
+  // into the record at +0x18. Bit 0 marks a listable asset (the editor drops a
+  // record without it) and bit 3 marks one whose colour comes from the Colour
+  // menu's palette rather than from its own colourways.
+  uint8_t flags_byte() const { return uint8_t((flags >> 8) & 0xFF); }
   // The two ends of a same-kind substitution, resolved at load. A hairstyle's
   // `substitute` is the version worn under a hat; that version's
   // `substitute_for` points back, and it is never offered as a choice.
@@ -173,6 +202,10 @@ struct Vertex {
 struct Batch {
   uint32_t shader = 0;
   uint32_t uv_sets = 0;
+  // The model states one index buffer and each batch its byte offset into it,
+  // so a triangle has a number that spans the whole model. A hiding template
+  // addresses triangles by that number, which is the only reason this is kept.
+  uint32_t first_triangle = 0;
   std::vector<Param> params;
   std::vector<Vertex> vertices;
   std::vector<uint16_t> indices;
@@ -197,6 +230,11 @@ struct ShapeVertex {
 // vertices apart and only the run that lands inside the model is used.
 struct Shape {
   std::vector<ShapeVertex> vertices;
+  // A hiding template fills the tag 4 record's OTHER half: the triangles of
+  // the body a garment covers, by whole-model triangle number. `body` is the
+  // body the template was authored against, 1 male and 2 female.
+  std::vector<uint32_t> hidden;
+  uint32_t body = 0;
 };
 
 struct RawVertex {
@@ -253,6 +291,21 @@ struct RawModel {
 
 bool DecodeRawModel(const std::vector<uint8_t>& data, RawModel* out);
 bool DecodeRawTexture(const std::vector<uint8_t>& data, RawTexture* out);
+
+// One slice of a raw avatar texture, to and from straight RGBA8. `format` is
+// the Xenos code the pack stores: 0x06 k_8_8_8_8, 0x12 DXT1, 0x13 DXT3,
+// 0x14 DXT5. Both ends keep the console's halfword byte swap.
+bool DecodeTextureSlice(const uint8_t* data, size_t size, uint32_t format,
+                        uint32_t width, uint32_t height, uint32_t pitch,
+                        uint8_t* rgba);
+bool EncodeTextureSlice(const uint8_t* rgba, uint32_t format, uint32_t width,
+                        uint32_t height, uint32_t pitch, uint8_t* out,
+                        size_t size);
+
+// Bytes one slice of `format` occupies at this size, and the row pitch that
+// goes with it. Zero when the format is not one of the four above.
+uint32_t TextureSliceBytes(uint32_t format, uint32_t width, uint32_t height,
+                           uint32_t* out_pitch);
 
 struct Skeleton {
   uint32_t count = 0;
@@ -404,6 +457,21 @@ struct Scene {
 
 Scene BuildScene(Catalog& catalog, const Description& description);
 
+// The hiding template a garment names, or UINT32_MAX when it names none. An
+// asset id's index field - bytes 4 and 5, record block +0x98 - is a TOC index,
+// and for a garment it points at its template: 267 of them do, covering 228 of
+// the pack's 231 templates, and every name lines up ("Cowboy Boots" -> "Cowboy
+// Boots Hiding Template").
+uint32_t HidingTemplateOf(const Catalog& catalog, uint32_t entry);
+
+// Degenerate the named triangles, exactly as xam does - it collapses a hidden
+// triangle onto its first index rather than removing it, so nothing after it
+// moves. Triangle numbers span the whole model; see Batch::first_triangle.
+// Returns how many landed in no batch at all, which is the one thing that
+// cannot be checked against the pack offline: zero is the healthy answer.
+uint32_t HideTriangles(Model* model, const std::vector<uint32_t>& triangles);
+uint32_t HideTriangles(RawModel* model, const std::vector<uint32_t>& triangles);
+
 struct Material {
   uint32_t layer[kLayerCount][4] = {};
   float tint[kLayerCount][4] = {};
@@ -443,7 +511,6 @@ struct Lighting {
 };
 
 Lighting DefaultLighting();
-constexpr float kBodyInset = 0.008f;
 
 void UnpackNormal(uint32_t packed, float out[3]);
 

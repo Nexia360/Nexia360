@@ -32,6 +32,14 @@ struct AssetInstallReport {
 // Where an installed set of dashboard UI assets lives.
 std::filesystem::path DefaultAssetDirectory();
 
+// The name XamGetLanguageTypeface hands a system title for the face inside
+// this .xtt, or empty if it is none of the three it asks for.
+//
+// MATCHING ON THE FILE NAME CANNOT WORK. An extracted flash font is named from
+// its own sfnt table, and the two Latin faces call themselves "Xbox TC" and
+// "Xbox JK" in there - nothing like xenonclatin.xtt or xenonjklatin.xtt.
+std::string DashboardTypefaceFor(const std::filesystem::path& font);
+
 // True when the file looks like an Xbox 360 NAND image - raw 528-byte pages or
 // an already-stripped logical image - rather than an XContent package.
 bool IsFlashImage(const std::filesystem::path& path);

@@ -736,8 +736,18 @@ dword_result_t _snwprintf_entry(dword_t buffer_ptr, dword_t buffer_count,
   // ("section://%X,%s#%s"), and the names are the only visible record of what
   // it is trying to open - the format string alone says nothing. Warning level
   // because log_level 2 drops XELOGD, and narrow enough not to flood.
+  //
+  // Each ghosted Colour tile produces TWO of these, and they are not the same
+  // request twice: `colour_hair_pressdisable.png` is followed by
+  // `hair_selected.png`. The two differ in where they write, too - the first
+  // into a heap object 0x108 bytes further along for each tile, the second
+  // into the same stack address every time - so they are two different call
+  // sites, and the caller is the only thing that says which. Feed it to
+  // XEXMagic (AvatarEditor.xex loads at 0x92000000).
   if (count >= 0 && data.wstr().compare(0, 10, u"section://") == 0) {
-    XELOGW("section load: {}", xe::to_utf8(data.wstr()));
+    const uint32_t caller = static_cast<uint32_t>(ctx->lr);
+    XELOGW("section load: {} caller {:08X} into {:08X}",
+           xe::to_utf8(data.wstr()), caller, buffer_ptr.value());
   }
   if (count < 0) {
     if (buffer_count > 0) {

@@ -129,6 +129,11 @@ class UserTracker {
 
   // Images
   bool UpdateUserIcon(uint64_t xuid, std::span<const uint8_t> icon_data);
+  // UpdateUserIcon picks the tile from the PNG's own size and only ever writes
+  // the public pair. XamWriteGamerTileEx is told which tile to write - the
+  // photo booth saves a Personal one - so it names the type instead.
+  bool WriteUserTile(uint64_t xuid, XTileType tile_type,
+                     std::span<const uint8_t> icon_data);
 
   void UpdateGamerpicSetting(uint64_t xuid, uint32_t title_id,
                              uint32_t big_tile_id, uint32_t small_tile_id);

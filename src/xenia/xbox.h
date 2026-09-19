@@ -214,6 +214,9 @@ enum : XNotificationID {
   */
   kXNotificationSystemPlayerTimerNotice = 0x00030015,
   kXNotificationSystemAvatarChanged = 0x00040017,
+  // What XamAvatarWearNow broadcasts, with a guest pointer to its 0x14 block
+  // {user index, XAVATAR_ASSET_ID} as the data.
+  kXNotificationSystemAvatarWearNow = 0x80050018,
   kXNotificationSystemNUIHardwareStatusChanged = 0x00060019,
   kXNotificationSystemNUIPause = 0x0006001A,
   kXNotificationSystemNUIUIApproach = 0x0006001B,

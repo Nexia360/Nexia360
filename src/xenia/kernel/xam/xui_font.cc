@@ -97,6 +97,12 @@ bool Font::Load(const uint8_t* data, size_t size) {
 
 // The sfnt name table, so an extracted font keeps the name the console gave
 // it. Platform 3 strings are UTF-16BE; platform 1 is single byte.
+//
+// NAME ID 1 COUNTS. Segoe Xbox Light carries the full twelve records, but the
+// two faces the dashboard draws Latin text with carry exactly ONE - the family
+// name, "Xbox TC" and "Xbox JK". Taking only the PostScript (6) and full (4)
+// names left both of them anonymous, they extracted as font1.xtt/font2.xtt,
+// and nothing could match them to the names XamGetLanguageTypeface asks for.
 void Font::ParseName() {
   size_t size = 0;
   const uint8_t* table = TableData("name", &size);
@@ -105,6 +111,7 @@ void Font::ParseName() {
   }
   const uint16_t count = Read16(table + 2);
   const uint16_t storage = Read16(table + 4);
+  uint32_t best = 0;
   for (uint16_t i = 0; i < count; ++i) {
     const size_t at = 6 + size_t(i) * 12;
     if (at + 12 > size) {
@@ -114,7 +121,7 @@ void Font::ParseName() {
     const uint16_t name_id = Read16(table + at + 6);
     const uint16_t length = Read16(table + at + 8);
     const uint16_t offset = Read16(table + at + 10);
-    if (name_id != 4 && name_id != 6) {
+    if (name_id != 1 && name_id != 4 && name_id != 6) {
       continue;
     }
     if (size_t(storage) + offset + length > size) {
@@ -139,13 +146,14 @@ void Font::ParseName() {
     if (text.empty()) {
       continue;
     }
-    if (name_id == 6) {
-      name_ = text;
-      return;
+    // PostScript name, then full name, then family - the records are in no
+    // guaranteed order, so rank rather than take the first.
+    const uint32_t rank = name_id == 6 ? 3u : (name_id == 4 ? 2u : 1u);
+    if (rank <= best) {
+      continue;
     }
-    if (name_.empty()) {
-      name_ = text;
-    }
+    best = rank;
+    name_ = text;
   }
 }
 

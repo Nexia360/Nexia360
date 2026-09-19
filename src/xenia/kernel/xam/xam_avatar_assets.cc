@@ -13,7 +13,9 @@
 #include <array>
 #include <atomic>
 #include <cstring>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <vector>
 
 #include "xenia/base/byte_order.h"
@@ -82,6 +84,8 @@ void Put16(uint8_t* p, uint16_t value) {
 void Put32(uint8_t* p, uint32_t value) {
   xe::store_and_swap<uint32_t>(p, value);
 }
+
+uint32_t Get32(const uint8_t* p) { return xe::load_and_swap<uint32_t>(p); }
 
 void PutFloat(uint8_t* p, float value) {
   uint32_t bits;
@@ -221,6 +225,30 @@ void WriteSkeleton(uint8_t* joints, bool mirror,
   }
 }
 
+// Which textures went into guest memory TILED, keyed by the address of their
+// base data.
+//
+// A texture is tiled or not as a whole, so its mip levels have to be laid out
+// the same way as its base - the GPU reads them all through one format. But
+// the tiling decision comes from bit 193 of the pack's texture header, not
+// from the Format dword, and the record we hand the guest carries only the
+// Format. GenerateAvatarMipMaps runs later with nothing but that record, so
+// the flag has to be carried across here rather than re-derived from a format
+// bit nobody has identified.
+std::mutex tiled_mutex;
+std::map<uint32_t, bool> tiled_textures;
+
+void NoteTextureTiling(uint32_t data_guest, bool tiled) {
+  std::lock_guard<std::mutex> lock(tiled_mutex);
+  tiled_textures[data_guest] = tiled;
+}
+
+bool TextureWasTiled(uint32_t data_guest) {
+  std::lock_guard<std::mutex> lock(tiled_mutex);
+  const auto found = tiled_textures.find(data_guest);
+  return found != tiled_textures.end() && found->second;
+}
+
 void WriteTextureRecord(uint8_t* record, const avatar::RawTexture& texture,
                         uint32_t data_guest) {
   Put32(record, texture.format);
@@ -322,6 +350,11 @@ bool WriteModel(const avatar::RawModel& model,
       Put32(slot, param.type);
       Put32(slot + 4, param.usage);
       if (param.type == kParamTexture) {
+        // TWO HALVES, low first. Writing data[0] as one dword to satisfy
+        // Avatars::Model_c::IsIntensityMap - which compares this field whole
+        // against a texture index - moved the index into the top 16 bits and
+        // broke every texture binding, so that reading is wrong: the console
+        // takes the index from the first halfword here.
         Put16(slot + 8, uint16_t(param.data[0] & 0xFFFF));
         Put16(slot + 10, uint16_t(param.data[0] >> 16));
         Put32(slot + 12, param.data[1]);
@@ -385,6 +418,13 @@ bool WriteModel(const avatar::RawModel& model,
     uint8_t* out = cpu + model.textures_offset + index * kTextureBytes;
     WriteTextureRecord(out, *chosen, gpu_guest + slot.gpu_offset);
     WriteTextureData(*chosen, gpu + slot.gpu_offset, slot.gpu_size);
+    // Exactly the condition WriteTextureData tiles on.
+    uint32_t noted_blocks = 4;
+    uint32_t noted_bytes_log2 = 4;
+    NoteTextureTiling(
+        gpu_guest + slot.gpu_offset,
+        chosen->tiled &&
+            BlockLayout(chosen->format, &noted_blocks, &noted_bytes_log2));
   }
   Put32(record, model.cpu_size);
   Put32(record + 0x04, model.gpu_size);
@@ -410,6 +450,210 @@ void SetAvatarCoordinateSystem(uint32_t value) {
 
 uint32_t AvatarCoordinateSystem() { return coordinate_system.load(); }
 
+// XamAvatarGenerateMipMaps. xam's own handler (sub_8196B1E8, behind the
+// 0xF2/0x600007 message) walks the asset buffer's models at stride 0x34 and
+// each model's textures at 0x2C, and fills in the mip chain the base level was
+// written without. It writes into the caller's buffer, which is guest memory,
+// and stores the level count and the chain's address back into the texture
+// record - a title that asked for mips and got a one-level texture back has no
+// way to know it, so the filtering simply stops working.
+X_RESULT GenerateAvatarMipMaps(uint32_t assets_guest, uint32_t buffer_guest,
+                               uint32_t buffer_size) {
+  auto* memory = kernel_memory();
+  if (!memory || !assets_guest) {
+    return X_E_INVALIDARG;
+  }
+  auto* assets = memory->TranslateVirtual<uint8_t*>(assets_guest);
+  if (!assets) {
+    return X_E_INVALIDARG;
+  }
+  const uint32_t model_count = Get32(assets + 0x08);
+  const uint32_t models_guest = Get32(assets + 0x10);
+  if (!model_count || !models_guest) {
+    return X_ERROR_SUCCESS;
+  }
+  uint8_t* buffer =
+      buffer_guest ? memory->TranslateVirtual<uint8_t*>(buffer_guest) : nullptr;
+  uint32_t used = 0;
+  uint32_t filled = 0;
+  std::vector<uint8_t> source;
+  std::vector<uint8_t> level;
+  for (uint32_t m = 0; m < model_count; ++m) {
+    uint8_t* model =
+        memory->TranslateVirtual<uint8_t*>(models_guest + m * kModelBytes);
+    if (!model) {
+      break;
+    }
+    const uint32_t textures = Get32(model + 0x18);
+    const uint32_t textures_guest = Get32(model + 0x30);
+    if (!textures || !textures_guest) {
+      continue;
+    }
+    // The feature layers are intensity maps and the console leaves them out of
+    // the mip pass - sub_8196B1E8 collects only the textures IsIntensityMap
+    // says no to. A usage of 2, or 5..0xC, marks one.
+    std::vector<bool> intensity(textures, false);
+    const uint32_t batches = Get32(model + 0x14);
+    const uint32_t batches_guest = Get32(model + 0x2C);
+    for (uint32_t b = 0; b < batches && batches_guest; ++b) {
+      const uint8_t* batch = memory->TranslateVirtual<const uint8_t*>(
+          batches_guest + b * kBatchBytes);
+      if (!batch) {
+        break;
+      }
+      for (uint32_t p = 0; p < kMaxParams; ++p) {
+        const uint8_t* slot = batch + 4 + p * kParamBytes;
+        if (Get32(slot) != kParamTexture) {
+          continue;
+        }
+        const uint32_t usage = Get32(slot + 4);
+        // THE FIRST HALFWORD. WriteModel puts the texture index at +8 and the
+        // UV index at +10, so the big-endian dword here reads
+        // `(texture << 16) | uv` - masking the low half picked the UV index
+        // and marked whichever texture happened to share that number as an
+        // intensity map. Textures that needed a mip chain went without one and
+        // sampled whatever was left in the buffer, which is the block noise on
+        // large garments.
+        const uint32_t index = Get32(slot + 8) >> 16;
+        if ((usage == 2 || (usage >= 5 && usage <= 0xC)) && index < textures) {
+          intensity[index] = true;
+        }
+      }
+    }
+    for (uint32_t t = 0; t < textures; ++t) {
+      if (intensity[t]) {
+        continue;
+      }
+      uint8_t* record = memory->TranslateVirtual<uint8_t*>(textures_guest +
+                                                           t * kTextureBytes);
+      if (!record) {
+        break;
+      }
+      const uint32_t format = Get32(record);
+      const uint32_t width = Get32(record + 0x04);
+      const uint32_t height = Get32(record + 0x08);
+      const uint32_t slice_size = Get32(record + 0x14);
+      const uint32_t slices = std::max(Get32(record + 0x20), 1u);
+      const uint32_t data_guest = Get32(record + 0x24);
+      uint32_t base_pitch = 0;
+      if (!data_guest || width < 2 || height < 2 ||
+          !avatar::TextureSliceBytes(format, width, height, &base_pitch)) {
+        continue;
+      }
+      const uint8_t* data =
+          memory->TranslateVirtual<const uint8_t*>(data_guest);
+      if (!data) {
+        continue;
+      }
+      // A TILED base gets no chain.
+      //
+      // EncodeTextureSlice lays a level out linearly, and a texture is tiled
+      // or not as a whole - the GPU reads every level through the one format -
+      // so a linear chain under a tiled base is read as noise, which is the
+      // block corruption on large garments. Tiling the levels instead is not
+      // the answer either: tiled storage rounds BOTH dimensions of every level
+      // up to a 32x32 block tile, so one 256x256 DXT1 chain would want ~73 KB
+      // a slice and the title only ever hands us 400 KB for all of them - that
+      // buffer is sized for linear chains. What layout the console uses for a
+      // tiled texture's mips has not been read, so these keep the one level
+      // they came with, exactly as they did before this pass existed.
+      if (TextureWasTiled(data_guest)) {
+        continue;
+      }
+      // Everything below the base, halving until 1x1.
+      uint32_t levels = 1;
+      uint32_t chain = 0;
+      for (uint32_t w = width, h = height; w > 1 || h > 1;) {
+        w = std::max(w >> 1, 1u);
+        h = std::max(h >> 1, 1u);
+        const uint32_t bytes = avatar::TextureSliceBytes(format, w, h, nullptr);
+        if (!bytes) {
+          break;
+        }
+        chain += bytes * slices;
+        ++levels;
+      }
+      if (levels < 2 || !buffer || uint64_t(used) + chain > buffer_size) {
+        continue;
+      }
+      const uint32_t chain_guest = buffer_guest + used;
+      uint8_t* out = buffer + used;
+      used += chain;
+      // SLICE MAJOR. Texture_c::GenerateMipData stores the bytes per slice at
+      // +0x10 and the total at +0x18, so every slice's levels sit together and
+      // slice s starts at s * (total / slices).
+      const uint32_t per_slice = chain / slices;
+      bool ok = true;
+      for (uint32_t slice = 0; slice < slices && ok; ++slice) {
+        source.assign(size_t(width) * height * 4, 0);
+        if (!avatar::DecodeTextureSlice(data + size_t(slice) * slice_size,
+                                        slice_size, format, width, height,
+                                        base_pitch, source.data())) {
+          ok = false;
+          break;
+        }
+        // This slice's levels, one after another, from its own base.
+        uint32_t w = width;
+        uint32_t h = height;
+        uint32_t at = 0;
+        for (uint32_t l = 1; l < levels; ++l) {
+          const uint32_t pw = w;
+          const uint32_t ph = h;
+          w = std::max(w >> 1, 1u);
+          h = std::max(h >> 1, 1u);
+          // Box filter from the level above, which `source` still holds.
+          level.assign(size_t(w) * h * 4, 0);
+          for (uint32_t y = 0; y < h; ++y) {
+            for (uint32_t x = 0; x < w; ++x) {
+              uint32_t sum[4] = {};
+              for (uint32_t k = 0; k < 4; ++k) {
+                const uint32_t sx = std::min(x * 2 + (k & 1), pw - 1);
+                const uint32_t sy = std::min(y * 2 + (k >> 1), ph - 1);
+                const uint8_t* p = source.data() + (size_t(sy) * pw + sx) * 4;
+                for (uint32_t c = 0; c < 4; ++c) {
+                  sum[c] += p[c];
+                }
+              }
+              uint8_t* d = level.data() + (size_t(y) * w + x) * 4;
+              for (uint32_t c = 0; c < 4; ++c) {
+                d[c] = uint8_t(sum[c] / 4);
+              }
+            }
+          }
+          uint32_t pitch = 0;
+          const uint32_t bytes =
+              avatar::TextureSliceBytes(format, w, h, &pitch);
+          if (!bytes || !avatar::EncodeTextureSlice(
+                            level.data(), format, w, h, pitch,
+                            out + slice * per_slice + at, bytes)) {
+            ok = false;
+            break;
+          }
+          at += bytes;
+          source.swap(level);
+        }
+      }
+      if (!ok) {
+        used -= chain;
+        continue;
+      }
+      // The four fields Texture_c::GenerateMipData clears on entry and fills on
+      // success - bytes per slice, total bytes, level count, and the buffer the
+      // caller handed in.
+      Put32(record + 0x10, per_slice);
+      Put32(record + 0x18, chain);
+      Put32(record + 0x1C, levels);
+      Put32(record + 0x28, chain_guest);
+      ++filled;
+    }
+  }
+  XELOGW(
+      "XamAvatarGenerateMipMaps: {} texture(s) given mip chains, {} of {} "
+      "buffer bytes used",
+      filled, used, uint32_t(buffer_size));
+  return X_ERROR_SUCCESS;
+}
+
 X_RESULT BuildAvatarAssets(const uint8_t* metadata, size_t metadata_size,
                            uint32_t component_mask, uint32_t result_guest,
                            uint32_t gpu_guest) {
@@ -417,6 +661,13 @@ X_RESULT BuildAvatarAssets(const uint8_t* metadata, size_t metadata_size,
   if (!catalog) {
     XELOGW("XamAvatarGetAssets: the Avatar update is not installed");
     return X_E_FAIL;
+  }
+  {
+    // Addresses inside the GPU arena are reused by the next build, so the
+    // tiling notes from the previous one would otherwise outlive their
+    // textures.
+    std::lock_guard<std::mutex> lock(tiled_mutex);
+    tiled_textures.clear();
   }
   auto* memory = kernel_memory();
   uint8_t* result =
@@ -477,6 +728,25 @@ X_RESULT BuildAvatarAssets(const uint8_t* metadata, size_t metadata_size,
     return X_E_FAIL;
   }
 
+  // The body triangles everything worn covers, so skin cannot come through a
+  // garment. Only what is actually being drawn contributes: a title that asks
+  // for the body alone gets an unbroken body, which is what the console does.
+  // A template states its body the way BodyMask does, 1 male and 2 female,
+  // where the description states it as a flag.
+  const uint32_t body_bit = description.body ? 1u : 2u;
+  std::vector<uint32_t> hidden;
+  for (const avatar::Component& component : wanted) {
+    const uint32_t index = avatar::HidingTemplateOf(*catalog, component.entry);
+    if (index == UINT32_MAX) {
+      continue;
+    }
+    auto shape = catalog->LoadShape(index);
+    if (!shape || shape->hidden.empty() || shape->body != body_bit) {
+      continue;
+    }
+    hidden.insert(hidden.end(), shape->hidden.begin(), shape->hidden.end());
+  }
+
   std::vector<std::shared_ptr<const avatar::RawTexture>> features;
   uint32_t written = 0;
   for (const avatar::Component& component : wanted) {
@@ -493,6 +763,17 @@ X_RESULT BuildAvatarAssets(const uint8_t* metadata, size_t metadata_size,
       if (avatar::ReshapeRawHead(*catalog, description, reshaped.get())) {
         model = reshaped;
       }
+    }
+    if ((component.mask & kComponentMaskBody) && !hidden.empty()) {
+      auto covered = std::make_shared<avatar::RawModel>(*model);
+      const uint32_t missed = avatar::HideTriangles(covered.get(), hidden);
+      if (missed) {
+        XELOGW(
+            "XamAvatarGetAssets: {} of {} hidden body triangles fell outside "
+            "every batch",
+            missed, hidden.size());
+      }
+      model = covered;
     }
     const uint32_t cpu_at = cpu.Take(model->cpu_size, 16);
     const uint32_t gpu_at = video.Take(model->gpu_size, kTextureAlignment);
@@ -527,10 +808,8 @@ X_RESULT BuildAvatarAssets(const uint8_t* metadata, size_t metadata_size,
       }
     }
     uint8_t* record = result + models + written * kModelBytes;
-    const float inset =
-        (component.mask & kComponentMaskBody) ? avatar::kBodyInset : 0.0f;
     if (!WriteModel(*model, overrides, ComponentPalette(description, component),
-                    mirror, inset, result + cpu_at, result_guest + cpu_at,
+                    mirror, 0.0f, result + cpu_at, result_guest + cpu_at,
                     gpu + gpu_at, gpu_guest + gpu_at, record)) {
       XELOGW("XamAvatarGetAssets: asset {} does not fit its own layout",
              component.entry);

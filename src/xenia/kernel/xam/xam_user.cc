@@ -20,12 +20,15 @@
 #include "xenia/kernel/xam/xam_private.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_modules.h"
 #include "xenia/kernel/xenumerator.h"
+#include "xenia/kernel/xna/xna_avatar.h"
+#include "xenia/kernel/xna/xna_avatar_format.h"
 #include "xenia/kernel/xsession.h"
 #include "xenia/ui/imgui_drawer.h"
 #include "xenia/ui/resources.h"
 #include "xenia/xbox.h"
 
 #include "third_party/stb/stb_image.h"
+#include "third_party/stb/stb_image_write.h"
 
 DECLARE_int32(user_language);
 DECLARE_int32(user_country);
@@ -1459,6 +1462,220 @@ dword_result_t XamWriteGamerTile_entry(
 }
 DECLARE_XAM_EXPORT1(XamWriteGamerTile, kUserProfiles, kSketchy);
 
+// EIGHT arguments, and the last is an overlapped. The real export
+// (0x816B1140) packs seven of them into a 0x20 message for app 0xFE message
+// 0x00024001 and hands r10 to XMsgStartIORequestEx as the overlapped; the
+// Avatar Editor's call site at 0x92207070 passes
+// (pixels, w, h, w * 4, target, &size, 1, overlapped).
+//
+// `size_ptr` is IN capacity, OUT length: the editor allocates the target with
+// exactly the value it leaves there (0x92206FE0 stores the capacity at +0x40
+// and then allocates that many bytes into +0x3C), the same in/out shape
+// XamReadTileEx uses.
+dword_result_t XamPngEncodeEx_entry(lpvoid_t source, dword_t width,
+                                    dword_t height, dword_t pitch,
+                                    lpvoid_t target, lpdword_t size_ptr,
+                                    dword_t flags,
+                                    pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
+  const uint32_t capacity = size_ptr ? uint32_t(*size_ptr) : 0;
+  auto run = [=](uint32_t& extended_error, uint32_t& length) -> X_RESULT {
+    extended_error = X_ERROR_SUCCESS;
+    length = 0;
+    if (!source || !target || !size_ptr || !width || !height ||
+        pitch < width * 4) {
+      extended_error = X_E_INVALIDARG;
+      return X_ERROR_INVALID_PARAMETER;
+    }
+    // The surface is already RGBA in memory order, which is what stb wants, so
+    // the only work is dropping the row padding when pitch exceeds the width.
+    //
+    // It is NOT the big-endian ARGB the avatar colour constants use, and it is
+    // not BGRA either - both of those were tried and both discoloured it.
+    // Measured off a real capture, undoing each candidate mapping: the face
+    // comes out 109,84,42 (tan), the ground 63,112,56 (green) and the sky
+    // 62,38,8 (dark orange) only when the bytes are read straight through.
+    // Alpha is the LAST byte and is 0xFF everywhere.
+    const uint8_t* rows = source.as<const uint8_t*>();
+    std::vector<uint8_t> rgba(size_t(width) * height * 4);
+    for (uint32_t y = 0; y < height; ++y) {
+      std::memcpy(rgba.data() + size_t(y) * width * 4, rows + size_t(y) * pitch,
+                  size_t(width) * 4);
+    }
+    std::vector<uint8_t> png;
+    const auto sink = [](void* context, void* data, int size) {
+      auto* out = static_cast<std::vector<uint8_t>*>(context);
+      out->insert(out->end(), static_cast<uint8_t*>(data),
+                  static_cast<uint8_t*>(data) + size);
+    };
+    if (!stbi_write_png_to_func(sink, &png, int(width), int(height), 4,
+                                rgba.data(), int(width) * 4) ||
+        png.empty()) {
+      extended_error = X_E_FUNCTION_FAILED;
+      return X_ERROR_FUNCTION_FAILED;
+    }
+    if (capacity && png.size() > capacity) {
+      XELOGW("XamPngEncodeEx: {} bytes of PNG will not fit {} of buffer",
+             png.size(), capacity);
+      *size_ptr = static_cast<uint32_t>(png.size());
+      extended_error = X_E_INSUFFICIENT_BUFFER;
+      return X_ERROR_INSUFFICIENT_BUFFER;
+    }
+    std::memcpy(target.as<uint8_t*>(), png.data(), png.size());
+    *size_ptr = static_cast<uint32_t>(png.size());
+    length = static_cast<uint32_t>(png.size());
+    return X_ERROR_SUCCESS;
+  };
+
+  uint32_t extended_error = 0;
+  uint32_t length = 0;
+  const X_RESULT result = run(extended_error, length);
+  if (!overlapped_ptr) {
+    return result == X_ERROR_SUCCESS ? result : extended_error;
+  }
+  // ENCODED INLINE, not on the deferred worker.
+  //
+  // This is a pure CPU encode with no I/O to wait on, and the Avatar Editor
+  // does not wait either: sub_920CB378 reads the target and the length back
+  // out of the request (+0x3C and +0x40) as soon as the call returns, copies
+  // them, and files the result as the gamer picture. Deferring the work meant
+  // it read an untouched buffer and the CAPACITY instead of a PNG - which is
+  // why the picture came out as uninitialised heap, and later as "no PNG in
+  // either buffer". The overlapped is still completed, so a caller that does
+  // poll it finds it already done.
+  kernel_state()->CompleteOverlappedImmediateEx(overlapped_ptr.guest_address(),
+                                                result, extended_error, length);
+  return X_ERROR_IO_PENDING;
+}
+DECLARE_XAM_EXPORT1(XamPngEncodeEx, kUserProfiles, kImplemented);
+
+// ELEVEN arguments: r3..r10 and three stack slots, the last of which is the
+// overlapped. The real export (0x81670740) reads them at caller +0x54, +0x5C
+// and +0x64 and packs a 0x2C message for app 0xFB message 0x000B0037; it
+// returns 997 only when that last one is non-null. Declaring five made r7 -
+// which the Avatar Editor passes as zero - look like the overlapped, so the
+// request was answered synchronously and never completed.
+//
+// The editor's call site (0x92206DF0) supplies
+// (user, flags, title, 0, 0, 0, bigBuf, bigSize, smallBuf, smallSize,
+// &request[8]). Big before small is the order this whole family uses -
+// XamWriteGamerTile takes `big_tile_id, small_tile_id` and every XTileType
+// comes as {kGamerTile, kGamerTileSmall}.
+//
+// `flags` is the same word XamWriteGamerTile builds: the low nibble is a
+// WriteTileType and 0x10 means "not for enumeration". The editor sends 0x12,
+// so a gamer picture saved from the photo booth is a Personal tile.
+dword_result_t XamWriteGamerTileEx_entry(
+    dword_t user_index, dword_t flags, dword_t title_id, dword_t unk4,
+    dword_t unk5, dword_t unk6, lpvoid_t big_ptr, dword_t big_size,
+    lpvoid_t small_ptr, dword_t small_size,
+    pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
+  auto run = [=](uint32_t& extended_error, uint32_t& length) -> X_RESULT {
+    extended_error = X_ERROR_SUCCESS;
+    length = 0;
+    if (user_index >= XUserMaxUserCount) {
+      extended_error = X_E_INVALIDARG;
+      return X_ERROR_INVALID_PARAMETER;
+    }
+    auto user = kernel_state()->xam_state()->GetUserProfile(user_index);
+    if (!user) {
+      extended_error = X_E_NO_SUCH_USER;
+      return X_ERROR_FUNCTION_FAILED;
+    }
+    const WriteTileType tile_type = static_cast<WriteTileType>(flags & 0xF);
+    if (tile_type != WriteTileType::Personal &&
+        tile_type != WriteTileType::Tile) {
+      XELOGW("XamWriteGamerTileEx: flags {:08X} names no tile type",
+             uint32_t(flags));
+      extended_error = X_E_INVALIDARG;
+      return X_ERROR_INVALID_PARAMETER;
+    }
+
+    // NOT named `small`: <rpcndr.h> defines that as `char`.
+    // The buffers already hold FINISHED PNGs, and the sizes are the buffers'
+    // CAPACITY, not the encoded length.
+    //
+    // The editor's chain is: XamPngEncodeEx (called from 0x92207070) encodes
+    // the avatar snapshot into its request's +0x3C with the length at +0x40;
+    // sub_92207058 hands that pair back; sub_920CB378 copies it and files it
+    // by kind - 7 is the 64, anything else the 32 - and sub_92207200 copies
+    // both into the task this export is handed. So nothing here encodes
+    // anything: it stores what it was given, and only as far as the PNG
+    // actually runs, because the rest of the buffer is slack.
+    const auto png_length = [](const uint8_t* data,
+                               uint32_t capacity) -> uint32_t {
+      static constexpr uint8_t kSignature[8] = {0x89, 0x50, 0x4E, 0x47,
+                                                0x0D, 0x0A, 0x1A, 0x0A};
+      if (!data || capacity < sizeof(kSignature) + 12 ||
+          std::memcmp(data, kSignature, sizeof(kSignature)) != 0) {
+        return 0;
+      }
+      // Walk the chunks to IEND: length(4) + type(4) + data + crc(4) each.
+      uint32_t at = uint32_t(sizeof(kSignature));
+      while (uint64_t(at) + 12 <= capacity) {
+        const uint32_t length =
+            (uint32_t(data[at]) << 24) | (uint32_t(data[at + 1]) << 16) |
+            (uint32_t(data[at + 2]) << 8) | uint32_t(data[at + 3]);
+        const bool end = std::memcmp(data + at + 4, "IEND", 4) == 0;
+        if (uint64_t(at) + 12 + length > capacity) {
+          return 0;
+        }
+        at += 12 + length;
+        if (end) {
+          return at;
+        }
+      }
+      return 0;
+    };
+
+    const bool personal = tile_type == WriteTileType::Personal;
+    auto* tracker = kernel_state()->xam_state()->user_tracker();
+    // Both tile types land on kGamerTile: "Personal" is not a storage slot
+    // here - LoadProfileIcons never reads pp_*.png back, and GetProfileIcon
+    // folds kPersonalGamerTile onto kGamerTile for every reader.
+    const auto store = [&](lpvoid_t buffer, uint32_t capacity,
+                           XTileType tile) -> uint32_t {
+      if (!buffer) {
+        return 0;
+      }
+      const uint8_t* data = buffer.as<const uint8_t*>();
+      const uint32_t length = png_length(data, capacity);
+      if (!length ||
+          !tracker->WriteUserTile(user->xuid(), tile, {data, length})) {
+        return 0;
+      }
+      return length;
+    };
+
+    const uint32_t wrote_big = store(big_ptr, big_size, XTileType::kGamerTile);
+    const uint32_t wrote_small =
+        store(small_ptr, small_size, XTileType::kGamerTileSmall);
+    if (!wrote_big && !wrote_small) {
+      XELOGW(
+          "XamWriteGamerTileEx: no PNG in either buffer ({:08X}+{:X} and "
+          "{:08X}+{:X})",
+          big_ptr.guest_address(), uint32_t(big_size),
+          small_ptr.guest_address(), uint32_t(small_size));
+      extended_error = X_E_INVALIDARG;
+      return X_ERROR_INVALID_PARAMETER;
+    }
+    XELOGI(
+        "XamWriteGamerTileEx: {} saved a {} gamer picture for title {:08X} "
+        "({} and {} bytes of PNG)",
+        user->name(), personal ? "personal" : "public", uint32_t(title_id),
+        wrote_big, wrote_small);
+    return X_ERROR_SUCCESS;
+  };
+
+  if (!overlapped_ptr) {
+    uint32_t extended_error, length;
+    const X_RESULT result = run(extended_error, length);
+    return result == X_ERROR_SUCCESS ? result : extended_error;
+  }
+  kernel_state()->CompleteOverlappedDeferredEx(run, overlapped_ptr);
+  return X_ERROR_IO_PENDING;
+}
+DECLARE_XAM_EXPORT1(XamWriteGamerTileEx, kUserProfiles, kImplemented);
+
 dword_result_t XamSessionCreateHandle_entry(lpdword_t handle_ptr) {
   auto e = object_ref<XSession>(new XSession(kernel_state()));
   auto result = (uint32_t)e->Initialize();
@@ -1954,10 +2171,38 @@ dword_result_t XamUserLogonEx_entry(pointer_t<X_PROFILEENUMRESULT> profile_ptr,
 }
 DECLARE_XAM_EXPORT1(XamUserLogonEx, kUserProfiles, kSketchy);
 
-X_HRESULT_result_t XamUserValidateAvatarManifest_entry() {
-  return X_ERROR_SUCCESS;
+// THREE arguments, and the third is an overlapped. The real export memsets a
+// 0x3EC message, copies the caller's 0x3E8 manifest in behind a leading user
+// index, and hands it to app 0xFB message 0xB0074; the Avatar Editor's
+// sub_920CBD18 passes an overlapped and treats 0 and ERROR_IO_PENDING alike,
+// which is only true because the completion carries the real answer.
+// Declaring no parameters left whatever was in r3..r5 as the result and never
+// completed anything.
+X_HRESULT_result_t XamUserValidateAvatarManifest_entry(
+    dword_t user_index, lpvoid_t manifest_ptr,
+    pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
+  X_RESULT result = X_ERROR_SUCCESS;
+  // ParseManifest's out parameter is NOT optional - it ends in an
+  // unconditional `*out = description`, so passing null writes through null.
+  // That is what faulted the moment the editor validated a manifest.
+  xna::avatar::Description parsed;
+  if (!manifest_ptr) {
+    result = X_ERROR_INVALID_PARAMETER;
+  } else if (!xna::avatar::ParseManifest(
+                 xna::XnaAvatarCatalog(), manifest_ptr.as<const uint8_t*>(),
+                 xna::avatar::kManifestBytes, &parsed)) {
+    // The console validates against the catalogue it has. A manifest we cannot
+    // parse is one the avatar pipeline would choke on later, and the caller's
+    // remedy - fall back to a default avatar - is the right one.
+    result = X_ERROR_INVALID_PARAMETER;
+  }
+  if (overlapped_ptr) {
+    kernel_state()->CompleteOverlappedImmediate(overlapped_ptr, result);
+    return X_ERROR_IO_PENDING;
+  }
+  return result;
 }
-DECLARE_XAM_EXPORT1(XamUserValidateAvatarManifest, kUserProfiles, kStub);
+DECLARE_XAM_EXPORT1(XamUserValidateAvatarManifest, kUserProfiles, kImplemented);
 
 dword_result_t XamUserGetUserIndexMask_entry(dword_t flags) {
   uint32_t mask = 0;
