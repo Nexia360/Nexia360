@@ -1776,6 +1776,23 @@ void KernelState::InitializeKernelGuestGlobals() {
   InitializeProcess(system_process, X_PROCTYPE_SYSTEM, 2, 5, 9);
   SetProcessTLSVars(system_process, 32, 0, 0);
 
+  // The title process too, even though no title is loaded yet.
+  //
+  // SetExecutableModule initialises this again when a title actually starts,
+  // and until this line that was the ONLY place it ever happened - so with no
+  // title the block stayed all zeroes. Any guest thread created before a
+  // title (the boot animation, and anything it starts through ExCreateThread,
+  // which passes no process and so lands here) then ran
+  // XThread::InitializeGuestObject against it: XeInsertTailList follows
+  // thread_list.blink_ptr, reads 0, and writes through guest address 0. An
+  // access violation with "Title not started yet" on the dialog.
+  //
+  // An initialised empty list costs nothing and the later re-initialisation
+  // from SetExecutableModule is unchanged.
+  auto title_process =
+      memory()->TranslateVirtual<X_KPROCESS*>(GetTitleProcess());
+  InitializeProcess(title_process, X_PROCTYPE_TITLE, 10, 13, 17);
+
   uint32_t oddobject_offset =
       kernel_guest_globals_ +
       offsetof(KernelGuestGlobals, XboxKernelDefaultObject);

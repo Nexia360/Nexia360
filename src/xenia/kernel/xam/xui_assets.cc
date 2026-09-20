@@ -41,6 +41,7 @@ constexpr size_t kClusterSize = 0x1000;
 constexpr uint32_t kOptFileFormatInfo = 0x000003FF;
 constexpr uint32_t kOptResourceInfo = 0x000002FF;
 constexpr uint32_t kOptExecutionInfo = 0x00040006;
+constexpr uint32_t kOptOriginalPeName = 0x000183FF;
 constexpr uint32_t kSecurityLoadAddress = 0x110;
 
 constexpr size_t kMiB = 1024 * 1024;
@@ -567,6 +568,43 @@ struct Candidate {
 
 // Flash keeps pre-update copies of some modules (the reference dump has build
 // 16547 vk/signin beside the live 17559), so keep the newest per module.
+// A module's ORIGINAL_PE_NAME, e.g. "bootanim.dll". Empty when it has none.
+//
+// ScanModules cannot be used to find every module: ParseXexHeader refuses one
+// with no resources at all (it ends in `return !out->resources.empty()`), and
+// bootanim.xex has none - it is pure code with a .XBMOVIE section. Its PE name
+// is the one thing in its header that names it.
+std::string ModulePeName(const uint8_t* data, size_t size) {
+  if (size < 0x18 || std::memcmp(data, "XEX2", 4) != 0) {
+    return {};
+  }
+  const uint32_t count = Read32(data + 0x14);
+  if (!count || count > 256 || size_t(0x18) + size_t(count) * 8 > size) {
+    return {};
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    const uint8_t* entry = data + 0x18 + size_t(i) * 8;
+    if (Read32(entry) != kOptOriginalPeName) {
+      continue;
+    }
+    const uint32_t at = Read32(entry + 4);
+    if (size_t(at) + 8 > size) {
+      return {};
+    }
+    const uint32_t length = Read32(data + at);
+    if (length < 4 || size_t(at) + length > size) {
+      return {};
+    }
+    std::string name(reinterpret_cast<const char*>(data + at + 4), length - 4);
+    const size_t end = name.find('\0');
+    if (end != std::string::npos) {
+      name.resize(end);
+    }
+    return name;
+  }
+  return {};
+}
+
 std::map<std::string, Candidate> ScanModules(
     const std::vector<uint8_t>& image) {
   std::map<std::string, Candidate> best;
@@ -754,6 +792,63 @@ bool IsFlashImage(const std::filesystem::path& path) {
     if (!std::memcmp(head.data() + at, "XEX2", 4)) {
       return true;
     }
+  }
+  return false;
+}
+
+bool ExtractFlashModule(const std::filesystem::path& image_path,
+                        const std::string& pe_name,
+                        const std::filesystem::path& out_file) {
+  std::vector<uint8_t> image;
+  if (!ReadWholeFile(image_path, &image)) {
+    return false;
+  }
+  if (ClassifyImage(image.size()) == ImageKind::kRaw) {
+    StripSpare(&image);
+  }
+
+  for (size_t at = 0; at + 0x18 < image.size(); at += kPageSize) {
+    if (std::memcmp(image.data() + at, "XEX2", 4) != 0) {
+      continue;
+    }
+    if (ModulePeName(image.data() + at, image.size() - at) != pe_name) {
+      continue;
+    }
+    // The ORIGINAL bytes, not a flattened image: this is written out as a xex
+    // for the loader to load normally, exactly as it sat on the chip.
+    const size_t extent = ObjectExtent(image, at);
+    std::vector<uint8_t> module(image.begin() + at,
+                                image.begin() + at + extent);
+    // A module can be fragmented across the NAND, in which case the run above
+    // is not the whole thing - the same rebuild the asset extractor uses puts
+    // it back together from its SHA-1 block chain.
+    XexHeader header;
+    std::vector<uint8_t> flat;
+    if (!ParseXexHeader(module.data(), module.size(), &header) ||
+        !FlattenXex(module.data(), module.size(), header, &flat)) {
+      std::vector<uint8_t> rebuilt;
+      XexHeader rebuilt_header;
+      if (ReassembleXex(image, at, &rebuilt) &&
+          ParseXexHeader(rebuilt.data(), rebuilt.size(), &rebuilt_header) &&
+          FlattenXex(rebuilt.data(), rebuilt.size(), rebuilt_header, &flat)) {
+        XELOGI("xui assets: {} was fragmented in the NAND; rebuilt it",
+               pe_name);
+        module = std::move(rebuilt);
+      }
+      // A module with no resources cannot be parsed or flattened by those -
+      // bootanim is one - so a failure here is not proof of anything. The
+      // bytes on the chip are written out either way and the loader decides.
+    }
+
+    std::error_code ec;
+    std::filesystem::create_directories(out_file.parent_path(), ec);
+    if (!WriteWholeFile(out_file, module.data(), module.size())) {
+      XELOGW("xui assets: could not write {}", xe::path_to_utf8(out_file));
+      return false;
+    }
+    XELOGI("xui assets: {} -> {} ({} bytes)", pe_name,
+           xe::path_to_utf8(out_file), module.size());
+    return true;
   }
   return false;
 }

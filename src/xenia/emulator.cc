@@ -7,6 +7,7 @@
  ******************************************************************************
  */
 
+#include <chrono>
 #include <ranges>
 
 #include "xenia/emulator.h"
@@ -430,6 +431,7 @@ X_STATUS Emulator::TerminateTitle(bool clear_handles) {
   }
   XELOGI("TerminateTitle: done");
 
+  RecordTitleExit();
   title_id_ = std::nullopt;
   title_name_ = "";
   title_version_ = "";
@@ -493,6 +495,85 @@ uint64_t Emulator::GetPersistentEmulatorFlags() {
   return EmulatorFlagDisclaimerAcknowledged;
 #endif
 }
+void Emulator::RecordTitleLaunch(const std::filesystem::path& path) {
+  if (!title_id_.has_value() || path.empty()) {
+    return;
+  }
+  // The dashboard is not a game and never belongs in a played list - the My
+  // Games tile would otherwise offer to launch the thing drawing it.
+  if (title_id_.value() == kernel::kDashboardID) {
+    return;
+  }
+
+  kernel::PlayedTitle title;
+  title.title_id = title_id_.value();
+  title.media_id = media_id_;
+  title.title_name = title_name_;
+  title.path = path;
+  kernel::xna::XnaPackageInfo xna_info;
+  title.is_xna = kernel::xna::IsXnaPackage(path, &xna_info);
+  title.content_type =
+      uint32_t(title.is_xna ? XContentType::kXNA : XContentType::kXbox360Title);
+  // A container states both outright. The CATEGORY is what the dashboard
+  // splits My Games from My Apps on - an Xbox 360 title with a non-zero
+  // category is an app - and nothing else on this side knows it. A bare .xex
+  // has no metadata, so it keeps the defaults above and reads as a game.
+  const auto header = vfs::XContentContainerDevice::ReadContainerHeader(path);
+  if (header && header->content_header.is_magic_valid()) {
+    title.content_type = uint32_t(header->content_metadata.content_type.get());
+    title.category = header->content_metadata.category;
+  }
+
+  played_row_ = played_db()->BeginSession(title);
+  played_started_utc_ = std::chrono::duration_cast<std::chrono::seconds>(
+                            std::chrono::system_clock::now().time_since_epoch())
+                            .count();
+  if (!played_row_) {
+    return;
+  }
+
+  if (game_info_database_) {
+    const std::vector<uint8_t> icon = game_info_database_->GetIcon();
+    if (!icon.empty()) {
+      played_db()->SetIcon(played_row_, icon);
+    }
+  }
+
+  std::vector<kernel::PlayedMount> mounts;
+  if (file_system_) {
+    for (const auto& [link, target] : file_system_->GetSymbolicLinks()) {
+      mounts.push_back({link, target});
+    }
+  }
+  played_db()->SetMounts(played_row_, mounts);
+}
+
+void Emulator::RecordTitleExit() {
+  if (!played_row_) {
+    return;
+  }
+  const int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
+                          std::chrono::system_clock::now().time_since_epoch())
+                          .count();
+  if (played_started_utc_ && now > played_started_utc_) {
+    played_db()->EndSession(played_row_, now - played_started_utc_);
+  }
+  played_row_ = 0;
+  played_started_utc_ = 0;
+}
+
+kernel::PlayedDB* Emulator::played_db() {
+  std::lock_guard lock(played_db_mutex_);
+  if (!played_db_) {
+    played_db_ = std::make_unique<kernel::PlayedDB>();
+    played_db_->Open(storage_root() / "played.db");
+    // The list that used to live in recent.toml, taken in once. The file is
+    // left where it is - an older build still reads it.
+    played_db_->ImportRecentToml(storage_root() / "recent.toml");
+  }
+  return played_db_.get();
+}
+
 void Emulator::SetPersistentEmulatorFlags(uint64_t new_flags) {
 #if XE_PLATFORM_WIN32 == 1
   uint64_t value = new_flags;
@@ -1557,6 +1638,7 @@ void Emulator::WaitUntilExit() {
     }
   }
 
+  RecordTitleExit();
   on_exit();
 }
 
@@ -1732,6 +1814,7 @@ X_STATUS Emulator::CompleteLaunch(const std::filesystem::path& path,
       kernel_state_->xam_state()->user_tracker()->AddDefaultProperties();
       kernel_state_->xam_state()->user_tracker()->AddDefaultContexts();
 
+      RecordTitleLaunch(path);
       on_launch(title_id_.value(), title_name_);
 
       kernel_state()->GetXboxLiveAPI()->Init();
@@ -1978,6 +2061,7 @@ X_STATUS Emulator::CompleteLaunch(const std::filesystem::path& path,
     return X_STATUS_UNSUCCESSFUL;
   }
   main_thread_ = main_thread;
+  RecordTitleLaunch(path);
   on_launch(title_id_.value(), title_name_);
 
   // Plugins must be loaded after calling LaunchModule() and

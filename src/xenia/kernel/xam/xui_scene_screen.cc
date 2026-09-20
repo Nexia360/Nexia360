@@ -12,6 +12,7 @@
 #include <utility>
 
 #include "xenia/base/logging.h"
+#include "xenia/kernel/xam/xui_game_library.h"
 
 namespace xe {
 namespace kernel {
@@ -104,6 +105,10 @@ void SceneScreen::Draw(class Draw& draw, const Element& root) {
   drawer.AddFallbackPackage(common_);
   drawer.SetFigures(&figures_);
   drawer.SetSkinFigures(&skin_figures_);
+  // A My Games row's box art is the title's own icon out of played.db, which
+  // is in no package.
+  drawer.SetArtSource(
+      [](const std::string& path) { return GameLibraryIcon(path); });
   // Each control holds its own playhead, so the drawer asks which one governs
   // whatever it is about to put down rather than being handed one for the
   // whole scene.

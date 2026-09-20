@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <future>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -49,6 +50,12 @@ class TitleUpdateDialog final : public ui::ImGuiDialog {
   EmulatorWindow* emulator_window_;
   uint32_t title_id_;
   std::filesystem::path launch_path_;
+
+  // The title's own icon, decoded once while drawing - a texture cannot be
+  // made outside a draw. `icon_tried_` keeps a title with no art from being
+  // looked up every frame.
+  std::unique_ptr<ui::ImmediateTexture> icon_;
+  bool icon_tried_ = false;
 
   std::vector<kernel::util::TitleUpdateEntry> entries_;
   std::vector<std::array<char, 128>> name_buffers_;

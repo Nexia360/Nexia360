@@ -2169,11 +2169,15 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
 
   ui::Presenter* presenter = graphics_system_->presenter();
   if (!presenter) {
+    XELOGE("IssueSwap({:08X}, {}x{}): no presenter", frontbuffer_ptr,
+           frontbuffer_width, frontbuffer_height);
     return;
   }
 
   // In case the swap command is the only one in the frame.
   if (!BeginSubmission(true)) {
+    XELOGE("IssueSwap({:08X}, {}x{}): BeginSubmission failed", frontbuffer_ptr,
+           frontbuffer_width, frontbuffer_height);
     return;
   }
 
@@ -2184,6 +2188,8 @@ void D3D12CommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
   ID3D12Resource* swap_texture_resource = texture_cache_->RequestSwapTexture(
       swap_texture_srv_desc, frontbuffer_format);
   if (!swap_texture_resource) {
+    XELOGE("IssueSwap({:08X}, {}x{}): no swap texture", frontbuffer_ptr,
+           frontbuffer_width, frontbuffer_height);
     return;
   }
   D3D12_RESOURCE_DESC swap_texture_desc = swap_texture_resource->GetDesc();

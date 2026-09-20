@@ -85,15 +85,15 @@ TEST_CASE("heap_alloc_basic", "[heap]") {
 TEST_CASE("heap_alloc_top_down", "[heap]") {
   TestHeap h(0x80000000, 0x100000, 0x1000);
 
-  // Top-down treats high_page_number as exclusive, so the top page is
-  // never handed out.
+  // high_page_number is the INCLUSIVE last page, so the top page IS handed
+  // out: a 1-page top-down allocation lands on the last page of the heap.
   uint32_t addr = 0;
   REQUIRE(h.Alloc(0x1000, 0x1000, true, &addr));
-  REQUIRE(addr == 0x800FE000);
+  REQUIRE(addr == 0x800FF000);
   REQUIRE(h.unreserved_page_count() == 255);
 
   REQUIRE(h.Alloc(0x2000, 0x1000, true, &addr));
-  REQUIRE(addr == 0x800FC000);
+  REQUIRE(addr == 0x800FD000);
   REQUIRE(h.unreserved_page_count() == 253);
 }
 
@@ -238,18 +238,17 @@ TEST_CASE("heap_alloc_alignment_top_down", "[heap]") {
   // 1MB heap, 4KB pages
   TestHeap h(0x80000000, 0x100000, 0x1000);
 
-  // Top-down skips the top page (0x800FF000), so a 1-page allocation
-  // lands on page 0xFE.
+  // The top page IS available, so a 1-page allocation lands on page 0xFF.
   uint32_t first = 0;
   REQUIRE(h.Alloc(0x1000, 0x1000, true, &first));
-  REQUIRE(first == 0x800FE000);
+  REQUIRE(first == 0x800FF000);
 
-  // 64KB-aligned top-down: stride 16, exclusive high at page 0xFF, so
-  // the highest aligned base is page 0xE0.
+  // 64KB-aligned top-down: stride 16, exclusive end at page 0x100, so the
+  // highest aligned base is page 0xF0.
   uint32_t aligned = 0;
   REQUIRE(h.Alloc(0x1000, 0x10000, true, &aligned));
   REQUIRE((aligned % 0x10000) == 0);
-  REQUIRE(aligned == 0x800E0000);
+  REQUIRE(aligned == 0x800F0000);
 }
 
 // ============================================================================

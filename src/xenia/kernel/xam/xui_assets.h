@@ -47,6 +47,17 @@ bool IsFlashImage(const std::filesystem::path& path);
 AssetInstallReport InstallFromFlashImage(const std::filesystem::path& image,
                                          const std::filesystem::path& out_dir);
 
+// Copies one whole module out of a NAND image, by its ORIGINAL_PE_NAME (e.g.
+// "bootanim.dll"), as a .xex the loader can load.
+//
+// Some modules are wanted as FILES rather than as a source of XUI packages,
+// and bootanim.xex is the one that matters: the kernel loads and runs it, it
+// exists only in flash - no system update carries it - and it has no
+// resources at all, so the package extractor cannot even see it.
+bool ExtractFlashModule(const std::filesystem::path& image,
+                        const std::string& pe_name,
+                        const std::filesystem::path& out_file);
+
 // The Avatar Editor's UI is not in flash - it ships in the system update the
 // XNA setup already downloads and unpacks. Pulls the XUI packages out of the
 // module XEXs found under `directory` (they are unencrypted, so the same

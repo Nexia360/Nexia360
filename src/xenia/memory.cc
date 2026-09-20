@@ -1414,10 +1414,15 @@ bool BaseHeap::AllocRange(uint32_t low_address, uint32_t high_address,
       }
 
       // Compute the highest aligned start within this block and range.
-      // high_page_number is exclusive and rounded down to the stride, so
-      // the top stride of pages is never returned.
+      //
+      // high_page_number is the INCLUSIVE index of the last usable page
+      // ((high_address - heap_base_) >> shift, with high_address = base +
+      // size - 1), so the exclusive end is one past it. Using it directly as
+      // the exclusive end silently drops the top page of every top-down
+      // allocation.
+      const uint32_t high_exclusive = high_page_number + 1;
       uint32_t high_aligned =
-          high_page_number - QuickMod(high_page_number, page_scan_stride);
+          high_exclusive - QuickMod(high_exclusive, page_scan_stride);
       uint32_t usable_end = std::min(block_end, high_aligned);
       if (usable_end < page_count) {
         continue;

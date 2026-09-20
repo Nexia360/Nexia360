@@ -9,6 +9,7 @@
 
 #include "xenia/app/emulator_window.h"
 
+#include <chrono>
 #include <mutex>
 #include <set>
 
@@ -25,6 +26,7 @@
 
 #include "xenia/app/console_settings_dialog.h"
 #include "xenia/app/messages_dialog.h"
+#include "xenia/app/recent_titles_dialog.h"
 #include "xenia/app/title_update_dialog.h"
 #include "xenia/base/assert.h"
 #include "xenia/base/clock.h"
@@ -57,6 +59,7 @@
 #include "xenia/kernel/xam/xam_ui.h"
 #include "xenia/kernel/xam/xui_assets.h"
 #include "xenia/kernel/xam/xui_keyboard_backend.h"
+#include "xenia/kernel/xboxkrnl/xboxkrnl_ani.h"
 #include "xenia/kernel/xconfig.h"
 #include "xenia/kernel/xna/xna_avatar_format.h"
 #include "xenia/kernel/xna/xna_dependencies.h"
@@ -207,7 +210,6 @@ using xe::ui::UIEvent;
 using namespace xe::hid;
 using namespace xe::gpu;
 
-constexpr std::string_view kRecentlyPlayedTitlesFilename = "recent.toml";
 constexpr std::string_view kBaseTitle = "Nexia360";
 
 EmulatorWindow::EmulatorWindow(Emulator* emulator,
@@ -254,6 +256,9 @@ std::unique_ptr<EmulatorWindow> EmulatorWindow::Create(
 }
 
 EmulatorWindow::~EmulatorWindow() {
+  // Before anything else: the boot animation's timer captures `this` and would
+  // otherwise still be counting down to a dashboard that has nowhere to go.
+  CancelPendingDashboard();
   // Notify the ImGui drawer that the immediate drawer is being destroyed.
   ShutdownGraphicsSystemPresenterPainting();
 }
@@ -1006,19 +1011,20 @@ bool EmulatorWindow::Initialize() {
   // FIXME: This code is really messy.
   auto main_menu = MenuItem::Create(MenuItem::Type::kNormal);
   auto file_menu = MenuItem::Create(MenuItem::Type::kPopup, "&File");
-  auto recent_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Open Recent");
-  auto recent_with_tu_menu =
-      MenuItem::Create(MenuItem::Type::kPopup, "Open Recent with &TU");
   auto zar_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Zar Package");
   auto xna_menu = MenuItem::Create(MenuItem::Type::kPopup, "&XNA Titles");
-  FillRecentlyLaunchedTitlesMenu(recent_menu.get());
-  FillRecentlyLaunchedTitlesWithTUMenu(recent_with_tu_menu.get());
   {
     file_menu->AddChild(
         MenuItem::Create(MenuItem::Type::kString, "&Open...", "Ctrl+O",
                          std::bind(&EmulatorWindow::FileOpen, this)));
-    file_menu->AddChild(std::move(recent_menu));
-    file_menu->AddChild(std::move(recent_with_tu_menu));
+    // A dialog rather than a submenu: a native menu neither scrolls nor
+    // carries an icon, and the recent list is no longer a handful of entries.
+    file_menu->AddChild(MenuItem::Create(
+        MenuItem::Type::kString, "&Open Recent...", "",
+        std::bind(&EmulatorWindow::ShowRecentTitlesDialog, this)));
+    file_menu->AddChild(MenuItem::Create(
+        MenuItem::Type::kString, "Open Recent with &TU...", "",
+        std::bind(&EmulatorWindow::ShowRecentTitlesWithTuDialog, this)));
     file_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
     file_menu->AddChild(
         MenuItem::Create(MenuItem::Type::kString, "Install Content...",
@@ -1049,6 +1055,10 @@ bool EmulatorWindow::Initialize() {
     xna_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
     FillXnaTitlesMenu(xna_menu.get());
     file_menu->AddChild(std::move(xna_menu));
+    file_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
+    file_menu->AddChild(
+        MenuItem::Create(MenuItem::Type::kString, "E&xit Title", "",
+                         std::bind(&EmulatorWindow::ExitTitle, this)));
 #ifdef DEBUG
     file_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
     file_menu->AddChild(
@@ -1620,6 +1630,86 @@ void EmulatorWindow::FileOpen() {
 
 void EmulatorWindow::FileClose() { emulator_->TerminateTitle(); }
 
+std::filesystem::path EmulatorWindow::DashboardFile(
+    const std::string& name) const {
+  return xe::filesystem::GetExecutableFolder() / "Dashboard" / name;
+}
+
+// Starting with nothing to run: play the boot animation, then the dashboard.
+//
+// The animation is a KERNEL CALL, not a title launch. AniStartBootAnimation
+// loads bootanim.xex and runs its ordinal 1 on its own guest thread, exactly
+// as xboxkrnl does - see xboxkrnl_ani.cc, which was read out of the real
+// 17559 kernel. Nothing here executes bootanim.xex as a title.
+//
+// The animation LOOPS - it never ends on its own - so this runs it for a set
+// time and then terminates it, which is what the console's own warm boot
+// does. Waiting for it to finish waits forever.
+void EmulatorWindow::BootToDashboard() {
+  std::error_code ec;
+  const auto dashboard = DashboardFile("dash.xex");
+  if (!std::filesystem::exists(dashboard, ec)) {
+    XELOGI("Boot: no dashboard installed at {}; staying idle",
+           xe::path_to_utf8(dashboard));
+    return;
+  }
+
+  if (XFAILED(kernel::xboxkrnl::StartBootAnimation())) {
+    XELOGI("Boot: no boot animation; going straight to the dash");
+    RunTitle(dashboard);
+    return;
+  }
+
+  // Armed AFTER the animation starts. RunTitle cancels a pending switch, so
+  // anything the user opens during the animation wins and the dash never
+  // yanks the screen away.
+  CancelPendingDashboard();
+  auto cancelled = std::make_shared<std::atomic<bool>>(false);
+  dashboard_pending_cancelled_ = cancelled;
+  dashboard_pending_thread_ =
+      threading::Thread::Create({}, [this, cancelled, dashboard]() {
+        xe::threading::Sleep(std::chrono::seconds(kBootAnimationSeconds));
+        if (cancelled->load()) {
+          return;
+        }
+        // Stopped the kernel way - through bootanim's own ordinal 2 - before
+        // the dash takes the screen.
+        kernel::xboxkrnl::TerminateBootAnimation();
+        app_context().CallInUIThread([this, dashboard, cancelled]() {
+          if (!cancelled->load()) {
+            RunTitle(dashboard);
+          }
+        });
+      });
+  if (dashboard_pending_thread_) {
+    dashboard_pending_thread_->set_name("Boot Animation");
+  }
+}
+
+void EmulatorWindow::CancelPendingDashboard() {
+  if (dashboard_pending_cancelled_) {
+    dashboard_pending_cancelled_->store(true);
+    dashboard_pending_cancelled_.reset();
+  }
+  dashboard_pending_thread_.reset();
+}
+
+// Stops the running title and goes back to an empty emulator, rather than
+// closing the emulator with it. The title's filesystem is dropped the same way
+// a failed launch drops it - leaving GAME:/UPDATE: pointing at a finished
+// title is what put a dead device in front of the next one.
+void EmulatorWindow::ExitTitle() {
+  if (!emulator_->is_title_open()) {
+    return;
+  }
+  ClearDialogs();
+  emulator_->TerminateTitle(cvars::title_switch_clear_handles);
+  emulator_->file_system()->Clear();
+  // The recent list gained this title's play time when the session ended.
+  LoadRecentlyLaunchedTitles();
+  UpdateTitle();
+}
+
 // A title switch - a game changing mode, or launching another title - is done
 // by the guest writing launch data and terminating. That data is only read
 // when the emulator starts, so the switch cannot happen inside this process:
@@ -1684,7 +1774,9 @@ void EmulatorWindow::InstallContent() {
 namespace {
 // Defined with the rest of the setup helpers, below.
 bool IsSystemUpdateTree(const std::filesystem::path& staging);
-std::string InstallSystemUpdateTree(const std::filesystem::path& staging);
+std::string InstallSystemUpdateTree(
+    const std::filesystem::path& staging,
+    std::vector<std::filesystem::path>* out_packages);
 std::string ReplaceDashboardFontsFromFlash(
     const std::filesystem::path& dashboard);
 }  // namespace
@@ -1713,11 +1805,21 @@ void EmulatorWindow::InstallContentPackages(
           path, kernel::xam::xui::DefaultAssetDirectory());
       archive_report += report.text;
       if (report.ok) {
+        const auto dashboard =
+            xe::filesystem::GetExecutableFolder() / "Dashboard";
         // A system title loads its typefaces off media:, so the flash ones go
         // into the Dashboard folder as well - whichever order the two installs
         // happen in, the flash faces are the ones left standing.
-        archive_report += ReplaceDashboardFontsFromFlash(
-            xe::filesystem::GetExecutableFolder() / "Dashboard");
+        archive_report += ReplaceDashboardFontsFromFlash(dashboard);
+        // The boot animation is a whole module, and NAND is the only place it
+        // exists - a system update does not carry it. Without this the
+        // dashboard comes up with no animation before it.
+        if (kernel::xam::xui::ExtractFlashModule(path, "bootanim.dll",
+                                                 dashboard / "bootanim.xex")) {
+          archive_report += "Dashboard: bootanim.xex taken from the flash\n";
+        } else {
+          archive_report += "Dashboard: no bootanim.xex in this flash image\n";
+        }
         ReloadDashboardUIAssets();
       }
       continue;
@@ -1741,11 +1843,13 @@ void EmulatorWindow::InstallContentPackages(
     }
     staging_dirs->push_back(staging);
 
-    // The USB system update: no XContent anywhere in it, just the console's
-    // own modules. It is where the avatar UI packages and AvatarEditor.xex
-    // come from, so install it here rather than reporting nothing was found.
+    // The USB system update: mostly the console's own modules, which belong
+    // beside dash.xex. It is NOT free of XContent, though - the avatar asset
+    // packs ride along in it, and those have to be installed into the content
+    // tree like any other package. Anything found is appended to `packages`
+    // and goes through the normal install below.
     if (IsSystemUpdateTree(staging)) {
-      archive_report += InstallSystemUpdateTree(staging);
+      archive_report += InstallSystemUpdateTree(staging, &packages);
       ReloadDashboardUIAssets();
       continue;
     }
@@ -3088,6 +3192,10 @@ std::string EmulatorWindow::CanonicalizeFileExtension(
 
 xe::X_STATUS EmulatorWindow::RunTitle(
     const std::filesystem::path& path_to_file) {
+  // Whatever is starting now takes precedence over a boot animation still
+  // counting down to the dashboard.
+  CancelPendingDashboard();
+
   std::error_code ec = {};
   bool titleExists = std::filesystem::exists(path_to_file, ec);
 
@@ -3218,8 +3326,9 @@ xe::X_STATUS EmulatorWindow::RunTitle(
 
     emulator_->file_system()->Clear();
   } else {
-    AddRecentlyLaunchedTitle(path_to_file, emulator_->title_name(),
-                             emulator_->title_id(), emulator_->media_id());
+    // Emulator::RecordTitleLaunch has already written the row - it is the only
+    // place with the title's icon and its mounts - so the menu just re-reads.
+    LoadRecentlyLaunchedTitles();
 
     auto xam =
         emulator_->kernel_state()->GetKernelModule<kernel::xam::XamModule>(
@@ -3453,16 +3562,48 @@ std::string ReplaceDashboardFontsFromFlash(
 // system title run from there reads its modules, its .lex overlays and its
 // typefaces off media:, which IS this folder, so cherry-picking three files
 // left it short.
-std::string CopyDashboardModules(const std::filesystem::path& staging) {
+// An XContent package, by its own signature. The system update carries the
+// avatar asset packs as extensionless files (FFFE07DF00000001 and friends),
+// so the magic is the only thing separating them from a module.
+bool IsXContentPackageFile(const std::filesystem::path& path) {
+  FILE* file = xe::filesystem::OpenFile(path, "rb");
+  if (!file) {
+    return false;
+  }
+  char magic[4] = {};
+  const size_t read = fread(magic, 1, sizeof(magic), file);
+  fclose(file);
+  if (read != sizeof(magic)) {
+    return false;
+  }
+  return !std::memcmp(magic, "CON ", 4) || !std::memcmp(magic, "PIRS", 4) ||
+         !std::memcmp(magic, "LIVE", 4);
+}
+
+std::string CopyDashboardModules(
+    const std::filesystem::path& staging,
+    std::vector<std::filesystem::path>* out_packages) {
   std::error_code ec;
   const auto dashboard = xe::filesystem::GetExecutableFolder() / "Dashboard";
   std::filesystem::create_directories(dashboard, ec);
   size_t copied = 0;
   size_t failed = 0;
+  size_t packages = 0;
   for (const auto& file : std::filesystem::recursive_directory_iterator(
            staging, std::filesystem::directory_options::skip_permission_denied,
            ec)) {
     if (!file.is_regular_file(ec)) {
+      continue;
+    }
+    // The avatar asset packs are why this check exists. Copied beside
+    // dash.xex they are invisible - the catalogue opens
+    // content/0000000000000000/FFFE07DF/00008000/FFFE07DF00000002/
+    // AvatarAssetPack.toc - so leaving them unextracted in Dashboard makes
+    // XamAvatarInitialize report the Avatar update as missing, every
+    // XamAvatarGetAssets return 80004005, and the avatar editor spin.
+    if (out_packages && IsXContentPackageFile(file.path())) {
+      out_packages->push_back(file.path());
+      ++packages;
       continue;
     }
     std::filesystem::copy_file(
@@ -3477,6 +3618,10 @@ std::string CopyDashboardModules(const std::filesystem::path& staging) {
   }
   std::string report = fmt::format("Dashboard: {} file(s) -> {}\n", copied,
                                    xe::path_to_utf8(dashboard));
+  if (packages) {
+    report += fmt::format(
+        "Avatar data: {} content package(s) sent to the installer\n", packages);
+  }
   if (failed) {
     report +=
         fmt::format("Dashboard: {} file(s) could not be copied\n", failed);
@@ -3509,8 +3654,10 @@ bool IsSystemUpdateTree(const std::filesystem::path& staging) {
   return false;
 }
 
-std::string InstallSystemUpdateTree(const std::filesystem::path& staging) {
-  std::string report = CopyDashboardModules(staging);
+std::string InstallSystemUpdateTree(
+    const std::filesystem::path& staging,
+    std::vector<std::filesystem::path>* out_packages) {
+  std::string report = CopyDashboardModules(staging, out_packages);
   const auto ui = kernel::xam::xui::InstallFromSystemUpdate(
       staging, kernel::xam::xui::DefaultAssetDirectory());
   return report + "Avatar UI: " + ui.text;
@@ -3531,7 +3678,9 @@ void InstallXnaSetupDashboard(XnaSetupState* state,
 
   // The Avatar Editor's XUI packages ride in the same update, inside
   // AvatarEditor.xex and Guide.AvatarMiniCreator.xex.
-  state->AddReport(InstallSystemUpdateTree(staging));
+  // Packages are not installed here - the avatar step hands the same zip to
+  // the content installer after the user presses OK.
+  state->AddReport(InstallSystemUpdateTree(staging, nullptr));
 
   std::filesystem::remove_all(staging, ec);
 }
@@ -3918,35 +4067,37 @@ void EmulatorWindow::FillXnaTitlesMenu(xe::ui::MenuItem* xna_menu) {
   }
 }
 
-void EmulatorWindow::FillRecentlyLaunchedTitlesMenu(
-    xe::ui::MenuItem* recent_menu) {
-  for (int i = 0; i < recently_launched_titles_.size(); ++i) {
-    std::string hotkey = (i == 0) ? "F9" : "";
-
-    const RecentTitleEntry& entry = recently_launched_titles_[i];
-    const std::string item_text = entry.title_name.empty()
-                                      ? entry.path_to_file.string()
-                                      : entry.title_name;
-
-    recent_menu->AddChild(MenuItem::Create(
-        MenuItem::Type::kString, item_text, hotkey,
-        std::bind(&EmulatorWindow::RunTitle, this, entry.path_to_file)));
+void EmulatorWindow::ShowRecentTitlesDialog() {
+  if (recent_titles_dialog_) {
+    return;
   }
+  recent_titles_dialog_ = new RecentTitlesDialog(
+      imgui_drawer_.get(), this, RecentTitlesDialog::Mode::kLaunch);
+  recent_titles_dialog_->set_closed_callback(
+      [this]() { recent_titles_dialog_ = nullptr; });
 }
 
-void EmulatorWindow::FillRecentlyLaunchedTitlesWithTUMenu(
-    xe::ui::MenuItem* recent_menu) {
-  for (size_t i = 0; i < recently_launched_titles_.size(); ++i) {
-    const RecentTitleEntry& entry = recently_launched_titles_[i];
-    const std::string item_text = entry.title_name.empty()
-                                      ? entry.path_to_file.string()
-                                      : entry.title_name;
-
-    recent_menu->AddChild(
-        MenuItem::Create(MenuItem::Type::kString, item_text, "",
-                         std::bind(&EmulatorWindow::OpenTitleUpdateSelector,
-                                   this, entry.path_to_file, entry.title_id)));
+void EmulatorWindow::ShowRecentTitlesWithTuDialog() {
+  if (recent_titles_dialog_) {
+    return;
   }
+  recent_titles_dialog_ = new RecentTitlesDialog(
+      imgui_drawer_.get(), this, RecentTitlesDialog::Mode::kTitleUpdate);
+  recent_titles_dialog_->set_closed_callback(
+      [this]() { recent_titles_dialog_ = nullptr; });
+}
+
+const RecentTitleEntry* EmulatorWindow::FindRecentTitle(
+    uint32_t title_id) const {
+  if (!title_id) {
+    return nullptr;
+  }
+  for (const RecentTitleEntry& entry : recently_launched_titles_) {
+    if (entry.title_id == title_id) {
+      return &entry;
+    }
+  }
+  return nullptr;
 }
 
 std::string EmulatorWindow::GetRecentMediaId(
@@ -3961,103 +4112,22 @@ std::string EmulatorWindow::GetRecentMediaId(
 }
 
 void EmulatorWindow::LoadRecentlyLaunchedTitles() {
-  std::ifstream file(emulator()->storage_root() /
-                     kRecentlyPlayedTitlesFilename);
-  if (!file.is_open()) {
-    return;
-  }
-
-  toml::parse_result parsed_file;
-  try {
-    parsed_file = toml::parse(file);
-  } catch (toml::parse_error& exception) {
-    XELOGE("Cannot parse file: recent.toml. Error: {}", exception.what());
-    return;
-  }
-
-  if (parsed_file.is_table()) {
-    for (const auto& [index, entry] : *parsed_file.as_table()) {
-      if (!entry.is_table()) {
-        continue;
-      }
-
-      const toml::table* entry_table = entry.as_table();
-
-      std::string title_name =
-          entry_table->get_as<std::string>("title_name")->get();
-      std::string path = entry_table->get_as<std::string>("path")->get();
-      std::time_t last_run_time =
-          entry_table->get_as<int64_t>("last_run_time")->get();
-
-      std::error_code ec = {};
-      if (path.empty() || !std::filesystem::exists(path, ec)) {
-        continue;
-      }
-
-      uint32_t title_id = 0;
-      if (auto id_node = entry_table->get_as<int64_t>("title_id")) {
-        title_id = static_cast<uint32_t>(id_node->get());
-      }
-
-      // Absent for entries written before media ids were recorded; those are
-      // filled in the next time the title is launched.
-      std::string media_id;
-      if (auto media_node = entry_table->get_as<std::string>("media_id")) {
-        media_id = media_node->get();
-      }
-
-      recently_launched_titles_.push_back(
-          {title_name, path, last_run_time, title_id, media_id});
+  // played.db is the store now - see PlayedDB. The old recent.toml is taken
+  // in once, by the database itself, the first time it is opened.
+  recently_launched_titles_.clear();
+  const size_t limit = cvars::recent_titles_entry_amount > 0
+                           ? size_t(cvars::recent_titles_entry_amount)
+                           : 0;
+  for (const kernel::PlayedTitle& title : emulator()->played_db()->GetRecent(
+           limit, kernel::PlayedSort::kMostRecentlyPlayed)) {
+    std::error_code ec;
+    if (title.path.empty() || !std::filesystem::exists(title.path, ec)) {
+      continue;
     }
+    recently_launched_titles_.push_back(
+        {title.title_name, title.path, std::time_t(title.last_run_utc),
+         title.title_id, title.media_id, title.icon});
   }
-}
-
-void EmulatorWindow::AddRecentlyLaunchedTitle(
-    std::filesystem::path path_to_file, std::string title_name,
-    uint32_t title_id, const std::string& media_id) {
-  if (cvars::recent_titles_entry_amount <= 0) {
-    return;
-  }
-
-  // Check if game is already on list and pop it to front
-  auto entry_index = std::find_if(recently_launched_titles_.cbegin(),
-                                  recently_launched_titles_.cend(),
-                                  [&title_name](const RecentTitleEntry& entry) {
-                                    return entry.title_name == title_name;
-                                  });
-  if (entry_index != recently_launched_titles_.cend()) {
-    recently_launched_titles_.erase(entry_index);
-  }
-
-  recently_launched_titles_.insert(
-      recently_launched_titles_.cbegin(),
-      {title_name, path_to_file, time(nullptr), title_id, media_id});
-  // Serialize to toml
-  auto toml_table = toml::table();
-
-  uint8_t index = 0;
-  for (const RecentTitleEntry& entry : recently_launched_titles_) {
-    auto entry_table = toml::table();
-
-    // Fill entry under specific index.
-    std::string str_path = xe::path_to_utf8(entry.path_to_file);
-    entry_table.insert("title_name", entry.title_name);
-    entry_table.insert("path", str_path);
-    entry_table.insert("last_run_time", entry.last_run_time);
-    entry_table.insert("title_id", static_cast<int64_t>(entry.title_id));
-    entry_table.insert("media_id", entry.media_id);
-
-    toml_table.insert(std::to_string(index++), entry_table);
-
-    if (index >= cvars::recent_titles_entry_amount) {
-      break;
-    }
-  }
-  // Open and write serialized data.
-  std::ofstream file(emulator()->storage_root() / kRecentlyPlayedTitlesFilename,
-                     std::ofstream::trunc);
-  file << toml_table;
-  file.close();
 }
 
 void EmulatorWindow::ClearDialogs() {

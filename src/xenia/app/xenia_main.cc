@@ -901,15 +901,24 @@ void EmulatorApp::EmulatorThread() {
   auto xam = emulator_->kernel_state()->GetKernelModule<kernel::xam::XamModule>(
       "xam.xex");
 
+  bool launched_from_loader_data = false;
   if (xam) {
     xam->LoadLoaderData();
 
     if (!xam->loader_data().host_path.empty()) {
       const std::filesystem::path host_path = xam->loader_data().host_path;
+      launched_from_loader_data = true;
       app_context().CallInUIThread([this, host_path]() {
         return emulator_window_->RunTitle(host_path);
       });
     }
+  }
+
+  // Nothing asked for: the boot animation, then the dashboard, the way the
+  // console starts. Does nothing when no dashboard is installed.
+  if (path.empty() && !launched_from_loader_data) {
+    app_context().CallInUIThread(
+        [this]() { emulator_window_->BootToDashboard(); });
   }
 
   // Now, we're going to use this thread to drive events related to emulation.

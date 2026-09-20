@@ -10,6 +10,7 @@
 #ifndef XENIA_APP_EMULATOR_WINDOW_H_
 #define XENIA_APP_EMULATOR_WINDOW_H_
 
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <string>
@@ -39,6 +40,7 @@ namespace app {
 
 class ConsoleSettingsDialog;
 class MessagesDialog;
+class RecentTitlesDialog;
 
 struct RecentTitleEntry {
   std::string title_name;
@@ -49,6 +51,10 @@ struct RecentTitleEntry {
   // title id because title updates are published per media id - a package for
   // a different one does not apply to this copy.
   std::string media_id;
+  // The title's own icon as a PNG, straight out of played.db. Kept as bytes
+  // rather than a texture because this list is rebuilt off the UI thread's
+  // draw and a texture can only be made while drawing.
+  std::vector<uint8_t> icon;
 };
 
 class EmulatorWindow {
@@ -112,6 +118,14 @@ class EmulatorWindow {
   // Shows the title-update selector for the given file, then launches it.
   void OpenTitleUpdateSelector(const std::filesystem::path& path,
                                uint32_t title_id);
+
+  // What has been played, newest first, as RecentTitlesDialog draws it.
+  const std::vector<RecentTitleEntry>& recently_launched_titles() const {
+    return recently_launched_titles_;
+  }
+  // The recent entry for a title id, or null. The title update selector uses
+  // it for the name and icon it shows beside the id.
+  const RecentTitleEntry* FindRecentTitle(uint32_t title_id) const;
   void UpdateTitle();
   void SetFullscreen(bool fullscreen);
   void ToggleFullscreen();
@@ -138,6 +152,10 @@ class EmulatorWindow {
   void ShowAvatarEditorDialog();
   void ToggleXuiSceneDialog();
   void SwitchTitle();
+
+  // Nothing to run: play the console's boot animation, then go to the dash.
+  // Called from the emulator thread at startup.
+  void BootToDashboard();
 
   // True when this run should start a fresh instance as it goes away: the
   // user chose Exit, and the guest has left launch data behind. Called from
@@ -369,6 +387,17 @@ class EmulatorWindow {
   void OnMouseUp(const ui::MouseEvent& e);
   void FileOpen();
   void FileClose();
+  // Stops the running title without closing the emulator.
+  void ExitTitle();
+
+  // Drops a pending dashboard switch. Called by RunTitle, so anything the
+  // user starts during the animation wins.
+  void CancelPendingDashboard();
+  std::filesystem::path DashboardFile(const std::string& name) const;
+
+  // How long the boot animation plays before it is terminated and the
+  // dashboard takes over. The animation loops, so something has to say when.
+  static constexpr int kBootAnimationSeconds = 12;
 
   // The Exit menu item. Distinct from closing the window any other way: a
   // title switch left pending by the guest is only picked up at startup, so
@@ -418,12 +447,11 @@ class EmulatorWindow {
       const std::filesystem::path& path);
 
   void RunPreviouslyPlayedTitle();
-  void FillRecentlyLaunchedTitlesMenu(xe::ui::MenuItem* recent_menu);
-  void FillRecentlyLaunchedTitlesWithTUMenu(xe::ui::MenuItem* recent_menu);
+  void ShowRecentTitlesDialog();
+  void ShowRecentTitlesWithTuDialog();
+  // Re-reads the recent list out of played.db. The launch itself is recorded
+  // by Emulator::RecordTitleLaunch, so this is the only direction.
   void LoadRecentlyLaunchedTitles();
-  void AddRecentlyLaunchedTitle(std::filesystem::path path_to_file,
-                                std::string title_name, uint32_t title_id,
-                                const std::string& media_id);
 
   void ClearDialogs();
 
@@ -481,6 +509,12 @@ class EmulatorWindow {
   MessagesDialog* voice_messages_dialog_ = nullptr;
   AvatarEditorDialog* avatar_editor_dialog_ = nullptr;
   XuiSceneDialog* xui_scene_dialog_ = nullptr;
+  RecentTitlesDialog* recent_titles_dialog_ = nullptr;
+
+  // The thread waiting out the boot animation, and the flag that calls it
+  // off. Shared, because the thread outlives the window's interest in it.
+  std::unique_ptr<threading::Thread> dashboard_pending_thread_;
+  std::shared_ptr<std::atomic<bool>> dashboard_pending_cancelled_;
 
   void OnMessagesDialogClosed(MessagesDialog** slot);
 

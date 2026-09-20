@@ -1192,10 +1192,17 @@ ID3D12Resource* D3D12TextureCache::RequestSwapTexture(
   BindingInfoFromFetchConstant(fetch, key, nullptr, 0);
   if (!key.is_valid || key.base_page == 0 ||
       key.dimension != xenos::DataDimension::k2DOrStacked) {
+    XELOGE(
+        "RequestSwapTexture: fetch 0 rejected - valid {}, base_page {:X}, "
+        "dimension {}",
+        uint32_t(key.is_valid), uint32_t(key.base_page),
+        uint32_t(key.dimension));
     return nullptr;
   }
   D3D12Texture* texture = static_cast<D3D12Texture*>(FindOrCreateTexture(key));
   if (texture == nullptr || !LoadTextureData(*texture)) {
+    XELOGE("RequestSwapTexture: base_page {:X} {} ", uint32_t(key.base_page),
+           texture ? "would not load" : "has no texture");
     return nullptr;
   }
   texture->MarkAsUsed();

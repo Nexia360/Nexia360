@@ -39,6 +39,11 @@ class VirtualFileSystem {
   bool IsSymbolicLinkRegistered(const std::string_view path);
   bool FindSymbolicLink(const std::string_view path, std::string& target);
 
+  // Every mount currently registered, as {link, target} - "GAME:" and the
+  // device path it stands for. Recorded with a title so a relaunch can put its
+  // filesystem back the way it was rather than re-deriving it.
+  std::vector<std::pair<std::string, std::string>> GetSymbolicLinks() const;
+
   // Layers a device over an existing mount: a path under shadowed_mount is
   // looked up in the overlay first and only falls through to the real device
   // when the overlay does not have that file. This is how a title update's

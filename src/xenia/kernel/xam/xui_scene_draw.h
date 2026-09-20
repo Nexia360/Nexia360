@@ -12,6 +12,7 @@
 
 #include <functional>
 #include <map>
+#include <span>
 #include <string>
 
 #include "xenia/kernel/xam/xui_draw.h"
@@ -51,6 +52,12 @@ class SceneDrawer {
   // Elements the host paints itself (the avatar stage, item previews).
   using Painter = std::function<bool(const Element&, const Rect&)>;
   void SetPainter(Painter painter) { painter_ = std::move(painter); }
+
+  // Art that is in no package - a title's own icon out of played.db, say.
+  // Asked only after every package has declined the path, so it can never
+  // shadow the console's own art.
+  using ArtSource = std::function<std::span<const uint8_t>(const std::string&)>;
+  void SetArtSource(ArtSource source) { art_source_ = std::move(source); }
 
   // Text the host supplies for an element, replacing the scene's own.
   using TextSource = std::function<bool(const Element&, std::string*)>;
@@ -105,6 +112,7 @@ class SceneDrawer {
   const std::map<uint32_t, FigurePath>* figures_ = nullptr;
   const std::map<uint32_t, FigurePath>* skin_figures_ = nullptr;
   Painter painter_;
+  ArtSource art_source_;
   TextSource text_source_;
   const TimelinePlayer* timeline_ = nullptr;
   TimelineSource timeline_source_;

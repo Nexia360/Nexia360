@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -25,6 +26,7 @@
 #include "xenia/kernel/upnp.h"
 #include "xenia/kernel/util/game_info_database.h"
 #include "xenia/kernel/util/network_adapter_manager.h"
+#include "xenia/kernel/util/played_db.h"
 #include "xenia/kernel/util/title_update_manager.h"
 #include "xenia/kernel/util/xlast.h"
 #include "xenia/memory.h"
@@ -188,6 +190,12 @@ class Emulator {
   kernel::util::GameInfoDatabase* game_info_database() const {
     return game_info_database_.get();
   }
+
+  // What this machine has played: the recent list, play counts and times, the
+  // title icons and the mounts each title ran with. Opened on first use, so a
+  // caller that only reads gets a valid database without anything having been
+  // launched. Never null.
+  kernel::PlayedDB* played_db();
 
   kernel::NetworkAdapterManager* GetNetworkAdapterManager() {
     return network_adapter_manager_.get();
@@ -372,6 +380,11 @@ class Emulator {
   X_STATUS CompleteLaunch(const std::filesystem::path& path,
                           const std::string_view module_path);
 
+  // Writes the title into played.db as it starts, with its icon and the
+  // mounts it is running with, and adds the session's length when it stops.
+  void RecordTitleLaunch(const std::filesystem::path& path);
+  void RecordTitleExit();
+
   std::filesystem::path command_line_;
   std::filesystem::path storage_root_;
   std::filesystem::path content_root_;
@@ -412,6 +425,12 @@ class Emulator {
   kernel::object_ref<kernel::XHostThread> plugin_loader_thread_;
   std::optional<uint32_t> title_id_;  // Currently running title ID
   std::unique_ptr<kernel::util::GameInfoDatabase> game_info_database_;
+  std::unique_ptr<kernel::PlayedDB> played_db_;
+  std::mutex played_db_mutex_;
+  // The played.db row of the title currently running, and when it started, so
+  // its time can be added when it stops.
+  int64_t played_row_ = 0;
+  int64_t played_started_utc_ = 0;
   std::unique_ptr<kernel::NetworkAdapterManager> network_adapter_manager_;
   std::unique_ptr<kernel::UPnP> upnp_;
   std::unique_ptr<kernel::util::TitleUpdateManager> title_update_manager_;

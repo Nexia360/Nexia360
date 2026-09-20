@@ -9,9 +9,17 @@
 
 #include "xenia/kernel/xam/apps/xam_app.h"
 
+#include <algorithm>
+#include <cstring>
+#include <string>
+#include <utility>
+#include <vector>
+
 #include "xenia/base/logging.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/xam/xam_content_device.h"
+#include "xenia/kernel/xam/xam_module.h"
+#include "xenia/kernel/xam/xam_uri.h"
 #include "xenia/kernel/xenumerator.h"
 
 /* Notes:
@@ -165,6 +173,104 @@ X_HRESULT XamApp::ExecuteDispatchMessage(uint32_t message, uint32_t buffer_ptr,
       *deployment_type = static_cast<uint32_t>(kernel_state_->deployment_type_);
       XELOGD("XTitleGetDeploymentType({:08X}, {:08X}",
              data->deployment_type_ptr.get(), data->overlapped_ptr.get());
+      return X_E_SUCCESS;
+    }
+    // XamLaunchURI. The export (xam 0x816FC4B0 -> 0x8199FBC8) validates the
+    // string, packs it into a 1028-byte request and sends it here as
+    // { flags, caller_app_id, char uri[1020] }. This is the worker at
+    // 0x819A06D0.
+    //
+    // The dashboard navigates by URI: every hub tile is one of these. Most
+    // of them - My Games and My Apps included - resolve back to the
+    // dashboard's OWN title id, so nothing is launched at all. The resolved
+    // string goes into the launch data and a notification tells the running
+    // title to read it, which is exactly what sub_819A05B8 does.
+    case 0x00022003: {
+      struct XAM_LAUNCH_URI {
+        xe::be<uint32_t> flags;
+        xe::be<uint32_t> caller_app_id;
+        char uri[1020];
+      }* data = reinterpret_cast<XAM_LAUNCH_URI*>(buffer);
+      if (!buffer || buffer_length < 8) {
+        return X_E_INVALIDARG;
+      }
+      const size_t room = buffer_length - offsetof(XAM_LAUNCH_URI, uri);
+      const std::string uri(
+          data->uri, strnlen(data->uri, std::min(room, sizeof(data->uri))));
+      const uint32_t flags = data->flags;
+      const uint32_t caller_app_id = data->caller_app_id;
+
+      // Which of a record's two expansions to take. Real xam asks app 0xFC
+      // for message 0x00058003 (0x819A07B0) and takes the
+      // Dash.MP.ContentExplorer.lex flavour unless that call fails or
+      // answers 0x001510F1. Nothing here implements that message, so the
+      // answer is the failing one - the BuiltIn.ContentApp.xzp flavour, a
+      // package the dashboard already carries. It is NOT dispatched for
+      // real: XLiveBaseApp reads an async task out of the buffer before it
+      // looks at the message, and this call has no buffer to read.
+      const bool prefer_content_explorer = false;
+
+      UriResolution resolved;
+      const X_HRESULT resolve_result = ResolveUri(
+          uri, (flags & 0x80000000) != 0, prefer_content_explorer, &resolved);
+      if (XFAILED(resolve_result)) {
+        XELOGE("XamLaunchURI('{}', flags {:08X}): {:08X}", uri, flags,
+               resolve_result);
+        return resolve_result;
+      }
+
+      // A URI that came back naming a different title would have to be
+      // launched. Nothing does that yet, and reporting success would leave
+      // the caller waiting on a launch that never comes.
+      if (!resolved.has_title_id ||
+          resolved.title_id != kernel_state_->title_id()) {
+        XELOGE(
+            "XamLaunchURI('{}') -> '{}': launching another title is not "
+            "implemented",
+            uri, resolved.uri);
+        return X_E_FAIL;
+      }
+      // Bit 0 is what lets the caller be answered in place at all; without
+      // it the console reboots to the dash instead, which would throw away
+      // the running title for a navigation.
+      if (!(flags & 0x1)) {
+        XELOGE(
+            "XamLaunchURI('{}') -> '{}': in-process navigation refused by "
+            "flags {:08X}",
+            uri, resolved.uri, flags);
+        return X_HRESULT_FROM_WIN32(X_ERROR_FILE_NOT_FOUND);
+      }
+      if (!(flags & 0x4)) {
+        XELOGE(
+            "XamLaunchURI('{}') -> '{}': flags {:08X} ask for a reboot to "
+            "the dashboard, which is not implemented",
+            uri, resolved.uri, flags);
+        return X_E_FAIL;
+      }
+
+      // The 0x3FC launch blob sub_819A05B8 builds, byte for byte:
+      //   +0x00  zero
+      //   +0x04  0x0F, the launch-data kind
+      //   +0x08  the caller's app id
+      //   +0x0C  the WHOLE resolved URI, NUL terminated
+      constexpr size_t kLaunchDataSize = 0x3FC;
+      constexpr size_t kUriOffset = 0x0C;
+      std::vector<uint8_t> launch_data(kLaunchDataSize, 0);
+      xe::store_and_swap<uint32_t>(launch_data.data() + 0x04, 0x0F);
+      xe::store_and_swap<uint32_t>(launch_data.data() + 0x08, caller_app_id);
+      const size_t copied =
+          std::min(resolved.uri.size(), kLaunchDataSize - kUriOffset - 1);
+      std::memcpy(launch_data.data() + kUriOffset, resolved.uri.data(), copied);
+
+      auto xam = kernel_state_->GetKernelModule<XamModule>("xam.xex");
+      xam->loader_data().launch_data = std::move(launch_data);
+
+      // Deliberately at error level. This is the one line that says whether
+      // a tile got as far as the dashboard, and the default log_level is 0 -
+      // errors only - so anything quieter would not survive a user's log.
+      XELOGE("XamLaunchURI('{}') -> '{}'", uri, resolved.uri);
+      kernel_state_->BroadcastNotification(kXNotificationSystemLaunchURI,
+                                           (caller_app_id << 16) | 0x0F);
       return X_E_SUCCESS;
     }
     case 0x0002B003: {

@@ -318,11 +318,21 @@ void SceneDrawer::DrawFigure(const Node& node, const Rect& rect, bool from_skin,
 void SceneDrawer::DrawImage(const Node& node, const Rect& rect, float opacity) {
   const std::string path = StringProperty(node, "ImagePath");
   const PackageEntry* art = FindArt(path);
-  if (!art) {
+  const uint8_t* data = art ? art->data : nullptr;
+  size_t size = art ? art->size : 0;
+  // Only once every package has declined it: a title icon is a PNG the host
+  // holds, not an entry in any XZP.
+  std::span<const uint8_t> external;
+  if (!data && art_source_) {
+    external = art_source_(path);
+    data = external.data();
+    size = external.size();
+  }
+  if (!data || !size) {
     return;
   }
   xe::ui::ImmediateTexture* texture =
-      draw_->ImageTexture(path, art->data, art->size, nullptr, nullptr);
+      draw_->ImageTexture(path, data, size, nullptr, nullptr);
   if (texture) {
     draw_->DrawImage(texture, rect, Fade(0xFFFFFFFF, opacity));
   }

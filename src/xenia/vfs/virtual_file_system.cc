@@ -106,6 +106,17 @@ bool VirtualFileSystem::FindSymbolicLink(const std::string_view path,
   return true;
 }
 
+std::vector<std::pair<std::string, std::string>>
+VirtualFileSystem::GetSymbolicLinks() const {
+  auto global_lock = global_critical_region_.Acquire();
+  std::vector<std::pair<std::string, std::string>> links;
+  links.reserve(symlinks_.size());
+  for (const auto& [link, target] : symlinks_) {
+    links.emplace_back(link, target);
+  }
+  return links;
+}
+
 bool VirtualFileSystem::ResolveSymbolicLink(const std::string_view path,
                                             std::string& result) {
   result = path;

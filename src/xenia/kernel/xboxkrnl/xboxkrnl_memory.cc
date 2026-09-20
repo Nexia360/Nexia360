@@ -75,14 +75,28 @@ dword_result_t NtAllocateVirtualMemory_entry(lpdword_t base_addr_ptr,
   assert_not_null(base_addr_ptr);
   assert_not_null(region_size_ptr);
 
-  // Set to TRUE when allocation is from devkit memory area.
-  // We don't support separate devkit memory, so just ignore this flag.
-  if (debug_memory) {
-    XELOGW(
-        "Game is attempting to allocate devkit debug memory (base: {:08X}, "
-        "size: {:08X}). Ignoring debug flag and using normal allocation.",
-        base_addr_ptr ? uint32_t(*base_addr_ptr) : 0,
-        region_size_ptr ? uint32_t(*region_size_ptr) : 0);
+  // The fifth argument is NOT a "devkit debug memory" boolean, whatever it
+  // used to be called here. The real kernel (17559 0x80083AA8) passes it
+  // straight to a pool selector at 0x80085390:
+  //
+  //   if (which == 0) { which = KeGetCurrentProcessType();
+  //                     if (which != 1) which = 2; }
+  //   if (which == 1) return pool 0x80170780;   // X_PROCTYPE_TITLE
+  //   if (which == 2) return pool 0x80170880;   // X_PROCTYPE_SYSTEM
+  //   return 0;                                 // only then a failure
+  //
+  // and NtAllocateVirtualMemory returns STATUS_INVALID_PARAMETER only when
+  // that comes back null - which takes a value above 2. So 1 and 2 are both
+  // ordinary requests naming which process's pool to allocate from, and
+  // refusing them is wrong: the boot animation asks for pool 1 and a retail
+  // console serves it.
+  //
+  // We keep one heap for everything, so the pool is not honoured - a request
+  // is answered from the same place whoever asks.
+  if (debug_memory > X_PROCTYPE_SYSTEM) {
+    XELOGW("NtAllocateVirtualMemory: no pool {} exists",
+           uint32_t(debug_memory));
+    return X_STATUS_INVALID_PARAMETER;
   }
 
   // This allocates memory from the kernel heap, which is initialized on startup

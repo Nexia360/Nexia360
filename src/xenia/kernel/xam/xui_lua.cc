@@ -14,10 +14,12 @@
 #include <cstring>
 #include <functional>
 #include <utility>
+#include <vector>
 
 #include "xenia/base/clock.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/string_util.h"
+#include "xenia/kernel/xam/xui_game_library.h"
 
 extern "C" {
 #include "lauxlib.h"
@@ -1076,6 +1078,227 @@ const Binding kStringTableImpl[] = {
     {nullptr, nullptr},
 };
 
+// Xbox.Dash.GameLibrary - the My Games tile.
+//
+// Shapes taken from dash.xex, not invented. Marketplace.GameLibrary:Load does
+//
+//   while self.Engine == false do
+//     self.Engine = Xbox.Dash.GameLibrary.LoadGameLibrary()
+//     if self.Engine == false then Sleep(0) end
+//   end
+//
+// so LoadGameLibrary may answer immediately, and this one does.
+// Marketplace.GameLibraryContentEnum._ReloadHelper then does
+//
+//   LibEnum = engine:CreateEnumerator(self.Filter)
+//   for i = 1, LibEnum:GetTitleCount() do
+//     title = LibEnum:GetTitleInfo(i)          -- ONE BASED
+//     if title == false then return end
+//     ...
+//
+// and Marketplace.GameLibrary:ConvertToLibraryItem reads Name, TitleId,
+// ContentType, Category, IsPurchased, ImagePath, DiscMediaId, FileName,
+// LatestTime, IsInPlayHistory and BasicAchievementInfo off each one. The rest
+// of the properties below are the remainder of what luatitleinfo.cpp declares,
+// so a script reaching for one of them gets a value rather than nothing.
+void PushTitleInfo(lua_State* L, const GameLibraryItem& item) {
+  lua_newtable(L);
+  const auto set_string = [&](const char* key, const std::string& value) {
+    lua_pushlstring(L, value.data(), value.size());
+    lua_setfield(L, -2, key);
+  };
+  const auto set_number = [&](const char* key, double value) {
+    lua_pushnumber(L, value);
+    lua_setfield(L, -2, key);
+  };
+  const auto set_bool = [&](const char* key, bool value) {
+    lua_pushboolean(L, value ? 1 : 0);
+    lua_setfield(L, -2, key);
+  };
+
+  set_string("Name", item.name);
+  // A NUMBER: ConvertToLibraryItem runs it through tonumber, which an eight
+  // hex digit string would fail.
+  set_number("TitleId", double(item.title_id));
+  set_number("ContentType", double(item.content_type));
+  set_number("Category", double(item.category));
+  set_string("FileName", item.path);
+  set_string("DiscMediaId", item.media_id);
+  // FILETIME, the unit the scripts sort on.
+  set_number("LatestTime", double(item.latest_time));
+  set_bool("IsInPlayHistory", item.in_play_history);
+  // Nothing here is bought, rented or trialled: everything is local and
+  // whole, so the licence questions all answer the same way.
+  set_bool("IsPurchased", true);
+  set_bool("IsLoaded", true);
+  set_bool("IsInstallable", false);
+  set_bool("IsDeletable", false);
+  set_bool("IsRecentlyDownloaded", false);
+  set_bool("IsArcadeTrial", false);
+  set_bool("IsGameDemo", false);
+  set_bool("IsNuiGame", false);
+  set_bool("IsCommunityCreator", false);
+  // An XNA title IS a community game, which is what the dashboard calls the
+  // indie channel. Nothing here is a trial, so it is the full version.
+  set_bool("IsCommunityGame", item.is_xna);
+  set_bool("IsFullCommunityGame", item.is_xna);
+  set_bool("IsTrialCommunityGame", false);
+  set_bool("ShowRatingInfo", false);
+  set_string("PCRatingDescription", "");
+  set_string("LeaderboardName", "");
+  set_number("OfferId", 0.0);
+  // "titleicon://XXXXXXXX" when the title has an icon, which the scene
+  // drawer's art source answers out of played.db, or empty when it has none.
+  set_string("ImagePath", item.image_path);
+  set_string("SlotImage", item.image_path);
+  set_number("AchievementsEarned", double(item.achievements_earned));
+  set_number("AchievementsPossible", double(item.achievements_possible));
+  set_number("GamerScoreEarned", double(item.gamerscore_earned));
+  set_number("GamerScorePossible", double(item.gamerscore_possible));
+
+  // ConvertToLibraryItem reads the achievement line off this, not off the
+  // title, and only when the title is in the play history.
+  lua_newtable(L);
+  set_number("AchievementsEarned", double(item.achievements_earned));
+  set_number("AchievementsPossible", double(item.achievements_possible));
+  set_number("GamerScoreEarned", double(item.gamerscore_earned));
+  set_number("GamerScorePossible", double(item.gamerscore_possible));
+  lua_setfield(L, -2, "BasicAchievementInfo");
+
+  // title:Launch(). The path is an upvalue rather than read back off the
+  // table, so a script that overwrote FileName cannot redirect it.
+  lua_pushlstring(L, item.path.data(), item.path.size());
+  lua_pushcclosure(
+      L,
+      [](lua_State* S) {
+        const char* path = lua_tostring(S, lua_upvalueindex(1));
+        lua_pushboolean(S, path && LaunchGameLibraryItem(path) ? 1 : 0);
+        return 1;
+      },
+      1);
+  lua_setfield(L, -2, "Launch");
+
+  // The rest of what luatitleinfo.cpp declares. Nothing here can be bought,
+  // installed or rated, so these answer rather than being absent - a script
+  // calling one gets a clear no instead of an error.
+  static const char* const kNoMethods[] = {
+      "InstallToHDD",       "GetPCRatingImage",   "GetImageInfo",
+      "GetLeaderboardInfo", "GetAchievementInfo",
+  };
+  for (const char* name : kNoMethods) {
+    lua_pushcfunction(L, [](lua_State* S) {
+      lua_pushboolean(S, 0);
+      return 1;
+    });
+    lua_setfield(L, -2, name);
+  }
+}
+
+// The list the enumerator was built over, kept as an upvalue so the whole
+// library is read once per enumerator rather than once per row.
+int GameLibraryEnum_GetTitleCount(lua_State* L) {
+  lua_pushvalue(L, lua_upvalueindex(1));
+  lua_pushnumber(L, double(lua_objlen(L, -1)));
+  return 1;
+}
+
+int GameLibraryEnum_GetTitleInfo(lua_State* L) {
+  // One based, and FALSE past the end - _ReloadHelper stops on false.
+  const int index = int(luaL_optnumber(L, 2, 0.0));
+  lua_pushvalue(L, lua_upvalueindex(1));
+  if (index < 1 || size_t(index) > lua_objlen(L, -1)) {
+    lua_pushboolean(L, 0);
+    return 1;
+  }
+  lua_rawgeti(L, -1, index);
+  return 1;
+}
+
+int GameLibrary_CreateEnumerator(lua_State* L) {
+  // The filter states NuiTitlesOnly, LicenseType, TitleId, SortOrder,
+  // Category, ContentType and PackageType. Nothing here is Nui and everything
+  // holds a full local licence, and the order is already newest first, so
+  // those three are ignored; the rest select.
+  //
+  // PackageType is what separates the hub's two tiles. DataSet.Library does
+  //
+  //   _IsAppsList = (Filter.PackageType == 2) or (Filter.PackageType == 3)
+  //
+  // so 2 and 3 ask for My Apps and anything else asks for My Games.
+  //
+  // SortOrder is the dashboard's own: DataSet.LibrarySort builds "SortOrder=1"
+  // for its default entry and "SortOrder=5" for the calendar one, and
+  // DataSet.Library falls back to 1 when a filter states none. Both mean most
+  // recently played here, which is the order the library is already built in.
+  double want_title_id = 0.0;
+  double want_content_type = 0.0;
+  double want_category = 0.0;
+  double package_type = 0.0;
+  double sort_order = 0.0;
+  if (lua_istable(L, 2)) {
+    const auto number = [&](const char* key) {
+      lua_getfield(L, 2, key);
+      const double value = lua_isnumber(L, -1) ? lua_tonumber(L, -1) : 0.0;
+      lua_pop(L, 1);
+      return value;
+    };
+    want_title_id = number("TitleId");
+    want_content_type = number("ContentType");
+    want_category = number("Category");
+    package_type = number("PackageType");
+    sort_order = number("SortOrder");
+  }
+  const bool apps_only = package_type == 2.0 || package_type == 3.0;
+
+  const std::vector<GameLibraryItem> items =
+      BuildGameLibrary(GameLibrarySortFor(uint32_t(sort_order)));
+  lua_newtable(L);
+  int written = 0;
+  for (const GameLibraryItem& item : items) {
+    if (item.is_app() != apps_only) {
+      continue;
+    }
+    if (want_title_id != 0.0 && double(item.title_id) != want_title_id) {
+      continue;
+    }
+    if (want_content_type != 0.0 &&
+        double(item.content_type) != want_content_type) {
+      continue;
+    }
+    if (want_category != 0.0 && double(item.category) != want_category) {
+      continue;
+    }
+    PushTitleInfo(L, item);
+    lua_rawseti(L, -2, ++written);
+  }
+
+  // The enumerator, closing over that list.
+  lua_newtable(L);
+  lua_pushvalue(L, -2);
+  lua_pushcclosure(L, GameLibraryEnum_GetTitleCount, 1);
+  lua_setfield(L, -2, "GetTitleCount");
+  lua_pushvalue(L, -2);
+  lua_pushcclosure(L, GameLibraryEnum_GetTitleInfo, 1);
+  lua_setfield(L, -2, "GetTitleInfo");
+  lua_remove(L, -2);
+  return 1;
+}
+
+int GameLibrary_Load(lua_State* L) {
+  // The engine. Nothing is read here - CreateEnumerator builds the list, so a
+  // library that changes between enumerations is picked up without the
+  // scripts having to be told.
+  lua_newtable(L);
+  lua_pushcfunction(L, GameLibrary_CreateEnumerator);
+  lua_setfield(L, -2, "CreateEnumerator");
+  return 1;
+}
+
+const Binding kGameLibrary[] = {
+    {"LoadGameLibrary", GameLibrary_Load},
+    {nullptr, nullptr},
+};
+
 // Stores the value on the top of the stack at a dotted path through _G,
 // creating the tables along the way. The scripts reach a native module both
 // by requiring it and by naming it - Xbox.Content - so it has to be in both
@@ -1730,6 +1953,10 @@ void LuaHost::RegisterNatives() {
   for (const char* name : kAbsentServices) {
     PreloadAbsentService(state_, name);
   }
+
+  // After the absent services, so this lands ON Xbox.Dash rather than being
+  // replaced by the stub that stands in for the rest of it.
+  PreloadTable(state_, "Xbox.Dash.GameLibrary", kGameLibrary);
 }
 
 bool LuaHost::Open() {

@@ -100,7 +100,28 @@ void TitleUpdateDialog::OnDraw(ImGuiIO& io) {
       return;
     }
 
-    ImGui::Text("Title %08X", title_id_);
+    // The id alone says nothing about which game this is. The name and the
+    // icon come from played.db, which has both for anything ever launched.
+    const RecentTitleEntry* recent =
+        emulator_window_->FindRecentTitle(title_id_);
+    if (recent && !icon_ && !icon_tried_) {
+      icon_tried_ = true;
+      if (!recent->icon.empty()) {
+        icon_ = imgui_drawer()->LoadImGuiIcon(recent->icon);
+      }
+    }
+    if (icon_) {
+      ImGui::Image(reinterpret_cast<ImTextureID>(icon_.get()),
+                   ImVec2(48.0f, 48.0f));
+      ImGui::SameLine();
+    }
+    ImGui::BeginGroup();
+    if (recent && !recent->title_name.empty()) {
+      ImGui::Text("Title %08X - %s", title_id_, recent->title_name.c_str());
+    } else {
+      ImGui::Text("Title %08X", title_id_);
+    }
+    ImGui::EndGroup();
     ImGui::Separator();
 
     if (entries_.empty()) {

@@ -7,6 +7,7 @@
  ******************************************************************************
  */
 
+#include <atomic>
 #include <cstddef>
 #include <cstring>
 #include <filesystem>
@@ -30,6 +31,7 @@
 #include "xenia/kernel/title_id_utils.h"
 #include "xenia/kernel/user_module.h"
 #include "xenia/kernel/util/shim_utils.h"
+#include "xenia/kernel/xam/app_manager.h"
 #include "xenia/kernel/xam/xam_module.h"
 #include "xenia/kernel/xam/xam_private.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_error.h"
@@ -906,6 +908,77 @@ dword_result_t XamFitnessClearBodyProfileRecords_entry(lpdword_t info_ptr) {
 }
 DECLARE_XAM_EXPORT1(XamFitnessClearBodyProfileRecords, kNone, kStub);
 
+// Real xam (0x8168F4E0) rejects a null pointer outright and otherwise hands
+// the four-byte payload to app 0xFB as message 0x000B0080. There is no fitness
+// app here to answer it, so this validates and agrees: a title that is told
+// initialisation failed stops asking, and a title that is told it worked goes
+// on to read records, which the XamFitness* stubs already answer.
+// Real xam (0x816FC4B0 -> 0x8199FBC8) validates the string, packs it into a
+// 1028-byte request as { a3, a1, char uri[1020] } and sends it to the xam app
+// as message 0x00022003. E_INVALIDARG for a null, empty or over-long URI; with
+// an overlapped it returns 0x8000000A and the caller waits on it.
+dword_result_t XamLaunchURI_entry(dword_t unk1, lpstring_t uri_ptr,
+                                  dword_t unk3,
+                                  pointer_t<XAM_OVERLAPPED> overlapped) {
+  const std::string uri =
+      uri_ptr ? std::string(uri_ptr.value()) : std::string();
+  // The length limit is the packet's, not a guess: the string plus its
+  // terminator has to fit the 1020 bytes that follow the two header words.
+  if (uri.empty() || uri.size() + 1 >= 0x3FC) {
+    return X_E_INVALIDARG;
+  }
+
+  constexpr uint32_t kRequestBytes = 1028;
+  const uint32_t request =
+      kernel_state()->memory()->SystemHeapAlloc(kRequestBytes);
+  if (!request) {
+    return X_E_FAIL;
+  }
+  uint8_t* packet = kernel_memory()->TranslateVirtual(request);
+  std::memset(packet, 0, kRequestBytes);
+  xe::store_and_swap<uint32_t>(packet + 0, unk3);
+  xe::store_and_swap<uint32_t>(packet + 4, unk1);
+  std::memcpy(packet + 8, uri.c_str(), uri.size() + 1);
+
+  // Straight to the app the export's XMsgStartIORequestEx would have reached;
+  // that wrapper is not declared outside its own translation unit.
+  const X_HRESULT result = kernel_state()->app_manager()->DispatchMessageAsync(
+      0xFE, 0x00022003, request, kRequestBytes, overlapped);
+  kernel_state()->memory()->SystemHeapFree(request);
+
+  if (overlapped) {
+    // Started; the caller waits on the overlapped rather than on this.
+    return X_E_HIVE_ANSWERED_IN_PROCESS;
+  }
+  return result;
+}
+DECLARE_XAM_EXPORT1(XamLaunchURI, kNone, kImplemented);
+
+dword_result_t XamFitnessInitialize_entry(lpvoid_t context_ptr) {
+  if (!context_ptr) {
+    return X_E_INVALIDARG;
+  }
+  return X_E_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamFitnessInitialize, kNone, kStub);
+
+// Whether a background download may use network storage. Real xam (0x8170FF90)
+// stores the flag on its download object at 0x81AC5A48 and always returns
+// S_OK; nothing downloads here, so keeping the flag is the whole behaviour -
+// but IsEnabled has to agree with what was last set.
+std::atomic<uint32_t> background_download_network_storage_enabled{0};
+
+dword_result_t XamBackgroundDownloadNetworkStorageEnable_entry(dword_t enable) {
+  background_download_network_storage_enabled = enable ? 1 : 0;
+  return X_ERROR_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamBackgroundDownloadNetworkStorageEnable, kNone, kStub);
+
+dword_result_t XamBackgroundDownloadNetworkStorageIsEnabled_entry() {
+  return background_download_network_storage_enabled.load();
+}
+DECLARE_XAM_EXPORT1(XamBackgroundDownloadNetworkStorageIsEnabled, kNone, kStub);
+
 dword_result_t
 XamBackgroundDownloadNetworkStorageRegisterChangeCallback_entry() {
   return X_ERROR_SUCCESS;
@@ -971,6 +1044,86 @@ DECLARE_XAM_EXPORT1(XamPackageManagerGetExperienceMode, kNone, kStub);
 
 dword_result_t XdfInitialize_entry() { return X_E_SUCCESS; }
 DECLARE_XAM_EXPORT1(XdfInitialize, kNone, kStub);
+
+// Loads one of the dashboard's own modules by bare name.
+//
+// The real one (0x817F6980 -> 0x817F66D0) goes through the download-feed
+// machinery: it allocates an 0x884 request object, hangs a completion routine
+// off it and loads out of the Xdf cache. None of that exists here, and none
+// of it has to: every module it asks for is a file sitting beside dash.xex,
+// so the load is done in place and reported as finished.
+//
+// The dash calls this from sub_927C63C0 as
+//   XdfLoadXex(name, &unk, 0, 8 or 9, 0, &hmodule)
+// and treats 0x8B050005 as "not mine, keep waiting" - so a failure here must
+// be ANY OTHER code, or the caller waits on a completion that never comes.
+dword_result_t XdfLoadXex_entry(lpstring_t name, lpdword_t unk2, dword_t unk3,
+                                dword_t flags, dword_t unk5,
+                                lpdword_t hmodule_ptr) {
+  if (!name || !hmodule_ptr || !flags) {
+    return X_E_INVALIDARG;
+  }
+  const std::string module_name = name.value();
+  *hmodule_ptr = 0;
+
+  auto* file_system = kernel_state()->file_system();
+  if (!file_system) {
+    return X_E_FAIL;
+  }
+
+  // A bare name has no device on it. These modules live beside dash.xex,
+  // which is the running title's own device; \Device\Flash is the same
+  // folder when the boot animation mounted it.
+  std::string resolved;
+  for (const std::string& candidate : {module_name, "GAME:\\" + module_name,
+                                       "\\Device\\Flash\\" + module_name}) {
+    if (file_system->ResolvePath(candidate)) {
+      resolved = candidate;
+      break;
+    }
+  }
+  if (resolved.empty()) {
+    // At error level on purpose: which module the dashboard wanted is the
+    // whole content of this failure, and the default log_level is 0.
+    XELOGE("XdfLoadXex('{}', flags {:X}): no such module", module_name,
+           flags.value());
+    return X_HRESULT_FROM_WIN32(X_ERROR_FILE_NOT_FOUND);
+  }
+
+  if (auto existing = kernel_state()->GetModule(module_name)) {
+    *hmodule_ptr = existing->hmodule_ptr();
+    XELOGE("XdfLoadXex('{}') -> already loaded, {:08X}", module_name,
+           existing->hmodule_ptr());
+    return X_E_SUCCESS;
+  }
+
+  auto module = kernel_state()->LoadUserModule(resolved);
+  if (!module) {
+    XELOGE("XdfLoadXex('{}'): {} would not load", module_name, resolved);
+    return X_E_FAIL;
+  }
+  // LoadUserModule only reads the file in - the imports are bound by
+  // FinishLoadingUserModule, exactly as XexLoadImage does it.
+  kernel_state()->ApplyTitleUpdate(module);
+  const X_STATUS loaded = kernel_state()->FinishLoadingUserModule(module);
+  if (XFAILED(loaded)) {
+    XELOGE("XdfLoadXex('{}'): FinishLoadingUserModule {:08X}", module_name,
+           loaded);
+    return X_E_FAIL;
+  }
+  // Ownership goes with the handle; XexUnloadImage releases the last one.
+  auto* raw = module.release();
+  *hmodule_ptr = raw->hmodule_ptr();
+  XELOGE("XdfLoadXex('{}') -> {}, {:08X}", module_name, resolved,
+         raw->hmodule_ptr());
+  return X_E_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XdfLoadXex, kNone, kSketchy);
+
+// Tears the dash's app stack down. Called on the failure path out of a hub
+// app launch, so leaving it undefined turned one failure into two.
+dword_result_t XamAppUnloadStack_entry(dword_t flags) { return X_E_SUCCESS; }
+DECLARE_XAM_EXPORT1(XamAppUnloadStack, kNone, kStub);
 
 void Mw3GametypeDumpTick();  // mw3_gametype_dump.cc
 

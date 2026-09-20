@@ -241,6 +241,13 @@ enum : XNotificationID {
   kXNotificationSystemSystemUpdateChanged = 0x80000010,
   kXNotificationSystemUnknown = 0x80010014,
   kXNotificationSystemDashboard = 0x80040016,
+  // What xam's XamLaunchURI worker broadcasts once a URI has resolved back to
+  // the title that is already running (sub_819A05B8 in the 17559 xam). The
+  // data is (caller_app_id << 16) | 0x0F, and the URI itself travels in the
+  // launch data - the dashboard re-reads that, then navigates. 0x21 is the
+  // same thing for XamPushBackURI.
+  kXNotificationSystemPushBackURI = 0x80040021,
+  kXNotificationSystemLaunchURI = 0x80040022,
 
   // XNotification Live
   kXNotificationLiveConnectionChanged = 0x02000001,

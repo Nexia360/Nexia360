@@ -12,6 +12,7 @@
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
 #include "xenia/kernel/kernel_state.h"
+#include "xenia/kernel/title_id_utils.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xam/xam_private.h"
 #include "xenia/kernel/xenumerator.h"
@@ -166,6 +167,29 @@ dword_result_t XamContentGetDeviceData_entry(
   return X_ERROR_SUCCESS;
 }
 DECLARE_XAM_EXPORT1(XamContentGetDeviceData, kContent, kImplemented);
+
+// The same record, with the friendly name in the console's language - real xam
+// (0x816EF020) asks the xam app for it by message 0x00020031 rather than
+// reading the device's own label. Ours are already named in English and there
+// is nothing else to ask, so the names match GetDeviceData.
+//
+// The part that is NOT cosmetic is the clamp xam applies afterwards: a device
+// of type USBMASS is reported as MU to anything that is not a system title.
+// USB mass storage arrived in 8955 and a title built before it does not know
+// the type, so xam hands those titles a type they do understand.
+dword_result_t XamContentGetLocalizedDeviceData_entry(
+    dword_t device_id, pointer_t<X_CONTENT_DEVICE_DATA> device_data) {
+  const X_RESULT result = XamContentGetDeviceData_entry(device_id, device_data);
+  if (result != X_ERROR_SUCCESS) {
+    return result;
+  }
+  if (device_data->device_type == static_cast<uint32_t>(DeviceType::USBMASS) &&
+      !IsSystemTitle(kernel_state()->title_id())) {
+    device_data->device_type = static_cast<uint32_t>(DeviceType::MU);
+  }
+  return X_ERROR_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamContentGetLocalizedDeviceData, kContent, kImplemented);
 
 dword_result_t XamContentCreateDeviceEnumerator_entry(dword_t content_type,
                                                       dword_t content_flags,

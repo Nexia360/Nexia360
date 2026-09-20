@@ -137,12 +137,17 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
 #endif
 
             while (frame_limiter_worker_running_) {
-              // If there is no title running then there is no need for guest
-              // frame limiter thread.
-              if (!kernel_state_->is_title_open()) {
-                xe::threading::Sleep(std::chrono::milliseconds(100));
-                continue;
-              }
+              // NO TITLE GATE HERE.
+              //
+              // Upstream skipped the whole loop unless a title was open. The
+              // boot animation is NOT a title - it is bootanim.xex run by the
+              // kernel - and it advances on the vblank interrupt this loop
+              // raises. Gating on a title meant no vblank, no graphics
+              // interrupt, no page flip: sound and a frozen screen.
+              //
+              // The loop costs one sleep per frame when nothing is drawing,
+              // which is what the old branch was saving. That is not worth a
+              // black screen.
 
               register_file()->values[XE_GPU_REG_D1MODE_V_COUNTER] +=
                   GetResolution().second;
@@ -342,10 +347,26 @@ void GraphicsSystem::MarkVblank() {
   // Increment vblank counter (so the game sees us making progress).
   command_processor_->increment_counter();
 
+  // Raise the vblank status bit for the duration of the interrupt.
+  //
+  // This is not decoration. A source-0 graphics interrupt handler is expected
+  // to check WHY it was called, and bootanim.xex does exactly that
+  // (0x9802FE04: read 0x7FC86544, test bit 0, return if clear). Nothing in
+  // this tree ever wrote 0x1951, so every vblank reached the guest, was
+  // judged spurious and dropped - the animation ran with sound and a black
+  // screen even once the interrupt was firing.
+  //
+  // Set before the dispatch and cleared after, so a guest polling outside its
+  // ISR does not see a vblank that is permanently in progress.
+  register_file()->values[XE_GPU_REG_D1MODE_VBLANK_VLINE_STATUS] |= 1;
+
   // TODO(benvanik): we shouldn't need to do the dispatch here, but there's
   //     something wrong and the CP will block waiting for code that
   //     needs to be run in the interrupt.
   DispatchInterruptCallback(0, 2);
+
+  register_file()->values[XE_GPU_REG_D1MODE_VBLANK_VLINE_STATUS] &=
+      ~uint32_t(1);
 }
 
 void GraphicsSystem::ClearCaches() {

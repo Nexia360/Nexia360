@@ -14,7 +14,8 @@ target_sources(xenia-app PRIVATE
 )
 
 # Other app sources (emulator_window, profile_dialogs, etc.)
-# touched to re-run the glob for avatar_editor_dialog.cc and xui_scene_dialog.cc
+# touched to re-run the glob for avatar_editor_dialog.cc and xui_scene_dialog.cc,
+# plus recent_titles_dialog.cc added 2026-09-19
 xe_platform_sources(xenia-app ${CMAKE_CURRENT_SOURCE_DIR})
 
 # Platform-specific entry points
