@@ -18,8 +18,6 @@ DECLARE_string(api_address);
 
 DECLARE_bool(bind_interface);
 
-DECLARE_bool(xhttp);
-
 DECLARE_bool(upnp);
 
 DECLARE_bool(logging);
@@ -270,10 +268,6 @@ void NetplaySettingsDialog::OnDraw(ImGuiIO& io) {
 
     ImGui::SameLine();
 
-    if (ImGui::Checkbox("XHTTP", &xhttp_)) {
-      xlive_api->SetXHttp(xhttp_);
-    }
-
     if (ImGui::Checkbox("Discord Presence", &discord_)) {
       ActivateDiscordState(discord_);
     }
@@ -523,7 +517,6 @@ void xe::app::NetplaySettingsDialog::UpdateSelectedNetworkModeIndex() {
 }
 
 void xe::app::NetplaySettingsDialog::InitializeCheckboxSettings() {
-  xhttp_ = cvars::xhttp;
   logging_ = cvars::logging;
   discord_ = cvars::discord;
   bind_interface_ = cvars::bind_interface;

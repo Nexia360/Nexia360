@@ -13,6 +13,8 @@
 #include <signal.h>
 #endif
 
+#include <algorithm>
+
 #include "xenia/base/byte_stream.h"
 #include "xenia/base/clock.h"
 #include "xenia/base/logging.h"
@@ -155,6 +157,14 @@ void XThread::set_name(const std::string_view name) {
 }
 
 static uint8_t next_cpu = 0;
+
+// 5, not 0: the counter increments before returning, so the next title's main
+// thread comes out on CPU 0 as it does on a cold boot.
+void ResetThreadCpuRotation() { next_cpu = 5; }
+
+static uint32_t stack_generation = 0;
+uint32_t CurrentStackGeneration() { return stack_generation; }
+void BumpStackGeneration() { ++stack_generation; }
 static uint8_t GetFakeCpuNumber(uint8_t proc_mask) {
   // NOTE: proc_mask is logical processors, not physical processors or cores.
   if (!proc_mask) {
@@ -289,6 +299,7 @@ bool XThread::AllocateStack(uint32_t size) {
 
   stack_alloc_base_ = address;
   stack_alloc_size_ = actual_size;
+  stack_generation_ = CurrentStackGeneration();
   stack_limit_ = address + (padding / 2);
   stack_base_ = stack_limit_ + size;
 
@@ -301,8 +312,15 @@ bool XThread::AllocateStack(uint32_t size) {
 
 void XThread::FreeStack() {
   if (stack_alloc_base_) {
-    auto heap = memory()->LookupHeap(kStackAddressRangeBegin);
-    heap->Release(stack_alloc_base_);
+    // Only if it is still ours: an older generation's stacks were reclaimed by
+    // ReleaseTitleMemory, and the range now belongs to the running title.
+    if (stack_generation_ == CurrentStackGeneration()) {
+      auto heap = memory()->LookupHeap(kStackAddressRangeBegin);
+      heap->Release(stack_alloc_base_);
+    } else {
+      XELOGI("XThread{:08X} ({:X}) stale stack {:08X}, not freeing", handle(),
+             thread_id_, stack_alloc_base_);
+    }
 
     stack_alloc_base_ = 0;
     stack_alloc_size_ = 0;
@@ -391,8 +409,14 @@ X_STATUS XThread::Create() {
   // Exports use this to get the kernel.
   thread_state_->context()->kernel_state = kernel_state_;
 
-  uint8_t cpu_index = GetFakeCpuNumber(
-      static_cast<uint8_t>(creation_params_.creation_flags >> 24));
+  const uint8_t requested_mask =
+      static_cast<uint8_t>(creation_params_.creation_flags >> 24);
+  uint8_t cpu_index = GetFakeCpuNumber(requested_mask);
+  XELOGI("XThread{:08X} ({:X}) cpu {} (mask {:02X}, {})", handle(), thread_id_,
+         cpu_index, requested_mask,
+         requested_mask
+             ? "explicit"
+             : (current_xthread_tls_ ? "inherited from parent" : "rotation"));
 
   // Initialize the KTHREAD object.
   InitializeGuestObject();
@@ -542,12 +566,37 @@ X_STATUS XThread::Terminate(int exit_code) {
   return X_STATUS_SUCCESS;
 }
 
+void XThread::CheckExitRequest() {
+  XThread* thread = current_xthread_tls_;
+  if (!thread || !thread->exit_requested_.load(std::memory_order_relaxed)) {
+    return;
+  }
+  thread->exit_requested_.store(false);
+  XELOGI("XThread{:08X} ({:X}) exiting cooperatively", thread->handle(),
+         thread->thread_id());
+  thread->Exit(0);  // does not return
+}
+
 void XThread::Abandon() {
   X_KTHREAD* thread = guest_object<X_KTHREAD>();
   thread->header.signal_state = 1;
   thread->exit_status = 0;
   emulator()->processor()->OnThreadExit(thread_id_);
   running_ = false;
+
+  // The thread will not run again, so its guest blocks can go now - the
+  // destructor may never run.
+  auto* memory = kernel_state()->memory();
+  if (tls_static_address_) {
+    memory->SystemHeapFree(tls_static_address_);
+    tls_static_address_ = 0;
+  }
+  if (pcr_address_) {
+    memory->SystemHeapFree(pcr_address_);
+    pcr_address_ = 0;
+  }
+  FreeStack();
+
   ReleaseHandle();
 }
 
@@ -1000,6 +1049,7 @@ X_STATUS XThread::Delay(uint32_t processor_mode, uint32_t alertable,
 
   timeout_ms = Clock::ScaleGuestDurationMillis(timeout_ms);
   if (alertable) {
+    CheckExitRequest();
     auto result =
         xe::threading::AlertableSleep(std::chrono::milliseconds(timeout_ms));
     switch (result) {
@@ -1017,7 +1067,14 @@ X_STATUS XThread::Delay(uint32_t processor_mode, uint32_t alertable,
         xe::threading::MaybeYield();
       }
     } else {
-      xe::threading::Sleep(std::chrono::milliseconds(timeout_ms));
+      // Sliced, so a sleeping thread still notices a teardown exit request.
+      uint32_t remaining = timeout_ms;
+      while (remaining) {
+        CheckExitRequest();
+        const uint32_t slice = std::min<uint32_t>(remaining, 50);
+        xe::threading::Sleep(std::chrono::milliseconds(slice));
+        remaining -= slice;
+      }
     }
   }
 

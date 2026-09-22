@@ -11,7 +11,11 @@
 
 #include "xenia/kernel/kernel_state.h"
 
+#include <chrono>
+#include <vector>
+
 #include "xenia/base/byte_stream.h"
+#include "xenia/base/clock.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/threading.h"
 #include "xenia/emulator.h"
@@ -997,6 +1001,47 @@ void KernelState::TerminateTitle(bool clear_handles) {
   xmp_volume_patch_.reset();
   // Emulator::TerminateTitle drops the UPDATE: mount right after this.
   mounted_title_update_path_.clear();
+
+  // Cooperative exit first: ask the title's guest threads to leave on their
+  // own and give them a moment. They unwind normally, so their destructors run
+  // and nothing host-side is left holding a lock. Done WITHOUT the global lock
+  // held - an exiting thread needs it. Whatever is still running after the
+  // deadline (a thread spinning in guest code never enters the kernel) is
+  // parked by the loop below, as before.
+  {
+    std::vector<object_ref<XThread>> leaving;
+    {
+      auto lock = global_critical_region_.Acquire();
+      for (const auto& [thread_id, thread] : threads_by_id_) {
+        if (thread && !XThread::IsInThread(thread) &&
+            thread->is_guest_thread() && !IsSystemThread(thread_id)) {
+          leaving.push_back(retain_object(thread));
+        }
+      }
+    }
+    for (auto& thread : leaving) {
+      thread->RequestExit();
+      if (thread->thread() && !emulator_->is_paused()) {
+        thread->thread()->Resume();
+      }
+    }
+    const uint64_t deadline = Clock::QueryHostUptimeMillis() + 250;
+    uint32_t left = 0;
+    for (auto& thread : leaving) {
+      const uint64_t now = Clock::QueryHostUptimeMillis();
+      if (now >= deadline || !thread->thread()) {
+        continue;
+      }
+      if (xe::threading::Wait(thread->thread(), false,
+                              std::chrono::milliseconds(deadline - now)) ==
+          xe::threading::WaitResult::kSuccess) {
+        ++left;
+      }
+    }
+    XELOGI("TerminateTitle: {} of {} guest thread(s) exited cooperatively",
+           left, leaving.size());
+  }
+
   auto global_lock = global_critical_region_.Acquire();
 
   // Call terminate routines.
@@ -1026,6 +1071,9 @@ void KernelState::TerminateTitle(bool clear_handles) {
         }
         XELOGI("TerminateTitle: parking thread {:08X} (handle {:08X})",
                thread->thread_id(), thread->handle());
+        // Not Terminate(): killing a host thread that holds the loader or CRT
+        // heap lock faults inside ntdll. Abandon frees the guest blocks, which
+        // is what the memory reclaim needs.
         thread->Abandon();
       }
     } else {

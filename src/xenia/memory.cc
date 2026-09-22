@@ -9,8 +9,16 @@
 
 #include "xenia/memory.h"
 
+#include <algorithm>
 #include <cstring>
 #include <random>
+
+#if defined(__clang__) || defined(__GNUC__)
+#define XE_RETURN_ADDRESS() __builtin_return_address(0)
+#else
+#include <intrin.h>
+#define XE_RETURN_ADDRESS() _ReturnAddress()
+#endif
 
 #include "third_party/fmt/include/fmt/format.h"
 #include "xenia/base/assert.h"
@@ -394,7 +402,12 @@ void Memory::UnmapViews() {
   }
 }
 
+// Freezes everything currently committed as system, permanently.
 void Memory::MarkAllocationsSystem() {
+  XELOGI("MarkAllocationsSystem: freezing all committed pages as system");
+  heaps_.v00000000.LogLiveRegions("v00000000");
+  heaps_.v40000000.LogLiveRegions("v40000000");
+  MarkSystemHeapWatermark();
   heaps_.v00000000.MarkAllocationsSystem();
   heaps_.v40000000.MarkAllocationsSystem();
   heaps_.v80000000.MarkAllocationsSystem();
@@ -806,6 +819,52 @@ void Memory::EnablePhysicalMemoryAccessCallbacks(
                                          enable_data_providers);
 }
 
+// Live SystemHeapAlloc blocks. System blocks are exempt from ReleaseUnmarked,
+// so the teardown frees anything allocated after the launch watermark.
+struct SystemAllocInfo {
+  uint32_t size;
+  uint64_t order;
+  void* caller;
+};
+static std::mutex system_alloc_mutex_;
+static std::map<uint32_t, SystemAllocInfo> system_allocs_;
+static uint64_t system_alloc_order_ = 0;
+static uint64_t system_alloc_watermark_ = 0;
+
+void Memory::MarkSystemHeapWatermark() {
+  std::lock_guard<std::mutex> lock(system_alloc_mutex_);
+  system_alloc_watermark_ = system_alloc_order_;
+  XELOGI("SystemHeap watermark at {} ({} block(s) belong to the kernel)",
+         system_alloc_watermark_, system_allocs_.size());
+}
+
+uint32_t Memory::ReleaseSystemHeapSinceWatermark() {
+  std::vector<std::pair<uint64_t, uint32_t>> doomed;  // order, address
+  uint64_t bytes = 0;
+  {
+    std::lock_guard<std::mutex> lock(system_alloc_mutex_);
+    for (const auto& [address, info] : system_allocs_) {
+      if (info.order > system_alloc_watermark_) {
+        doomed.emplace_back(info.order, address);
+        bytes += info.size;
+        XELOGD("  leaked system block {:08X} {} bytes, caller {}", address,
+               info.size, info.caller);
+      }
+    }
+  }
+  // Newest first.
+  std::sort(doomed.begin(), doomed.end(),
+            [](const auto& a, const auto& b) { return a.first > b.first; });
+  for (const auto& [order, address] : doomed) {
+    SystemHeapFree(address);
+  }
+  if (!doomed.empty()) {
+    XELOGI("TerminateTitle: freed {} leaked system block(s), {} KB",
+           doomed.size(), bytes / 1024);
+  }
+  return uint32_t(doomed.size());
+}
+
 uint32_t Memory::SystemHeapAlloc(uint32_t size, uint32_t alignment,
                                  uint32_t system_heap_flags) {
   // TODO(benvanik): lightweight pool.
@@ -819,12 +878,21 @@ uint32_t Memory::SystemHeapAlloc(uint32_t size, uint32_t alignment,
   }
   heap->MarkSystem(address, size);
   Zero(address, size);
+  {
+    std::lock_guard<std::mutex> lock(system_alloc_mutex_);
+    system_allocs_[address] =
+        SystemAllocInfo{size, ++system_alloc_order_, XE_RETURN_ADDRESS()};
+  }
   return address;
 }
 
 void Memory::SystemHeapFree(uint32_t address, uint32_t* out_region_size) {
   if (!address) {
     return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(system_alloc_mutex_);
+    system_allocs_.erase(address);
   }
   // TODO(benvanik): lightweight pool.
   auto heap = LookupHeap(address);
@@ -1157,6 +1225,35 @@ void BaseHeap::MarkSystem(uint32_t address, uint32_t size) {
   }
 }
 
+void BaseHeap::LogLiveRegions(const char* tag) {
+  auto global_lock = global_critical_region_.Acquire();
+  const uint32_t total = uint32_t(page_table_.size());
+  uint32_t page = 0;
+  uint32_t count = 0;
+  uint64_t bytes = 0;
+  while (page < total) {
+    const PageEntry entry = page_table_[page];
+    if (!entry.state || entry.base_address != page ||
+        !entry.region_page_count) {
+      ++page;
+      continue;
+    }
+    const uint32_t remaining = total - page;
+    const uint32_t region_pages = entry.region_page_count < remaining
+                                      ? uint32_t(entry.region_page_count)
+                                      : remaining;
+    const uint64_t low = uint64_t(heap_base_) + uint64_t(page) * page_size_;
+    const uint64_t size = uint64_t(region_pages) * page_size_;
+    XELOGI("  live {} {:08X}-{:08X} ({} KB){}", tag, uint32_t(low),
+           uint32_t(low + size), uint32_t(size / 1024),
+           page_table_[page].system ? " [already system]" : "");
+    ++count;
+    bytes += size;
+    page += region_pages;
+  }
+  XELOGI("LogLiveRegions {}: {} region(s), {} KB", tag, count, bytes / 1024);
+}
+
 void BaseHeap::MarkAllocationsSystem() {
   auto global_lock = global_critical_region_.Acquire();
   for (auto& entry : page_table_) {
@@ -1184,15 +1281,17 @@ uint32_t BaseHeap::ReleaseUnmarked(
       const uint32_t region_pages = entry.region_page_count < remaining
                                         ? uint32_t(entry.region_page_count)
                                         : remaining;
+      const uint64_t low = uint64_t(heap_base_) + uint64_t(page) * page_size_;
+      const uint64_t high = low + uint64_t(region_pages) * page_size_;
       bool release = true;
       for (uint32_t i = page; i < page + region_pages; ++i) {
         if (page_table_[i].system) {
           release = false;
+          XELOGI("ReleaseUnmarked: KEEPING system region {:08X}-{:08X} ({} KB)",
+                 uint32_t(low), uint32_t(high), uint32_t((high - low) / 1024));
           break;
         }
       }
-      const uint64_t low = uint64_t(heap_base_) + uint64_t(page) * page_size_;
-      const uint64_t high = low + uint64_t(region_pages) * page_size_;
       for (const auto& range : keep) {
         if (low < range.second && range.first < high) {
           release = false;
@@ -1586,7 +1685,15 @@ bool BaseHeap::Release(uint32_t base_address, uint32_t* out_region_size) {
   uint32_t base_page_number = (base_address - heap_base_) / page_size_;
   auto base_page_entry = page_table_[base_page_number];
   if (base_page_entry.base_address != base_page_number) {
-    XELOGE("BaseHeap::Release failed because address is not a region start");
+    XELOGE(
+        "BaseHeap::Release({:08X}) failed: not a region start. heap {:08X} "
+        "page size {:X}, page {:X} belongs to region starting at page {:X} "
+        "({:08X}), region size {:X} pages, state {:X}",
+        base_address, heap_base_, page_size_, base_page_number,
+        uint32_t(base_page_entry.base_address),
+        heap_base_ + uint32_t(base_page_entry.base_address) * page_size_,
+        uint32_t(base_page_entry.region_page_count),
+        uint32_t(base_page_entry.state));
     return false;
   }
 

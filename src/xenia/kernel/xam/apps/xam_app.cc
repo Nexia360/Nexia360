@@ -11,16 +11,19 @@
 
 #include <algorithm>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "xenia/base/logging.h"
+#include "xenia/base/string_util.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/xam/xam_content_device.h"
 #include "xenia/kernel/xam/xam_module.h"
 #include "xenia/kernel/xam/xam_uri.h"
 #include "xenia/kernel/xenumerator.h"
+#include "xenia/vfs/devices/xcontent_container_device.h"
 
 /* Notes:
    - Messages ids that start with 0x00021xxx are UI calls
@@ -73,33 +76,16 @@ X_HRESULT XamApp::ExecuteDispatchMessage(uint32_t message, uint32_t buffer_ptr,
 
       assert_true(enum_struct->magic == kXObjSignature);
 
-      XCONTENT_CROSS_TITLE_DATA cross_title_data = {};
-      uint8_t* cross_title_data_ptr =
-          reinterpret_cast<uint8_t*>(&cross_title_data);
-
-      uint32_t item_count = 0;
-      X_RESULT result = e->WriteItems(cross_title_data_ptr,
-                                      data_ptr->buffer_size, &item_count);
-
       XCONTENT_DATA_INTERNAL* content_data_ptr =
           memory_->TranslateVirtual<XCONTENT_DATA_INTERNAL*>(
               data_ptr->buffer_ptr);
 
-      assert_true(data_ptr->buffer_size == sizeof(XCONTENT_DATA_INTERNAL));
-
       std::memset(content_data_ptr, 0, data_ptr->buffer_size);
 
-      if (!result) {
-        content_data_ptr->device_id = cross_title_data.content_data.device_id;
-        content_data_ptr->content_type =
-            cross_title_data.content_data.content_type;
-        content_data_ptr->set_display_name(
-            cross_title_data.content_data.display_name());
-        content_data_ptr->set_file_name(
-            cross_title_data.content_data.file_name());
-        content_data_ptr->padding[0] = content_data_ptr->padding[1] = 0;
-        content_data_ptr->title_id = cross_title_data.title_id;
-      }
+      uint32_t item_count = 0;
+      X_RESULT result =
+          e->WriteItems(reinterpret_cast<uint8_t*>(content_data_ptr),
+                        data_ptr->buffer_size, &item_count);
 
       result = X_HRESULT_FROM_WIN32(result);
 
@@ -184,7 +170,6 @@ X_HRESULT XamApp::ExecuteDispatchMessage(uint32_t message, uint32_t buffer_ptr,
     // of them - My Games and My Apps included - resolve back to the
     // dashboard's OWN title id, so nothing is launched at all. The resolved
     // string goes into the launch data and a notification tells the running
-    // title to read it, which is exactly what sub_819A05B8 does.
     case 0x00022003: {
       struct XAM_LAUNCH_URI {
         xe::be<uint32_t> flags;
@@ -230,16 +215,6 @@ X_HRESULT XamApp::ExecuteDispatchMessage(uint32_t message, uint32_t buffer_ptr,
             uri, resolved.uri);
         return X_E_FAIL;
       }
-      // Bit 0 is what lets the caller be answered in place at all; without
-      // it the console reboots to the dash instead, which would throw away
-      // the running title for a navigation.
-      if (!(flags & 0x1)) {
-        XELOGE(
-            "XamLaunchURI('{}') -> '{}': in-process navigation refused by "
-            "flags {:08X}",
-            uri, resolved.uri, flags);
-        return X_HRESULT_FROM_WIN32(X_ERROR_FILE_NOT_FOUND);
-      }
       if (!(flags & 0x4)) {
         XELOGE(
             "XamLaunchURI('{}') -> '{}': flags {:08X} ask for a reboot to "
@@ -248,19 +223,20 @@ X_HRESULT XamApp::ExecuteDispatchMessage(uint32_t message, uint32_t buffer_ptr,
         return X_E_FAIL;
       }
 
-      // The 0x3FC launch blob sub_819A05B8 builds, byte for byte:
+      // The 0x3FC launch blob sub_819A0440 builds, byte for byte:
       //   +0x00  zero
-      //   +0x04  0x0F, the launch-data kind
+      //   +0x04  0x0C, the launch-data command: navigate to a URI
       //   +0x08  the caller's app id
-      //   +0x0C  the WHOLE resolved URI, NUL terminated
       constexpr size_t kLaunchDataSize = 0x3FC;
       constexpr size_t kUriOffset = 0x0C;
+      constexpr uint32_t kNavigateToUri = 0x0C;
       std::vector<uint8_t> launch_data(kLaunchDataSize, 0);
-      xe::store_and_swap<uint32_t>(launch_data.data() + 0x04, 0x0F);
+      xe::store_and_swap<uint32_t>(launch_data.data() + 0x04, kNavigateToUri);
       xe::store_and_swap<uint32_t>(launch_data.data() + 0x08, caller_app_id);
+      const std::string& navigate_uri = resolved.args;
       const size_t copied =
-          std::min(resolved.uri.size(), kLaunchDataSize - kUriOffset - 1);
-      std::memcpy(launch_data.data() + kUriOffset, resolved.uri.data(), copied);
+          std::min(navigate_uri.size(), kLaunchDataSize - kUriOffset - 1);
+      std::memcpy(launch_data.data() + kUriOffset, navigate_uri.data(), copied);
 
       auto xam = kernel_state_->GetKernelModule<XamModule>("xam.xex");
       xam->loader_data().launch_data = std::move(launch_data);
@@ -268,9 +244,13 @@ X_HRESULT XamApp::ExecuteDispatchMessage(uint32_t message, uint32_t buffer_ptr,
       // Deliberately at error level. This is the one line that says whether
       // a tile got as far as the dashboard, and the default log_level is 0 -
       // errors only - so anything quieter would not survive a user's log.
-      XELOGE("XamLaunchURI('{}') -> '{}'", uri, resolved.uri);
-      kernel_state_->BroadcastNotification(kXNotificationSystemLaunchURI,
-                                           (caller_app_id << 16) | 0x0F);
+      XELOGE("XamLaunchURI('{}') -> '{}', navigating title {:08X} to '{}'", uri,
+             resolved.uri, resolved.title_id, navigate_uri);
+      kernel_state_->BroadcastNotification(
+          kXNotificationSystemStorageDevicesChanged, 0);
+      kernel_state_->BroadcastNotification(
+          kXNotificationSystemPushBackURI,
+          (caller_app_id << 16) | kNavigateToUri);
       return X_E_SUCCESS;
     }
     case 0x0002B003: {

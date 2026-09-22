@@ -208,6 +208,7 @@ class BaseHeap {
 
   void MarkSystem(uint32_t address, uint32_t size);
   void MarkAllocationsSystem();
+  void LogLiveRegions(const char* tag);
   uint32_t ReleaseUnmarked(
       const std::vector<std::pair<uint32_t, uint32_t>>& keep);
 
@@ -374,6 +375,10 @@ class Memory {
   void Reset();
 
   void MarkAllocationsSystem();
+  // Records which system blocks belong to the kernel rather than the title.
+  void MarkSystemHeapWatermark();
+  // Frees system blocks allocated since the watermark, newest first.
+  uint32_t ReleaseSystemHeapSinceWatermark();
   uint32_t ReleaseTitleAllocations(
       const std::vector<std::pair<uint32_t, uint32_t>>& keep);
 

@@ -123,6 +123,8 @@ constexpr SchemeRecord kSchemeTable[] = {
      "hub:root:Dash.MP.ContentExplorer.lex:ActivityDetails:%s"},
     {"activityalerts", 0, nullptr,
      "hub:root:Dash.MP.ContentExplorer.lex:ActivityAlerts:%s"},
+
+    {"nexia", 1, "pam:%s", nullptr},
 };
 
 // xam's resolver walks at most ten rewrites before giving up.

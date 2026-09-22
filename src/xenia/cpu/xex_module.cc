@@ -1158,7 +1158,10 @@ bool XexModule::Unload() {
   if (!is_patch()) {
     assert_not_zero(base_address_);
 
-    memory()->LookupHeap(base_address_)->Release(base_address_);
+    if (!memory()->LookupHeap(base_address_)->Release(base_address_)) {
+      XELOGE("XexModule::Unload('{}'): image at {:08X} was NOT released", name_,
+             base_address_);
+    }
   }
 
   xex_header_mem_.resize(0);

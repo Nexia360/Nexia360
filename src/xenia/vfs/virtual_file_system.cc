@@ -132,6 +132,17 @@ bool VirtualFileSystem::ResolveSymbolicLink(const std::string_view path,
     // Found symlink!
     auto target_path = (*it).second;
     auto relative_path = result.substr((*it).first.size());
+    if (!relative_path.empty() && !target_path.empty()) {
+      const char target_last = target_path.back();
+      const char relative_first = relative_path.front();
+      const bool target_ends_separator =
+          target_last == '\\' || target_last == '/';
+      const bool relative_starts_separator =
+          relative_first == '\\' || relative_first == '/';
+      if (!target_ends_separator && !relative_starts_separator) {
+        target_path.push_back('\\');
+      }
+    }
     result = target_path + relative_path;
     was_resolved = true;
   }
@@ -361,8 +372,14 @@ X_STATUS VirtualFileSystem::OpenFile(Entry* root_entry,
 
     auto file_name = xe::utf8::find_name_from_guest_path(path);
     entry = parent_entry->GetChild(file_name);
+    if (!entry) {
+      entry = ResolveTileImageAlias(parent_entry, file_name);
+    }
   } else {
     entry = !root_entry ? ResolvePath(path) : root_entry->GetChild(path);
+    if (!entry && root_entry) {
+      entry = ResolveTileImageAlias(root_entry, path);
+    }
   }
 
   if (entry) {

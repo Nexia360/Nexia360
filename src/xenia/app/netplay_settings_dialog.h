@@ -78,7 +78,6 @@ class NetplaySettingsDialog final : public ui::ImGuiDialog {
 
   bool bind_interface_ = false;
   bool logging_ = false;
-  bool xhttp_ = false;
   bool discord_ = false;
   bool nexiahub_transport_ = false;
   bool transport_tcp_fallback_ = true;

@@ -21,6 +21,27 @@ namespace kernel {
 namespace xam {
 namespace xui {
 
+static const Property kControlPackAuraControl_Properties[] = {
+    {"ThemeImageIndex", PropertyType::kUnsigned, 0x0, nullptr},
+    {"BackgroundImage", PropertyType::kString, 0x0, nullptr},
+    {"SurfaceSphere", PropertyType::kBool, 0x0, nullptr},
+    {"BannerImage", PropertyType::kString, 0x0, nullptr},
+    {"BackgroundImagePanScale", PropertyType::kFloat, 0x0, nullptr},
+    {"SurfaceVignette", PropertyType::kBool, 0x0, nullptr},
+};
+static const PropertyTable kControlPackAuraControl_Table = {
+    kControlPackAuraControl_Properties, 6};
+
+// dash.xex 17559, _GetPropDef at 0x92777A40, registered at 0x92778F04 with
+// base XuiScene. Only two of its own; everything else a hub scene carries
+// comes down the XuiScene chain.
+static const Property kControlPackHubScene_Properties[] = {
+    {"PositionRay", PropertyType::kQuaternion, 0x0, nullptr},
+    {"ScreenOffset", PropertyType::kQuaternion, 0x0, nullptr},
+};
+static const PropertyTable kControlPackHubScene_Table = {
+    kControlPackHubScene_Properties, 2};
+
 static const Property kControlPackNuiBack_Properties[] = {
     {"Handedness", PropertyType::kUnsigned, 0x0, nullptr},
 };
@@ -98,6 +119,32 @@ static const Property kHUDScene_Properties[] = {
     {"ShowGamerInfo", PropertyType::kBool, 0x0, nullptr},
 };
 static const PropertyTable kHUDScene_Table = {kHUDScene_Properties, 6};
+
+static const Property kDashScene_Properties[] = {
+    {"PanelSettings", PropertyType::kString, 0x0, nullptr},
+    {"PanelStrings", PropertyType::kString, 0x4, nullptr},
+    {"PanelScenePaths", PropertyType::kString, 0x0, nullptr},
+};
+static const PropertyTable kDashScene_Table = {kDashScene_Properties, 3};
+
+static const Property kXuiAvatar_Properties[] = {
+    {"UseActiveUserAvatar", PropertyType::kBool, 0x0, nullptr},
+    {"EnableUserControl", PropertyType::kBool, 0x0, nullptr},
+    {"UseCustomView", PropertyType::kBool, 0x8, nullptr},
+    {"RenderView", PropertyType::kUnsigned, 0x8, nullptr},
+    {"CustomViewEyePosition", PropertyType::kVector, 0x0, nullptr},
+    {"CustomViewFocusPosition", PropertyType::kVector, 0x0, nullptr},
+    {"CustomViewUpDirection", PropertyType::kVector, 0x0, nullptr},
+    {"ShowSelfShadow", PropertyType::kBool, 0x8, nullptr},
+    {"ShowShadow", PropertyType::kBool, 0x8, nullptr},
+    {"ShowCarryable", PropertyType::kBool, 0x8, nullptr},
+    {"ShowHat", PropertyType::kBool, 0x8, nullptr},
+    {"FreezeAvatar", PropertyType::kBool, 0x0, nullptr},
+    {"UseAvateering", PropertyType::kBool, 0x0, nullptr},
+    {"FullBodyAvateering", PropertyType::kBool, 0x0, nullptr},
+    {"AvateeringTrackingID", PropertyType::kUnsigned, 0x8, nullptr},
+};
+static const PropertyTable kXuiAvatar_Table = {kXuiAvatar_Properties, 15};
 
 static const Property kXuiButton_Properties[] = {
     {"PressKey", PropertyType::kUnsigned, 0x0, nullptr},
@@ -244,6 +291,43 @@ static const Property kXuiGridPanel_Properties[] = {
 };
 static const PropertyTable kXuiGridPanel_Table = {kXuiGridPanel_Properties, 7};
 
+// _GetPropDef at 0x9223FCB8, registered at 0x922409BC with base XuiControl.
+// That Register calls TWO helpers -- 0x928C9F60 fills szClassDetails at +0x0C,
+// and only 0x9223FCB8 fills pPropDefs at +0x1C.
+static const Property kXuiHtmlControl_Properties[] = {
+    {"LineHeight", PropertyType::kInteger, 0x0, nullptr},
+    {"TeletypeCount", PropertyType::kInteger, 0x0, nullptr},
+};
+static const PropertyTable kXuiHtmlControl_Table = {kXuiHtmlControl_Properties,
+                                                    2};
+
+// _GetPropDef at 0x922396D8, registered at 0x9223FC10 with base XuiElement.
+static const Property kXuiHtmlPresenter_Properties[] = {
+    {"DataAssociation", PropertyType::kUnsigned, 0x0, nullptr},
+};
+static const PropertyTable kXuiHtmlPresenter_Table = {
+    kXuiHtmlPresenter_Properties, 1};
+
+// _GetPropDef at 0x92214A20, registered at 0x92215CFC with base XuiControl.
+// Entries 1..11 all share offset 0x0004 and differ only by dwExtra, which is
+// the bit each one sets in a single flags word.
+static const Property kXuiTouch_Properties[] = {
+    {"PositionOffset", PropertyType::kVector, 0x0, nullptr},
+    {"HorizontalScrub", PropertyType::kBool, 0x0, nullptr},
+    {"HorizontalFling", PropertyType::kBool, 0x0, nullptr},
+    {"HorizontalRubberBand", PropertyType::kBool, 0x0, nullptr},
+    {"HorizontalClamp", PropertyType::kBool, 0x0, nullptr},
+    {"VerticalScrub", PropertyType::kBool, 0x0, nullptr},
+    {"VerticalFling", PropertyType::kBool, 0x0, nullptr},
+    {"VerticalRubberBand", PropertyType::kBool, 0x0, nullptr},
+    {"VerticalClamp", PropertyType::kBool, 0x0, nullptr},
+    {"CenterSmallCanvas", PropertyType::kBool, 0x0, nullptr},
+    {"StretchToFit", PropertyType::kBool, 0x0, nullptr},
+    {"EnableBandBreak", PropertyType::kBool, 0x0, nullptr},
+    {"Hollow", PropertyType::kBool, 0x0, nullptr},
+};
+static const PropertyTable kXuiTouch_Table = {kXuiTouch_Properties, 13};
+
 static const Property kXuiImage_Properties[] = {
     {"SizeMode", PropertyType::kUnsigned, 0x0, nullptr},
     {"ImagePath", PropertyType::kString, 0x10, nullptr},
@@ -386,6 +470,16 @@ static const Property kXuiSound_Properties[] = {
 };
 static const PropertyTable kXuiSound_Table = {kXuiSound_Properties, 4};
 
+// _GetPropDef at 0x921DDA78, registered at 0x921DDF7C with base XuiSound.
+static const Property kXuiSoundXACT_Properties[] = {
+    {"Cue", PropertyType::kString, 0x0, nullptr},
+    {"SoundBank", PropertyType::kString, 0x10, nullptr},
+    {"WaveBank", PropertyType::kString, 0x10, nullptr},
+    {"DopplerScale", PropertyType::kFloat, 0x0, nullptr},
+    {"AudioPosition", PropertyType::kVector, 0x0, nullptr},
+};
+static const PropertyTable kXuiSoundXACT_Table = {kXuiSoundXACT_Properties, 5};
+
 static const Property kXuiSoundXAudio_Properties[] = {
     {"File", PropertyType::kString, 0x0, nullptr},
 };
@@ -463,6 +557,10 @@ static const XuiClass kClasses[] = {
     {"ChangePersonalTileScene", "HUDScene", {nullptr, 0}},
     {"ClauseList", "XuiList", {nullptr, 0}},
     {"CongratulationsScene", "HUDScene", {nullptr, 0}},
+    {"ControlPackAuraControl",
+     "XuiElement",
+     {kControlPackAuraControl_Properties, 6}},
+    {"ControlPackHubScene", "XuiScene", {kControlPackHubScene_Properties, 2}},
     {"ControlPackNuiBack", "XuiControl", {kControlPackNuiBack_Properties, 1}},
     {"ControlPackNuiButton", "XuiButton", {nullptr, 0}},
     {"ControlPackNuiCheckbox", "XuiCheckbox", {nullptr, 0}},
@@ -489,7 +587,15 @@ static const XuiClass kClasses[] = {
     {"ControlPackNuiVScroll", "XuiElement", {nullptr, 0}},
     {"ControlPackSimpleCursorScene", "XuiScene", {nullptr, 0}},
     {"ControlPackSystemGesture", "XuiElement", {nullptr, 0}},
+    // Registered at 0x9277A0EC with null propdefs; its properties are
+    // XuiPerspectiveScene's.
+    // Registered at 0x9277A6DC with null propdefs.
+    {"ControlPackLegacyControl", "XuiControl", {nullptr, 0}},
+    {"ControlPackScourScene", "XuiPerspectiveScene", {nullptr, 0}},
     {"ControlPackVariablesScene", "XuiScene", {nullptr, 0}},
+    // Registered at 0x9277950C with pPropDefs and dwPropDefCount both NULL --
+    // it declares nothing of its own, so its properties are XuiControl's.
+    {"ControlPackVuiBling", "XuiControl", {nullptr, 0}},
     {"EditProfileScene", "HUDScene", {nullptr, 0}},
     {"ExtendedScene", "XuiScene", {nullptr, 0}},
     {"GameScene", "HUDScene", {nullptr, 0}},
@@ -497,6 +603,7 @@ static const XuiClass kClasses[] = {
     {"GameShowcaseYouScene", "HUDScene", {nullptr, 0}},
     {"GamerCardScene", "XuiScene", {nullptr, 0}},
     {"GamerCardUIScene", "HUDScene", {nullptr, 0}},
+    {"DashScene", "XuiScene", {kDashScene_Properties, 3}},
     {"GamerPicButton", "XuiButton", {nullptr, 0}},
     {"GamerPreferencesList", "XuiList", {nullptr, 0}},
     {"GamerPreferencesScene", "HUDScene", {nullptr, 0}},
@@ -536,12 +643,16 @@ static const XuiClass kClasses[] = {
     {"UserList", "XuiList", {nullptr, 0}},
     {"UserListScene", "XuiScene", {nullptr, 0}},
     {"VKXuiButton", "XuiButton", {nullptr, 0}},
+    {"XuiAvatar", "XuiControl", {kXuiAvatar_Properties, 15}},
     {"XuiBackButton", "XuiButton", {nullptr, 0}},
     {"XuiButton", "XuiControl", {kXuiButton_Properties, 7}},
     {"XuiCanvas", "XuiElement", {nullptr, 0}},
     {"XuiCaret", "XuiControl", {nullptr, 0}},
     {"XuiCheckbox", "XuiControl", {kXuiCheckbox_Properties, 1}},
     {"XuiCommonList", "XuiList", {kXuiCommonList_Properties, 3}},
+    // Registered at 0x927DA72C with pPropDefs and dwPropDefCount NULL: no
+    // properties of its own, everything comes from XuiControl.
+    {"XuiCompVideo", "XuiControl", {nullptr, 0}},
     {"XuiControl", "XuiElement", {kXuiControl_Properties, 19}},
     {"XuiEdit", "XuiControl", {kXuiEdit_Properties, 6}},
     {"XuiElement", nullptr, {kXuiElement_Properties, 27}},
@@ -550,6 +661,8 @@ static const XuiClass kClasses[] = {
     {"XuiGridPanel", "XuiElement", {kXuiGridPanel_Properties, 7}},
     {"XuiGroup", "XuiElement", {nullptr, 0}},
     {"XuiImage", "XuiElement", {kXuiImage_Properties, 5}},
+    {"XuiHtmlControl", "XuiControl", {kXuiHtmlControl_Properties, 2}},
+    {"XuiHtmlPresenter", "XuiElement", {kXuiHtmlPresenter_Properties, 1}},
     {"XuiImagePresenter", "XuiElement", {kXuiImagePresenter_Properties, 4}},
     {"XuiLabel", "XuiControl", {kXuiLabel_Properties, 1}},
     {"XuiList", "XuiControl", {kXuiList_Properties, 2}},
@@ -567,9 +680,11 @@ static const XuiClass kClasses[] = {
     {"XuiShader", "XuiElement", {kXuiShader_Properties, 14}},
     {"XuiSlider", "XuiControl", {kXuiSlider_Properties, 7}},
     {"XuiSound", "XuiElement", {kXuiSound_Properties, 4}},
+    {"XuiSoundXACT", "XuiSound", {kXuiSoundXACT_Properties, 5}},
     {"XuiSoundXAudio", "XuiSound", {kXuiSoundXAudio_Properties, 1}},
     {"XuiTabScene", "XuiScene", {kXuiTabScene_Properties, 6}},
     {"XuiText", "XuiElement", {kXuiText_Properties, 8}},
+    {"XuiTouch", "XuiControl", {kXuiTouch_Properties, 13}},
     {"XuiTextPresenter", "XuiElement", {kXuiTextPresenter_Properties, 8}},
     {"XuiTextureSurface", "XuiGroup", {kXuiTextureSurface_Properties, 4}},
     {"XuiTransition", "XuiElement", {nullptr, 0}},

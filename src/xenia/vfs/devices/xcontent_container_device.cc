@@ -9,6 +9,7 @@
 
 #include "xenia/vfs/devices/xcontent_container_device.h"
 #include "xenia/base/logging.h"
+#include "xenia/base/utf8.h"
 #include "xenia/vfs/devices/xcontent_devices/stfs_container_device.h"
 #include "xenia/vfs/devices/xcontent_devices/svod_container_device.h"
 
@@ -124,7 +125,12 @@ XContentContainerDevice::ReadContainerHeader(
     return {};
   }
 
-  return ReadContainerHeader(header_file);
+  // This used to return without closing, leaking a handle on the container
+  // every time. The CreateContentDevice overload above fcloses its own file;
+  // this one is called for every item of every content enumeration.
+  auto header = ReadContainerHeader(header_file);
+  fclose(header_file);
+  return header;
 }
 
 std::unique_ptr<XContentContainerHeader>
@@ -139,12 +145,58 @@ XContentContainerDevice::ReadContainerHeader(FILE* host_file) {
   return header;
 }
 
+static const char* const kTileImageAliases[] = {
+    "game.png",
+    "gametile.png",
+    "game_tile.png",
+    "nxetile.png",
+};
+
+static bool IsTileImageName(const std::string_view name) {
+  const std::string lower = xe::utf8::lower_ascii(name);
+  for (const char* alias : kTileImageAliases) {
+    if (lower == alias) {
+      return true;
+    }
+  }
+  return false;
+}
+
+Entry* ResolveTileImageAlias(Entry* parent, const std::string_view requested) {
+  if (!parent || !IsTileImageName(requested)) {
+    return nullptr;
+  }
+  for (const char* alias : kTileImageAliases) {
+    Entry* entry = parent->GetChild(alias);
+    if (entry) {
+      XELOGW("XContentContainer: '{}' not in package, serving '{}' instead",
+             requested, alias);
+      return entry;
+    }
+  }
+  return nullptr;
+}
+
 Entry* XContentContainerDevice::ResolvePath(const std::string_view path) {
   // The filesystem will have stripped our prefix off already, so the path will
   // be in the form:
   // some\PATH.foo
   XELOGFS("StfsContainerDevice::ResolvePath({})", path);
-  return root_entry_->ResolvePath(path);
+  Entry* entry = root_entry_->ResolvePath(path);
+  if (entry) {
+    return entry;
+  }
+
+  // NtCreateFile resolves the parent and calls GetChild itself, so the tile
+  // fallback mostly happens in VirtualFileSystem::OpenFile. This covers the
+  // callers that do pass a whole path, such as NtQueryFullAttributesFile.
+  const size_t separator = path.find_last_of("\\/");
+  const std::string_view leaf =
+      separator == std::string_view::npos ? path : path.substr(separator + 1);
+  Entry* parent = separator == std::string_view::npos
+                      ? root_entry_.get()
+                      : root_entry_->ResolvePath(path.substr(0, separator));
+  return ResolveTileImageAlias(parent, leaf);
 }
 
 void XContentContainerDevice::Dump(StringBuffer* string_buffer) {

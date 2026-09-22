@@ -32,6 +32,8 @@ void CloseOpenedContentFiles();
 // +0x0C. Defined in xam_info.cc, used there and by XamLaunchAvatarEditor.
 std::vector<uint8_t> BuildAvatarEditorLaunchData(const std::u16string& item);
 
+void RegisterIssuedToken(uint32_t token_ptr, uint32_t size);
+
 // Registration functions, one per file.
 #define XE_MODULE_EXPORT_GROUP(m, n)                                  \
   void Register##n##Exports(xe::cpu::ExportResolver* export_resolver, \

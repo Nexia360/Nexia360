@@ -8,6 +8,7 @@
  */
 
 #include <algorithm>
+#include <atomic>
 #include <ranges>
 #include <vector>
 
@@ -1420,21 +1421,73 @@ void UserTracker::RefreshTitleSummary(uint64_t xuid, uint32_t title_id) {
   user->WriteGpd(kDashboardID);
 }
 
+namespace {
+void LogLogonState(uint32_t state) {
+  static std::atomic<uint32_t> last_state = {0xFFFFFFFF};
+  const uint32_t previous = last_state.exchange(state);
+  if (previous == state) {
+    return;
+  }
+  const char* name = "?";
+  switch (state) {
+    case X_ONLINE_S_LOGON_CONNECTION_ESTABLISHED:
+      name = "CONNECTION_ESTABLISHED";
+      break;
+    case X_ONLINE_S_LOGON_DISCONNECTED:
+      name = "DISCONNECTED";
+      break;
+    case X_ONLINE_E_LOGON_NO_NETWORK_CONNECTION:
+      name = "NO_NETWORK_CONNECTION";
+      break;
+    case X_ONLINE_E_LOGON_NOT_LOGGED_ON:
+      name = "NOT_LOGGED_ON";
+      break;
+    default:
+      break;
+  }
+  XELOGW("Logon state -> {:08X} {}", state, name);
+}
+}  // namespace
+
 uint32_t UserTracker::GetLogonState() const {
   const NETWORK_MODE network_state =
       static_cast<NETWORK_MODE>(cvars::network_mode);
 
-  // What status do we return if we're not connected to any network?
-  // if (network_state == NETWORK_MODE::OFFLINE) {
-  //   return X_ONLINE_E_LOGON_NO_NETWORK_CONNECTION;
-  // }
+  // The dashboard's test is `hr >= 0 && hr != S_LOGON_DISCONNECTED`, so any
+  // failure HRESULT and that one success code both read as offline. It polls
+  // this every frame.
+  if (network_state == NETWORK_MODE::OFFLINE) {
+    LogLogonState(X_ONLINE_E_LOGON_NO_NETWORK_CONNECTION);
+    return X_ONLINE_E_LOGON_NO_NETWORK_CONNECTION;
+  }
 
   // >= XBOXLIVE: Nexia Hub (3) is an Xbox-Live-class online mode. Everything
   // Live-gated funnels through here (LoggedInToLive), so an == check would
   // report the console as disconnected while on the hub.
-  return network_state >= NETWORK_MODE::XBOXLIVE
-             ? X_ONLINE_S_LOGON_CONNECTION_ESTABLISHED
-             : X_ONLINE_S_LOGON_DISCONNECTED;
+  if (network_state < NETWORK_MODE::XBOXLIVE) {
+    LogLogonState(X_ONLINE_S_LOGON_DISCONNECTED);
+    return X_ONLINE_S_LOGON_DISCONNECTED;
+  }
+
+  // A network mode is not a logon. Claiming a Live connection with nobody
+  // signed in told the dashboard it was online from the first frame, before
+  // any profile existed. A logon needs a signed-in, Live-enabled profile.
+  auto* xam_state = kernel_state()->xam_state();
+  if (!xam_state) {
+    LogLogonState(X_ONLINE_E_LOGON_NOT_LOGGED_ON);
+    return X_ONLINE_E_LOGON_NOT_LOGGED_ON;
+  }
+
+  for (uint32_t i = 0; i < XUserMaxUserCount; i++) {
+    auto* user = xam_state->GetUserProfile(i);
+    if (user && user->IsLiveEnabled()) {
+      LogLogonState(X_ONLINE_S_LOGON_CONNECTION_ESTABLISHED);
+      return X_ONLINE_S_LOGON_CONNECTION_ESTABLISHED;
+    }
+  }
+
+  LogLogonState(X_ONLINE_E_LOGON_NOT_LOGGED_ON);
+  return X_ONLINE_E_LOGON_NOT_LOGGED_ON;
 }
 
 bool UserTracker::LoggedInToLive() const {

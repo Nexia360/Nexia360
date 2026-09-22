@@ -91,6 +91,145 @@ using namespace xe::literals;
 #define XHTTP_ERROR_NOT_INITIALIZED                         (XHTTP_ERROR_BASE + 172)
 #define XHTTP_ERROR_SECURE_FAILURE                          (XHTTP_ERROR_BASE + 175)
 
+// XHTTP is WinHTTP for the console - the error codes above are WinHTTP's
+// verbatim, and so is everything below.
+
+// Handle kinds, as reported by XHTTP_OPTION_HANDLE_TYPE.
+#define XHTTP_HANDLE_TYPE_SESSION                           1
+#define XHTTP_HANDLE_TYPE_CONNECT                           2
+#define XHTTP_HANDLE_TYPE_REQUEST                           3
+
+// XHttpOpen access types.
+#define XHTTP_ACCESS_TYPE_DEFAULT_PROXY                     0
+#define XHTTP_ACCESS_TYPE_NO_PROXY                          1
+#define XHTTP_ACCESS_TYPE_NAMED_PROXY                       3
+
+// XHttpOpenRequest flags.
+#define XHTTP_FLAG_SECURE                                   0x00800000
+#define XHTTP_FLAG_ESCAPE_PERCENT                           0x00000004
+#define XHTTP_FLAG_NULL_CODEPAGE                            0x00000008
+#define XHTTP_FLAG_BYPASS_PROXY_CACHE                       0x00000100
+#define XHTTP_FLAG_REFRESH                                  XHTTP_FLAG_BYPASS_PROXY_CACHE
+#define XHTTP_FLAG_ESCAPE_DISABLE                           0x00000040
+#define XHTTP_FLAG_ESCAPE_DISABLE_QUERY                     0x00000080
+
+// XHttpOpen flags. The dash's XMan client opens its session with ASYNC, which
+// means every call returns immediately and completion is reported through the
+// XHttpSetStatusCallback callback, pumped by XHttpDoWork.
+#define XHTTP_FLAG_ASYNC                                    0x10000000
+
+#define XHTTP_QUERY_ACCEPT                                  0
+#define XHTTP_QUERY_ACCEPT_CHARSET                          1
+#define XHTTP_QUERY_ACCEPT_ENCODING                         2
+#define XHTTP_QUERY_ACCEPT_LANGUAGE                         3
+#define XHTTP_QUERY_ACCEPT_RANGES                           4
+#define XHTTP_QUERY_ALLOW                                   5
+#define XHTTP_QUERY_CACHE_CONTROL                           6
+#define XHTTP_QUERY_CONNECTION                              7
+#define XHTTP_QUERY_CONTENT_LANGUAGE                        8
+#define XHTTP_QUERY_CONTENT_LENGTH                          9
+#define XHTTP_QUERY_CONTENT_TRANSFER_ENCODING               10
+#define XHTTP_QUERY_CONTENT_TYPE                            11
+#define XHTTP_QUERY_DATE                                    12
+#define XHTTP_QUERY_EXPIRES                                 13
+#define XHTTP_QUERY_EXT                                     14
+#define XHTTP_QUERY_HOST                                    15
+#define XHTTP_QUERY_IF_MATCH                                16
+#define XHTTP_QUERY_IF_MODIFIED_SINCE                       17
+#define XHTTP_QUERY_IF_NONE_MATCH                           18
+#define XHTTP_QUERY_IF_RANGE                                19
+#define XHTTP_QUERY_IF_UNMODIFIED_SINCE                     20
+#define XHTTP_QUERY_LAST_MODIFIED                           21
+#define XHTTP_QUERY_RAW_HEADERS_CRLF                        22
+#define XHTTP_QUERY_MAN                                     23
+#define XHTTP_QUERY_MIME_VERSION                            24
+#define XHTTP_QUERY_MX                                      25
+#define XHTTP_QUERY_NT                                      26
+#define XHTTP_QUERY_NTS                                     27
+#define XHTTP_QUERY_RANGE                                   28
+#define XHTTP_QUERY_REFERRER                                29
+#define XHTTP_QUERY_SERVER                                  30
+#define XHTTP_QUERY_SEQ                                     31
+#define XHTTP_QUERY_SID                                     32
+#define XHTTP_QUERY_ST                                      33
+#define XHTTP_QUERY_TIMEOUT                                 34
+#define XHTTP_QUERY_TRANSFER_ENCODING                       35
+#define XHTTP_QUERY_UNLESS_MODIFIED_SINCE                   36
+#define XHTTP_QUERY_USER_AGENT                              37
+#define XHTTP_QUERY_USN                                     38
+#define XHTTP_QUERY_X_DELAY                                 39
+#define XHTTP_QUERY_X_DELAYFLAGS                            40
+#define XHTTP_QUERY_X_ERR                                   41
+#define XHTTP_QUERY_MAX                                     42
+#define XHTTP_QUERY_STATUS_CODE                             0xFFFE
+#define XHTTP_QUERY_CUSTOM                                  0xFFFF
+#define XHTTP_QUERY_FLAG_REQUEST_HEADERS                    0x80000000
+#define XHTTP_QUERY_FLAG_SYSTEMTIME                         0x40000000
+#define XHTTP_QUERY_FLAG_NUMBER                             0x20000000
+#define XHTTP_QUERY_FLAG_FILETIME                           0x10000000
+// The level is the low 16 bits; every flag lives above them. The old mask was
+// built by negating just two flag bits, so FLAG_SYSTEMTIME/FILETIME leaked
+// into the level and matched nothing.
+#define XHTTP_QUERY_HEADER_MASK                             0x0000FFFF
+
+// XHttpSetOption / XHttpQueryOption options.
+#define XHTTP_OPTION_CALLBACK                               1
+#define XHTTP_OPTION_RESOLVE_TIMEOUT                        2
+#define XHTTP_OPTION_CONNECT_TIMEOUT                        3
+#define XHTTP_OPTION_CONNECT_RETRIES                        4
+#define XHTTP_OPTION_SEND_TIMEOUT                           5
+#define XHTTP_OPTION_RECEIVE_TIMEOUT                        6
+#define XHTTP_OPTION_HANDLE_TYPE                            9
+#define XHTTP_OPTION_READ_BUFFER_SIZE                       12
+#define XHTTP_OPTION_WRITE_BUFFER_SIZE                      13
+#define XHTTP_OPTION_PARENT_HANDLE                          21
+#define XHTTP_OPTION_SECURITY_FLAGS                         31
+#define XHTTP_OPTION_URL                                    34
+#define XHTTP_OPTION_SECURITY_KEY_BITNESS                   36
+#define XHTTP_OPTION_PROXY                                  38
+#define XHTTP_OPTION_USER_AGENT                             41
+#define XHTTP_OPTION_CONTEXT_VALUE                          45
+#define XHTTP_OPTION_DISABLE_FEATURE                        63
+#define XHTTP_OPTION_MAX_CONNS_PER_SERVER                   73
+#define XHTTP_OPTION_MAX_CONNS_PER_1_0_SERVER               74
+
+// XHttpQueryAuthSchemes / XHttpSetCredentials.
+#define XHTTP_AUTH_SCHEME_BASIC                             0x00000001
+#define XHTTP_AUTH_SCHEME_NTLM                              0x00000002
+#define XHTTP_AUTH_SCHEME_PASSPORT                          0x00000004
+#define XHTTP_AUTH_SCHEME_DIGEST                            0x00000008
+#define XHTTP_AUTH_SCHEME_NEGOTIATE                         0x00000010
+#define XHTTP_AUTH_TARGET_SERVER                            0
+#define XHTTP_AUTH_TARGET_PROXY                             1
+
+// Status callback notifications, for XHttpSetStatusCallback.
+#define XHTTP_CALLBACK_STATUS_RESOLVING_NAME                0x00000001
+#define XHTTP_CALLBACK_STATUS_NAME_RESOLVED                 0x00000002
+#define XHTTP_CALLBACK_STATUS_CONNECTING_TO_SERVER          0x00000004
+#define XHTTP_CALLBACK_STATUS_CONNECTED_TO_SERVER           0x00000008
+#define XHTTP_CALLBACK_STATUS_SENDING_REQUEST               0x00000010
+#define XHTTP_CALLBACK_STATUS_REQUEST_SENT                  0x00000020
+#define XHTTP_CALLBACK_STATUS_RECEIVING_RESPONSE            0x00000040
+#define XHTTP_CALLBACK_STATUS_RESPONSE_RECEIVED             0x00000080
+#define XHTTP_CALLBACK_STATUS_CLOSING_CONNECTION            0x00000100
+#define XHTTP_CALLBACK_STATUS_CONNECTION_CLOSED             0x00000200
+#define XHTTP_CALLBACK_STATUS_HANDLE_CREATED                0x00000400
+#define XHTTP_CALLBACK_STATUS_HANDLE_CLOSING                0x00000800
+#define XHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE             0x00020000
+#define XHTTP_CALLBACK_STATUS_DATA_AVAILABLE                0x00040000
+#define XHTTP_CALLBACK_STATUS_READ_COMPLETE                 0x00080000
+#define XHTTP_CALLBACK_STATUS_WRITE_COMPLETE                0x00100000
+#define XHTTP_CALLBACK_STATUS_REQUEST_ERROR                 0x00200000
+#define XHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE          0x00400000
+#define XHTTP_CALLBACK_FLAG_ALL_NOTIFICATIONS               0xFFFFFFFF
+
+// API ids reported in XHTTP_ASYNC_RESULT.dwResult alongside REQUEST_ERROR.
+#define XHTTP_API_RECEIVE_RESPONSE                          1
+#define XHTTP_API_QUERY_DATA_AVAILABLE                      2
+#define XHTTP_API_READ_DATA                                 3
+#define XHTTP_API_WRITE_DATA                                4
+#define XHTTP_API_SEND_REQUEST                              5
+
 #define X_ONLINE_FRIENDSTATE_FLAG_NONE                      0x00000000
 #define X_ONLINE_FRIENDSTATE_FLAG_ONLINE                    0x00000001
 #define X_ONLINE_FRIENDSTATE_FLAG_PLAYING                   0x00000002

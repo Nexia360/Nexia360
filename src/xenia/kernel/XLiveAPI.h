@@ -143,8 +143,6 @@ class XLiveAPI {
 
   void SetLogging(bool state) const;
 
-  void SetXHttp(bool state) const;
-
   void SetBindInterface(bool state) const;
 
   void SetNexiaHubTransport(bool state);

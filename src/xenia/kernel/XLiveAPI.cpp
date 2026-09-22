@@ -73,7 +73,6 @@ DEFINE_bool(
     "Store user data on backend (not recommended), otherwise fallback locally.",
     "Live");
 
-DEFINE_bool(xhttp, false, "Toggles XHTTP.", "Live");
 
 DEFINE_bool(nexiahub_transport, true,
             "Relay netplay traffic through the Nexia Hub transport when a "
@@ -383,8 +382,6 @@ bool XLiveAPI::SelectNetworkMode(uint32_t mode) {
 }
 
 void XLiveAPI::SetLogging(bool state) const { OVERRIDE_bool(logging, state); }
-
-void XLiveAPI::SetXHttp(bool state) const { OVERRIDE_bool(xhttp, state); }
 
 void XLiveAPI::SetBindInterface(bool state) const {
   OVERRIDE_bool(bind_interface, state);

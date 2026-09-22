@@ -10,7 +10,9 @@
 #ifndef XENIA_VFS_DEVICES_XCONTENT_DEVICES_STFS_CONTAINER_DEVICE_H_
 #define XENIA_VFS_DEVICES_XCONTENT_DEVICES_STFS_CONTAINER_DEVICE_H_
 
+#include <memory>
 #include <unordered_map>
+#include <vector>
 
 #include "xenia/kernel/util/xex2_info.h"
 #include "xenia/vfs/devices/stfs_xbox.h"
@@ -27,6 +29,13 @@ class StfsContainerDevice : public XContentContainerDevice {
   StfsContainerDevice(const std::string_view mount_path,
                       const std::filesystem::path& host_path);
   ~StfsContainerDevice() override;
+
+  void SetBackingData(std::vector<uint8_t> data) {
+    backing_data_ = std::move(data);
+  }
+  void set_allow_nested_mount(bool allow) { allow_nested_mount_ = allow; }
+
+  bool Initialize() override;
 
   bool is_read_only() const override {
     return GetContainerHeader()
@@ -79,11 +88,33 @@ class StfsContainerDevice : public XContentContainerDevice {
                               uint32_t& secondary_table_offset);
   const uint8_t GetBlocksPerHashTableFromContainerHeader() const;
 
+  // Copies a whole entry out of this package by walking its block list.
+  static bool ReadEntryBytes(StfsContainerEntry* entry,
+                             std::vector<uint8_t>& out);
+  // If the package carries `nxeart` but no tile image of its own, mounts
+  // nxeart and grafts the artwork inside it into the root under a name the
+  // dashboard will ask for.
+  void MountNestedNxeArt();
+  // Adds a synthetic file to the root whose contents are `bytes`. The buffer
+  // and its mapping are owned by this device, so the entry stays valid for as
+  // long as the package is mounted.
+  void InjectMemoryEntry(const std::string_view name,
+                         std::vector<uint8_t> bytes, const Entry* timestamps);
+
   uint8_t blocks_per_hash_table_;
   uint32_t block_step_[2];
 
   std::unordered_map<size_t, StfsHashTable> cached_hash_tables_;
   std::unique_ptr<MappedMemory> data_;
+
+  // Set when this device is backed by memory rather than a host file.
+  std::vector<uint8_t> backing_data_;
+  // False on a nested device, so a package inside a package cannot recurse.
+  bool allow_nested_mount_ = true;
+  // Storage for entries grafted in by MountNestedNxeArt. Both vectors must
+  // outlive the entries that point into them.
+  std::vector<std::unique_ptr<std::vector<uint8_t>>> injected_blobs_;
+  std::vector<std::unique_ptr<MappedMemory>> injected_maps_;
 };
 
 }  // namespace vfs

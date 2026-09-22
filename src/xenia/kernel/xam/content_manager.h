@@ -209,12 +209,15 @@ class ContentPackage {
 
   const uint32_t GetPackageLicense() const { return license_; }
 
+  bool is_mounted() const { return mounted_; }
+
  private:
   KernelState* kernel_state_;
   std::string root_name_;
   std::string device_path_;
   XCONTENT_AGGREGATE_DATA content_data_;
   uint32_t license_;
+  bool mounted_ = false;
 };
 
 class ContentManager {
@@ -230,6 +233,12 @@ class ContentManager {
   std::vector<XCONTENT_AGGREGATE_DATA> ListContentODD(
       const uint32_t device_id, const uint64_t xuid, const uint32_t title_id,
       const XContentType content_type) const;
+
+  std::unordered_set<uint32_t> FindAllTitleIds(const uint64_t xuid) const;
+
+  // Whether a content type lives under the active title update rather than in
+  // the global content tree. See the note on the definition.
+  static bool IsPerTitleUpdateContent(XContentType content_type);
 
   std::unique_ptr<ContentPackage> ResolvePackage(
       const std::string_view root_name, const uint64_t xuid,
@@ -265,6 +274,14 @@ class ContentManager {
   uint64_t GetContentTotalSpace() const;
   uint64_t GetContentFreeSpace() const;
 
+  // Host path of an enumerated package - a container file or an extracted
+  // directory. The cross-title enumerator uses it to read a container's
+  // metadata back out for the fields XCONTENT_AGGREGATE_DATA cannot carry.
+  std::filesystem::path FindPackagePath(const uint64_t xuid,
+                                        const XCONTENT_AGGREGATE_DATA& data) {
+    return ResolvePackagePath(xuid, data);
+  }
+
  private:
   std::filesystem::path ResolvePackageRoot(
       const uint64_t xuid, const uint32_t title_id,
@@ -275,6 +292,19 @@ class ContentManager {
   std::filesystem::path ResolvePackageHeaderPath(
       const std::string_view file_name, uint64_t xuid, uint32_t title_id,
       const XContentType content_type) const;
+
+  // The root ResolvePackageRoot did not choose. Used to find content an older
+  // build filed on the other side of the title-update split.
+  std::filesystem::path AlternatePackageRoot(uint64_t xuid, uint32_t title_id,
+                                             XContentType content_type) const;
+
+  // The one root that owns this slot. Both the content path and its .header
+  // path come from here, so they can never end up in different trees - which
+  // is what destroyed saves.
+  std::filesystem::path ChosenPackageRoot(uint64_t xuid, uint32_t title_id,
+                                          XContentType content_type,
+                                          const std::string_view file_name,
+                                          uint32_t disc_number = -1) const;
 
   // If the title's active title update bundles per-user content
   // (<library>/<title>/<active>/Content/<xuid>/), returns that path so saved

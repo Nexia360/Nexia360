@@ -52,6 +52,7 @@
 #include "xenia/kernel/xna/xna_bridge.h"
 #include "xenia/kernel/xna/xna_host.h"
 #include "xenia/kernel/xna/xna_launcher.h"
+#include "xenia/kernel/xthread.h"
 #include "xenia/memory.h"
 #include "xenia/ui/file_picker.h"
 #include "xenia/ui/imgui_dialog.h"
@@ -422,6 +423,7 @@ X_STATUS Emulator::TerminateTitle(bool clear_handles) {
   }
 
   XELOGI("TerminateTitle: memory");
+  memory()->ReleaseSystemHeapSinceWatermark();
   kernel_state_->ReleaseTitleMemory();
   XELOGI("TerminateTitle: code");
   processor()->FlushCode();
@@ -429,6 +431,8 @@ X_STATUS Emulator::TerminateTitle(bool clear_handles) {
   if (graphics_system()) {
     graphics_system()->ClearCaches();
   }
+  kernel::ResetThreadCpuRotation();
+  kernel::BumpStackGeneration();
   XELOGI("TerminateTitle: done");
 
   RecordTitleExit();

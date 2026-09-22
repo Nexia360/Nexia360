@@ -734,6 +734,56 @@ dword_result_t XamContentSetThumbnail_entry(
 }
 DECLARE_XAM_EXPORT1(XamContentSetThumbnail, kContent, kImplemented);
 
+dword_result_t XamContentSetThumbnailInternal_entry(
+    lpvoid_t content_data_ptr, lpvoid_t buffer_ptr, dword_t buffer_size,
+    pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
+  if (buffer_size > vfs::XContentMetadata::kThumbLengthV2) {
+    return X_E_INVALIDARG;
+  }
+
+  X_RESULT result = X_ERROR_SUCCESS;
+  if (content_data_ptr && buffer_ptr && buffer_size) {
+    XCONTENT_AGGREGATE_DATA content_data =
+        *content_data_ptr.as<XCONTENT_DATA*>();
+
+    auto buffer = std::vector<uint8_t>((uint8_t*)buffer_ptr,
+                                       (uint8_t*)buffer_ptr + buffer_size);
+    // Content kept as its container has the thumbnail in its own header and
+    // is read-only, so this answers ACCESS_DENIED for those. That is not a
+    // failure the caller needs to hear about - it already has the image.
+    const X_RESULT write_result =
+        kernel_state()->content_manager()->SetContentThumbnail(
+            content_data.xuid, content_data, std::move(buffer));
+    if (write_result != X_ERROR_ACCESS_DENIED) {
+      result = write_result;
+    }
+  }
+
+  if (overlapped_ptr) {
+    kernel_state()->CompleteOverlappedImmediate(overlapped_ptr, result);
+    return X_ERROR_IO_PENDING;
+  }
+  return result;
+}
+DECLARE_XAM_EXPORT1(XamContentSetThumbnailInternal, kContent, kImplemented);
+
+dword_result_t XamContentGetAttributesInternal_entry(
+    lpvoid_t content_data_ptr, lpdword_t attributes_ptr,
+    pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
+  if (attributes_ptr) {
+    // Nothing installed here is partial, corrupt or transfer-locked.
+    *attributes_ptr = 0;
+  }
+
+  if (overlapped_ptr) {
+    kernel_state()->CompleteOverlappedImmediate(overlapped_ptr,
+                                                X_ERROR_SUCCESS);
+    return X_ERROR_IO_PENDING;
+  }
+  return X_ERROR_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamContentGetAttributesInternal, kContent, kStub);
+
 dword_result_t xeXamContentDelete(dword_t user_index, lpvoid_t content_data_ptr,
                                   dword_t content_data_size,
                                   pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
@@ -888,36 +938,60 @@ dword_result_t xeXamContentLaunchImage(dword_t user_index,
      "XSYSLAUNCH:\\""
       - title_id is usually written into first 8 characters of filename
   */
-  vfs::Entry* entry;
+  std::filesystem::path host_path;
+
   if (!image_location) {
-    XCONTENT_AGGREGATE_DATA content_data =
-        *content_data_ptr.as<XCONTENT_DATA*>();
-    const uint32_t title_id = xe::string_util::from_string<uint32_t>(
-        content_data.file_name().substr(0, 8), true);
+    XCONTENT_AGGREGATE_DATA content_data;
+    uint64_t xuid = 0;
+    if (content_data_size == sizeof(XCONTENT_DATA_INTERNAL)) {
+      const auto* internal = content_data_ptr.as<XCONTENT_DATA_INTERNAL*>();
+      content_data = *static_cast<const XCONTENT_DATA*>(internal);
+      content_data.title_id = internal->title_id;
+      content_data.xuid = internal->xuid;
+      xuid = internal->xuid;
+    } else {
+      content_data = *content_data_ptr.as<XCONTENT_DATA*>();
+    }
 
-    // This should be done via content_manager, however as it isn't capable of
-    // such action we need to improvise.
-    const std::string package_path =
-        fmt::format("GAME:/Content/0000000000000000/{:08X}/{:08X}/{}", title_id,
-                    static_cast<uint32_t>(content_data.content_type.get()),
-                    content_data.file_name());
+    if (content_data.title_id == 0 ||
+        content_data.title_id == kCurrentlyRunningTitleId) {
+      content_data.title_id = kernel_state()->title_id();
+    }
 
-    entry = kernel_state()->file_system()->ResolvePath(package_path);
+    // The content manager knows both roots - the global tree and the active
+    // title update's - and whether the package is an extracted directory or
+    // the container itself.
+    host_path =
+        kernel_state()->content_manager()->FindPackagePath(xuid, content_data);
+    if (host_path.empty() || !std::filesystem::exists(host_path)) {
+      XELOGE(
+          "XamContentLaunchImage: no package for title {:08X} type {:08X} "
+          "'{}'",
+          content_data.title_id.get(),
+          static_cast<uint32_t>(content_data.content_type.get()),
+          content_data.file_name());
+      return X_STATUS_NO_SUCH_FILE;
+    }
+
+    // A container goes in whole - that is exactly what File > Open does with
+    // one. An extracted package is a directory, so point at the executable
+    // inside it.
+    if (std::filesystem::is_directory(host_path)) {
+      host_path /= xe::to_path(xex_path.value());
+    }
   } else {
-    entry = kernel_state()->file_system()->ResolvePath(image_location.value());
-  }
+    vfs::Entry* entry =
+        kernel_state()->file_system()->ResolvePath(image_location.value());
+    if (!entry) {
+      return X_STATUS_NO_SUCH_FILE;
+    }
 
-  if (!entry) {
-    return X_STATUS_NO_SUCH_FILE;
-  }
-
-  const std::filesystem::path host_path =
-      kernel_state()->emulator()->content_root() / entry->name();
-
-  if (!std::filesystem::exists(host_path)) {
-    uint64_t progress = 0;
-    vfs::VirtualFileSystem::ExtractContentFile(
-        entry, kernel_state()->emulator()->content_root(), progress, true);
+    host_path = kernel_state()->emulator()->content_root() / entry->name();
+    if (!std::filesystem::exists(host_path)) {
+      uint64_t progress = 0;
+      vfs::VirtualFileSystem::ExtractContentFile(
+          entry, kernel_state()->emulator()->content_root(), progress, true);
+    }
   }
 
   RecordLaunchOrigin();

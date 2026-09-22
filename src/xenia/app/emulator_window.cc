@@ -114,6 +114,11 @@ DEFINE_bool(auto_check_updates, true,
             "available.",
             "General");
 
+DEFINE_bool(dashboard_coldboot, true,
+            "Tear a title down the way a console reboot does when launching "
+            "from the dashboard.",
+            "General");
+
 DEFINE_string(
     postprocess_antialiasing, "",
     "Post-processing anti-aliasing effect to apply to the image output of the "
@@ -1193,6 +1198,16 @@ bool EmulatorWindow::Initialize() {
     console_menu->AddChild(MenuItem::Create(
         MenuItem::Type::kString, "&Open console settings", "",
         std::bind(&EmulatorWindow::ToggleConsoleSettingsDialog, this)));
+
+    console_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
+
+    console_menu->AddChild(MenuItem::Create(
+        MenuItem::Type::kString, "Enable Cold &Boot", "",
+        std::bind(&EmulatorWindow::SetDashboardColdBoot, this, true)));
+
+    console_menu->AddChild(MenuItem::Create(
+        MenuItem::Type::kString, "Disable Cold Boo&t", "",
+        std::bind(&EmulatorWindow::SetDashboardColdBoot, this, false)));
   }
   main_menu->AddChild(std::move(console_menu));
 
@@ -1646,6 +1661,10 @@ std::filesystem::path EmulatorWindow::DashboardFile(
 // time and then terminates it, which is what the console's own warm boot
 // does. Waiting for it to finish waits forever.
 void EmulatorWindow::BootToDashboard() {
+  if (!cvars::dashboard_coldboot) {
+    XELOGI("Boot: cold boot disabled; skipping the boot animation and dash");
+    return;
+  }
   std::error_code ec;
   const auto dashboard = DashboardFile("dash.xex");
   if (!std::filesystem::exists(dashboard, ec)) {
@@ -2605,6 +2624,12 @@ void EmulatorWindow::ToggleNetplayStatusDialog() {
     }
     emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
   }
+}
+
+void EmulatorWindow::SetDashboardColdBoot(bool enabled) {
+  OVERRIDE_bool(dashboard_coldboot, enabled);
+  config::SaveConfig();
+  XELOGI("Dashboard cold boot {}", enabled ? "enabled" : "disabled");
 }
 
 void EmulatorWindow::ToggleControllerVibration() {

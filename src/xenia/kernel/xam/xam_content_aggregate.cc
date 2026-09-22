@@ -7,6 +7,10 @@
  ******************************************************************************
  */
 
+#include <filesystem>
+#include <unordered_set>
+#include <vector>
+
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
 #include "xenia/base/string_util.h"
@@ -16,8 +20,11 @@
 #include "xenia/kernel/xam/xam_content_device.h"
 #include "xenia/kernel/xam/xam_private.h"
 #include "xenia/kernel/xenumerator.h"
+#include "xenia/vfs/devices/xcontent_container_device.h"
 #include "xenia/vfs/file.h"
 #include "xenia/xbox.h"
+
+DECLARE_int32(license_mask);
 
 namespace xe {
 namespace kernel {
@@ -89,8 +96,8 @@ dword_result_t XamContentAggregateCreateEnumerator_entry(qword_t xuid,
     return X_E_INVALIDARG;
   }
 
-  auto e = make_object<XStaticEnumerator<XCONTENT_CROSS_TITLE_DATA>>(
-      kernel_state(), 1);
+  auto e =
+      make_object<XStaticEnumerator<XCONTENT_DATA_INTERNAL>>(kernel_state(), 1);
   X_KENUMERATOR_CONTENT_AGGREGATE* extra;
   auto result = e->Initialize(XUserIndexAny, 0xFE, 0x2000E, 0x20010, 0, &extra);
   if (XFAILED(result)) {
@@ -104,15 +111,27 @@ dword_result_t XamContentAggregateCreateEnumerator_entry(qword_t xuid,
       static_cast<XContentType>(content_type.value());
 
   if (!device_info || device_info->device_type == DeviceType::HDD) {
-    // Fetch any alternate title IDs defined in the XEX header
-    // (used by games to load saves from other titles, etc)
-    std::vector<uint32_t> title_ids{title_id ? title_id.value()
-                                             : kCurrentlyRunningTitleId};
-    auto exe_module = kernel_state()->GetExecutableModule();
-    if (exe_module && exe_module->xex_module()) {
-      const auto& alt_ids = exe_module->xex_module()->opt_alternate_title_ids();
-      std::copy(alt_ids.cbegin(), alt_ids.cend(),
-                std::back_inserter(title_ids));
+    std::vector<uint32_t> title_ids;
+    if (title_id) {
+      title_ids.push_back(title_id.value());
+      // Fetch any alternate title IDs defined in the XEX header
+      // (used by games to load saves from other titles, etc)
+      auto exe_module = kernel_state()->GetExecutableModule();
+      if (exe_module && exe_module->xex_module()) {
+        const auto& alt_ids =
+            exe_module->xex_module()->opt_alternate_title_ids();
+        std::copy(alt_ids.cbegin(), alt_ids.cend(),
+                  std::back_inserter(title_ids));
+      }
+    } else {
+      auto* content_manager = kernel_state()->content_manager();
+      std::unordered_set<uint32_t> all_ids =
+          content_manager->FindAllTitleIds(xuid == -1 ? 0 : uint64_t(xuid));
+      if (xuid && xuid != -1) {
+        const auto common_ids = content_manager->FindAllTitleIds(0);
+        all_ids.insert(common_ids.cbegin(), common_ids.cend());
+      }
+      title_ids.assign(all_ids.cbegin(), all_ids.cend());
     }
 
     for (const auto& title_id : title_ids) {
@@ -124,18 +143,53 @@ dword_result_t XamContentAggregateCreateEnumerator_entry(qword_t xuid,
       for (const auto& content_data : content_datas) {
         auto item = e->AppendItem();
         assert_not_null(item);
-        if (item) {
-          item->content_data.device_id = content_data.device_id;
-          item->content_data.content_type = content_data.content_type;
-          item->content_data.display_name_raw = content_data.display_name_raw;
-          std::memcpy(item->content_data.file_name_raw,
-                      content_data.file_name_raw,
-                      sizeof(content_data.file_name_raw));
-          item->content_data.padding[0] = 0;
-          item->content_data.padding[1] = 0;
-
-          item->title_id = content_data.title_id;
+        if (!item) {
+          continue;
         }
+        std::memset(item, 0, sizeof(*item));
+        item->device_id = content_data.device_id;
+        item->content_type = content_data.content_type;
+        item->display_name_raw = content_data.display_name_raw;
+        std::memcpy(item->file_name_raw, content_data.file_name_raw,
+                    sizeof(content_data.file_name_raw));
+        item->padding[0] = 0;
+        item->padding[1] = 0;
+        item->title_id = content_data.title_id;
+        item->xuid = content_data.xuid;
+
+        const uint32_t license_cvar =
+            static_cast<uint32_t>(cvars::license_mask);
+        item->license_mask = license_cvar;
+        if (license_cvar == 0xFFFFFFFF || license_cvar == 1) {
+          // Bit 0 is the purchased bit - see ContentManager::OpenContent.
+          item->license_mask = item->license_mask.get() | 1;
+        }
+
+        const auto package_path =
+            kernel_state()->content_manager()->FindPackagePath(
+                xuid == -1 ? 0 : uint64_t(xuid), content_data);
+        if (std::filesystem::is_regular_file(package_path)) {
+          auto header =
+              vfs::XContentContainerDevice::ReadContainerHeader(package_path);
+          if (header) {
+            const auto& metadata = header->content_metadata;
+            item->category = metadata.category;
+            item->content_size = metadata.content_size;
+            xe::string_util::copy_and_swap_truncating(
+                item->title_name, metadata.title_name(),
+                xe::countof(item->title_name));
+          }
+        }
+
+        // Temporary: one line per item, so the exact record the dashboard is
+        // handed is visible. Retire once My Games is settled.
+        XELOGE(
+            "  item title {:08X} type {:08X} device {:08X} license {:08X} "
+            "cat {:08X} '{}' file '{}'",
+            item->title_id.get(), uint32_t(item->content_type.get()),
+            item->device_id.get(), item->license_mask.get(),
+            item->category.get(), xe::to_utf8(item->display_name()),
+            item->file_name());
       }
     }
   }
@@ -144,8 +198,11 @@ dword_result_t XamContentAggregateCreateEnumerator_entry(qword_t xuid,
   //   AddODDContentTest(e, content_type_enum);
   // }
 
-  XELOGD("XamContentAggregateCreateEnumerator: added {} items to enumerator",
-         e->item_count());
+  XELOGE(
+      "XamContentAggregateCreateEnumerator(xuid {:016X}, device {:08X}, "
+      "type {:08X}, title {:08X}) -> {} items",
+      uint64_t(xuid), uint32_t(device_id), uint32_t(content_type),
+      uint32_t(title_id), e->item_count());
 
   *handle_out = e->handle();
   return X_ERROR_SUCCESS;

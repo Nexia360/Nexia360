@@ -8,7 +8,14 @@
  */
 
 #include "xenia/vfs/devices/xcontent_devices/stfs_container_device.h"
+
+#include <cstring>
+#include <memory>
+#include <utility>
+#include <vector>
+
 #include "xenia/base/logging.h"
+#include "xenia/base/math.h"
 #include "xenia/kernel/xam/content_manager.h"
 #include "xenia/vfs/devices/xcontent_devices/stfs_container_entry.h"
 
@@ -25,6 +32,35 @@ StfsContainerDevice::StfsContainerDevice(const std::string_view mount_path,
 
 StfsContainerDevice::~StfsContainerDevice() {}
 
+bool StfsContainerDevice::Initialize() {
+  if (backing_data_.empty()) {
+    return XContentContainerDevice::Initialize();
+  }
+
+  // Memory-backed: the package is a blob we already hold (see
+  // SetBackingData), so there is no host file to open or stat.
+  if (backing_data_.size() < sizeof(XContentContainerHeader)) {
+    return false;
+  }
+
+  auto header = std::make_unique<XContentContainerHeader>();
+  std::memcpy(header.get(), backing_data_.data(),
+              sizeof(XContentContainerHeader));
+  if (!header->content_header.is_magic_valid()) {
+    return false;
+  }
+  header_ = std::move(header);
+  SetFilesSize(backing_data_.size());
+
+  SetupContainer();
+
+  if (LoadHostFiles() != Result::kSuccess) {
+    return false;
+  }
+
+  return Read() == Result::kSuccess;
+}
+
 void StfsContainerDevice::SetupContainer() {
   // Additional part specific to STFS container.
   const XContentContainerHeader* header = GetContainerHeader();
@@ -40,6 +76,13 @@ XContentContainerDevice::Result StfsContainerDevice::LoadHostFiles() {
 
   if (header->content_metadata.data_file_count > 0) {
     XELOGW("STFS container is not a single file. Loading might fail!");
+  }
+
+  if (!backing_data_.empty()) {
+    // Non-owning view over our own buffer; backing_data_ outlives data_.
+    data_ = std::unique_ptr<MappedMemory>(
+        new MappedMemory(backing_data_.data(), backing_data_.size()));
+    return Result::kSuccess;
   }
 
   data_ = MappedMemory::Open(host_path_, MappedMemory::Mode::kRead);
@@ -100,7 +143,130 @@ StfsContainerDevice::Result StfsContainerDevice::Read() {
     assert_always();
   }
 
+  if (allow_nested_mount_) {
+    MountNestedNxeArt();
+  }
+
   return Result::kSuccess;
+}
+
+bool StfsContainerDevice::ReadEntryBytes(StfsContainerEntry* entry,
+                                         std::vector<uint8_t>& out) {
+  if (!entry || !entry->data()) {
+    return false;
+  }
+
+  const uint8_t* base = entry->data()->data();
+  const size_t mapped_size = entry->data()->size();
+
+  out.resize(entry->size());
+  size_t written = 0;
+  for (const auto& record : entry->block_list()) {
+    if (written + record.length > out.size() ||
+        record.offset + record.length > mapped_size) {
+      return false;
+    }
+    std::memcpy(out.data() + written, base + record.offset, record.length);
+    written += record.length;
+  }
+
+  return written == out.size();
+}
+
+void StfsContainerDevice::InjectMemoryEntry(const std::string_view name,
+                                            std::vector<uint8_t> bytes,
+                                            const Entry* timestamps) {
+  auto blob = std::make_unique<std::vector<uint8_t>>(std::move(bytes));
+  auto map = std::unique_ptr<MappedMemory>(
+      new MappedMemory(blob->data(), blob->size()));
+
+  auto* root = static_cast<StfsContainerEntry*>(root_entry_.get());
+  auto entry = StfsContainerEntry::Create(this, root, name, map.get());
+  entry->attributes_ = kFileAttributeNormal | kFileAttributeReadOnly;
+  entry->size_ = blob->size();
+  entry->allocation_size_ = xe::round_up(blob->size(), kBlockSize);
+  entry->data_offset_ = 0;
+  entry->data_size_ = blob->size();
+  // The whole file is one contiguous run at offset 0 of its own mapping, so
+  // StfsContainerFile::Read lands exactly on the bytes.
+  entry->block_list_.push_back({0, 0, blob->size()});
+  if (timestamps) {
+    entry->create_timestamp_ = timestamps->create_timestamp();
+    entry->write_timestamp_ = timestamps->write_timestamp();
+    entry->access_timestamp_ = timestamps->access_timestamp();
+  }
+
+  root->children_.emplace_back(std::move(entry));
+  injected_maps_.emplace_back(std::move(map));
+  injected_blobs_.emplace_back(std::move(blob));
+}
+
+void StfsContainerDevice::MountNestedNxeArt() {
+  if (!root_entry_) {
+    return;
+  }
+
+  // Only step in when the package has no tile image the dashboard can open.
+  // A package that ships game.png is already fine.
+  static const char* const kTileNames[] = {"game.png", "gametile.png",
+                                           "game_tile.png", "nxetile.png"};
+  for (const char* tile_name : kTileNames) {
+    if (root_entry_->GetChild(tile_name)) {
+      return;
+    }
+  }
+
+  auto* nxeart = root_entry_->GetChild("nxeart");
+  if (!nxeart || (nxeart->attributes() & kFileAttributeDirectory)) {
+    return;
+  }
+
+  std::vector<uint8_t> package;
+  if (!ReadEntryBytes(static_cast<StfsContainerEntry*>(nxeart), package)) {
+    XELOGW("XContentContainer: could not read nxeart out of {}", host_path_);
+    return;
+  }
+
+  if (package.size() < sizeof(XContentContainerHeader) ||
+      (std::memcmp(package.data(), "LIVE", 4) != 0 &&
+       std::memcmp(package.data(), "CON ", 4) != 0 &&
+       std::memcmp(package.data(), "PIRS", 4) != 0)) {
+    // Some titles really do ship a plain image called nxeart. Leave it be.
+    return;
+  }
+
+  auto nested = std::make_unique<StfsContainerDevice>("", host_path_);
+  nested->set_allow_nested_mount(false);
+  nested->SetBackingData(std::move(package));
+  if (!nested->Initialize() || !nested->root_entry_) {
+    XELOGW("XContentContainer: nxeart in {} did not mount", host_path_);
+    return;
+  }
+
+  // nxeslot.jpg is the slot/tile art; nxebg.jpg is the full-screen
+  // background, which is not what a tile wants.
+  static const char* const kNestedTileNames[] = {"nxeslot.jpg", "nxeslot.png",
+                                                 "nxetile.jpg", "nxetile.png"};
+  for (const char* nested_name : kNestedTileNames) {
+    auto* art = nested->root_entry_->GetChild(nested_name);
+    if (!art || (art->attributes() & kFileAttributeDirectory)) {
+      continue;
+    }
+
+    std::vector<uint8_t> bytes;
+    if (!ReadEntryBytes(static_cast<StfsContainerEntry*>(art), bytes)) {
+      continue;
+    }
+
+    // Named game.png because that is what ArcadeInfo.xml asks for; the
+    // dashboard's image loader goes by content, not by extension.
+    InjectMemoryEntry("game.png", std::move(bytes), nxeart);
+    XELOGI("XContentContainer: serving nxeart\\{} as game.png ({} bytes)",
+           nested_name, art->size());
+    return;
+  }
+
+  XELOGW("XContentContainer: nxeart in {} holds no tile image", host_path_);
 }
 
 std::unique_ptr<StfsContainerEntry> StfsContainerDevice::ReadEntry(

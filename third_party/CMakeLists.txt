@@ -898,16 +898,28 @@ ffmpeg_common(libavformat)
 # libcurl
 # ==============================================================================
 
-file(GLOB_RECURSE CURL_SOURCES 
-    "${CMAKE_CURRENT_SOURCE_DIR}/libcurl/lib/**.c" 
-    "${CMAKE_CURRENT_SOURCE_DIR}/libcurl/lib/**.h"
-)
-add_library(libcurl STATIC ${CURL_SOURCES})
-target_link_libraries(libcurl PRIVATE crypt32 secur32)
-target_include_directories(libcurl PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/libcurl/lib ${CMAKE_CURRENT_SOURCE_DIR}/libcurl/include)
-target_compile_definitions(libcurl PRIVATE
-  BUILDING_LIBCURL HTTP_ONLY USE_SCHANNEL USE_WINDOWS_SSPI
-)
+# The vendored tree is built here only on Windows, where SChannel supplies TLS
+# and no generated curl_config.h is needed - lib/config-win32.h covers it.
+# Everywhere else curl needs a configure-generated curl_config.h, so use the
+# platform's own libcurl instead of trying to reproduce one.
+if(WIN32)
+  file(GLOB_RECURSE CURL_SOURCES
+      "${CMAKE_CURRENT_SOURCE_DIR}/libcurl/lib/**.c"
+      "${CMAKE_CURRENT_SOURCE_DIR}/libcurl/lib/**.h"
+  )
+  add_library(libcurl STATIC ${CURL_SOURCES})
+  target_link_libraries(libcurl PRIVATE crypt32 secur32)
+  target_include_directories(libcurl
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/libcurl/lib
+    PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/libcurl/include)
+  target_compile_definitions(libcurl PRIVATE
+    BUILDING_LIBCURL HTTP_ONLY USE_SCHANNEL USE_WINDOWS_SSPI
+  )
+else()
+  find_package(CURL REQUIRED)
+  add_library(libcurl INTERFACE)
+  target_link_libraries(libcurl INTERFACE CURL::libcurl)
+endif()
 
 # ==============================================================================
 # miniupnp

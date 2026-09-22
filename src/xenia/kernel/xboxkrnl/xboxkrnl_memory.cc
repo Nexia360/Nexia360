@@ -761,12 +761,10 @@ dword_result_t KeGetImagePageTableEntry_entry(dword_t address,
 
   if (image_heap->page_size() < 65536) {
     returned_value |= 0x40000000;
-
-    // TODO(Gliniak): Verify if 1 is set when page is marked as read-only. For
-    // now there is not enough data, but dashboard 14xxx and above requires that
-    // return from this call will have bit 0 set.
-    returned_value |= 1;
   }
+
+  // Bit 0 is PRESENT; dash.xex bugchecks 0xF7 without it.
+  returned_value |= 1;
 
   return returned_value & 0x400FFFFF;  // this is actually the mask it applies
                                        // to the final

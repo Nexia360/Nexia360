@@ -22,6 +22,7 @@
 #include "xenia/cpu/ppc/ppc_context.h"
 #include "xenia/kernel/kernel_flags.h"
 #include "xenia/kernel/kernel_state.h"
+#include "xenia/kernel/xthread.h"
 
 namespace xe {
 namespace kernel {
@@ -596,6 +597,8 @@ struct ExportRegistrerHelper {
         new cpu::Export(ORDINAL, xe::cpu::Export::Type::kFunction, name, TAGS);
     struct X {
       static void Trampoline(PPCContext* ppc_context) {
+        // Teardown asks guest threads to leave; this is where they notice.
+        XThread::CheckExitRequest();
         Param::Init init = {
             ppc_context,
             0,
@@ -627,6 +630,8 @@ struct ExportRegistrerHelper {
     };
     struct Y {
       static void Trampoline(PPCContext* ppc_context) {
+        // Teardown asks guest threads to leave; this is where they notice.
+        XThread::CheckExitRequest();
         Param::Init init = {
             ppc_context,
             0,

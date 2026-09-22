@@ -275,8 +275,11 @@ void ObjectTable::PurgeAllObjects() {
   for (uint32_t slot = 0; slot < table_capacity_; slot++) {
     auto& entry = table_[slot];
     if (entry.object) {
+      // As Reset(): ReleaseHandle() here decrements past zero, so RemoveHandle
+      // never runs and the object's reference is never dropped.
+      entry.object->handles().clear();
       entry.handle_ref_count = 0;
-      entry.object->ReleaseHandle();
+      entry.object->Release();
 
       entry.object = nullptr;
     }

@@ -380,6 +380,14 @@ struct FiberReentryException {
 };
 #endif
 
+// Puts the hardware-thread rotation back where a cold boot starts it.
+void ResetThreadCpuRotation();
+
+// Bumped per title teardown. A stack allocated under an older generation was
+// already reclaimed wholesale, so freeing it again would hit the next title's.
+uint32_t CurrentStackGeneration();
+void BumpStackGeneration();
+
 class XThread : public XObject, public cpu::Thread {
  public:
   static const XObject::Type kObjectType = XObject::Type::Thread;
@@ -433,6 +441,13 @@ class XThread : public XObject, public cpu::Thread {
 
   X_STATUS Create();
   X_STATUS Exit(int exit_code);
+
+  // Ask this thread to leave on its own the next time it enters the kernel.
+  void RequestExit() { exit_requested_.store(true); }
+  bool exit_requested() const { return exit_requested_.load(); }
+  // Called on the guest thread from the kernel shim. Does not return if an
+  // exit was requested.
+  static void CheckExitRequest();
   X_STATUS Terminate(int exit_code);
   void Abandon();
 
@@ -529,8 +544,10 @@ class XThread : public XObject, public cpu::Thread {
   uint32_t pcr_address_ = 0;
   uint32_t stack_alloc_base_ = 0;  // Stack alloc base
   uint32_t stack_alloc_size_ = 0;  // Stack alloc size
-  uint32_t stack_base_ = 0;        // High address
-  uint32_t stack_limit_ = 0;       // Low address
+  uint32_t stack_generation_ = 0;  // Title generation the stack belongs to
+  std::atomic<bool> exit_requested_ = {false};
+  uint32_t stack_base_ = 0;   // High address
+  uint32_t stack_limit_ = 0;  // Low address
   bool guest_thread_ = false;
   bool main_thread_ = false;  // Entry-point thread
   bool running_ = false;

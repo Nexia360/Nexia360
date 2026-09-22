@@ -8,8 +8,12 @@
  */
 
 #include <cstring>
+#include <filesystem>
+#include <string>
 
+#include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
+#include "xenia/emulator.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xam/xam_private.h"
@@ -257,10 +261,117 @@ dword_result_t XamWriteBiometricData_entry(dword_t a, lpvoid_t buffer,
 }
 DECLARE_XAM_EXPORT1(XamWriteBiometricData, kNone, kStub);
 
-// -- Cache. There is no title cache partition here. --------------------------
+static std::filesystem::path CacheEntryPath(uint32_t cache_id, uint32_t hash,
+                                            const char* name) {
+  auto* emulator = kernel_state()->emulator();
+  if (!emulator || emulator->cache_root().empty()) {
+    return {};
+  }
+
+  std::string key = fmt::format("{:08X}_{:08X}", cache_id, hash);
+  if (name && *name) {
+    // Keep it recognisable on disk, but never let a key escape the folder.
+    std::string suffix;
+    for (const char* c = name; *c && suffix.size() < 48; ++c) {
+      suffix.push_back((*c >= '0' && *c <= '9') || (*c >= 'A' && *c <= 'Z') ||
+                               (*c >= 'a' && *c <= 'z') || *c == '.' ||
+                               *c == '-' || *c == '_'
+                           ? *c
+                           : '_');
+    }
+    key += "_" + suffix;
+  }
+  return emulator->cache_root() / "xam" / (key + ".bin");
+}
+
+dword_result_t XamCacheFetchFile_entry(dword_t cache_id, dword_t flags,
+                                       dword_t hash, lpstring_t name,
+                                       lpvoid_t buffer_ptr,
+                                       lpdword_t size_ptr) {
+  const auto path =
+      CacheEntryPath(cache_id, hash, name ? name.value().c_str() : nullptr);
+  std::error_code ec;
+  if (path.empty() || !std::filesystem::exists(path, ec)) {
+    if (size_ptr) {
+      *size_ptr = 0;
+    }
+    return X_ERROR_FILE_NOT_FOUND;
+  }
+
+  const uint64_t file_size = std::filesystem::file_size(path, ec);
+  if (ec) {
+    if (size_ptr) {
+      *size_ptr = 0;
+    }
+    return X_ERROR_FILE_NOT_FOUND;
+  }
+
+  // Report the size the caller needs rather than truncating into its buffer.
+  if (!buffer_ptr || !size_ptr || *size_ptr < file_size) {
+    if (size_ptr) {
+      *size_ptr = static_cast<uint32_t>(file_size);
+    }
+    return X_ERROR_INSUFFICIENT_BUFFER;
+  }
+
+  FILE* file = xe::filesystem::OpenFile(path, "rb");
+  if (!file) {
+    *size_ptr = 0;
+    return X_ERROR_FILE_NOT_FOUND;
+  }
+  const size_t read =
+      fread(buffer_ptr.as<uint8_t*>(), 1, static_cast<size_t>(file_size), file);
+  fclose(file);
+
+  *size_ptr = static_cast<uint32_t>(read);
+  return read == file_size ? X_ERROR_SUCCESS : X_ERROR_FUNCTION_FAILED;
+}
+DECLARE_XAM_EXPORT1(XamCacheFetchFile, kFileSystem, kImplemented);
+
+dword_result_t XamCacheStoreFile_entry(dword_t cache_id, dword_t flags,
+                                       dword_t hash, lpstring_t name,
+                                       lpvoid_t buffer_ptr, dword_t size) {
+  const auto path =
+      CacheEntryPath(cache_id, hash, name ? name.value().c_str() : nullptr);
+  if (path.empty() || !buffer_ptr || !size) {
+    return X_ERROR_INVALID_PARAMETER;
+  }
+
+  std::error_code ec;
+  std::filesystem::create_directories(path.parent_path(), ec);
+
+  FILE* file = xe::filesystem::OpenFile(path, "wb");
+  if (!file) {
+    return X_ERROR_ACCESS_DENIED;
+  }
+  const size_t written = fwrite(buffer_ptr.as<uint8_t*>(), 1, size, file);
+  fclose(file);
+
+  if (written != size) {
+    std::filesystem::remove(path, ec);
+    return X_ERROR_FUNCTION_FAILED;
+  }
+  return X_ERROR_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamCacheStoreFile, kFileSystem, kImplemented);
+
+dword_result_t XamCacheDeleteFile_entry(dword_t cache_id, dword_t flags,
+                                        dword_t hash, lpstring_t name) {
+  const auto path =
+      CacheEntryPath(cache_id, hash, name ? name.value().c_str() : nullptr);
+  if (path.empty()) {
+    return X_ERROR_FILE_NOT_FOUND;
+  }
+  std::error_code ec;
+  return std::filesystem::remove(path, ec) ? X_ERROR_SUCCESS
+                                           : X_ERROR_FILE_NOT_FOUND;
+}
+DECLARE_XAM_EXPORT1(XamCacheDeleteFile, kFileSystem, kImplemented);
 
 dword_result_t XamCacheOpenFile_entry(lpvoid_t name, dword_t flags,
                                       lpdword_t out_handle) {
+  // The handle-based half of the API. Nothing in the dashboard's tile path
+  // uses it; the fetch/store pair above is what it calls.
   if (out_handle) {
     *out_handle = 0;
   }
@@ -273,8 +384,16 @@ dword_result_t XamCacheCloseFile_entry(dword_t handle) {
 }
 DECLARE_XAM_EXPORT1(XamCacheCloseFile, kFileSystem, kStub);
 
-dword_result_t XamCacheReset_entry(dword_t a) { return X_ERROR_SUCCESS; }
-DECLARE_XAM_EXPORT1(XamCacheReset, kFileSystem, kStub);
+dword_result_t XamCacheReset_entry(dword_t cache_id) {
+  auto* emulator = kernel_state()->emulator();
+  if (!emulator || emulator->cache_root().empty()) {
+    return X_ERROR_SUCCESS;
+  }
+  std::error_code ec;
+  std::filesystem::remove_all(emulator->cache_root() / "xam", ec);
+  return X_ERROR_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamCacheReset, kFileSystem, kImplemented);
 
 // -- Content, profile and tiles. Fail rather than lie. -----------------------
 

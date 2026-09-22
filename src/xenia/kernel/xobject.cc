@@ -201,8 +201,21 @@ X_STATUS XObject::Wait(uint32_t wait_reason, uint32_t processor_mode,
                         TimeoutTicksToMs(*opt_timeout)))
                   : std::chrono::milliseconds::max();
 
-  auto result =
-      xe::threading::Wait(wait_handle, alertable ? true : false, timeout_ms);
+  // An infinite wait is broken into slices so a thread blocked here still
+  // notices a teardown exit request; it is otherwise unreachable, because it
+  // never re-enters the kernel to hit the shim check.
+  xe::threading::WaitResult result;
+  if (timeout_ms == std::chrono::milliseconds::max()) {
+    constexpr auto kSlice = std::chrono::milliseconds(50);
+    do {
+      XThread::CheckExitRequest();
+      result =
+          xe::threading::Wait(wait_handle, alertable ? true : false, kSlice);
+    } while (result == xe::threading::WaitResult::kTimeout);
+  } else {
+    result =
+        xe::threading::Wait(wait_handle, alertable ? true : false, timeout_ms);
+  }
 
   switch (result) {
     case xe::threading::WaitResult::kSuccess:
@@ -280,9 +293,17 @@ X_STATUS XObject::WaitMultiple(uint32_t count, XObject** objects,
 
   X_STATUS status;
   uint32_t boost_increment = 0;
+  // See Wait(): an infinite wait is sliced so teardown can reach the thread.
+  const bool infinite = timeout_ms == std::chrono::milliseconds::max();
+  constexpr auto kSlice = std::chrono::milliseconds(50);
   if (wait_type) {
-    auto result = xe::threading::WaitAny(wait_handles, count,
-                                         alertable ? true : false, timeout_ms);
+    std::pair<xe::threading::WaitResult, size_t> result;
+    do {
+      XThread::CheckExitRequest();
+      result =
+          xe::threading::WaitAny(wait_handles, count, alertable ? true : false,
+                                 infinite ? kSlice : timeout_ms);
+    } while (infinite && result.first == xe::threading::WaitResult::kTimeout);
     switch (result.first) {
       case xe::threading::WaitResult::kSuccess:
         objects[result.second]->WaitCallback();
@@ -305,8 +326,13 @@ X_STATUS XObject::WaitMultiple(uint32_t count, XObject** objects,
         break;
     }
   } else {
-    auto result = xe::threading::WaitAll(wait_handles, count,
-                                         alertable ? true : false, timeout_ms);
+    xe::threading::WaitResult result;
+    do {
+      XThread::CheckExitRequest();
+      result =
+          xe::threading::WaitAll(wait_handles, count, alertable ? true : false,
+                                 infinite ? kSlice : timeout_ms);
+    } while (infinite && result == xe::threading::WaitResult::kTimeout);
     switch (result) {
       case xe::threading::WaitResult::kSuccess:
         for (uint32_t i = 0; i < count; i++) {

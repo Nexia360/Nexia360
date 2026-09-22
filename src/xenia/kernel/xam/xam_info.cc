@@ -11,10 +11,20 @@
 #include <cstddef>
 #include <cstring>
 #include <filesystem>
+#include <map>
 #include <mutex>
+#include <sstream>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+
+// clang-format off
+// platform.h FIRST: it defines NOMINMAX, and curl.h drags in windows.h whose
+// min/max macros break std::numeric_limits<>::max() in math.h.
+#include "xenia/base/platform.h"
+#include "third_party/libcurl/include/curl/curl.h"
+// clang-format on
 
 #include "xenia/base/clock.h"
 #include "xenia/base/cvar.h"
@@ -68,6 +78,14 @@ DEFINE_int32(avpack, 8,
              " 7 = TV PAL-60\n"
              " 8 = HDMI (default)",
              "Video");
+// Must sit out here with the others: a DEFINE_ inside namespace xe::kernel::xam
+// opens xe::kernel::xam::cvars, which then HIDES the file-scope ::cvars and
+// breaks every other cvar this file reads.
+DEFINE_bool(dash_module_fetch, true,
+            "Fetch a dashboard module the console asks for and does not have "
+            "from the configured hub, caching it in the Dashboard folder.",
+            "Kernel");
+
 DEFINE_bool(staging_mode, 0,
             "Enables preview mode in dashboards to render debug information.",
             "Kernel");
@@ -83,6 +101,21 @@ dword_result_t XamFeatureEnabled_entry(dword_t app_id) { return 0; }
 DECLARE_XAM_EXPORT1(XamFeatureEnabled, kNone, kStub);
 
 dword_result_t XamGetStagingMode_entry() { return cvars::staging_mode; }
+
+dword_result_t XamGetDefaultImage_entry(dword_t index, lpdword_t image_ptr,
+                                        lpdword_t image_size_ptr) {
+  if (index >= 3) {
+    return X_E_INVALIDARG;
+  }
+  if (image_ptr) {
+    *image_ptr = 0;
+  }
+  if (image_size_ptr) {
+    *image_size_ptr = 0;
+  }
+  return X_E_FAIL;
+}
+DECLARE_XAM_EXPORT1(XamGetDefaultImage, kNone, kStub);
 DECLARE_XAM_EXPORT1(XamGetStagingMode, kNone, kStub);
 
 dword_result_t XamLogLocalizationEtx_entry(dword_t event_id,
@@ -99,6 +132,25 @@ dword_result_t XamGetOnlineSchema_entry() {
   return kernel_state()->xam_state()->GetOnlineSchemaAddress();
 }
 DECLARE_XAM_EXPORT1(XamGetOnlineSchema, kNone, kImplemented);
+
+static std::string CurrentUserUriSegment() {
+  // Both IsUserSignedIn and GetUserProfile are overloaded on user index and
+  // XUID, so the index has to be typed or the call is ambiguous.
+  auto* xam_state = kernel_state()->xam_state();
+  const uint32_t user_index = 0;
+  if (!xam_state || !xam_state->IsUserSignedIn(user_index)) {
+    return {};
+  }
+  const auto profile = xam_state->GetUserProfile(user_index);
+  if (!profile) {
+    return {};
+  }
+  const uint64_t online_xuid = profile->GetOnlineXUID();
+  if (!online_xuid) {
+    return {};
+  }
+  return fmt::format("/u/{:016X}", online_xuid);
+}
 
 // Central table for the "query" Live hive (XamQueryLiveHive{A,W}). Both the
 // ANSI and wide entry points resolve names through here so they stay in sync.
@@ -135,16 +187,17 @@ static bool QueryLiveHiveValue(const std::string& name, std::string& value) {
     return true;
   }
   // Xbox Manifest (XMan) / Epix Live content -- host + our /Dash routes.
+  const std::string user_root = host + "/Dash" + CurrentUserUriSegment();
   if (name == "EpixXManUriRoot") {
-    value = host + "/Dash";
+    value = user_root;
     return true;
   }
   if (name == "EpixXManPreviewUriRoot") {
-    value = host + "/Dash/xman/preview";
+    value = user_root + "/xman/preview";
     return true;
   }
   if (name == "GameImageAssetUriRoot") {
-    value = host + "/Dash/images";
+    value = user_root + "/images";
     return true;
   }
 
@@ -160,15 +213,10 @@ static bool QueryLiveHiveValue(const std::string& name, std::string& value) {
       {"CatalogCDNUriPort", "80"},
       {"NielsenSoundEnabled", "1"},
       {"OobeComplete", "1"},
-      {"EpixXManManifestUriPath", "/xman/manifest"},
-      // Epix channel behaviour flags. FailSafe/Shallow ON make the dash render
-      // the embedded offline home content instead of blocking on a loading
-      // screen while it waits for the full online channel to load (which needs
-      // the not-yet-wired Live content services). This unblocks the home hub
-      // for a Live profile; the online path is a later enhancement.
-      {"EpixFailSafeEnabled", "1"},
+      {"EpixXManManifestUriPath", "/xman/manifest/"},
+      {"EpixFailSafeEnabled", "0"},
       {"EpixShallowEnabled", "1"},
-      {"EpixPollFrequencyInMinutes", "60"},
+      {"EpixPollFrequencyInMinutes", "1"},
       {"EpixBusyWatchDogInSeconds", "30"},
       {"EpixReportingEnabled", "0"},
   };
@@ -1057,6 +1105,263 @@ DECLARE_XAM_EXPORT1(XdfInitialize, kNone, kStub);
 //   XdfLoadXex(name, &unk, 0, 8 or 9, 0, &hmodule)
 // and treats 0x8B050005 as "not mine, keep waiting" - so a failure here must
 // be ANY OTHER code, or the caller waits on a completion that never comes.
+constexpr long kModuleFetchTimeoutSeconds = 30;
+constexpr curl_off_t kModuleFetchMaxBytes = 16 * 1024 * 1024;
+
+static size_t AppendModuleBytes(void* data, size_t size, size_t count,
+                                void* context) {
+  return fwrite(data, size, count, reinterpret_cast<FILE*>(context));
+}
+
+static int RefuseOversizedModule(void*, curl_off_t total_download,
+                                 curl_off_t downloaded, curl_off_t,
+                                 curl_off_t) {
+  return (total_download > kModuleFetchMaxBytes ||
+          downloaded > kModuleFetchMaxBytes)
+             ? 1
+             : 0;
+}
+
+// A bare file name and nothing else. The name arrives from the guest, which
+// got it from a manifest we serve over the network, so it decides nothing
+// about where the write lands.
+static bool IsSafeModuleName(const std::string& module_name) {
+  return !module_name.empty() &&
+         module_name.find_first_of("/\\:") == std::string::npos &&
+         module_name.find("..") == std::string::npos;
+}
+
+static std::string DashModuleHost() {
+  std::string host = XLiveAPI::GetApiAddress();
+  if (!host.empty() && host.back() == '/') {
+    host.pop_back();
+  }
+  return host;
+}
+
+// Fetch a small text body. Used for the module manifest, which is ours and is
+// a few hundred bytes; anything larger is refused rather than grown into.
+static bool FetchSmallText(const std::string& url, std::string* out) {
+  CURL* curl = curl_easy_init();
+  if (!curl) {
+    return false;
+  }
+  out->clear();
+  curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+  curl_easy_setopt(curl, CURLOPT_USERAGENT, "nexia360");
+  curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT, kModuleFetchTimeoutSeconds);
+  curl_easy_setopt(
+      curl, CURLOPT_WRITEFUNCTION,
+      +[](void* data, size_t size, size_t count, void* context) -> size_t {
+        auto* text = reinterpret_cast<std::string*>(context);
+        if (text->size() + size * count > 64 * 1024) {
+          return 0;
+        }
+        text->append(reinterpret_cast<const char*>(data), size * count);
+        return size * count;
+      });
+  curl_easy_setopt(curl, CURLOPT_WRITEDATA, out);
+
+  const CURLcode result = curl_easy_perform(curl);
+  long status = 0;
+  curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+  curl_easy_cleanup(curl);
+  return result == CURLE_OK && status < 400;
+}
+
+// Keyed lowercase; name keeps the manifest's spelling for the URL.
+struct DashModuleEntry {
+  std::string name;
+  std::string version;
+};
+
+static std::map<std::string, DashModuleEntry>& DashModuleManifest() {
+  static std::map<std::string, DashModuleEntry> manifest;
+  static bool fetched = false;
+  if (fetched) {
+    return manifest;
+  }
+  fetched = true;
+
+  const std::string host = DashModuleHost();
+  if (host.empty()) {
+    return manifest;
+  }
+  std::string body;
+  if (!FetchSmallText(host + "/Dash/modules/manifest.txt", &body)) {
+    XELOGI("XdfLoadXex: no module manifest from the hub");
+    return manifest;
+  }
+  std::istringstream lines(body);
+  std::string line;
+  while (std::getline(lines, line)) {
+    while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) {
+      line.pop_back();
+    }
+    if (line.empty() || line[0] == '#') {
+      continue;
+    }
+    const size_t split = line.find_first_of(" \t");
+    if (split == std::string::npos) {
+      continue;
+    }
+    const std::string name = line.substr(0, split);
+    const std::string version =
+        line.substr(line.find_first_not_of(" \t", split));
+    if (IsSafeModuleName(name) && !version.empty()) {
+      manifest[xe::utf8::lower_ascii(name)] = DashModuleEntry{name, version};
+    }
+  }
+  XELOGI("XdfLoadXex: module manifest lists {} module(s)", manifest.size());
+  return manifest;
+}
+
+// The version of the cached copy, from the .ver file written beside it. Empty
+// when there is no cached copy, or none was ever recorded.
+static std::string CachedModuleVersion(const std::filesystem::path& module) {
+  std::filesystem::path marker = module;
+  marker += ".ver";
+  std::error_code ec;
+  if (!std::filesystem::exists(module, ec) ||
+      !std::filesystem::exists(marker, ec)) {
+    return {};
+  }
+  FILE* file = xe::filesystem::OpenFile(marker, "rb");
+  if (!file) {
+    return {};
+  }
+  char text[128] = {};
+  const size_t read = fread(text, 1, sizeof(text) - 1, file);
+  fclose(file);
+  std::string version(text, read);
+  while (!version.empty() &&
+         (version.back() == '\n' || version.back() == '\r')) {
+    version.pop_back();
+  }
+  return version;
+}
+
+static bool FetchDashModule(const std::string& module_name,
+                            const std::string& version) {
+  if (!cvars::dash_module_fetch || !IsSafeModuleName(module_name)) {
+    return false;
+  }
+
+  const std::string host = DashModuleHost();
+  if (host.empty()) {
+    return false;
+  }
+  const std::string url = host + "/Dash/modules/" + module_name;
+
+  const std::filesystem::path directory =
+      xe::filesystem::GetExecutableFolder() / "Dashboard";
+  std::error_code ec;
+  std::filesystem::create_directories(directory, ec);
+  const std::filesystem::path destination = directory / module_name;
+  std::filesystem::path partial = destination;
+  partial += ".part";
+
+  FILE* file = xe::filesystem::OpenFile(partial, "wb");
+  if (!file) {
+    XELOGE("XdfLoadXex: no cache file for '{}'", module_name);
+    return false;
+  }
+
+  CURL* curl = curl_easy_init();
+  if (!curl) {
+    fclose(file);
+    std::filesystem::remove(partial, ec);
+    return false;
+  }
+  curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+  curl_easy_setopt(curl, CURLOPT_USERAGENT, "nexia360");
+  curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT, kModuleFetchTimeoutSeconds);
+  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, AppendModuleBytes);
+  curl_easy_setopt(curl, CURLOPT_WRITEDATA, file);
+  curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+  curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, RefuseOversizedModule);
+
+  const CURLcode result = curl_easy_perform(curl);
+  long status = 0;
+  curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+  curl_easy_cleanup(curl);
+  fclose(file);
+
+  if (result != CURLE_OK || status >= 400) {
+    // Info, not error: a module the hub does not serve is the ordinary case
+    // for every module the console asks for that is simply not ours.
+    XELOGI("XdfLoadXex: '{}' not available from the hub (curl {} http {})",
+           module_name, static_cast<int>(result), status);
+    std::filesystem::remove(partial, ec);
+    return false;
+  }
+
+  // A XEX or nothing. Whatever the far end served, if it is not an image the
+  // loader would accept then keeping it only produces a confusing failure the
+  // next time the dashboard asks.
+  char magic[4] = {};
+  FILE* check = xe::filesystem::OpenFile(partial, "rb");
+  const bool is_xex = check &&
+                      fread(magic, 1, sizeof(magic), check) == sizeof(magic) &&
+                      std::memcmp(magic, "XEX2", sizeof(magic)) == 0;
+  if (check) {
+    fclose(check);
+  }
+  if (!is_xex) {
+    XELOGW("XdfLoadXex: '{}' from the hub is not a XEX2 image", module_name);
+    std::filesystem::remove(partial, ec);
+    return false;
+  }
+
+  std::filesystem::remove(destination, ec);
+  std::filesystem::rename(partial, destination, ec);
+  if (ec) {
+    XELOGE("XdfLoadXex: '{}' could not be kept", module_name);
+    std::filesystem::remove(partial, ec);
+    return false;
+  }
+
+  // The version marker goes down AFTER the module, so an interrupted update
+  // leaves a stale marker missing rather than a stale module claiming to be
+  // current - the next run then re-fetches instead of trusting it.
+  if (!version.empty()) {
+    std::filesystem::path marker = destination;
+    marker += ".ver";
+    FILE* mark = xe::filesystem::OpenFile(marker, "wb");
+    if (mark) {
+      fwrite(version.c_str(), 1, version.size(), mark);
+      fclose(mark);
+    }
+  }
+  XELOGI("XdfLoadXex: fetched '{}' ({}) from {}", module_name,
+         version.empty() ? "unversioned" : version, url);
+  return true;
+}
+
+static void EnsureDashModule(const std::string& module_name) {
+  if (!cvars::dash_module_fetch || !IsSafeModuleName(module_name)) {
+    return;
+  }
+  auto& manifest = DashModuleManifest();
+  const auto entry = manifest.find(xe::utf8::lower_ascii(module_name));
+  if (entry == manifest.end()) {
+    return;
+  }
+  const std::string& canonical = entry->second.name;
+  const std::string& version = entry->second.version;
+  const std::filesystem::path destination =
+      xe::filesystem::GetExecutableFolder() / "Dashboard" / canonical;
+  const std::string cached = CachedModuleVersion(destination);
+  if (cached == version) {
+    return;
+  }
+  XELOGI("XdfLoadXex: '{}' is {} - hub has {}", canonical,
+         cached.empty() ? "not cached" : "version " + cached, version);
+  FetchDashModule(canonical, version);
+}
+
 dword_result_t XdfLoadXex_entry(lpstring_t name, lpdword_t unk2, dword_t unk3,
                                 dword_t flags, dword_t unk5,
                                 lpdword_t hmodule_ptr) {
@@ -1070,6 +1375,11 @@ dword_result_t XdfLoadXex_entry(lpstring_t name, lpdword_t unk2, dword_t unk3,
   if (!file_system) {
     return X_E_FAIL;
   }
+
+  // Before the resolve, not after a miss: a module we publish has to be the
+  // CURRENT one, and a cached older build would otherwise be found and used
+  // forever. Costs one map lookup for any module that is not ours.
+  EnsureDashModule(module_name);
 
   // A bare name has no device on it. These modules live beside dash.xex,
   // which is the running title's own device; \Device\Flash is the same
@@ -1231,6 +1541,20 @@ struct X_XAM_TOKEN {
   char data[0x20];               // +0x10 token bytes
 };
 
+// Tokens we have handed to the guest: base address -> block size. XamGetToken
+// (xam_net.cc) registers through RegisterIssuedToken, so one XamFreeToken can
+// serve both issuers.
+static std::mutex issued_tokens_mutex;
+static std::unordered_map<uint32_t, uint32_t> issued_tokens;
+
+void RegisterIssuedToken(uint32_t token_ptr, uint32_t size) {
+  if (!token_ptr) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(issued_tokens_mutex);
+  issued_tokens[token_ptr] = size;
+}
+
 dword_result_t XamRequestToken_entry(dword_t signin_state,
                                      dword_t xuid_or_index, lpvoid_t service_id,
                                      dword_t flags, lpdword_t token_out,
@@ -1255,15 +1579,43 @@ dword_result_t XamRequestToken_entry(dword_t signin_state,
   token->data_length = static_cast<uint32_t>(sizeof(kToken));
   token->data_ptr = token_ptr + offsetof(X_XAM_TOKEN, data);
 
+  RegisterIssuedToken(token_ptr, size);
   *token_out = token_ptr;
   return X_ERROR_SUCCESS;
 }
 DECLARE_XAM_EXPORT1(XamRequestToken, kNone, kImplemented);
 
 dword_result_t XamFreeToken_entry(dword_t token_ptr) {
-  if (token_ptr) {
-    kernel_state()->memory()->SystemHeapFree(token_ptr);
+  if (!token_ptr) {
+    return X_ERROR_SUCCESS;
   }
+
+  uint32_t size = 0;
+  {
+    std::lock_guard<std::mutex> lock(issued_tokens_mutex);
+    auto it = issued_tokens.find(token_ptr);
+    if (it == issued_tokens.end()) {
+      // Not a live token of ours: a double free, or a pointer from somewhere
+      // else entirely. Releasing it would fail inside the heap and log an
+      // error for an address we never owned, so say so and stop here.
+      XELOGW("XamFreeToken: {:08X} is not a token we issued; ignoring",
+             token_ptr.value());
+      return X_ERROR_SUCCESS;
+    }
+    size = it->second;
+    issued_tokens.erase(it);
+  }
+
+  // A token's bytes may live inside the block (XamRequestToken) or in their own
+  // allocation (XamGetToken). Free the separate one, never the interior one.
+  auto* token =
+      kernel_state()->memory()->TranslateVirtual<X_XAM_TOKEN*>(token_ptr);
+  const uint32_t data_ptr = token->data_ptr;
+  if (data_ptr && (data_ptr < token_ptr || data_ptr >= token_ptr + size)) {
+    kernel_state()->memory()->SystemHeapFree(data_ptr);
+  }
+
+  kernel_state()->memory()->SystemHeapFree(token_ptr);
   return X_ERROR_SUCCESS;
 }
 DECLARE_XAM_EXPORT1(XamFreeToken, kNone, kImplemented);
