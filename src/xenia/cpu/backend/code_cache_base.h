@@ -182,11 +182,14 @@ class CodeCacheBase : public CodeCache {
 
       size_t high_mark = generated_code_offset_;
 
-      generated_code_map_.emplace_back(
-          (uint64_t(code_execute_address - generated_code_execute_base_)
-           << 32) |
-              generated_code_offset_,
-          function_info);
+      {
+        std::lock_guard<xe_mutex> map_lock(generated_code_map_mutex_);
+        generated_code_map_.emplace_back(
+            (uint64_t(code_execute_address - generated_code_execute_base_)
+             << 32) |
+                generated_code_offset_,
+            function_info);
+      }
 
       // Commit memory if needed.
       EnsureCommitted(high_mark);
@@ -240,6 +243,10 @@ class CodeCacheBase : public CodeCache {
   }
 
   GuestFunction* LookupFunction(uint64_t host_pc) override {
+    // Leaf lock: the writers (PlaceGuestCode/MarkReserved/Flush) mutate the map
+    // under global_critical_region_, so the map needs its own lock that both
+    // sides take. Taken last, never held while acquiring anything else.
+    std::lock_guard<xe_mutex> map_lock(generated_code_map_mutex_);
     if (generated_code_map_.empty()) {
       return nullptr;
     }
@@ -277,6 +284,7 @@ class CodeCacheBase : public CodeCache {
   void MarkReserved() override {
     auto global_lock = global_critical_region_.Acquire();
     reserved_code_offset_ = generated_code_offset_;
+    std::lock_guard<xe_mutex> map_lock(generated_code_map_mutex_);
     reserved_map_size_ = generated_code_map_.size();
     reserved_marked_ = true;
     self().OnMarkReserved();
@@ -311,7 +319,10 @@ class CodeCacheBase : public CodeCache {
                             flushed);
     }
     generated_code_offset_ = reserved_code_offset_;
-    generated_code_map_.resize(reserved_map_size_);
+    {
+      std::lock_guard<xe_mutex> map_lock(generated_code_map_mutex_);
+      generated_code_map_.resize(reserved_map_size_);
+    }
     self().OnFlush();
     return flushed;
   }
@@ -417,6 +428,13 @@ class CodeCacheBase : public CodeCache {
   size_t generated_code_offset_ = 0;
   std::atomic<size_t> generated_code_commit_mark_ = {0};
   std::vector<std::pair<uint64_t, GuestFunction*>> generated_code_map_;
+  // Guards generated_code_map_ against the unlocked readers: LookupFunction is
+  // called from the exception handler, the stack walker and MMIO recording on
+  // arbitrary threads, while the writers mutate the vector under
+  // global_critical_region_. This is a LEAF lock (taken after the global region
+  // by the writers, after dbghelp_mutex_ by the stack walker) and must never
+  // acquire anything else while held.
+  xe_mutex generated_code_map_mutex_;
   size_t reserved_code_offset_ = 0;
   size_t reserved_map_size_ = 0;
   bool reserved_marked_ = false;
