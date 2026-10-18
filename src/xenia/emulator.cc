@@ -423,6 +423,9 @@ X_STATUS Emulator::TerminateTitle(bool clear_handles) {
   }
 
   XELOGI("TerminateTitle: memory");
+  // Before the sweep, not after: every thread still running owns guest blocks
+  // the sweep would otherwise hand to the next title.
+  kernel_state_->PinLiveThreadBlocks();
   memory()->ReleaseSystemHeapSinceWatermark();
   kernel_state_->ReleaseTitleMemory();
   XELOGI("TerminateTitle: code");
@@ -717,6 +720,16 @@ X_STATUS Emulator::LaunchPath(const std::filesystem::path& path) {
     case FileSignatureType::LIVE:
     case FileSignatureType::CON:
     case FileSignatureType::PIRS: {
+      // An XBLIG/XNA title ships as an ordinary STFS container, so the
+      // signature alone does not distinguish it. It has no default.xex, and
+      // LaunchStfsContainer would fail looking for one - the launcher mounts
+      // the container itself.
+      kernel::xna::XnaPackageInfo xna_info;
+      if (kernel::xna::IsXnaPackage(path, &xna_info)) {
+        X_STATUS result = CompleteLaunch(path, "");
+        kernel_state_->deployment_type_ = XDeploymentType::kDownload;
+        return result;
+      }
       mount_result = MountPath(path, "\\Device\\Package_0");
       return mount_result ? mount_result : LaunchStfsContainer(path);
     } break;
@@ -1058,6 +1071,37 @@ X_STATUS Emulator::InstallContentPackage(
     const std::filesystem::path& path, ContentInstallEntry& installation_info) {
   installation_info.installation_state_ = InstallState::preparing;
 
+  // An XBLIG is a GAME, not content belonging to one. It declares itself as
+  // kMarketplaceContent owned by the XNA Indie Player, which would otherwise
+  // extract it into that title's content tree - where it is neither launchable
+  // nor anything the guest looks for. The library is its home, kept as the
+  // container the launcher mounts.
+  {
+    kernel::xna::XnaPackageInfo xna_info;
+    if (kernel::xna::IsXnaPackage(path, &xna_info)) {
+      std::error_code ec;
+      const auto library = storage_root() / "xna_library";
+      std::filesystem::create_directories(library, ec);
+      const auto destination = library / path.filename();
+      std::filesystem::copy_file(
+          path, destination, std::filesystem::copy_options::overwrite_existing,
+          ec);
+      if (ec) {
+        installation_info.installation_state_ = InstallState::failed;
+        installation_info.installation_error_message_ = ec.message();
+        installation_info.installation_result_ = X_STATUS_ACCESS_DENIED;
+        XELOGE("Could not install XNA package {}: {}", xe::path_to_utf8(path),
+               ec.message());
+        return X_STATUS_ACCESS_DENIED;
+      }
+      XELOGI("Installed XNA title {} to {}", xna_info.display_name,
+             xe::path_to_utf8(destination));
+      installation_info.installation_state_ = InstallState::installed;
+      installation_info.installation_result_ = X_STATUS_SUCCESS;
+      return X_STATUS_SUCCESS;
+    }
+  }
+
   std::unique_ptr<vfs::XContentContainerDevice> device =
       vfs::XContentContainerDevice::CreateContentDevice("", path);
 
@@ -1070,17 +1114,20 @@ X_STATUS Emulator::InstallContentPackage(
     return X_STATUS_INVALID_PARAMETER;
   }
 
-  // Title updates must not be installed while a title is running: the running
-  // title holds its update open and its content resolves through whichever
-  // update is active, so installing underneath it could swap files out from
-  // under the guest. Everything else (saves, DLC, profiles) is fine.
+  // A title update may not be installed under the title it belongs to - that
+  // one holds its update open and resolves content through it, so the files
+  // would be swapped out from under the guest. An update for a DIFFERENT title
+  // touches nothing the running one is using.
   if (installation_info.content_type_ == XContentType::kInstaller &&
-      is_title_open()) {
+      is_title_open() && installation_info.title_id_ == title_id()) {
     installation_info.installation_state_ = InstallState::failed;
     installation_info.installation_error_message_ =
-        "Close the game before installing a title update.";
+        "Close the game before installing its title update.";
     installation_info.installation_result_ = X_STATUS_ACCESS_DENIED;
-    XELOGE("Refusing to install a title update while a title is running");
+    XELOGE(
+        "Refusing to install a title update for {:08X} while that title is "
+        "running",
+        installation_info.title_id_);
     return X_STATUS_ACCESS_DENIED;
   }
 
@@ -1374,7 +1421,11 @@ void Emulator::Resume() {
       continue;
     }
 
-    if (!thread->is_running()) {
+    // SAME CONDITION AS Pause(). This read !is_running(), the exact inverse of
+    // what Pause() suspends, so every thread it froze was skipped here and the
+    // emulator never came back from a pause. Threads parked by TerminateTitle
+    // are cleared of running_ before they are abandoned, so they stay parked.
+    if (thread->is_running()) {
       thread->thread()->Resume(nullptr);
     }
   }
@@ -1536,8 +1587,14 @@ bool Emulator::ExceptionCallback(Exception* ex) {
     return processor()->OnUnhandledException(ex);
   }
 
-  if (!(ex->pc() >= code_base && ex->pc() < code_end)) {
-    // Didn't occur in guest code. Let it pass.
+  // A GUEST THREAD OFF THE RAILS IS STILL OURS. A call through a null or wild
+  // function pointer leaves pc outside the code cache, and bailing out here
+  // handed those to the host dialog, which has no guest context to show: it
+  // printed "execute at 0x0" with an empty stack trace and nothing else. The
+  // guest's own LR and stack still say who made the call, so claim it.
+  const bool in_guest_code = ex->pc() >= code_base && ex->pc() < code_end;
+  if (!in_guest_code && !kernel::XThread::IsInThread()) {
+    // Really not ours - a host thread faulting in host code.
     return false;
   }
 
@@ -1548,8 +1605,8 @@ bool Emulator::ExceptionCallback(Exception* ex) {
   auto current_thread = kernel::XThread::GetCurrentThread();
   assert_not_null(current_thread);
 
-  auto guest_function = code_cache->LookupFunction(ex->pc());
-  assert_not_null(guest_function);
+  auto* guest_function =
+      in_guest_code ? code_cache->LookupFunction(ex->pc()) : nullptr;
 
   auto context = current_thread->thread_state()->context();
 
@@ -1560,9 +1617,19 @@ bool Emulator::ExceptionCallback(Exception* ex) {
                                current_thread->thread_id()));
   crash_msg.append(
       fmt::format("Thread Handle: 0x{:08X}\n", current_thread->handle()));
-  crash_msg.append(
-      fmt::format("PC: 0x{:08X}\n",
-                  guest_function->MapMachineCodeToGuestAddress(ex->pc())));
+  const uint32_t guest_pc =
+      guest_function ? guest_function->MapMachineCodeToGuestAddress(ex->pc())
+                     : 0;
+  if (guest_function) {
+    crash_msg.append(fmt::format("PC: 0x{:08X}\n", guest_pc));
+  } else {
+    // Left the code cache entirely, so there is no guest pc to map. The host
+    // address is the whole story: zero means a call through a null pointer.
+    crash_msg.append(fmt::format(
+        "PC: outside the code cache, host 0x{:016X} - the guest called "
+        "through a bad function pointer\n",
+        ex->pc()));
+  }
   if (ex->code() == Exception::Code::kAccessViolation) {
     const char* op_str = "unknown";
     if (ex->access_violation_operation() ==
@@ -1572,10 +1639,71 @@ bool Emulator::ExceptionCallback(Exception* ex) {
                Exception::AccessViolationOperation::kWrite) {
       op_str = "write";
     }
-    crash_msg.append(fmt::format("Access Violation: {} at 0x{:016X}\n", op_str,
-                                 ex->fault_address()));
+    // Report it in GUEST space. fault_address() is a host address, and for a
+    // null guest pointer it comes out as the membase plus the field offset -
+    // 0x000000010000002C for a read of +0x2C off null, which reads like a wild
+    // 64-bit pointer instead of the null dereference it is.
+    const uint64_t host_fault = ex->fault_address();
+    const uint64_t membase =
+        reinterpret_cast<uint64_t>(memory()->virtual_membase());
+    if (host_fault >= membase && host_fault < membase + 0x100000000ull) {
+      crash_msg.append(fmt::format("Access Violation: {} at guest 0x{:08X}\n",
+                                   op_str, uint32_t(host_fault - membase)));
+    } else {
+      crash_msg.append(
+          fmt::format("Access Violation: {} at host 0x{:016X}\n", op_str,
+                      host_fault));
+    }
   } else if (ex->code() == Exception::Code::kIllegalInstruction) {
     crash_msg.append("Illegal Instruction\n");
+  }
+  // The module and the caller chain. Without these the dump names an address
+  // and nothing else, and working out which DLL it belongs to means reading
+  // the guest's stack out of a live process by hand.
+  if (guest_function) {
+    if (auto* module = processor()->LookupModule(guest_pc)) {
+      crash_msg.append(fmt::format("Module: {}\n", module->name()));
+    }
+  } else if (auto* module = processor()->LookupModule(uint32_t(context->lr))) {
+    // No pc to place, so place the caller instead.
+    crash_msg.append(fmt::format("Module (from LR): {}\n", module->name()));
+  }
+  crash_msg.append(fmt::format("LR: 0x{:08X}  CTR: 0x{:08X}\n",
+                               uint32_t(context->lr), uint32_t(context->ctr)));
+  // SCAN THE STACK, DO NOT WALK IT. Following the back chain assumes every
+  // frame stores one, and a leaf function that never opened a frame breaks the
+  // very first hop - it printed 0x00000285 and a stack address as "return
+  // addresses". Scanning for words that land inside a loaded module cannot
+  // invent a frame: every line below is a real code address. Some are stale
+  // leftovers rather than live frames, so they are candidates, not a call
+  // stack - but LR above is always the true immediate caller.
+  crash_msg.append("Guest stack (return-address candidates):\n");
+  const uint32_t sp = uint32_t(context->r[1]);
+  int found = 0;
+  for (uint32_t offset = 0; offset < 0x400 && found < 16; offset += 4) {
+    const uint32_t slot = sp + offset;
+    if (slot < 0x10000 || slot >= 0xFFFF0000 || !memory()->LookupHeap(slot)) {
+      break;
+    }
+    auto* word = memory()->TranslateVirtual<xe::be<uint32_t>*>(slot);
+    if (!word) {
+      break;
+    }
+    const uint32_t value = *word;
+    // A return address is word-aligned and inside a module's code.
+    if (!value || (value & 3)) {
+      continue;
+    }
+    auto* module = processor()->LookupModule(value);
+    if (!module) {
+      continue;
+    }
+    crash_msg.append(fmt::format("  +0x{:03X} 0x{:08X} {}\n", offset, value,
+                                 module->name()));
+    ++found;
+  }
+  if (!found) {
+    crash_msg.append("  (nothing on the stack resolved to a module)\n");
   }
   crash_msg.append("Registers:\n");
   for (int i = 0; i < 32; i++) {

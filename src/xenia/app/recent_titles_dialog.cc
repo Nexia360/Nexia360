@@ -34,6 +34,14 @@ RecentTitlesDialog::RecentTitlesDialog(ui::ImGuiDrawer* imgui_drawer,
       mode_(mode) {}
 
 RecentTitlesDialog::~RecentTitlesDialog() {
+  // The icons go back to the drawer, not out with this object: ImGui still has
+  // Image commands holding these pointers, and they are not rendered until
+  // later in the same paint that deleted this dialog.
+  for (auto& [index, icon] : icons_) {
+    imgui_drawer()->ReleaseTextureDeferred(std::move(icon));
+  }
+  icons_.clear();
+
   if (closed_callback_) {
     closed_callback_();
   }
@@ -142,7 +150,10 @@ void RecentTitlesDialog::OnDraw(ImGuiIO& io) {
     EmulatorWindow* window = emulator_window_;
     const Mode mode = mode_;
     Close();
-    window->app_context().CallInUIThread(
+    // DEFERRED, not CallInUIThread: that one runs the body INLINE when it is
+    // already on the UI thread, which OnDraw always is - so the teardown this
+    // comment says to avoid happened anyway, in the middle of the frame.
+    window->app_context().CallInUIThreadDeferred(
         [window, mode, chosen, chosen_title_id]() {
           if (mode == Mode::kLaunch) {
             window->RunTitle(chosen);

@@ -50,6 +50,8 @@ public unsafe struct XnaOsTable {
   public delegate* unmanaged<uint, byte*, uint, uint> GuideGetText;
   public delegate* unmanaged<uint, void> GuideRelease;
   public delegate* unmanaged<uint, byte*, void> Log;
+  // ABI 5. Called when the title's Main returns.
+  public delegate* unmanaged<int, void> TitleExited;
 }
 
 public enum XnaOsGuideStatus {
@@ -225,6 +227,18 @@ public static unsafe class XnaOs {
   }
 
   public static void Log(string message) => Log(Level.Info, message);
+
+  /// <summary>
+  /// Tells Nexia the title's Main returned, so it can tear the title down and
+  /// go back to the dashboard. Silently ignored by a host older than ABI 5.
+  /// </summary>
+  public static void TitleExited(int exitCode) {
+    var t = table;
+    if (t == null || t->TitleExited == null) {
+      return;
+    }
+    t->TitleExited(exitCode);
+  }
 
   /// <summary>
   /// Sends Console.Out and Console.Error to the log as well, so a title's own

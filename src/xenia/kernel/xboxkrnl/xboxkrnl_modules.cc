@@ -122,10 +122,11 @@ dword_result_t xeXexLoadImage(
     if (user_module) {
       kernel_state()->ApplyTitleUpdate(user_module);
       kernel_state()->FinishLoadingUserModule(user_module);
-      // Give up object ownership, this reference will be released by the last
-      // XexUnloadImage call
-      auto user_module_raw = user_module.release();
-      hmodule = user_module_raw->hmodule_ptr();
+      // Held until the last XexUnloadImage. Kept in the kernel's own list
+      // rather than as a bare leaked reference, so terminating a title that
+      // never unloads its modules can still let go of them.
+      kernel_state()->RetainLoaderModule(user_module);
+      hmodule = user_module->hmodule_ptr();
       result = X_STATUS_SUCCESS;
     }
   }
@@ -185,10 +186,11 @@ dword_result_t XexUnloadImage_entry(lpvoid_t hmodule) {
   if (module->module_type() != XModule::ModuleType::kKernelModule) {
     auto ldr_data = hmodule.as<X_LDR_DATA_TABLE_ENTRY*>();
     if (--ldr_data->load_count == 0) {
-      // No more references, free it.
-      module->Release();
-      kernel_state()->UnloadUserModule(object_ref<UserModule>(
-          reinterpret_cast<UserModule*>(module.release())));
+      // No more references, free it. The loader's own reference is dropped
+      // through the kernel's list, which is where XexLoadImage put it.
+      auto* user_module = reinterpret_cast<UserModule*>(module.get());
+      kernel_state()->UnloadUserModule(retain_object(user_module));
+      kernel_state()->ReleaseLoaderModule(user_module);
     }
   }
 

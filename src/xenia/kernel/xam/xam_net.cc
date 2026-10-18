@@ -7,8 +7,10 @@
  ******************************************************************************
  */
 
+#include <cstring>
 #include <mutex>
 #include <random>
+#include <string>
 #include <unordered_map>
 
 // clang-format off
@@ -1236,45 +1238,70 @@ dword_result_t NetDll_XNetDnsLookup_entry(dword_t caller, lpstring_t host,
   }
 
   const uint32_t dns_address = kernel_memory()->SystemHeapAlloc(sizeof(XNDNS));
+  if (!dns_address) {
+    return static_cast<uint32_t>(X_WSAError::X_WSAENOBUFS);
+  }
   XNDNS* dns = kernel_memory()->TranslateVirtual<XNDNS*>(dns_address);
 
+  // The heap hands back whatever the block last held, and the guest reads cina
+  // to know how many of aina to trust.
+  std::memset(dns, 0, sizeof(XNDNS));
   dns->status = static_cast<uint32_t>(X_WSAError::X_WSAEINPROGRESS);
 
   *dns_ptr = dns_address;
 
+  // Copied now, not read later: the lookup runs on its own thread and the guest
+  // is free to reuse its buffer the moment this returns.
+  const std::string host_name(host.value());
+
   auto run = [=](std::stop_token stop_token) {
     if (stop_token.stop_requested()) {
+      dns->cina = 0;
       dns->status = X_ERROR_SUCCESS;
       xboxkrnl::xeNtSetEvent(event_handle, nullptr);
       return;
     }
 
-    ADDRINFOA hints = {.ai_family = XSocket::X_AF_INET};
-    PADDRINFOA addr_info = {};
+    ADDRINFOA hints = {.ai_family = AF_INET};
+    PADDRINFOA addr_info = nullptr;
 
-    const int status = getaddrinfo(host, nullptr, &hints, &addr_info);
+    const int status =
+        getaddrinfo(host_name.c_str(), nullptr, &hints, &addr_info);
 
     if (status) {
       XELOGI("DNS Lookup: Failed");
+      dns->cina = 0;
       dns->status = XSocket::GetLastWSAErrorStatic();
       xboxkrnl::xeNtSetEvent(event_handle, nullptr);
       return;
     }
 
-    XELOGI("DNS Lookup: Success");
-
     uint32_t address_index = 0;
-    addrinfo* info = addr_info;
 
-    while (info && address_index < std::size(dns->aina) &&
-           !stop_token.stop_requested()) {
-      dns->aina[address_index] = *reinterpret_cast<in_addr*>(info->ai_addr);
-      info = addr_info->ai_next;
-      address_index++;
+    for (const addrinfo* info = addr_info;
+         info && address_index < std::size(dns->aina) &&
+         !stop_token.stop_requested();
+         info = info->ai_next) {
+      // ai_addr is a sockaddr, whose first four bytes are the family and the
+      // port - reading it as an in_addr handed the guest 2.0.0.0. The address
+      // is further in, and is already network order, which is what aina holds.
+      if (info->ai_family != AF_INET || !info->ai_addr ||
+          info->ai_addrlen < sizeof(sockaddr_in)) {
+        continue;
+      }
+      dns->aina[address_index++] =
+          reinterpret_cast<const sockaddr_in*>(info->ai_addr)->sin_addr;
     }
 
+    freeaddrinfo(addr_info);
+
     dns->cina = address_index;
-    dns->status = XSocket::GetLastWSAErrorStatic();
+    // Not GetLastWSAErrorStatic(): getaddrinfo succeeded, and the thread's last
+    // error is whatever some unrelated call left behind.
+    dns->status = X_ERROR_SUCCESS;
+
+    XELOGI("DNS Lookup: {} resolved to {} address(es)", host_name,
+           address_index);
 
     xboxkrnl::xeNtSetEvent(event_handle, nullptr);
   };

@@ -1025,7 +1025,11 @@ bool XactPlayWave(uint32_t cue, uint32_t category, const uint8_t* data,
   XnaVoiceParams params;
   params.category = category;
   params.volume = volume;
-  if (format.codec == kXnaAudioWma) {
+  // XMA runs through the emulated hardware decoder one packet per blocking
+  // register kick, so a music-length cue takes seconds. Decoding it here would
+  // stop the caller, which is the title's game loop - long enough that a title
+  // watching its own frame counter reads it as a freeze.
+  if (format.codec == kXnaAudioWma || format.codec == kXnaAudioXma) {
     auto bytes = std::make_shared<std::vector<uint8_t>>(data, data + size);
     XnaVoiceStartAsync(
         owner,
@@ -1034,8 +1038,8 @@ bool XactPlayWave(uint32_t cue, uint32_t category, const uint8_t* data,
           return XnaDecodeAudio(format, bytes->data(), uint32_t(bytes->size()));
         },
         params);
-    XELOGI("[xna] XACT cue {} decoding {} byte(s) of WMA in the background",
-           cue, size);
+    XELOGI("[xna] XACT cue {} decoding {} byte(s) of {} in the background", cue,
+           size, format.codec == kXnaAudioWma ? "WMA" : "XMA");
     return true;
   }
   XnaSamples samples = XnaDecodeAudio(format, data, size);

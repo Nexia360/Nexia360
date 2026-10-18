@@ -11,6 +11,7 @@
 
 #include "xenia/kernel/xam/profile_manager.h"
 
+#include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
 #include "xenia/emulator.h"
 #include "xenia/hid/input_system.h"
@@ -33,8 +34,14 @@ namespace xe {
 namespace kernel {
 namespace xam {
 
-bool ProfileManager::DecryptAccountFile(const uint8_t* data,
+bool ProfileManager::DecryptAccountFile(const uint8_t* data, size_t data_size,
                                         X_XAMACCOUNTINFO* output, bool devkit) {
+  // 0x10 hash + 8 + the account record. A shorter file is not a truncated
+  // account, it is not an account - and reading the difference would run off
+  // the end of the buffer.
+  if (!data || data_size < kAccountFileSize) {
+    return false;
+  }
   const uint8_t* key = util::GetXeKey(0x19, devkit);
   if (!key) {
     return false;  // this shouldn't happen...
@@ -227,15 +234,18 @@ bool ProfileManager::LoadAccount(const uint64_t xuid) {
       &bytes_read);
   output_file->Destroy();
 
-  if (bytes_read < sizeof(X_XAMACCOUNTINFO)) {
+  if (bytes_read < kAccountFileSize) {
+    XELOGW("Account file for XUID {} is {} bytes, needs {}", xuid_as_string,
+           bytes_read, kAccountFileSize);
     DismountProfile(xuid);
     return false;
   }
 
   X_XAMACCOUNTINFO tmp_acct;
-  if (!ProfileManager::DecryptAccountFile(file_data.data(), &tmp_acct)) {
-    if (!ProfileManager::DecryptAccountFile(file_data.data(), &tmp_acct,
-                                            true)) {
+  if (!ProfileManager::DecryptAccountFile(file_data.data(), bytes_read,
+                                          &tmp_acct)) {
+    if (!ProfileManager::DecryptAccountFile(file_data.data(), bytes_read,
+                                            &tmp_acct, true)) {
       XELOGW("Failed to decrypt account data file for XUID: {}",
              xuid_as_string);
       return false;
@@ -504,6 +514,32 @@ std::filesystem::path ProfileManager::GetProfilePath(
   return kernel_state_->emulator()->content_root() / xuid / kDashboardStringID /
          fmt::format("{:08X}", static_cast<uint32_t>(XContentType::kProfile)) /
          xuid;
+}
+
+std::vector<uint8_t> ProfileManager::GetProfileIcon(
+    const uint64_t xuid, const XTileType icon_type) const {
+  const auto name = kTileFileNames.find(icon_type);
+  if (name == kTileFileNames.end() ||
+      name->second.find('{') != std::string::npos) {
+    return {};
+  }
+
+  const auto path = GetProfilePath(xuid) / xe::to_path(name->second);
+  std::error_code ec;
+  if (!std::filesystem::is_regular_file(path, ec)) {
+    return {};
+  }
+
+  auto file = xe::filesystem::OpenFile(path, "rb");
+  if (!file) {
+    return {};
+  }
+
+  std::vector<uint8_t> data(std::filesystem::file_size(path, ec));
+  const size_t read = fread(data.data(), 1, data.size(), file);
+  fclose(file);
+  data.resize(read);
+  return data;
 }
 
 bool ProfileManager::CreateProfile(const std::string gamertag, bool autologin,

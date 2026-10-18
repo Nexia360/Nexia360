@@ -44,6 +44,12 @@ TitleUpdateDialog::TitleUpdateDialog(ui::ImGuiDrawer* imgui_drawer,
   Reload();
 }
 
+TitleUpdateDialog::~TitleUpdateDialog() {
+  // See ImGuiDrawer::ReleaseTextureDeferred - picking a row deletes this
+  // dialog inside the paint whose draw commands still point at the icon.
+  imgui_drawer()->ReleaseTextureDeferred(std::move(icon_));
+}
+
 void TitleUpdateDialog::Reload() {
   auto* manager = emulator_window_->emulator()->title_update_manager();
   entries_.clear();
@@ -242,9 +248,11 @@ void TitleUpdateDialog::OnDraw(ImGuiIO& io) {
       ImGui::CloseCurrentPopup();
       Close();
       // Launch after this draw completes so the dialog is gone first.
+      // DEFERRED, not CallInUIThread: that one runs the body inline when it is
+      // already on the UI thread, so it launched mid-frame instead.
       EmulatorWindow* window = emulator_window_;
       std::filesystem::path path = launch_path_;
-      window->app_context().CallInUIThread(
+      window->app_context().CallInUIThreadDeferred(
           [window, path]() { window->RunTitle(path); });
     }
     ImGui::SameLine();

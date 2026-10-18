@@ -48,6 +48,7 @@ class ProfileConfigDialog final : public ui::ImGuiDialog {
     LoadProfileIcon();
     LoadSignedInProfilesCount();
   }
+  ~ProfileConfigDialog() override;
 
  protected:
   void OnDraw(ImGuiIO& io) override;

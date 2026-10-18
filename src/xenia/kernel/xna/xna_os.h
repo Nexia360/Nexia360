@@ -37,7 +37,7 @@ namespace xna {
 
 // Bump when a field is added. Fields are only ever APPENDED, and the managed
 // side checks `size` before touching anything it was not compiled against.
-constexpr uint32_t kXnaOsAbiVersion = 4;
+constexpr uint32_t kXnaOsAbiVersion = 5;
 
 // A guide request is the one thing here that is not instantaneous: the dialog
 // stays up while a person reads it, on the emulator's UI thread, while the
@@ -150,6 +150,14 @@ struct XnaOsTable {
   // goes nowhere at all - which makes every managed failure silent. Levels
   // match XELOG*: 0 debug, 1 info, 2 warning, 3 error.
   void (*Log)(uint32_t level, const char* message);
+
+  // --- Title exit (ABI version 5) ------------------------------------------
+  //
+  // Called by the managed bootstrap when the title's Main returns. Nothing
+  // else observes a hosted title ending - it runs in-process on a managed
+  // thread - so without this the emulator sits on a dead title with no way
+  // back to the dashboard. `exit_code` is the title's, 0 for a clean exit.
+  void (*TitleExited)(int32_t exit_code);
 };
 
 #pragma pack(pop)
@@ -164,7 +172,7 @@ static_assert(offsetof(XnaOsUser, online_xuid) == 8,
 static_assert(offsetof(XnaOsUser, signin_state) == 16,
               "XnaOsUser layout changed");
 static_assert(offsetof(XnaOsUser, gamertag) == 36, "XnaOsUser layout changed");
-static_assert(sizeof(void*) != 8 || sizeof(XnaOsTable) == 128,
+static_assert(sizeof(void*) != 8 || sizeof(XnaOsTable) == 136,
               "XnaOsTable layout changed - bump kXnaOsAbiVersion and update "
               "managed/XnaOs.cs");
 

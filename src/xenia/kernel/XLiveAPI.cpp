@@ -334,6 +334,11 @@ bool XLiveAPI::SelectNetworkMode(uint32_t mode) {
     return true;
   }
 
+  // Take the user's choice now. RefreshNetworkMode reads this, and the online
+  // modes finish asynchronously (StartWhoamiAsync), so leaving it unset made
+  // the call report failure and the UI revert the selection.
+  OVERRIDE_int32(network_mode, mode);
+
   if (mode == NETWORK_MODE::OFFLINE) {
     cvars::network_mode = mode;
 

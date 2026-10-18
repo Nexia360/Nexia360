@@ -213,7 +213,8 @@ dword_result_t NtAllocateVirtualMemory_entry(lpdword_t base_addr_ptr,
     }
   }
 
-  XELOGD("NtAllocateVirtualMemory = {:08X}", address);
+  XELOGD("NtAllocateVirtualMemory = {:08X}, {:X} byte(s), type {:X}", address,
+         adjusted_size, uint32_t(allocation_type));
 
   // Stash back.
   // Maybe set X_STATUS_ALREADY_COMMITTED if MEM_COMMIT?
@@ -298,6 +299,8 @@ dword_result_t NtFreeVirtualMemory_entry(lpdword_t base_addr_ptr,
   if (heap->heap_type() != HeapType::kGuestVirtual) {
     return X_STATUS_INVALID_PARAMETER;
   }
+  XELOGD("NtFreeVirtualMemory({:08X}, {:X}, type {:X})", base_addr_value,
+         region_size_value, uint32_t(free_type));
   bool result = false;
   if (free_type == X_MEM_DECOMMIT) {
     // If zero, we may need to query size (free whole region).

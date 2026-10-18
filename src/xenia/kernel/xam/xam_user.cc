@@ -1041,41 +1041,74 @@ dword_result_t XamUserCreateTitlesPlayedEnumerator_entry(
 }
 DECLARE_XAM_EXPORT1(XamUserCreateTitlesPlayedEnumerator, kUserProfiles, kStub);
 
+static bool IsGamerTileType(XTileType type) {
+  switch (type) {
+    case XTileType::kGamerTile:
+    case XTileType::kGamerTileSmall:
+    case XTileType::kLocalGamerTile:
+    case XTileType::kLocalGamerTileSmall:
+    case XTileType::kPersonalGamerTile:
+    case XTileType::kPersonalGamerTileSmall:
+    case XTileType::kAvatarGamerTile:
+    case XTileType::kAvatarGamerTileSmall:
+      return true;
+    default:
+      return false;
+  }
+}
+
 dword_result_t XamReadTile_entry(dword_t tile_type, dword_t title_id,
                                  qword_t item_id, dword_t user_index,
                                  lpdword_t output_ptr,
                                  lpdword_t buffer_size_ptr,
                                  pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
-  auto user = kernel_state()->xam_state()->GetUserProfile(user_index);
-  if (!user) {
-    user = kernel_state()->xam_state()->GetUserProfileAny(item_id);
-    if (!user) {
-      return X_ERROR_INVALID_PARAMETER;
-    }
-  }
-
   if (!buffer_size_ptr) {
     return X_ERROR_INVALID_PARAMETER;
   }
 
+  const auto type = static_cast<XTileType>(tile_type.value());
+  const bool gamer_tile = IsGamerTileType(type);
+
+  // For the gamer-tile family item_id is the XUID whose picture is wanted.
+  // The dashboard asks for profiles that are not signed in, so it cannot be
+  // resolved through user_index.
+  uint64_t xuid = gamer_tile ? item_id.value() : 0;
+  if (!xuid) {
+    auto user = kernel_state()->xam_state()->GetUserProfile(user_index);
+    if (!user) {
+      user = kernel_state()->xam_state()->GetUserProfileAny(item_id);
+    }
+    if (!user) {
+      return X_ERROR_INVALID_PARAMETER;
+    }
+    xuid = user->xuid();
+  }
+
+  const uint32_t capacity = *buffer_size_ptr;
+
   auto run = [=](uint32_t& extended_error, uint32_t& length) {
+    std::vector<uint8_t> from_disk;
     std::span<const uint8_t> tile =
-        kernel_state()->xam_state()->user_tracker()->GetIcon(
-            user->xuid(), title_id, static_cast<XTileType>(tile_type.value()),
-            item_id);
+        kernel_state()->xam_state()->user_tracker()->GetIcon(xuid, title_id,
+                                                             type, item_id);
+
+    if (tile.empty() && gamer_tile) {
+      from_disk =
+          kernel_state()->xam_state()->profile_manager()->GetProfileIcon(xuid,
+                                                                         type);
+      tile = from_disk;
+    }
 
     auto result = X_ERROR_SUCCESS;
 
-    if (tile.empty()) {
-      result = X_ERROR_FILE_NOT_FOUND;
-    }
-
     *buffer_size_ptr = static_cast<uint32_t>(tile.size());
 
-    if (output_ptr) {
-      memcpy(output_ptr, tile.data(), tile.size());
-    } else {
+    if (tile.empty()) {
+      result = X_ERROR_FILE_NOT_FOUND;
+    } else if (!output_ptr || capacity < tile.size()) {
       result = X_ERROR_INSUFFICIENT_BUFFER;
+    } else {
+      memcpy(output_ptr, tile.data(), tile.size());
     }
 
     extended_error = X_HRESULT_FROM_WIN32(result);

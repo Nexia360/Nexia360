@@ -527,7 +527,12 @@ int XexModule::ReadImage(const void* xex_addr, size_t xex_length,
     return 0;
   }
 
-  memory()->LookupHeap(base_address_)->Reset();
+  // NO HEAP RESET HERE. Reset() zeroes the page table of the WHOLE heap, and
+  // every module image lives in the same one - so each DLL loaded wiped the
+  // bookkeeping of every module already loaded, and by shutdown the heap had
+  // no record of any of them. Unload then failed to release every image.
+  // The range this image needs is set up by the AllocFixed in LoadContinue,
+  // which is all that was ever required.
 
   aes_decrypt_buffer(
       key, reinterpret_cast<const uint8_t*>(xex_security_info()->aes_key), 16,

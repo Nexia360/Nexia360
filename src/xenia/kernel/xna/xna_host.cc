@@ -9,6 +9,8 @@
 
 #include "xenia/kernel/xna/xna_host.h"
 
+#include "xenia/kernel/xna/xna_launcher.h"
+
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
@@ -318,7 +320,14 @@ void XnaHost::Stop() {
   // The runtime itself is deliberately left loaded: CoreCLR cannot be unloaded
   // from a process, and closing the library out from under it would crash on
   // the next managed callback.
+  const bool was_running = running_;
   running_ = false;
+  // Covers the paths the managed callback cannot: a bootstrap that fails after
+  // the title was announced, or a host-side teardown. Harmless if the title
+  // already reported its own exit - the notify only fires once.
+  if (was_running) {
+    XnaNotifyTitleExited(0);
+  }
 }
 
 bool XnaHostWritable(const void* begin, const void* end) {

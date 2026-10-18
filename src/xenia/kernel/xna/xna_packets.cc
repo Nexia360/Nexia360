@@ -494,6 +494,8 @@ void HlcbDecoder::Dispatch(HlcbPacketType type, uint32_t handle,
       break;
     }
     case HlcbPacketType::kSetTexture:
+      XELOGD("[xna] packet kSetTexture: sampler {} texture {:08X}",
+             ReadWord(body, 4), handle);
       sink->SetTexture(ReadWord(body, 4), handle);
       break;
     // SendEffectSetTexturePacket writes three dwords: the header carrying the
@@ -502,6 +504,10 @@ void HlcbDecoder::Dispatch(HlcbPacketType type, uint32_t handle,
     // title bound through an effect parameter was silently dropped, and only
     // the ones bound by raw sampler slot ever reached the GPU.
     case HlcbPacketType::kEffectSetTexture:
+      XELOGD(
+          "[xna] packet kEffectSetTexture: effect {} parameter {} "
+          "texture {:08X}",
+          handle, ReadWord(body, 4), ReadWord(body, 8));
       sink->EffectTexture(handle, ReadWord(body, 4), ReadWord(body, 8));
       break;
     case HlcbPacketType::kEffectSetTechnique:

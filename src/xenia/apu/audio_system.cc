@@ -228,7 +228,7 @@ X_STATUS AudioSystem::RegisterClient(uint32_t callback, uint32_t callback_arg,
   xe::store_and_swap<uint32_t>(memory()->TranslateVirtual(ptr), callback_arg);
 
   clients_[index] = {driver, callback, callback_arg, ptr, true};
-  XELOGI("AudioSystem::RegisterClient: client {} registered successfully",
+  XELOGD("AudioSystem::RegisterClient: client {} registered successfully",
          index);
 
   if (out_index) {
@@ -268,6 +268,16 @@ void AudioSystem::UnregisterClient(size_t index) {
 
   auto global_lock = global_critical_region_.Acquire();
   assert_true(index < kMaximumClientCount);
+  if (index >= kMaximumClientCount || !clients_[index].in_use) {
+    // A second unregister of the same slot would tear down whoever holds it
+    // now. The title switch makes that reachable: the teardown unregisters
+    // every client, and the guest thread that asked for the switch runs on and
+    // unregisters its own driver afterwards - by which point the slot can
+    // belong to the title that just started.
+    XELOGD("AudioSystem: client {} is not registered, ignoring unregister",
+           index);
+    return;
+  }
   DestroyDriver(clients_[index].driver);
   memory()->SystemHeapFree(clients_[index].wrapped_callback_arg);
   clients_[index] = {0};
@@ -285,11 +295,11 @@ void AudioSystem::UnregisterClient(size_t index) {
 void AudioSystem::UnregisterAllClients() {
   for (size_t index = 0; index < kMaximumClientCount; ++index) {
     if (clients_[index].in_use) {
-      XELOGI("AudioSystem: unregistering client {}", index);
+      XELOGD("AudioSystem: unregistering client {}", index);
       UnregisterClient(index);
     }
   }
-  XELOGI("AudioSystem: clients unregistered, callback active {}",
+  XELOGD("AudioSystem: clients unregistered, callback active {}",
          callback_active_.load());
   for (uint32_t i = 0; i < 1000 && callback_active_.load(); ++i) {
     xe::threading::Sleep(std::chrono::milliseconds(1));

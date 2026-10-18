@@ -725,6 +725,33 @@ X_RESULT ContentManager::GetContentThumbnail(
     return X_ERROR_SUCCESS;
   }
 
+  // A profile's thumbnail IS its gamerpic. On a console the profile arrives as
+  // a package whose STFS header carries it; ours is a directory, and the
+  // picture is a file inside it, so there is no __thumbnail.png to find.
+  if (data.content_type == XContentType::kProfile) {
+    for (const auto tile :
+         {XTileType::kGamerTile, XTileType::kGamerTileSmall}) {
+      const auto name = kTileFileNames.find(tile);
+      if (name == kTileFileNames.end()) {
+        continue;
+      }
+      const auto icon_path = package_path / name->second;
+      std::error_code ec;
+      if (!std::filesystem::is_regular_file(icon_path, ec)) {
+        continue;
+      }
+      auto file = xe::filesystem::OpenFile(icon_path, "rb");
+      if (!file) {
+        continue;
+      }
+      buffer->resize(std::filesystem::file_size(icon_path, ec));
+      fread(buffer->data(), 1, buffer->size(), file);
+      fclose(file);
+      return X_ERROR_SUCCESS;
+    }
+    return X_ERROR_FILE_NOT_FOUND;
+  }
+
   auto thumb_path = package_path / kThumbnailFileName;
   if (std::filesystem::exists(thumb_path)) {
     auto file = xe::filesystem::OpenFile(thumb_path, "rb");

@@ -816,6 +816,11 @@ void ReloadForLaunch() {
   if (cvars::title_switch_in_process && display_window) {
     XThread* thread = XThread::GetCurrentThread();
     kernel_state()->UnregisterThread(thread);
+    // This thread keeps running through the whole teardown to reach the
+    // Terminate below, so its PCR and TLS must survive the sweep - otherwise
+    // they are handed to the next title's main thread while this one is still
+    // pointing at them, and freed again when this thread finally goes.
+    thread->PinGuestBlocks();
     emulator->on_title_switch();
     thread->Terminate(0);
   }

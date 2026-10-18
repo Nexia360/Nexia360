@@ -10,6 +10,7 @@
 #include "xenia/kernel/xna/xna_launcher.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdio>
 #include <cstring>
@@ -534,6 +535,7 @@ std::vector<uint8_t> XnaTitleIcon() {
 }
 
 bool LaunchXnaPackage(const std::filesystem::path& path) {
+  XnaClearTitleExited();
   XnaPackageInfo info;
   if (!IsXnaPackage(path, &info)) {
     XELOGE("XnaLauncher: {} holds no managed XNA title",
@@ -612,6 +614,26 @@ bool LaunchXnaPackage(const std::filesystem::path& path) {
   }
   return true;
 }
+
+static std::atomic<bool> title_exited{false};
+
+void XnaNotifyTitleExited(int32_t exit_code) {
+  if (title_exited.exchange(true)) {
+    return;
+  }
+  XELOGI("XnaLauncher: hosted title exited ({}); returning to the dashboard",
+         exit_code);
+  KernelState* state = KernelState::shared();
+  if (state && state->emulator()) {
+    // The teardown and the dashboard boot both have to happen on the UI
+    // thread, and this is called from a managed thread.
+    state->emulator()->on_xna_title_exit();
+  }
+}
+
+bool XnaTitleHasExited() { return title_exited.load(); }
+
+void XnaClearTitleExited() { title_exited.store(false); }
 
 }  // namespace xna
 }  // namespace kernel

@@ -10,6 +10,7 @@
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
 #include "xenia/base/string_util.h"
+#include "xenia/emulator.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/smc.h"
 #include "xenia/kernel/user_module.h"
@@ -20,6 +21,7 @@
 #include "xenia/kernel/xboxkrnl/xboxkrnl_module.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_threading.h"
 #include "xenia/kernel/xenumerator.h"
+#include "xenia/kernel/xna/xna_launcher.h"
 #include "xenia/ui/imgui_dialog.h"
 #include "xenia/ui/imgui_drawer.h"
 #include "xenia/vfs/devices/host_path_device.h"
@@ -963,6 +965,21 @@ dword_result_t xeXamContentLaunchImage(dword_t user_index,
     // the container itself.
     host_path =
         kernel_state()->content_manager()->FindPackagePath(xuid, content_data);
+
+    // An XNA title is not in the content tree - it lives in the library the
+    // enumerator reported it from, under its own file name.
+    if (host_path.empty() || !std::filesystem::exists(host_path)) {
+      const auto library =
+          kernel_state()->emulator()->storage_root() / "xna_library";
+      const auto candidate = library / xe::to_path(content_data.file_name());
+      xna::XnaPackageInfo xna_info;
+      std::error_code ec;
+      if (std::filesystem::exists(candidate, ec) &&
+          xna::IsXnaPackage(candidate, &xna_info)) {
+        host_path = candidate;
+      }
+    }
+
     if (host_path.empty() || !std::filesystem::exists(host_path)) {
       XELOGE(
           "XamContentLaunchImage: no package for title {:08X} type {:08X} "
@@ -975,8 +992,11 @@ dword_result_t xeXamContentLaunchImage(dword_t user_index,
 
     // A container goes in whole - that is exactly what File > Open does with
     // one. An extracted package is a directory, so point at the executable
-    // inside it.
-    if (std::filesystem::is_directory(host_path)) {
+    // inside it. An XNA/XBLIG package is the exception: it has no default.xex,
+    // and the launcher mounts the package itself.
+    xna::XnaPackageInfo xna_info;
+    if (std::filesystem::is_directory(host_path) &&
+        !xna::IsXnaPackage(host_path, &xna_info)) {
       host_path /= xe::to_path(xex_path.value());
     }
   } else {

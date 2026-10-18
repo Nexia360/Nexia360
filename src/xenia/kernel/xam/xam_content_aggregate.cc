@@ -11,15 +11,21 @@
 #include <unordered_set>
 #include <vector>
 
+#include "third_party/fmt/include/fmt/format.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
 #include "xenia/base/string_util.h"
+#include "xenia/emulator.h"
 #include "xenia/kernel/kernel_state.h"
+#include "xenia/kernel/title_id_utils.h"
 #include "xenia/kernel/user_module.h"
 #include "xenia/kernel/util/shim_utils.h"
+#include "xenia/kernel/xam/profile_manager.h"
 #include "xenia/kernel/xam/xam_content_device.h"
 #include "xenia/kernel/xam/xam_private.h"
+#include "xenia/kernel/xam/xam_state.h"
 #include "xenia/kernel/xenumerator.h"
+#include "xenia/kernel/xna/xna_launcher.h"
 #include "xenia/vfs/devices/xcontent_container_device.h"
 #include "xenia/vfs/file.h"
 #include "xenia/xbox.h"
@@ -80,6 +86,109 @@ void AddODDContentTest(object_ref<XStaticEnumerator<XCONTENT_AGGREGATE_DATA>> e,
         }
       }
     }
+  }
+}
+
+// Every profile on the machine, as a content record.
+//
+// A profile lives under its OWN xuid - content/<xuid>/FFFE07D1/00010000/ - so
+// the title-id sweep above never reaches one: the dashboard asks with xuid 0,
+// and a profile is not stored there. The profile manager already knows them
+// all, which is where Settings > Storage gets its list.
+static void AppendProfileItems(XStaticEnumerator<XCONTENT_DATA_INTERNAL>* e) {
+  auto* profile_manager = kernel_state()->xam_state()->profile_manager();
+  if (!profile_manager) {
+    return;
+  }
+  const auto* accounts = profile_manager->GetAccounts();
+  if (!accounts) {
+    return;
+  }
+
+  for (const auto& [xuid, account] : *accounts) {
+    auto item = e->AppendItem();
+    if (!item) {
+      continue;
+    }
+    std::memset(item, 0, sizeof(*item));
+    item->device_id = static_cast<uint32_t>(DummyDeviceId::HDD);
+    item->content_type = XContentType::kProfile;
+    item->title_id = kDashboardID;
+    item->xuid = xuid;
+    item->license_mask = 0xFFFFFFFF;
+
+    const std::string gamertag = account.GetGamertagString();
+    item->set_display_name(xe::to_utf16(gamertag));
+    item->set_file_name(fmt::format("{:016X}", xuid));
+    xe::string_util::copy_and_swap_truncating(item->title_name,
+                                              xe::to_utf16(gamertag),
+                                              xe::countof(item->title_name));
+
+    // What Storage shows as the profile's size.
+    std::error_code ec;
+    uint64_t bytes = 0;
+    const auto root = profile_manager->GetProfilePath(xuid);
+    if (std::filesystem::is_directory(root, ec)) {
+      for (const auto& entry :
+           std::filesystem::recursive_directory_iterator(root, ec)) {
+        if (entry.is_regular_file(ec)) {
+          bytes += entry.file_size(ec);
+        }
+      }
+    }
+    item->content_size = bytes;
+
+    XELOGD("  profile item xuid {:016X} '{}' {} bytes", xuid, gamertag, bytes);
+  }
+}
+
+// Every package in the XNA library, as a content record the dashboard can
+// show and launch. The file name is the package's own, which is what
+// XamContentLaunchImage resolves back to a path.
+static void AppendXnaLibraryItems(
+    XStaticEnumerator<XCONTENT_DATA_INTERNAL>* e) {
+  const auto library =
+      kernel_state()->emulator()->storage_root() / "xna_library";
+  std::error_code ec;
+  if (!std::filesystem::is_directory(library, ec)) {
+    return;
+  }
+
+  for (const auto& entry : std::filesystem::directory_iterator(library, ec)) {
+    // A locally built title is a directory; a shipped one is a container.
+    if (!entry.is_regular_file() && !entry.is_directory()) {
+      continue;
+    }
+    xna::XnaPackageInfo info;
+    if (!xna::IsXnaPackage(entry.path(), &info)) {
+      continue;
+    }
+
+    auto item = e->AppendItem();
+    if (!item) {
+      continue;
+    }
+    std::memset(item, 0, sizeof(*item));
+    item->device_id = static_cast<uint32_t>(DummyDeviceId::HDD);
+    item->content_type = XContentType::kArcadeTitle;
+    item->title_id = info.title_id;
+    item->xuid = 0;
+    item->license_mask = 0xFFFFFFFF;
+
+    // The display name carries the extension the exe had; the dashboard shows
+    // this verbatim.
+    std::string name = info.display_name;
+    const size_t dot = name.find_last_of('.');
+    if (dot != std::string::npos) {
+      name = name.substr(0, dot);
+    }
+    item->set_display_name(xe::to_utf16(name));
+    item->set_file_name(xe::path_to_utf8(entry.path().filename()));
+    xe::string_util::copy_and_swap_truncating(
+        item->title_name, xe::to_utf16(name), xe::countof(item->title_name));
+
+    XELOGD("  xna item title {:08X} '{}' file '{}'", item->title_id.get(), name,
+           item->file_name());
   }
 }
 
@@ -181,6 +290,17 @@ dword_result_t XamContentAggregateCreateEnumerator_entry(qword_t xuid,
           }
         }
 
+        // An XBLIG ships as kMarketplaceContent owned by the XNA Indie Player
+        // (0x584E07D2) - on a console it is that app, not the dashboard, which
+        // launches it. We have no Indie Player, so the dashboard sees DLC in
+        // My Games, has nothing to launch it with, and drops the tile.
+        // Reporting it as an arcade title is what makes it launchable, and
+        // Nexia hosts it directly.
+        if (item->content_type == XContentType::kMarketplaceContent &&
+            xna::IsXnaPackage(package_path, nullptr)) {
+          item->content_type = XContentType::kArcadeTitle;
+        }
+
         // Temporary: one line per item, so the exact record the dashboard is
         // handed is visible. Retire once My Games is settled.
         XELOGE(
@@ -191,6 +311,24 @@ dword_result_t XamContentAggregateCreateEnumerator_entry(qword_t xuid,
             item->category.get(), xe::to_utf8(item->display_name()),
             item->file_name());
       }
+    }
+
+    // XNA titles live in their own library, not the content tree - they are
+    // games, not content belonging to a title - so nothing above finds them.
+    // They are reported as arcade titles because that is what the dashboard
+    // will offer to launch; the package itself says kMarketplaceContent, which
+    // is true of an XBLIG on a console and useless to us without the Indie
+    // Player to launch it.
+    if (!title_id && (content_type_enum == XContentType::kInvalid ||
+                      content_type_enum == XContentType::kArcadeTitle ||
+                      content_type.value() == 0xFFFFFFFF)) {
+      AppendXnaLibraryItems(e.get());
+    }
+
+    if (content_type_enum == XContentType::kProfile ||
+        content_type_enum == XContentType::kInvalid ||
+        content_type.value() == 0xFFFFFFFF) {
+      AppendProfileItems(e.get());
     }
   }
 

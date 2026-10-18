@@ -292,7 +292,15 @@ class XSocket : public XObject {
   Type type_;            // Type (DGRAM/Stream/etc)
   Protocol proto_;       // Protocol (TCP/UDP/etc)
   bool vdp_;             // VDP Protocol
-  bool secure_ = false;  // Secure socket (encryption enabled)
+  // Set by setsockopt(SOL_SOCKET, SO_MARKINSECURE / SO_GRANTINSECURE). The
+  // title is speaking raw IP to a real address, so this socket must never go
+  // through the hub relay - the relay addresses peers by XUID, which an
+  // insecure socket has none of. Tracked per option and OR'd, so clearing one
+  // does not cancel the other.
+  // (Replaces secure_, which was written once here and never read.)
+  bool mark_insecure_ = false;   // SO_MARKINSECURE, outbound
+  bool grant_insecure_ = false;  // SO_GRANTINSECURE, inbound
+  bool marked_insecure_ = false;  // the two above, OR'd
 
   bool bound_ = false;  // Explicitly bound to an IP address?
 
@@ -361,6 +369,10 @@ class XSocket : public XObject {
   // it are queued for THIS socket instead of whichever one reads first.
   void ClaimTransportPort();
   void ReleaseTransportPort();
+
+  // Applies SO_MARKINSECURE / SO_GRANTINSECURE. Undoes a relay bind if the
+  // option arrives after the socket was already bound the relay's way.
+  void SetMarkedInsecure(bool value, uint32_t optname);
 
   // The port this socket receives on, network order. Prefers the port actually
   // claimed, so a claim and the pops that follow it always agree even if

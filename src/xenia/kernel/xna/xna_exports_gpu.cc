@@ -1961,9 +1961,13 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
 
   void SetTexture(uint32_t sampler, uint32_t texture) override {
     std::lock_guard<std::mutex> lock(resource_mutex);
-    if (sampler < kMaxTextures) {
-      bound_textures_[sampler] = texture;
+    if (sampler >= kMaxTextures) {
+      XELOGD("[xna] SetTexture: sampler {} is past the {} slots - dropped",
+             sampler, kMaxTextures);
+      return;
     }
+    XELOGD("[xna] SetTexture: slot {} <- texture {:08X}", sampler, texture);
+    bound_textures_[sampler] = texture;
   }
 
   // Kept by NAME, exactly like the constant values, and for the same reason:
@@ -1974,10 +1978,20 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
   void EffectTexture(uint32_t effect, uint32_t parameter,
                      uint32_t texture) override {
     auto* image = xe::kernel::xna::FindEffect(effect);
-    if (!image || !parameter || parameter > image->parameters.size()) {
+    if (!image) {
+      XELOGD("[xna] EffectTexture: effect {} is not a known effect", effect);
+      return;
+    }
+    if (!parameter || parameter > image->parameters.size()) {
+      XELOGD(
+          "[xna] EffectTexture: effect {} parameter {} is outside its {} "
+          "parameter(s)",
+          effect, parameter, image->parameters.size());
       return;
     }
     const auto& info = image->parameters[parameter - 1];
+    XELOGD("[xna] EffectTexture: effect {} \"{}\" <- texture {:08X}", effect,
+           info.name, texture);
     std::lock_guard<std::mutex> lock(resource_mutex);
     texture_by_effect_[effect][info.name] = texture;
     texture_by_name_[info.name] = texture;
@@ -2681,8 +2695,16 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
     if (++collect_calls_ % 256 == 0) {
       ReportTextureCensusLocked();
     }
+    XELOGD(
+        "[xna] collect textures: effect {}, {} slot(s), {} sampler(s), {} "
+        "named binding(s)",
+        effect, count, samplers.size(), bindings->size());
     const auto describe = [&](uint32_t texture, uint32_t slot) {
       if (slot >= count || slot >= kMaxTextures) {
+        XELOGD(
+            "[xna]    slot {} is past the {} the draw has (limit {}) - "
+            "texture {:08X} dropped",
+            slot, count, kMaxTextures, texture);
         return;
       }
       if (!texture) {
@@ -2715,6 +2737,9 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
       out[slot].tiled = found->second.resolves != 0;
       out[slot].handle = texture;
       out[slot].type = found->second.type;
+      XELOGD("[xna]    bound texture {:08X} ({}x{} format {}) to slot {}",
+             texture, found->second.width, found->second.height,
+             found->second.format, slot);
       // The sampler state the title bound to this same slot decides wrap vs
       // clamp and point vs linear. Without it every world texture was clamped,
       // so a wrapped facade showed one stretched edge instead of tiling.
@@ -2746,12 +2771,14 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
     // and that link lives in the effect's sampler state, which is not parsed
     // yet. Until it is, they are paired on their stem - leading underscore
     // gone, one trailing Sampler/Texture/Map removed - which joins every pair
-    // this title uses. Each pairing is logged, and so is every sampler left
-    // without a texture, so the log says outright where the convention fails
-    // instead of the screen going quietly black.
+    // this title uses. Every outcome is logged - which rule matched, and what
+    // the effect had on offer when none did - because this loop failing shows
+    // up as nothing but a screen holding its clear colour.
     for (const auto& entry : samplers) {
+      const char* how = "by name";
       auto bound = bindings->find(entry.first);
       if (bound == bindings->end()) {
+        how = "by stem";
         const std::string want = TextureNameStem(entry.first);
         for (auto it = bindings->begin(); it != bindings->end(); ++it) {
           if (TextureNameStem(it->first) == want) {
@@ -2768,6 +2795,7 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
       // wins over _SourceTexture for a SourceDepth sampler. This is what left
       // the post-process source - the whole rendered scene - unbound.
       if (bound == bindings->end()) {
+        how = "by stem prefix";
         const std::string want = TextureNameStem(entry.first);
         size_t best = 0;
         for (auto it = bindings->begin(); it != bindings->end(); ++it) {
@@ -2780,9 +2808,33 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
           }
         }
       }
-      if (bound == bindings->end() || !bound->second) {
+      if (bound == bindings->end()) {
+        std::string offered;
+        for (const auto& candidate : *bindings) {
+          if (!offered.empty()) {
+            offered += ", ";
+          }
+          offered += candidate.first;
+        }
+        if (offered.empty()) {
+          offered = "nothing";
+        }
+        XELOGD(
+            "[xna]    sampler \"{}\" (s{}) has no texture - stem \"{}\", "
+            "effect {} offers: {}",
+            entry.first, entry.second, TextureNameStem(entry.first), effect,
+            offered);
         continue;
       }
+      if (!bound->second) {
+        XELOGD(
+            "[xna]    sampler \"{}\" (s{}) matched \"{}\" {}, but it holds "
+            "no texture",
+            entry.first, entry.second, bound->first, how);
+        continue;
+      }
+      XELOGD("[xna]    sampler \"{}\" (s{}) <- \"{}\" {} = texture {:08X}",
+             entry.first, entry.second, bound->first, how, bound->second);
       describe(bound->second, entry.second);
     }
   }
@@ -4561,22 +4613,21 @@ extern "C" uint32_t xna_D3D_D3D_Effect_GetParameter(uint32_t device,
   WriteName(out_name, parameter.name);
   WriteName(out_semantic, std::string());
 
-  // PER EFFECT, NOT GLOBAL. The previous trace was capped at four calls across
-  // the whole run, which SpriteBatch exhausted before BasicEffect - the effect
-  // that actually fails - logged anything at all. Counting per effect says how
-  // many of its parameters the collection actually asked for, which is the
-  // question: 26 calls means the collection is built and the name lookup is
-  // what fails, one call means the loop stops after the first.
+  // EVERY CALL. A cap here hides the question it exists to answer - which
+  // parameters the title's collection actually asked for. The class and type
+  // go with it because a texture parameter reported as anything but
+  // class 3 / type 5..9 makes EffectParameter.SetValue(Texture) throw instead
+  // of sending its packet.
   {
     static std::mutex counts_mutex;
     static std::map<uint32_t, uint32_t> counts;
     std::lock_guard<std::mutex> lock(counts_mutex);
     const uint32_t seen = ++counts[input[0]];
-    const bool last = index + 1 == image->parameters.size();
-    if (seen <= 2 || last) {
-      XELOGI("[xna] GetParameter effect {} index {} -> \"{}\" (call {} of {})",
-             input[0], index, parameter.name, seen, image->parameters.size());
-    }
+    XELOGD(
+        "[xna] GetParameter effect {} index {} -> \"{}\" class {} type {} "
+        "(call {} of {})",
+        input[0], index, parameter.name, out_desc ? out_desc[0] : 0,
+        out_desc ? out_desc[1] : 0, seen, image->parameters.size());
   }
   return index + 1;
 }

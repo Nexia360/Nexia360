@@ -263,6 +263,25 @@ class KernelState {
   void UnloadUserModule(const object_ref<UserModule>& module,
                         bool call_entry = true);
 
+  // The reference XexLoadImage keeps on a module until XexUnloadImage balances
+  // it. Terminating a title drops whatever is left.
+  void RetainLoaderModule(const object_ref<UserModule>& module);
+  void ReleaseLoaderModule(UserModule* module);
+
+  // Every guest thread's stack, resolved to guest addresses. A title that
+  // stops making kernel calls is spinning in its own code, and the log has
+  // nothing to say about where - this does.
+  void DumpGuestThreads(const std::string_view reason);
+
+  // Watches the kernel-call heartbeat and dumps the guest threads when a
+  // running title stops making any call at all. A lock-up cannot be caught by
+  // hand: the window may not be processing input either.
+  void StartHangWatchdog();
+  void StopHangWatchdog();
+
+  // Keeps the PCR and TLS of every live thread out of the teardown sweep.
+  void PinLiveThreadBlocks();
+
   object_ref<KernelModule> GetKernelModule(const std::string_view name);
   template <typename T>
   object_ref<KernelModule> LoadKernelModule() {
@@ -400,7 +419,14 @@ class KernelState {
   uint32_t hosted_title_id_ = 0;
   std::vector<object_ref<KernelModule>> kernel_modules_;
   std::vector<object_ref<UserModule>> user_modules_;
+  // XexLoadImage holds a module alive until the matching XexUnloadImage. Held
+  // here rather than as a bare leaked reference, so terminating a title that
+  // never unloads its DLLs can still drop them - see RetainLoaderModule.
+  std::vector<object_ref<UserModule>> loader_modules_;
   std::vector<TerminateNotification> terminate_notifications_;
+
+  std::unique_ptr<xe::threading::Thread> hang_watchdog_;
+  std::atomic<bool> hang_watchdog_running_ = {false};
   uint32_t kernel_guest_globals_ = 0;
 
   std::atomic<bool> dispatch_thread_running_;

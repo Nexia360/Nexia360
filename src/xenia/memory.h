@@ -379,6 +379,11 @@ class Memory {
   void MarkSystemHeapWatermark();
   // Frees system blocks allocated since the watermark, newest first.
   uint32_t ReleaseSystemHeapSinceWatermark();
+
+  // Keeps a block out of the next watermark sweep. A thread that outlives the
+  // title it belonged to still needs its own guest blocks, and the sweep has
+  // no idea who owns what.
+  void PinSystemHeapBlock(uint32_t address);
   uint32_t ReleaseTitleAllocations(
       const std::vector<std::pair<uint32_t, uint32_t>>& keep);
 

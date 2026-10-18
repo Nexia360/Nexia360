@@ -221,6 +221,26 @@ static bool exception_pointers_handler(HostExceptionReport* report) {
 
   report->AddString(except_message.c_str());
 
+  // The address that was actually touched. Windows' own message for an access
+  // violation carries %p placeholders it will not fill for us, so without this
+  // the one number that says what went wrong is missing from every report.
+  const auto* record = report->ExceptionInfo->ExceptionRecord;
+  if ((except_code == EXCEPTION_ACCESS_VIOLATION ||
+       except_code == EXCEPTION_IN_PAGE_ERROR) &&
+      record->NumberParameters >= 2) {
+    // 0 read, 1 write, 8 execute (DEP) - not a dense range.
+    const ULONG_PTR operation = record->ExceptionInformation[0];
+    const char* what = operation == 0   ? "read"
+                       : operation == 1 ? "write"
+                       : operation == 8 ? "execute"
+                                        : "access";
+    const auto address =
+        reinterpret_cast<void*>(record->ExceptionInformation[1]);
+    report->AddString(fmt::format("Access Violation: {} at {}\n", what,
+                                  report->GetFormattedAddress(address))
+                          .c_str());
+  }
+
   return true;
 }
 

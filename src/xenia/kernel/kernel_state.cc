@@ -11,10 +11,12 @@
 
 #include "xenia/kernel/kernel_state.h"
 
+#include <algorithm>
 #include <chrono>
 #include <vector>
 
 #include "xenia/base/byte_stream.h"
+#include "xenia/cpu/stack_walker.h"
 #include "xenia/base/clock.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/threading.h"
@@ -88,9 +90,13 @@ KernelState::KernelState(Emulator* emulator)
       kMemoryProtectRead | kMemoryProtectWrite);
 
   xenia_assert(fixed_alloc_worked);
+
+  StartHangWatchdog();
 }
 
 KernelState::~KernelState() {
+  StopHangWatchdog();
+
   SetExecutableModule(nullptr);
 
   if (dispatch_thread_running_) {
@@ -959,6 +965,153 @@ X_RESULT KernelState::ApplyTitleUpdate(
   return result;
 }
 
+void KernelState::DumpGuestThreads(const std::string_view reason) {
+  auto* stack_walker = processor() ? processor()->stack_walker() : nullptr;
+  if (!stack_walker) {
+    XELOGE("DumpGuestThreads({}): no stack walker", reason);
+    return;
+  }
+
+  std::vector<object_ref<XThread>> threads;
+  {
+    auto global_lock = global_critical_region_.Acquire();
+    for (const auto& [id, thread] : threads_by_id_) {
+      if (thread && !thread->is_host_object()) {
+        threads.push_back(retain_object(thread));
+      }
+    }
+  }
+
+  XELOGE("==== GUEST THREAD DUMP ({}) - {} thread(s) ====", reason,
+         threads.size());
+  for (const auto& thread : threads) {
+    auto* host_thread = thread->thread();
+    if (!host_thread) {
+      continue;
+    }
+    XELOGE(" thread {:08X} '{}' cpu {}", thread->handle(), thread->name(),
+           thread->active_cpu());
+
+    // The walker needs the thread held still, and the frames are only
+    // meaningful while it is.
+    host_thread->Suspend();
+    uint64_t host_pcs[64] = {};
+    cpu::StackFrame frames[64] = {};
+    const size_t count = stack_walker->CaptureStackTrace(
+        host_thread->native_handle(), host_pcs, 0, xe::countof(host_pcs),
+        nullptr, nullptr, nullptr);
+    const bool resolved =
+        count && stack_walker->ResolveStack(host_pcs, frames, count);
+    host_thread->Resume();
+
+    if (!resolved) {
+      XELOGE("   <no frames>");
+      continue;
+    }
+    for (size_t i = 0; i < count; ++i) {
+      const auto& frame = frames[i];
+      if (frame.type == cpu::StackFrame::Type::kGuest) {
+        auto* function = frame.guest_symbol.function;
+        XELOGE("   [{:2}] guest {:08X} {}", i, frame.guest_pc,
+               function ? function->name() : "");
+      } else {
+        XELOGE("   [{:2}] host  {:016X} {}", i, frame.host_pc,
+               frame.host_symbol.name);
+      }
+    }
+  }
+  XELOGE("==== END GUEST THREAD DUMP ====");
+}
+
+void KernelState::PinLiveThreadBlocks() {
+  // A thread that outlives the title keeps its PCR and KTHREAD, and the sweep
+  // has no idea who owns what. Handing a live thread's blocks to a new one
+  // gives two threads the same KTHREAD address - and since a guest critical
+  // section decides ownership by comparing that address, both of them then
+  // believe they hold every lock the other takes.
+  auto global_lock = global_critical_region_.Acquire();
+  for (const auto& [id, thread] : threads_by_id_) {
+    if (thread) {
+      thread->PinGuestBlocks();
+    }
+  }
+}
+
+void KernelState::StartHangWatchdog() {
+  if (hang_watchdog_running_.exchange(true)) {
+    return;
+  }
+  hang_watchdog_ = xe::threading::Thread::Create({}, [this]() {
+    xe::threading::set_name("Hang Watchdog");
+    XELOGD("Hang watchdog: started");
+    uint64_t last_calls = 0;
+    uint32_t still = 0;
+    bool reported = false;
+    while (hang_watchdog_running_.load(std::memory_order_relaxed)) {
+      xe::threading::Sleep(std::chrono::seconds(2));
+      const uint64_t calls = XThread::kernel_call_count();
+      // Zero means no guest code has ever entered the kernel, i.e. the
+      // emulator is sitting idle with nothing loaded. That is not a hang.
+      if (calls == 0) {
+        still = 0;
+        reported = false;
+        continue;
+      }
+      if (calls != last_calls) {
+        last_calls = calls;
+        still = 0;
+        reported = false;
+        continue;
+      }
+      // NO title_open GATE. A title that wedges during its own teardown or
+      // before the launch completes is exactly when this is wanted, and the
+      // gate made the watchdog silent for those.
+      ++still;
+      if (still <= 6) {
+        XELOGD("Hang watchdog: still at {} call(s) for {} second(s)", calls,
+               still * 2);
+      }
+      // Ten seconds without the title asking the kernel for anything. The one
+      // line that says WHY the dump below appeared stays at error level; the
+      // per-tick chatter above is only useful when you are already watching.
+      if (still >= 5 && !reported) {
+        reported = true;
+        XELOGE("Hang watchdog: no kernel call for {} second(s)", still * 2);
+        DumpGuestThreads("hang watchdog");
+      }
+    }
+    XELOGD("Hang watchdog: stopped");
+  });
+}
+
+void KernelState::StopHangWatchdog() {
+  if (!hang_watchdog_running_.exchange(false)) {
+    return;
+  }
+  if (hang_watchdog_) {
+    // Thread derives from WaitHandle, so this is the free Wait, not XThread's.
+    xe::threading::Wait(hang_watchdog_.get(), false,
+                        std::chrono::milliseconds(3000));
+    hang_watchdog_.reset();
+  }
+}
+
+void KernelState::RetainLoaderModule(const object_ref<UserModule>& module) {
+  auto global_lock = global_critical_region_.Acquire();
+  loader_modules_.push_back(module);
+}
+
+void KernelState::ReleaseLoaderModule(UserModule* module) {
+  auto global_lock = global_critical_region_.Acquire();
+  auto it = std::find_if(loader_modules_.begin(), loader_modules_.end(),
+                         [module](const object_ref<UserModule>& held) {
+                           return held.get() == module;
+                         });
+  if (it != loader_modules_.end()) {
+    loader_modules_.erase(it);
+  }
+}
+
 void KernelState::UnloadUserModule(const object_ref<UserModule>& module,
                                    bool call_entry) {
   auto global_lock = global_critical_region_.Acquire();
@@ -1081,8 +1234,16 @@ void KernelState::TerminateTitle(bool clear_handles) {
     }
   }
 
-  XELOGI("TerminateTitle: unloading {} user modules", user_modules_.size());
+  XELOGI("TerminateTitle: unloading {} user modules ({} held by the loader)",
+         user_modules_.size(), loader_modules_.size());
   // Third: Unload all user modules (including the executable).
+  //
+  // The loader's references go first. A title killed mid-run never calls the
+  // XexUnloadImage that would balance its XexLoadImage, so without this every
+  // DLL it loaded outlives it - and because ~XModule is what calls
+  // Processor::RemoveModule, the dead module stays registered and shadows the
+  // next title's module of the same name at the same base address.
+  loader_modules_.clear();
   for (size_t i = 0; i < user_modules_.size(); i++) {
     user_modules_[i]->ReleaseHandle();
   }

@@ -358,6 +358,25 @@ void KeSetCurrentStackPointers_entry(lpvoid_t stack_ptr,
 DECLARE_XBOXKRNL_EXPORT2(KeSetCurrentStackPointers, kThreading, kImplemented,
                          kHighFrequency);
 
+// A guest pointer we are about to read a dispatch header out of.
+// GetNativeObject dereferences it immediately, so a bad one faults inside the
+// kernel instead of coming back as an error the title can handle.
+static bool IsValidGuestDispatchPointer(uint32_t guest_address) {
+  if (!guest_address || (guest_address & 3)) {
+    return false;
+  }
+  auto* memory = kernel_state()->memory();
+  auto* heap = memory ? memory->LookupHeap(guest_address) : nullptr;
+  if (!heap) {
+    return false;
+  }
+  HeapAllocationInfo info = {};
+  if (!heap->QueryRegionInfo(guest_address, &info)) {
+    return false;
+  }
+  return (info.state & kMemoryAllocationCommit) != 0;
+}
+
 dword_result_t KeSetAffinityThread_entry(lpvoid_t thread_ptr, dword_t affinity,
                                          lpdword_t previous_affinity_ptr) {
   // The Xbox 360, according to disassembly of KeSetAffinityThread, unlike
@@ -366,6 +385,14 @@ dword_result_t KeSetAffinityThread_entry(lpvoid_t thread_ptr, dword_t affinity,
   // result.
   if (!affinity) {
     return X_STATUS_INVALID_PARAMETER;
+  }
+  // GetNativeObject reads the dispatch header straight off this pointer, so a
+  // guest that hands us a bad one faults inside the kernel rather than getting
+  // an error back.
+  if (!IsValidGuestDispatchPointer(thread_ptr.guest_address())) {
+    XELOGE("KeSetAffinityThread: guest thread pointer {:08X} is not usable",
+           thread_ptr.guest_address());
+    return X_STATUS_INVALID_HANDLE;
   }
   auto thread = XObject::GetNativeObject<XThread>(kernel_state(), thread_ptr);
   if (!thread) {
@@ -376,6 +403,15 @@ dword_result_t KeSetAffinityThread_entry(lpvoid_t thread_ptr, dword_t affinity,
     return X_STATUS_INVALID_HANDLE;
   }
   if (previous_affinity_ptr) {
+    // The OUT pointer is guest-supplied too, and writing through a bad one
+    // faults in the kernel exactly like a bad thread pointer does.
+    if (!IsValidGuestDispatchPointer(previous_affinity_ptr.guest_address())) {
+      XELOGE(
+          "KeSetAffinityThread: previous-affinity pointer {:08X} is not "
+          "writable",
+          previous_affinity_ptr.guest_address());
+      return X_STATUS_INVALID_PARAMETER;
+    }
     *previous_affinity_ptr = uint32_t(1) << thread->active_cpu();
   }
   thread->SetAffinity(affinity);
@@ -386,6 +422,12 @@ DECLARE_XBOXKRNL_EXPORT1(KeSetAffinityThread, kThreading, kImplemented);
 dword_result_t KeQueryBasePriorityThread_entry(lpvoid_t thread_ptr) {
   int32_t priority = 0;
 
+  if (!IsValidGuestDispatchPointer(thread_ptr.guest_address())) {
+    XELOGE("KeQueryBasePriorityThread: guest thread pointer {:08X} is not "
+           "usable",
+           thread_ptr.guest_address());
+    return 0;
+  }
   auto thread = XObject::GetNativeObject<XThread>(kernel_state(), thread_ptr);
   if (thread) {
     priority = thread->QueryPriority();

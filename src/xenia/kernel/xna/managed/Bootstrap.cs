@@ -510,6 +510,7 @@ public static unsafe class Bootstrap {
   }
 
   private static void RunTitle(string gamePath) {
+    int exitCode = 0;
     try {
       string titleDir = Path.GetDirectoryName(Path.GetFullPath(gamePath));
       XnaOs.Log($"loading {gamePath}");
@@ -558,9 +559,15 @@ public static unsafe class Bootstrap {
       LogRecentThrows();
       // What the title got through before it died is the list worth reading.
       XnaOs.Log(ExportUsage());
+      exitCode = -1;
     } catch (Exception e) {
       XnaOs.Log(XnaOs.Level.Error, $"title failed: {e}");
       LogRecentThrows();
+      exitCode = -1;
+    } finally {
+      // Nothing else can see a hosted title end - this thread is the title.
+      // Without it the emulator sits on a dead title with no way back.
+      XnaOs.TitleExited(exitCode);
     }
   }
 }

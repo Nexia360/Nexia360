@@ -92,6 +92,18 @@ class ImGuiDrawer : public WindowInputListener, public UIDrawer {
 
   ImmediateTexture* GetLoadingTileIcon() { return loading_tile_icon_.get(); }
 
+  // THE ONLY SAFE WAY FOR A DIALOG TO FREE A TEXTURE. ImGui records draw
+  // commands holding a raw ImmediateTexture*, and they are not consumed until
+  // RenderDrawLists later in the SAME paint - while ImGuiDialog::Draw deletes
+  // a closing dialog the moment its OnDraw returns, well before that. Freeing
+  // a texture from a dialog destructor therefore hands D3D12 a dead pointer.
+  // Textures parked here are released once the frame has been rendered.
+  void ReleaseTextureDeferred(std::unique_ptr<ImmediateTexture> texture) {
+    if (texture) {
+      textures_pending_release_.push_back(std::move(texture));
+    }
+  }
+
   ImFont* GetTitleFont() {
     if (!GetIO().Fonts->Fonts[1]->IsLoaded()) {
       return GetIO().Fonts->Fonts[0];
@@ -204,6 +216,10 @@ class ImGuiDrawer : public WindowInputListener, public UIDrawer {
   std::unique_ptr<ImmediateTexture> loading_tile_icon_;
 
   std::vector<std::unique_ptr<ImmediateTexture>> notification_icon_textures_;
+
+  // Freed after the frame that may still reference them has been rendered -
+  // see ReleaseTextureDeferred.
+  std::vector<std::unique_ptr<ImmediateTexture>> textures_pending_release_;
 
   // If there's an active pointer, the ImGui mouse is controlled by this touch.
   // If it's TouchEvent::kPointerIDNone, the ImGui mouse is controlled by the

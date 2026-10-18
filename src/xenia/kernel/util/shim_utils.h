@@ -599,6 +599,7 @@ struct ExportRegistrerHelper {
       static void Trampoline(PPCContext* ppc_context) {
         // Teardown asks guest threads to leave; this is where they notice.
         XThread::CheckExitRequest();
+        XThread::NoteKernelCall();
         Param::Init init = {
             ppc_context,
             0,
@@ -632,6 +633,7 @@ struct ExportRegistrerHelper {
       static void Trampoline(PPCContext* ppc_context) {
         // Teardown asks guest threads to leave; this is where they notice.
         XThread::CheckExitRequest();
+        XThread::NoteKernelCall();
         Param::Init init = {
             ppc_context,
             0,

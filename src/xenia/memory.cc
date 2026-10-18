@@ -34,8 +34,15 @@
 // TODO(benvanik): move xbox.h out
 #include "xenia/xbox.h"
 
-DEFINE_bool(protect_zero, true, "Protect the zero page from reads and writes.",
+// OFF BY DEFAULT. The console leaves the low page readable, so titles that
+// read through a null pointer keep running there; protecting it turns those
+// into crashes that only ever happen under emulation. It was on to cover a
+// bug that has since been fixed, and left on it made users flip it by hand.
+DEFINE_bool(protect_zero, false, "Protect the zero page from reads and writes.",
             "Memory");
+// Moves anyone still holding the old true onto false, so an existing config
+// does not keep turning the console's readable low page into a crash.
+UPDATE_from_bool(protect_zero, 2026, 9, 28, 18, true);
 DEFINE_bool(emit_inline_mmio_checks, false,
             "Emit inline MMIO range checks for all I32 loads/stores instead "
             "of relying on exception-based MMIO detection.",
@@ -838,6 +845,20 @@ void Memory::MarkSystemHeapWatermark() {
          system_alloc_watermark_, system_allocs_.size());
 }
 
+void Memory::PinSystemHeapBlock(uint32_t address) {
+  if (!address) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(system_alloc_mutex_);
+  auto it = system_allocs_.find(address);
+  if (it == system_allocs_.end()) {
+    return;
+  }
+  // Order zero is below every watermark, so the sweep leaves it alone and the
+  // owner frees it when it is actually done with it.
+  it->second.order = 0;
+}
+
 uint32_t Memory::ReleaseSystemHeapSinceWatermark() {
   std::vector<std::pair<uint64_t, uint32_t>> doomed;  // order, address
   uint64_t bytes = 0;
@@ -887,12 +908,23 @@ uint32_t Memory::SystemHeapAlloc(uint32_t size, uint32_t alignment,
 }
 
 void Memory::SystemHeapFree(uint32_t address, uint32_t* out_region_size) {
+  if (out_region_size) {
+    *out_region_size = 0;
+  }
   if (!address) {
     return;
   }
   {
     std::lock_guard<std::mutex> lock(system_alloc_mutex_);
-    system_allocs_.erase(address);
+    // ONLY A BLOCK WE STILL OWN. The teardown sweep frees whatever a title
+    // left behind, and the owner of each of those blocks comes back and frees
+    // the same address afterwards. Releasing unconditionally made that second
+    // free real: by then the page could already have been handed to something
+    // else - a new thread's PCR, in the case that cost a title switch - and
+    // the release pulled it out from under the new owner.
+    if (!system_allocs_.erase(address)) {
+      return;
+    }
   }
   // TODO(benvanik): lightweight pool.
   auto heap = LookupHeap(address);
@@ -1319,6 +1351,7 @@ uint32_t BaseHeap::ReleaseUnmarked(
 }
 
 void BaseHeap::Reset() {
+  XELOGD("BaseHeap::Reset({:08X}): clearing the whole page table", heap_base_);
   // TODO(DrChat): protect pages.
   std::memset(page_table_.data(), 0, sizeof(PageEntry) * page_table_.size());
   unreserved_page_count_ = uint32_t(page_table_.size());
@@ -1675,6 +1708,12 @@ bool BaseHeap::Decommit(uint32_t address, uint32_t size) {
     page_entry.state &= ~kMemoryAllocationCommit;
   }
 
+  // DECOMMIT DOES NOT RELEASE. Handing the reservation back here takes the
+  // address range away from a title that is still running and still tracking
+  // it - Source's tier0 keeps a table covering everything it reserved, and
+  // indexes it by address, so a range released out from under it walks off the
+  // end of that table and faults. The leaked reservations this was meant to
+  // reclaim are reclaimed at title teardown by ReleaseTitleAllocations.
   return true;
 }
 
@@ -1695,6 +1734,14 @@ bool BaseHeap::Release(uint32_t base_address, uint32_t* out_region_size) {
         uint32_t(base_page_entry.region_page_count),
         uint32_t(base_page_entry.state));
     return false;
+  }
+
+  // The 64K heap is where module images live, and an image released by anyone
+  // other than XexModule::Unload is what leaves Unload reporting a region that
+  // is already gone.
+  if (page_size_ == 0x10000) {
+    XELOGD("BaseHeap::Release({:08X}) releasing {:X} page(s)", base_address,
+           uint32_t(base_page_entry.region_page_count));
   }
 
   if (heap_base_ == 0x00000000 && base_page_number == 0) {

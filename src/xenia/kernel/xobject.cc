@@ -420,6 +420,28 @@ void XObject::SetNativePointer(uint32_t native_ptr, bool uninitialized) {
   guest_object_ptr_ = native_ptr;
 }
 
+// The guest dispatcher types the switch below builds objects for, against the
+// host object a stashed handle resolved to.
+static bool MatchesDispatchType(XObject::Type type, int32_t as_type) {
+  switch (as_type) {
+    case 0:  // EventNotificationObject
+    case 1:  // EventSynchronizationObject
+      return type == XObject::Type::Event;
+    case 2:  // MutantObject
+      return type == XObject::Type::Mutant;
+    case 5:  // SemaphoreObject
+      return type == XObject::Type::Semaphore;
+    case 6:  // ThreadObject
+      return type == XObject::Type::Thread;
+    case 8:   // TimerNotificationObject
+    case 9:   // TimerSynchronizationObject
+      return type == XObject::Type::Timer;
+    default:
+      // Nothing is built for the rest, so nothing can be checked against them.
+      return true;
+  }
+}
+
 object_ref<XObject> XObject::GetNativeObject(KernelState* kernel_state,
                                              void* native_ptr, int32_t as_type,
                                              bool already_locked) {
@@ -446,12 +468,32 @@ object_ref<XObject> XObject::GetNativeObject(KernelState* kernel_state,
 
   if (header->wait_list.flink_ptr == kXObjSignature) {
     // Already initialized.
-    // TODO: assert if the type of the object != as_type
+    //
+    // THE HANDLE LIVES IN GUEST MEMORY, so it outlives the object table it
+    // came from. After a title switch the table is purged and the same handle
+    // is handed to something else entirely - and every caller here casts the
+    // result to the type it asked for without checking. A guest KTHREAD left
+    // over from the previous title then became, say, an event, and the first
+    // XThread call on it walked off into nothing.
     uint32_t handle = header->wait_list.blink_ptr;
     result = kernel_state->object_table()
                  ->LookupObject<XObject>(handle, true)
                  .release();
-  } else {
+    if (result && !MatchesDispatchType(result->type(), as_type)) {
+      XELOGE(
+          "XObject::GetNativeObject: stale handle {:08X} at {:08X} is a {} "
+          "now, not dispatch type {} - treating as uninitialized",
+          handle, kernel_state->memory()->HostToGuestVirtual(native_ptr),
+          uint32_t(result->type()), as_type);
+      result->Release();
+      result = nullptr;
+    }
+    if (!result) {
+      // Fall through and build a fresh object over the guest structure.
+      header->wait_list.flink_ptr = 0;
+    }
+  }
+  if (header->wait_list.flink_ptr != kXObjSignature) {
     // First use, create new.
     // https://www.nirsoft.net/kernel_struct/vista/KOBJECTS.html
     XObject* object = nullptr;

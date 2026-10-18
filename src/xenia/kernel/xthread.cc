@@ -28,9 +28,13 @@
 #include "xenia/kernel/user_module.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_threading.h"
 
-DEFINE_bool(ignore_thread_priorities, false,
+DEFINE_bool(ignore_thread_priorities, true,
             "Ignores game-specified thread priorities.", "Kernel");
 UPDATE_from_bool(ignore_thread_priorities, 2026, 4, 9, 12, true);
+// Back to true. The 2026-04-09 update moved everyone onto false; this moves
+// anyone still sitting on that false back, so an existing config does not keep
+// honouring guest priorities.
+UPDATE_from_bool(ignore_thread_priorities, 2026, 9, 28, 18, false);
 DEFINE_bool(ignore_thread_affinities, true,
             "Ignores game-specified thread affinities.", "Kernel");
 
@@ -94,7 +98,11 @@ XThread::~XThread() {
     delete thread_state_;
   }
   kernel_state()->memory()->SystemHeapFree(tls_static_address_);
-  kernel_state()->memory()->SystemHeapFree(pcr_address_);
+  if (pcr_address_) {
+    XELOGD("XThread{:08X} ({:X}) destroyed, freeing PCR {:08X}", handle(),
+           thread_id_, pcr_address_);
+    kernel_state()->memory()->SystemHeapFree(pcr_address_);
+  }
   FreeStack();
 
   if (thread_) {
@@ -433,6 +441,9 @@ X_STATUS XThread::Create() {
 
   pcr->prcb_data.dpc_active = 0;  // DPC active bool?
 
+  XELOGD("XThread{:08X} ({:X}) PCR {:08X}, KTHREAD {:08X}", handle(),
+         thread_id_, pcr_address_, guest_object());
+
   // Always retain when starting - the thread owns itself until exited.
   RetainHandle();
 
@@ -536,6 +547,8 @@ X_STATUS XThread::Exit(int exit_code) {
   xe::Profiler::ThreadExit();
 
   running_ = false;
+  XELOGD("XThread{:08X} ({:X}) exited, code {}", handle(), thread_id_,
+         exit_code);
   ReleaseHandle();
 
   // NOTE: this does not return!
@@ -566,15 +579,45 @@ X_STATUS XThread::Terminate(int exit_code) {
   return X_STATUS_SUCCESS;
 }
 
+std::atomic<uint64_t> XThread::kernel_calls_ = {0};
+
+void XThread::NoteKernelCall() {
+  kernel_calls_.fetch_add(1, std::memory_order_relaxed);
+}
+
 void XThread::CheckExitRequest() {
+  // NO HEARTBEAT HERE. An infinite guest wait re-enters this every 50 ms to
+  // stay interruptible, so counting it kept the hang watchdog's heartbeat
+  // alive at 20 Hz on a completely wedged title - the watchdog never fired
+  // once in a whole session. Only a real export bumps it, from the shim
+  // trampolines.
   XThread* thread = current_xthread_tls_;
   if (!thread || !thread->exit_requested_.load(std::memory_order_relaxed)) {
     return;
   }
   thread->exit_requested_.store(false);
-  XELOGI("XThread{:08X} ({:X}) exiting cooperatively", thread->handle(),
+  XELOGD("XThread{:08X} ({:X}) exiting cooperatively", thread->handle(),
          thread->thread_id());
   thread->Exit(0);  // does not return
+}
+
+void XThread::PinGuestBlocks() {
+  auto* memory = kernel_state()->memory();
+  memory->PinSystemHeapBlock(pcr_address_);
+  memory->PinSystemHeapBlock(tls_static_address_);
+  // The KTHREAD too, and it is NOT at guest_object(): CreateNative allocates
+  // one block holding an X_OBJECT_HEADER followed by the object, and hands
+  // back the address of the object. Missing this is what let a live thread's
+  // KTHREAD be handed to a new one - and a guest critical section decides who
+  // owns it by comparing exactly that address.
+  if (guest_object()) {
+    const uint32_t object_block = guest_object() - sizeof(X_OBJECT_HEADER);
+    memory->PinSystemHeapBlock(object_block);
+    auto* header = memory->TranslateVirtual<X_OBJECT_HEADER*>(object_block);
+    memory->PinSystemHeapBlock(header->object_type_ptr);
+  }
+  XELOGD("XThread{:08X} ({:X}) pinned PCR {:08X}, KTHREAD {:08X}", handle(),
+         thread_id_, pcr_address_, guest_object());
 }
 
 void XThread::Abandon() {
@@ -592,6 +635,8 @@ void XThread::Abandon() {
     tls_static_address_ = 0;
   }
   if (pcr_address_) {
+    XELOGD("XThread{:08X} ({:X}) abandoned, freeing PCR {:08X}", handle(),
+           thread_id_, pcr_address_);
     memory->SystemHeapFree(pcr_address_);
     pcr_address_ = 0;
   }
@@ -889,6 +934,11 @@ void XThread::SetAffinity(uint32_t affinity) {
 }
 
 uint8_t XThread::active_cpu() const {
+  // Abandon() releases the PCR and zeroes this, and a thread can outlive the
+  // title that made it - so the guest can still reach one whose PCR is gone.
+  if (!pcr_address_) {
+    return 0;
+  }
   const X_KPCR& pcr = *memory()->TranslateVirtual<const X_KPCR*>(pcr_address_);
   return pcr.prcb_data.current_cpu;
 }
@@ -897,6 +947,12 @@ void XThread::SetActiveCpu(uint8_t cpu_index) {
   // May be called during thread creation - don't skip if current == new.
 
   assert_true(cpu_index < 6);
+
+  if (!pcr_address_) {
+    XELOGW("XThread{:08X} ({:X}): SetActiveCpu with no PCR, ignored", handle(),
+           thread_id_);
+    return;
+  }
 
   X_KPCR& pcr = *memory()->TranslateVirtual<X_KPCR*>(pcr_address_);
   pcr.prcb_data.current_cpu = cpu_index;
@@ -955,11 +1011,46 @@ X_STATUS XThread::Resume(uint32_t* out_suspend_count) {
   uint32_t unused_host_suspend_count = 0;
 
 #if XE_PLATFORM_WIN32
-  uint8_t previous_suspend_count =
-      reinterpret_cast<std::atomic_uint8_t*>(&guest_thread->suspend_count)
-          ->fetch_sub(1);
+  // NEVER BELOW ZERO. suspend_count is a uint8_t living in the guest's own
+  // X_KTHREAD, so decrementing it at zero wraps it to 255 - and the next
+  // Suspend then adds one, reads zero, takes its "wrapped, so not suspended"
+  // path and never suspends the host thread at all. After that the counts are
+  // fiction.
+  //
+  // Clamping the guest count is NOT a reason to skip the host resume: the two
+  // counts are separate, and stopping here when they disagree left six guest
+  // threads suspended with nothing able to wake them.
+  uint8_t previous_suspend_count = 0;
+  {
+    auto* suspend_count =
+        reinterpret_cast<std::atomic_uint8_t*>(&guest_thread->suspend_count);
+    previous_suspend_count = suspend_count->load();
+    while (previous_suspend_count > 0 &&
+           !suspend_count->compare_exchange_weak(previous_suspend_count,
+                                                 previous_suspend_count - 1)) {
+    }
+  }
+  // Signal after the count has dropped. A self-suspending thread re-reads the
+  // count every time it wakes, so an early or duplicate set only costs it one
+  // extra loop.
+  if (self_suspend_event_) {
+    self_suspend_event_->Set();
+  }
   if (out_suspend_count) {
     *out_suspend_count = previous_suspend_count;
+  }
+  {
+    auto* caller = XThread::GetCurrentThread();
+    XELOGD("XThread{:08X} ({:X}) RESUMED by {:08X}, guest count was {}",
+           handle(), thread_id_, caller ? caller->handle() : 0,
+           uint32_t(previous_suspend_count));
+  }
+  if (previous_suspend_count == 0) {
+    // The guest count is clamped, but the HOST suspend count is its own thing
+    // and can be higher - a resume that stops here leaves the thread suspended
+    // with nothing left to wake it. Resuming a thread that is not suspended is
+    // a no-op on Windows, so always drain the host side.
+    XELOGD("XThread::Resume({:08X}): guest count was already zero", handle());
   }
 
   if (thread_->Resume(&unused_host_suspend_count)) {
@@ -968,19 +1059,21 @@ X_STATUS XThread::Resume(uint32_t* out_suspend_count) {
     return X_STATUS_UNSUCCESSFUL;
   }
 #else
-  // Use mutex to protect suspend_count access and coordinate with SelfSuspend.
   bool should_resume_host = false;
   {
-    std::lock_guard<std::mutex> lock(suspend_mutex_);
-    uint8_t previous = guest_thread->suspend_count;
-    if (previous > 0) {
-      guest_thread->suspend_count--;
+    auto* suspend_count =
+        reinterpret_cast<std::atomic_uint8_t*>(&guest_thread->suspend_count);
+    uint8_t previous = suspend_count->load();
+    while (previous > 0 &&
+           !suspend_count->compare_exchange_weak(previous, previous - 1)) {
     }
     if (out_suspend_count) {
       *out_suspend_count = previous;
     }
-    should_resume_host = (guest_thread->suspend_count == 0);
-    suspend_cv_.notify_all();
+    should_resume_host = (suspend_count->load() == 0);
+  }
+  if (self_suspend_event_) {
+    self_suspend_event_->Set();
   }
 
   // Try to resume host thread if fully resumed (for non-self-suspended case).
@@ -997,6 +1090,19 @@ X_STATUS XThread::Suspend(uint32_t* out_suspend_count) {
 
   X_KTHREAD* guest_thread = guest_object<X_KTHREAD>();
 
+  // SELF-SUSPEND COOPERATIVELY. The host SuspendThread blocks inside the call,
+  // so a resume arriving before the thread is actually suspended is spent on a
+  // running thread and the suspend that follows has nothing to undo it.
+  if (XThread::IsInThread(this)) {
+    XELOGD("XThread{:08X} ({:X}) SELF-SUSPENDING", handle(), thread_id_);
+    const uint32_t previous = SelfSuspend();
+    XELOGD("XThread{:08X} ({:X}) self-suspend released", handle(), thread_id_);
+    if (out_suspend_count) {
+      *out_suspend_count = previous;
+    }
+    return X_STATUS_SUCCESS;
+  }
+
   uint8_t previous_suspend_count =
       reinterpret_cast<std::atomic_uint8_t*>(&guest_thread->suspend_count)
           ->fetch_add(1);
@@ -1006,11 +1112,19 @@ X_STATUS XThread::Suspend(uint32_t* out_suspend_count) {
   // If we are suspending ourselves, we can't hold the lock.
   uint32_t unused_host_suspend_count = 0;
 
-  // If we had suspend count wrap around and go back to 0 then thread is not
-  // suspended.
+  // Only reachable if the count wrapped past 255, which it can no longer do
+  // now that Resume clamps at zero. Left as a guard rather than a silent
+  // overflow, because skipping the host suspend here is what stranded a
+  // self-suspending guest thread with nothing to wake it.
   if (guest_thread->suspend_count == 0) {
+    XELOGE("XThread::Suspend({:08X}): suspend count overflowed", handle());
     return X_STATUS_SUCCESS;
   }
+
+  auto* caller = XThread::GetCurrentThread();
+  XELOGD("XThread{:08X} ({:X}) SUSPENDED by {:08X}, guest count now {}",
+         handle(), thread_id_, caller ? caller->handle() : 0,
+         uint32_t(guest_thread->suspend_count));
 
   if (thread_->Suspend(&unused_host_suspend_count)) {
     return X_STATUS_SUCCESS;
@@ -1019,17 +1133,22 @@ X_STATUS XThread::Suspend(uint32_t* out_suspend_count) {
   }
 }
 
-#if !XE_PLATFORM_WIN32
 uint32_t XThread::SelfSuspend() {
   auto guest_thread = guest_object<X_KTHREAD>();
-  std::unique_lock<std::mutex> lock(suspend_mutex_);
-  uint32_t previous = guest_thread->suspend_count;
-  guest_thread->suspend_count++;
-  suspend_cv_.wait(
-      lock, [guest_thread]() { return guest_thread->suspend_count == 0; });
+  auto* suspend_count =
+      reinterpret_cast<std::atomic_uint8_t*>(&guest_thread->suspend_count);
+  const uint32_t previous = suspend_count->fetch_add(1);
+  while (suspend_count->load() != 0) {
+    if (!self_suspend_event_) {
+      break;
+    }
+    // Timed, so a set consumed by the wrong waiter or lost to a teardown can
+    // never strand this thread the way the old condition variable could.
+    xe::threading::Wait(self_suspend_event_.get(), false,
+                        std::chrono::milliseconds(50));
+  }
   return previous;
 }
-#endif  // !XE_PLATFORM_WIN32
 
 X_STATUS XThread::Delay(uint32_t processor_mode, uint32_t alertable,
                         uint64_t interval) {

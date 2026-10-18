@@ -1483,6 +1483,16 @@ void EmulatorWindow::OnKeyDown(ui::KeyEvent& e) {
       }
     } break;
 
+    case ui::VirtualKey::kF10: {
+      // A title that has stopped drawing and stopped calling the kernel is
+      // spinning in its own code, where the log cannot follow it. This is the
+      // only way to ask where it is.
+      auto* kernel_state = emulator()->kernel_state();
+      if (kernel_state) {
+        kernel_state->DumpGuestThreads("F10");
+      }
+    } break;
+
     default:
       return;
   }
@@ -2479,6 +2489,15 @@ void EmulatorWindow::ToggleXuiSceneDialog() {
   xui_scene_dialog_ = new XuiSceneDialog(imgui_drawer_.get(), this);
   xui_scene_dialog_->set_closed_callback(
       [this]() { xui_scene_dialog_ = nullptr; });
+}
+
+void EmulatorWindow::OnXnaTitleExit() {
+  if (emulator_->is_title_open()) {
+    emulator_->TerminateTitle(cvars::title_switch_clear_handles);
+  }
+  // Where a 360 title exit lands. Skipped when cold boot is off, which is the
+  // same rule startup follows.
+  BootToDashboard();
 }
 
 void EmulatorWindow::SwitchTitle() {

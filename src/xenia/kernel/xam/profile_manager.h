@@ -78,8 +78,13 @@ const static inline uint64_t GenerateXuid() {
 
 class ProfileManager {
  public:
-  static bool DecryptAccountFile(const uint8_t* data, X_XAMACCOUNTINFO* output,
-                                 bool devkit = false);
+  // An Account file is 0x10 bytes of hash followed by 8 + sizeof(account)
+  // of RC4'd payload.
+  static constexpr size_t kAccountFileSize =
+      0x10 + 8 + sizeof(X_XAMACCOUNTINFO);
+
+  static bool DecryptAccountFile(const uint8_t* data, size_t data_size,
+                                 X_XAMACCOUNTINFO* output, bool devkit = false);
 
   static void EncryptAccountFile(const X_XAMACCOUNTINFO* input, uint8_t* output,
                                  bool devkit = false);
@@ -137,6 +142,11 @@ class ProfileManager {
   }
   const X_XAMACCOUNTINFO* GetAccount(const uint64_t xuid);
 
+  // Where a profile's files live. Public because content enumeration reports
+  // a profile's size, and this is the only thing that knows the layout.
+  std::filesystem::path GetProfilePath(const uint64_t xuid) const;
+  std::filesystem::path GetProfilePath(const std::string xuid) const;
+
   uint32_t GetAccountCount() const {
     return static_cast<uint32_t>(accounts_.size());
   }
@@ -144,6 +154,11 @@ class ProfileManager {
   uint32_t SignedInProfilesCount() const {
     return static_cast<uint32_t>(logged_profiles_.size());
   }
+
+  // A profile that is not signed in has no UserProfile, so its gamerpic can
+  // only come off disk.
+  std::vector<uint8_t> GetProfileIcon(const uint64_t xuid,
+                                      const XTileType icon_type) const;
 
   std::filesystem::path GetProfileContentPath(
       const uint64_t xuid, const uint32_t title_id = -1,
@@ -167,9 +182,6 @@ class ProfileManager {
   bool CreateAccount(const uint64_t xuid, const X_XAMACCOUNTINFO* account);
   void SetDefaultXboxLiveEnabledAccountSettings(
       X_XAMACCOUNTINFO& account) const;
-
-  std::filesystem::path GetProfilePath(const uint64_t xuid) const;
-  std::filesystem::path GetProfilePath(const std::string xuid) const;
 
   std::vector<uint64_t> FindProfiles() const;
 

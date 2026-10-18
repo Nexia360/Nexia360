@@ -176,7 +176,34 @@ void Processor::PreLaunch() {
 
 bool Processor::AddModule(std::unique_ptr<Module> module) {
   auto global_lock = global_critical_region_.Acquire();
-  modules_.push_back(std::move(module));
+  // LookupModule answers with the FIRST module whose range contains an
+  // address, so a module left behind by a previous title shadows the one
+  // being added at the same base and every function resolves against the
+  // dead image.
+  bool superseded = false;
+  for (const auto& existing : modules_) {
+    if (existing->name() == module->name()) {
+      superseded = true;
+      break;
+    }
+  }
+  XELOGI("Processor::AddModule('{}'), {} module(s) loaded", module->name(),
+         modules_.size() + 1);
+  if (superseded) {
+    // A module of this name is still registered from a previous title. It is
+    // NOT erased: a retained XModule keeps a raw processor_module_ pointer at
+    // it, and destroying it here leaves that dangling. Putting the new one in
+    // front is enough, because both lookups take the first match - the live
+    // image wins every name and address resolution, and the dead one is only
+    // reachable through the pointer that already had it.
+    XELOGD(
+        "Processor::AddModule('{}'): superseding a module of that name left "
+        "by a previous title",
+        module->name());
+    modules_.insert(modules_.begin(), std::move(module));
+  } else {
+    modules_.push_back(std::move(module));
+  }
   return true;
 }
 
@@ -193,6 +220,8 @@ void Processor::RemoveModule(const std::string_view name) {
     const std::vector<uint32_t> addressed_functions =
         (*itr)->GetAddressedFunctions();
 
+    XELOGI("Processor::RemoveModule('{}'), {} function(s), {} module(s) left",
+           name, addressed_functions.size(), modules_.size() - 1);
     modules_.erase(itr);
 
     for (const uint32_t entry : addressed_functions) {
@@ -213,7 +242,10 @@ Module* Processor::GetModule(const std::string_view name) {
 
 std::vector<Module*> Processor::GetModules() {
   auto global_lock = global_critical_region_.Acquire();
-  std::vector<Module*> clone(modules_.size());
+  // reserve, not resize: sizing it first left that many null entries in front
+  // of the real ones, and every caller iterates the whole vector.
+  std::vector<Module*> clone;
+  clone.reserve(modules_.size());
   for (const auto& module : modules_) {
     clone.push_back(module.get());
   }
@@ -267,7 +299,13 @@ void Processor::FlushCode() {
   }
   auto* code_cache = backend_ ? backend_->code_cache() : nullptr;
   const size_t flushed = code_cache ? code_cache->Flush() : 0;
-  XELOGI("Processor::FlushCode released {} bytes of generated code", flushed);
+  XELOGI(
+      "Processor::FlushCode released {} bytes of generated code, {} "
+      "module(s) still loaded",
+      flushed, modules_.size());
+  for (const auto& module : modules_) {
+    XELOGI("   surviving module '{}'", module->name());
+  }
 }
 
 Function* Processor::ResolveFunction(uint32_t address) {

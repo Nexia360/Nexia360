@@ -448,6 +448,10 @@ class XThread : public XObject, public cpu::Thread {
   // Called on the guest thread from the kernel shim. Does not return if an
   // exit was requested.
   static void CheckExitRequest();
+
+  // The hang watchdog's heartbeat. Called once per kernel export entry, and
+  // nowhere else - see CheckExitRequest.
+  static void NoteKernelCall();
   X_STATUS Terminate(int exit_code);
   void Abandon();
 
@@ -504,14 +508,24 @@ class XThread : public XObject, public cpu::Thread {
   X_STATUS Delay(uint32_t processor_mode, uint32_t alertable,
                  uint64_t interval);
 
-#if !XE_PLATFORM_WIN32
   // Performs self-suspension: increments suspend_count and blocks until
   // another thread calls Resume() and suspend_count reaches 0.
   // Returns the previous suspend_count value.
   uint32_t SelfSuspend();
-#endif
 
   xe::threading::Thread* thread() { return thread_.get(); }
+
+  // Keeps this thread's own guest blocks out of the title teardown sweep. The
+  // thread that asks for a title switch runs on past the teardown, and its PCR
+  // being swept hands the next title's main thread a page this one still owns.
+  void PinGuestBlocks();
+
+  // Bumped by every kernel export. A title that stops moving this has stopped
+  // asking the kernel for anything, which is what a lock-up looks like from
+  // out here.
+  static uint64_t kernel_call_count() {
+    return kernel_calls_.load(std::memory_order_relaxed);
+  }
 
   virtual bool Save(ByteStream* stream) override;
   static object_ref<XThread> Restore(KernelState* kernel_state,
@@ -545,6 +559,8 @@ class XThread : public XObject, public cpu::Thread {
   uint32_t stack_alloc_base_ = 0;  // Stack alloc base
   uint32_t stack_alloc_size_ = 0;  // Stack alloc size
   uint32_t stack_generation_ = 0;  // Title generation the stack belongs to
+  static std::atomic<uint64_t> kernel_calls_;
+
   std::atomic<bool> exit_requested_ = {false};
   uint32_t stack_base_ = 0;   // High address
   uint32_t stack_limit_ = 0;  // Low address
@@ -557,11 +573,17 @@ class XThread : public XObject, public cpu::Thread {
   int32_t boost_amount_ = 0;   // accumulated priority boost above base
   uint64_t quantum_start_ms_ = 0;  // host uptime (ms) when quantum last reset
 
-#if !XE_PLATFORM_WIN32
-  // Condition variable for thread self-suspension.
-  std::mutex suspend_mutex_;
-  std::condition_variable suspend_cv_;
-#endif
+  // Self-suspension is cooperative on every platform. The host SuspendThread
+  // cannot be used for it: a resume that lands between the count going up and
+  // the thread actually blocking is consumed against a thread that is not
+  // suspended yet, and the thread then sleeps with nothing left to wake it.
+  // NO LOCK HERE. Suspend() freezes a host thread wherever it happens to be,
+  // including inside Resume(); if Resume() needed a lock the frozen thread
+  // owned, the resumer blocked forever and nothing could wake either of them.
+  // An auto-reset event needs no lock on either side, and a Set() that lands
+  // before the wait is retained instead of lost.
+  std::unique_ptr<xe::threading::Event> self_suspend_event_ =
+      xe::threading::Event::CreateAutoResetEvent(false);
 
   // Reentry mechanism for fiber-based stack switching.
   // On Linux, C++ exceptions are used instead of setjmp/longjmp so that

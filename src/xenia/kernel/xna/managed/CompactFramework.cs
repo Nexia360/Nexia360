@@ -4,9 +4,8 @@
 // These titles were built against the .NET CF that shipped on the console. Its
 // surface is nearly a subset of the desktop's, but not quite: BlockWorld calls
 // Thread.SetProcessorAffinity, which only ever existed to pin work to one of
-// the 360's hardware threads. There is no desktop equivalent and no need for
-// one - the host scheduler already does the job - so the call is redirected to
-// a shim that does nothing.
+// the 360's hardware threads. There is no desktop equivalent, so the call is
+// redirected to a shim that applies it as a host affinity mask.
 //
 // Done at load time rather than by pre-recompiling the title, for the same
 // reason the XNA facades are: there is then nothing to keep in sync and no
@@ -40,6 +39,17 @@ public static partial class CfShims {
     return NativeCalls.OpenTitleStream(name);
   }
 
+  // StackTrace(Thread, bool) walked ANOTHER thread's stack, which required
+  // suspending it; CoreCLR dropped it and there is no replacement. Quasar's
+  // LockDetector builds one to describe a frozen game loop, and without this
+  // the MissingMethodException takes the process down instead. This thread's
+  // stack is not the one asked for, but it keeps the title's own freeze
+  // handling running.
+  public static System.Diagnostics.StackTrace NewStackTrace(
+      System.Threading.Thread thread, bool needFileInfo) {
+    return new System.Diagnostics.StackTrace(needFileInfo);
+  }
+
   private static string[] MatchInPackage(string path, string[] names,
                                          string searchPattern) {
     var matched = new List<string>();
@@ -53,12 +63,112 @@ public static partial class CfShims {
     return matched.ToArray();
   }
 
+  // XnaOs.Log is a static bound once at bootstrap, and statics are per load
+  // context: a shim called from a title assembly runs against a second copy of
+  // this assembly whose table was never bound, so every line vanishes at its
+  // null check. An export off the running program is found from any context.
+  private delegate void ShimLogFn(uint level, IntPtr message);
+  private static ShimLogFn shimLog;
+  private static bool shimLogResolved;
+
+  public static void ShimLog(uint level, string message) {
+    if (!shimLogResolved) {
+      shimLogResolved = true;
+      try {
+        if (NativeLibrary.TryGetExport(NativeLibrary.GetMainProgramHandle(),
+                                       "Nexia_XnaLog", out IntPtr address)) {
+          shimLog = Marshal.GetDelegateForFunctionPointer<ShimLogFn>(address);
+        }
+      } catch (Exception) {
+      }
+    }
+    if (shimLog == null) {
+      return;
+    }
+    IntPtr text = Marshal.StringToHGlobalAnsi(message);
+    try {
+      shimLog(level, text);
+    } finally {
+      Marshal.FreeHGlobal(text);
+    }
+  }
+
+  [DllImport("kernel32.dll", SetLastError = true)]
+  private static extern IntPtr SetThreadAffinityMask(IntPtr thread,
+                                                     IntPtr affinityMask);
+
+  [DllImport("kernel32.dll")]
+  private static extern IntPtr GetCurrentThread();
+
   /// <summary>
-  /// Thread affinity on the 360 pinned work to one of six hardware threads.
-  /// Honouring it here would mean pinning a desktop thread to a core number
-  /// that means something entirely different, which is worse than ignoring it.
+  /// Thread affinity on the 360: six hardware threads, 0 and 2 kept by the
+  /// system, so titles pin their work to 1, 3, 4 and 5. The numbers carry the
+  /// title's scheduling intent - two threads given the same index were meant
+  /// to interleave, two given different ones were meant to run at once - so
+  /// each hardware thread is mapped onto its own host processor and the set
+  /// becomes an affinity mask.
   /// </summary>
   public static void SetProcessorAffinity(object thread, int[] processorIds) {
+    if (processorIds == null || processorIds.Length == 0 ||
+        !OperatingSystem.IsWindows()) {
+      return;
+    }
+    // A managed Thread exposes no native handle, so only the running thread
+    // can be pinned. Every console call site pins Thread.CurrentThread.
+    if (thread is System.Threading.Thread target &&
+        !ReferenceEquals(target, System.Threading.Thread.CurrentThread)) {
+      ShimLog(2, "   SetProcessorAffinity: only the running thread can be " +
+                     "pinned, leaving this one where it is");
+      return;
+    }
+    int processors = Math.Min(Environment.ProcessorCount, 64);
+    if (processors <= 0) {
+      return;
+    }
+    ulong mask = 0;
+    foreach (int id in processorIds) {
+      if (id >= 0) {
+        mask |= 1UL << (id % processors);
+      }
+    }
+    if (mask == 0) {
+      return;
+    }
+    if (SetThreadAffinityMask(GetCurrentThread(), (IntPtr)(long)mask) ==
+        IntPtr.Zero) {
+      ShimLog(2, $"   SetProcessorAffinity: mask {mask:X} refused (error " +
+                     $"{Marshal.GetLastWin32Error()})");
+      return;
+    }
+    ShimLog(1, $"   thread {Environment.CurrentManagedThreadId} \"" +
+                   $"{System.Threading.Thread.CurrentThread.Name}\" pinned to " +
+                   $"host mask {mask:X} for 360 hardware thread(s) " +
+                   string.Join(", ", processorIds));
+  }
+
+  /// <summary>
+  /// The console has six hardware threads and a title sizes its worker pools
+  /// and work partitions from that. Handing it the host's core count makes a
+  /// game written for six build pools of thirty-two, against arrays and
+  /// affinity tables that were cut for six.
+  /// </summary>
+  public static int ProcessorCount() {
+    ShimLog(1, "   Environment.ProcessorCount answered with the console's 6");
+    return 6;
+  }
+
+  /// <summary>
+  /// Thread.Abort existed on the console and throws
+  /// PlatformNotSupportedException on CoreCLR. Titles call it to tear down a
+  /// worker before starting the next one, and the throw lands in whatever
+  /// catch is around the teardown - BlockWorld's is the world generator's, so
+  /// the loading screen never ends. Nothing here can kill a thread; leaving it
+  /// running is the one outcome that does not take the title down with it.
+  /// </summary>
+  public static void ThreadAbort(object thread) {
+    ShimLog(2, "   Thread.Abort is not supported - the thread \"" +
+                   (thread as System.Threading.Thread)?.Name +
+                   "\" was left running");
   }
 
   public static object StringBuilderValue(object field, object builder) {
@@ -471,6 +581,8 @@ internal static class CompactFramework {
   private static readonly Dictionary<string, string> Redirects =
       new(StringComparer.Ordinal) {
         { "System.Threading.Thread::SetProcessorAffinity", "SetProcessorAffinity" },
+        { "System.Threading.Thread::Abort", "ThreadAbort" },
+        { "System.Environment::get_ProcessorCount", "ProcessorCount" },
         { "Microsoft.Xna.Framework.Storage.StorageContainer::GetStorageRootForPlayer",
           "StorageRootForPlayer" },
         { "Microsoft.Xna.Framework.Graphics.PacketHelpers::SendDrawPrimitivePacket",
@@ -603,6 +715,7 @@ internal static class CompactFramework {
         { "System.Xml.Linq.XDocument::Save", "XDocumentSave" },
         { "System.Xml.Linq.XElement::Load", "XElementLoad" },
         { "System.Xml.Linq.XElement::Save", "XElementSave" },
+        { "System.Diagnostics.StackTrace::.ctor", "NewStackTrace" },
       };
 
   private static readonly HashSet<string> FilesystemTypes =

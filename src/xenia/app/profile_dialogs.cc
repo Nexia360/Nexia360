@@ -139,6 +139,15 @@ void NoProfileDialog::OnDraw(ImGuiIO& io) {
   ImGui::End();
 }
 
+ProfileConfigDialog::~ProfileConfigDialog() {
+  // See ImGuiDrawer::ReleaseTextureDeferred - the gamerpics are still
+  // referenced by the draw commands of the paint that deleted this dialog.
+  for (auto& [xuid, icon] : profile_icon_) {
+    imgui_drawer()->ReleaseTextureDeferred(std::move(icon));
+  }
+  profile_icon_.clear();
+}
+
 void ProfileConfigDialog::LoadProfileIcon() {
   if (!emulator_window_) {
     return;

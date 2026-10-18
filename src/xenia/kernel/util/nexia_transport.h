@@ -247,7 +247,10 @@ class NexiaTransport {
   sockaddr_in server_addr_ = {};
   bool server_resolved_ = false;
 
-  uintptr_t socket_ = ~uintptr_t(0);
+  // Atomic: written under mutex_ (OpenSocket/TryStartUdp/CloseSocket via
+  // ReestablishUdp) but read lock-free on the hot paths (WriterMain, PumpMain's
+  // select/recv), so a plain handle would be a data race against a rebuild.
+  std::atomic<uintptr_t> socket_ = {~uintptr_t(0)};
 
   std::atomic<bool> ready_ = {false};
   std::atomic<bool> running_ = {false};
@@ -285,7 +288,10 @@ class NexiaTransport {
   std::map<uint16_t, PendingFrame> udp_pending_;
 
   // Labels the pieces of one frame so the far side can place them.
-  uint16_t next_frag_id_ = 0;
+  // Atomic: incremented from guest threads (SendTo) and the keepalive thread
+  // (SendRegistration) without holding mutex_, so a plain counter could hand
+  // two concurrent senders the same FRAG_ID and corrupt reassembly.
+  std::atomic<uint16_t> next_frag_id_ = {0};
 
   // Destination port (network order) -> what is waiting for it. Queues exist
   // only while a socket claims the port: creating one on arrival would let a

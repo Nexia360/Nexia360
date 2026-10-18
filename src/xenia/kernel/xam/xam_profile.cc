@@ -147,6 +147,32 @@ dword_result_t XamProfileHasWindowsLiveCredentials_entry(dword_t user_index) {
 DECLARE_XAM_EXPORT1(XamProfileHasWindowsLiveCredentials, kUserProfiles,
                     kImplemented);
 
+// Signature read off dash.xex 17559 at 0x922F8100:
+//   addi r5, r1, 480    ; account out
+//   lwz  r3, 0x0(r30)   ; device
+//   ld   r4, 312(r30)   ; XUID - a 64-bit load
+//   bl   XamProfileLoadAccountInfo
+// and the caller treats a NEGATIVE result as failure (cmpwi r3,0 / bge),
+// zeroing its 0x17C buffer itself - so an X_ERROR_* code would read as
+// success.
+dword_result_t XamProfileLoadAccountInfo_entry(
+    dword_t device_id, qword_t xuid, pointer_t<X_XAMACCOUNTINFO> account_ptr) {
+  if (!account_ptr) {
+    return X_E_INVALIDARG;
+  }
+  account_ptr.Zero();
+
+  const X_XAMACCOUNTINFO* account =
+      kernel_state()->xam_state()->profile_manager()->GetAccount(xuid);
+  if (!account) {
+    return X_E_NO_SUCH_USER;
+  }
+
+  *account_ptr = *account;
+  return X_ERROR_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamProfileLoadAccountInfo, kUserProfiles, kImplemented);
+
 }  // namespace xam
 }  // namespace kernel
 }  // namespace xe

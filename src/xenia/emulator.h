@@ -364,6 +364,9 @@ class Emulator {
       on_session_change;
   xe::Delegate<uint32_t> on_avatar_editor;
   xe::Delegate<> on_title_switch;
+  // A hosted XNA title's Main returned. Raised from a managed thread; the
+  // handler marshals to the UI thread to tear down and boot the dashboard.
+  xe::Delegate<> on_xna_title_exit;
 
  private:
   enum : uint64_t { EmulatorFlagDisclaimerAcknowledged = 1ULL << 0 };

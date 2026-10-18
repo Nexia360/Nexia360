@@ -36,6 +36,7 @@ class TitleUpdateDialog final : public ui::ImGuiDialog {
   TitleUpdateDialog(ui::ImGuiDrawer* imgui_drawer,
                     EmulatorWindow* emulator_window, uint32_t title_id,
                     std::filesystem::path launch_path);
+  ~TitleUpdateDialog() override;
 
  protected:
   void OnDraw(ImGuiIO& io) override;

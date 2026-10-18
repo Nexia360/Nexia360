@@ -641,6 +641,9 @@ void ImGuiDrawer::SetImmediateDrawer(ImmediateDrawer* new_immediate_drawer) {
     locked_achievement_icon_.reset();
     loading_tile_icon_.reset();
     notification_icon_textures_.clear();
+    // Anything a dialog parked for deferred release belongs to the drawer
+    // going away, so it cannot outlive it.
+    textures_pending_release_.clear();
   }
   immediate_drawer_ = new_immediate_drawer;
   if (immediate_drawer_) {
@@ -774,6 +777,11 @@ void ImGuiDrawer::Draw(UIDrawContext& ui_draw_context) {
   // Detaching is deferred if the last dialog is removed during drawing, perform
   // it now if needed.
   DetachIfLastWindowRemoved();
+
+  // The draw lists are rendered and nothing holds these pointers any more, so
+  // textures a dialog gave up mid-frame can finally go. Must stay AFTER
+  // RenderDrawLists - that is the whole point of the deferral.
+  textures_pending_release_.clear();
 
   if (!dialogs_.empty() || !notifications_.empty()) {
     // Repaint (and handle input) continuously if still active.

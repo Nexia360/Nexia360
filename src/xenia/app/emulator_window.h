@@ -156,6 +156,8 @@ class EmulatorWindow {
   // Nothing to run: play the console's boot animation, then go to the dash.
   // Called from the emulator thread at startup.
   void BootToDashboard();
+  // A hosted XNA title ended: tear it down and go back to the dashboard.
+  void OnXnaTitleExit();
 
   // True when this run should start a fresh instance as it goes away: the
   // user chose Exit, and the guest has left launch data behind. Called from

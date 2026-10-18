@@ -245,6 +245,13 @@ bool XSocket::IsTransportEligible() const {
     return false;
   }
 
+  // An insecure socket carries raw IP to an address the title worked out for
+  // itself. The relay has no XUID to send that to, so it stays on the host
+  // stack.
+  if (marked_insecure_) {
+    return false;
+  }
+
   // Datagram protocols only - a frame carries one datagram, so a byte stream
   // pushed through it would be reframed.
   if (proto_ != X_IPPROTO_UDP && proto_ != X_IPPROTO_VDP) {
@@ -271,6 +278,53 @@ void XSocket::ClaimTransportPort() {
 
   claimed_transport_port_ = htons(bound_port_.get());
   transport->ClaimPort(claimed_transport_port_);
+}
+
+void XSocket::SetMarkedInsecure(bool value, uint32_t optname) {
+  if (optname == SO_GRANTINSECURE) {
+    grant_insecure_ = value;
+  } else {
+    mark_insecure_ = value;
+  }
+
+  // Either option alone takes the socket off the relay, so clearing one while
+  // the other still stands must not put it back.
+  const bool effective = mark_insecure_ || grant_insecure_;
+  if (marked_insecure_ == effective) {
+    return;
+  }
+
+  // Ask BEFORE flipping the flag: this is what says whether the socket had
+  // already been set up the relay's way.
+  const bool was_relayed = IsTransportEligible();
+  marked_insecure_ = effective;
+
+  XELOGD("XSocket: {} {} on port {} (was relayed: {})",
+         optname == SO_GRANTINSECURE ? "SO_GRANTINSECURE" : "SO_MARKINSECURE",
+         value ? "set" : "cleared", uint32_t(bound_port_.get()), was_relayed);
+
+  if (!effective || !was_relayed) {
+    return;
+  }
+
+  // THE RELAY NEVER BOUND THE HOST HANDLE. Bind() short-circuits for an
+  // eligible socket - it records the port, claims a relay port and returns
+  // without touching the host socket. A title that marks the socket insecure
+  // after binding would then be left with a handle that is not bound to
+  // anything and receives nothing at all. Hand the relay port back and do the
+  // bind for real; IsTransportEligible() is false now, so Bind takes the
+  // normal path, UPnP and interface forcing included.
+  ReleaseTransportPort();
+
+  if (bound_) {
+    const xe::be<uint16_t> port = bound_port_;
+    bound_ = false;
+    XSOCKADDR_IN sa = {};
+    sa.address_family = 2;  // AF_INET
+    sa.address_port = port;
+    sa.address_ip.s_addr = 0;
+    Bind(&sa, sizeof(sa));
+  }
 }
 
 void XSocket::ReleaseTransportPort() {
@@ -366,8 +420,20 @@ int XSocket::SetOption(uint32_t level, uint32_t optname, void* optval_ptr,
                        uint32_t optlen) {
   if (level == 0xFFFF && (optname == SO_MARKINSECURE || optname == SO_PRIVATE ||
                           optname == SO_GRANTINSECURE)) {
-    // Disable socket encryption
-    secure_ = false;
+    // Disable socket encryption. These have no host equivalent, so they are
+    // answered here rather than passed to setsockopt.
+    // MARKINSECURE is the outbound half, GRANTINSECURE the inbound one. Either
+    // says this socket carries raw IP rather than XNet-addressed traffic, and
+    // the relay cannot carry that, so both take it off the relay.
+    if (optname == SO_MARKINSECURE || optname == SO_GRANTINSECURE) {
+      // The value is a BOOL and a title may pass FALSE to un-mark, so test it
+      // rather than the call. A nonzero test over the whole word needs no
+      // byte-swap.
+      const bool enable =
+          optlen >= sizeof(uint32_t) && optval_ptr &&
+          *reinterpret_cast<const uint32_t*>(optval_ptr) != 0;
+      SetMarkedInsecure(enable, optname);
+    }
     return X_ERROR_SUCCESS;
   }
 

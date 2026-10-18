@@ -45,6 +45,17 @@ struct XnaPackageInfo {
 // but reads only PE headers.
 bool IsXnaPackage(const std::filesystem::path& path, XnaPackageInfo* out_info);
 
+// A hosted title's Main returned. Called from the managed bootstrap through
+// XnaOsTable::TitleExited, and by the host itself if the bootstrap thread ends
+// without saying so. Safe to call more than once; only the first has effect.
+void XnaNotifyTitleExited(int32_t exit_code);
+
+// Whether a hosted title has ended and not yet been torn down.
+bool XnaTitleHasExited();
+
+// Arms the exit notification again for the next title.
+void XnaClearTitleExited();
+
 // Unpacks the package into the emulator's storage root and starts it on the
 // host CLR. Returns false and logs why on any failure; `XnaHost::last_error()`
 // carries the message worth showing a user.

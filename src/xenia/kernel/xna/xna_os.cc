@@ -9,6 +9,8 @@
 
 #include "xenia/kernel/xna/xna_os.h"
 
+#include "xenia/kernel/xna/xna_launcher.h"
+
 #include <algorithm>
 #include <cstring>
 #include <filesystem>
@@ -350,6 +352,11 @@ void GuideRelease(uint32_t request) {
   guide_requests.erase(request);
 }
 
+void TitleExited(int32_t exit_code) {
+  XELOGI("[xna] title exited ({})", exit_code);
+  XnaNotifyTitleExited(exit_code);
+}
+
 }  // namespace
 
 uint32_t XnaGuideBeginKeyboard(uint32_t slot, const char* title,
@@ -409,6 +416,7 @@ const XnaOsTable* GetXnaOsTable() {
       &GuideGetText,
       &GuideRelease,
       &Log,
+      &TitleExited,
   };
   return &table;
 }

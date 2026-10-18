@@ -178,10 +178,18 @@ class XObject {
   KernelState* kernel_state() const;
   Memory* memory() const;
 
+  // Every subclass narrows this. Undefined means "any", which is what
+  // GetNativeObject<XObject> asks for.
+  static const Type kObjectType = Type::Undefined;
+
   Type type() const;
 
-  // Returns the primary handle of this object.
-  X_HANDLE handle() const { return handles_[0]; }
+  // Returns the primary handle of this object, or 0 if it has none. Purging
+  // the object table clears an object's handles while the object itself can
+  // still be referenced, so this cannot assume there is one.
+  X_HANDLE handle() const {
+    return handles_.empty() ? X_HANDLE(0) : handles_[0];
+  }
 
   // Returns all associated handles with this object.
   std::vector<X_HANDLE> handles() const { return handles_; }
@@ -420,9 +428,20 @@ template <typename T>
 object_ref<T> XObject::GetNativeObject(KernelState* kernel_state,
                                        void* native_ptr, int32_t as_type,
                                        bool already_locked) {
-  return object_ref<T>(reinterpret_cast<T*>(
-      GetNativeObject(kernel_state, native_ptr, as_type, already_locked)
-          .release()));
+  auto object =
+      GetNativeObject(kernel_state, native_ptr, as_type, already_locked);
+  // CHECK BEFORE CASTING. The type comes from the guest structure, so a
+  // pointer to anything at all resolves to whatever that memory claims to be -
+  // an event, a semaphore - and this used to hand it back as a T regardless.
+  // The first field read off the wrong object is garbage, and the caller
+  // faults somewhere that looks nothing like the call that caused it.
+  // Undefined is the base XObject, which any type satisfies.
+  if constexpr (T::kObjectType != Type::Undefined) {
+    if (object && object->type() != T::kObjectType) {
+      return object_ref<T>(nullptr);
+    }
+  }
+  return object_ref<T>(reinterpret_cast<T*>(object.release()));
 }
 
 }  // namespace kernel

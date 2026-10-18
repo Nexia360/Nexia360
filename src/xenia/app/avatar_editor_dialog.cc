@@ -84,6 +84,10 @@ AvatarEditorDialog::AvatarEditorDialog(ui::ImGuiDrawer* imgui_drawer,
 }
 
 AvatarEditorDialog::~AvatarEditorDialog() {
+  // See ImGuiDrawer::ReleaseTextureDeferred - this dialog is deleted inside
+  // the paint that still has draw commands pointing at the preview.
+  imgui_drawer()->ReleaseTextureDeferred(std::move(preview_));
+
   CloseOverlay();
   imgui_drawer()->GetFocusManager()->UIDropFocus(kFocusName);
   if (closed_callback_) {

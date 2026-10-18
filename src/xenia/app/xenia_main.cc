@@ -861,6 +861,11 @@ void EmulatorApp::EmulatorThread() {
     app_context().CallInUIThread([this]() { emulator_window_->SwitchTitle(); });
   });
 
+  emulator_->on_xna_title_exit.AddListener([this]() {
+    app_context().CallInUIThread(
+        [this]() { emulator_window_->OnXnaTitleExit(); });
+  });
+
   emulator_->on_terminate.AddListener([]() {
     if (cvars::discord) {
       discord::DiscordPresence::NotPlaying();

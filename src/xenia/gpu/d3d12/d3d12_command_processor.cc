@@ -2552,6 +2552,12 @@ Shader* D3D12CommandProcessor::HostedLoadShader(xenos::ShaderType shader_type,
   // handing the translator instructions that are byte-reversed but still parse.
   Shader* shader = pipeline_cache_->LoadShader(
       shader_type, microcode, dword_count, std::endian::native);
+  // IssueDraw analyses it, but that is after the hosted caller has read the
+  // constant and vertex-fetch maps to set the draw up - and an unanalysed
+  // shader reports empty maps, so no fetch slot is ever written.
+  if (shader) {
+    pipeline_cache_->AnalyzeShaderUcode(*shader);
+  }
   switch (shader_type) {
     case xenos::ShaderType::kVertex:
       active_vertex_shader_ = shader;
