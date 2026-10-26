@@ -2261,6 +2261,20 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
           }
         }
 
+        // Packed conversion for this fetch constant (see GetIntegerScaleBits).
+        id_vector_temp_.clear();
+        id_vector_temp_.push_back(
+            builder_->makeIntConstant(kSystemConstantTextureIntegerScaleBits));
+        id_vector_temp_.push_back(
+            builder_->makeIntConstant(int32_t(fetch_constant_index >> 2)));
+        id_vector_temp_.push_back(
+            builder_->makeIntConstant(int32_t(fetch_constant_index & 3)));
+        spv::Id integer_scale_bits_packed = builder_->createLoad(
+            builder_->createAccessChain(spv::StorageClassUniform,
+                                        uniform_system_constants_,
+                                        id_vector_temp_),
+            spv::NoPrecision);
+
         // Apply the signednesses to all the needed components. If swizzling is
         // done in the shader rather than via the image view, unsigned or signed
         // source has already been selected into `result` - only need to bias or
@@ -2330,6 +2344,34 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
             }
             // Unsigned biased.
             builder_->setBuildPoint(&block_sign_unsigned_biased);
+            // Decode as signed offset binary: (n - 2^(w - 1)) / (2^(w - 1) - 1)
+            // This maps 128 to zero for 8 bit components, avoiding the 1/255
+            // bias of 2 * u - 1. Leave the result unclamped until num_format is
+            // applied, and keep 2 * u - 1 when the width is unknown or 1 bit.
+            spv::Id biased_width_minus_1 = builder_->createTriOp(
+                spv::OpBitFieldUExtract, type_uint_, integer_scale_bits_packed,
+                builder_->makeUintConstant(6 * result_component_index),
+                builder_->makeUintConstant(4));
+            spv::Id biased_half = builder_->createUnaryOp(
+                spv::OpConvertUToF, type_float_,
+                builder_->createBinOp(spv::OpShiftLeftLogical, type_uint_,
+                                      builder_->makeUintConstant(1),
+                                      biased_width_minus_1));
+            spv::Id biased_exact = builder_->createNoContractionBinOp(
+                spv::OpFSub, type_float_,
+                builder_->createNoContractionBinOp(
+                    spv::OpFMul, type_float_, sample_result_component_unsigned,
+                    builder_->createNoContractionBinOp(
+                        spv::OpFSub, type_float_,
+                        builder_->createNoContractionBinOp(
+                            spv::OpFMul, type_float_, biased_half,
+                            const_float_2),
+                        const_float_1_)),
+                biased_half);
+            biased_exact = builder_->createNoContractionBinOp(
+                spv::OpFDiv, type_float_, biased_exact,
+                builder_->createNoContractionBinOp(
+                    spv::OpFSub, type_float_, biased_half, const_float_1_));
             spv::Id sample_result_component_unsigned_biased =
                 builder_->createNoContractionBinOp(
                     spv::OpFMul, type_float_, sample_result_component_unsigned,
@@ -2339,6 +2381,11 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
                     spv::OpFAdd, type_float_,
                     sample_result_component_unsigned_biased,
                     const_float_minus_1);
+            sample_result_component_unsigned_biased = builder_->createTriOp(
+                spv::OpSelect, type_float_,
+                builder_->createBinOp(spv::OpINotEqual, type_bool_,
+                                      biased_width_minus_1, const_uint_0_),
+                biased_exact, sample_result_component_unsigned_biased);
             builder_->createBranch(&block_sign_merge);
             // Gamma.
             builder_->setBuildPoint(&block_sign_gamma_start);
@@ -2373,101 +2420,269 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
           }
         }
 
-        // num_format is applied after signs/gamma. Fixed textures sample as
-        // normalized host values, so integer num_format scales them back to
-        // guest integer units here.
+        // Apply num_format after signs/gamma.
         id_vector_temp_.clear();
-        id_vector_temp_.push_back(
-            builder_->makeIntConstant(kSystemConstantTextureIntegerScaleBits));
-        id_vector_temp_.push_back(
-            builder_->makeIntConstant(int32_t(fetch_constant_index >> 2)));
-        id_vector_temp_.push_back(
-            builder_->makeIntConstant(int32_t(fetch_constant_index & 3)));
-        spv::Id integer_scale_bits_packed = builder_->createLoad(
-            builder_->createAccessChain(spv::StorageClassUniform,
-                                        uniform_system_constants_,
-                                        id_vector_temp_),
-            spv::NoPrecision);
+        id_vector_temp_.insert(id_vector_temp_.cend(), result, result + 4);
+        spv::Id integer_scale_result =
+            builder_->createCompositeConstruct(type_float4_, id_vector_temp_);
         {
-          // Uniform early out. Zero means leave the sample alone. Only integer
-          // num_format on fixed textures has scale bits.
+          // Uniform early out. Zero means leave the sample alone.
+          // Bit 26 is the coordinate snap, not a scale.
           spv::Id integer_scale_active = builder_->createBinOp(
-              spv::OpINotEqual, type_bool_, integer_scale_bits_packed,
-              builder_->makeUintConstant(0));
+              spv::OpINotEqual, type_bool_,
+              builder_->createBinOp(
+                  spv::OpBitwiseAnd, type_uint_, integer_scale_bits_packed,
+                  builder_->makeUintConstant((UINT32_C(1) << 26) - 1)),
+              const_uint_0_);
           SpirvBuilder::IfBuilder if_integer_scale(
               integer_scale_active, spv::SelectionControlMaskNone, *builder_);
-          spv::Id scaled_result[4] = {};
+          spv::Id integer_scale_result_converted;
           {
-            spv::Id const_uint_1 = builder_->makeUintConstant(1);
-            uint32_t result_remaining_components =
-                used_result_nonzero_components;
-            uint32_t result_component_index;
-            while (xe::bit_scan_forward(result_remaining_components,
-                                        &result_component_index)) {
-              result_remaining_components &=
-                  ~(UINT32_C(1) << result_component_index);
-              spv::Id scale_bits = builder_->createTriOp(
-                  spv::OpBitFieldUExtract, type_uint_,
-                  integer_scale_bits_packed,
-                  builder_->makeUintConstant(result_component_index * 6),
-                  builder_->makeUintConstant(6));
-              spv::Id scale_shift = builder_->createBinOp(
-                  spv::OpIAdd, type_uint_,
-                  builder_->createBinOp(spv::OpBitwiseAnd, type_uint_,
-                                        scale_bits,
-                                        builder_->makeUintConstant(0xF)),
-                  const_uint_1);
-              scale_shift = builder_->createBinOp(
-                  spv::OpISub, type_uint_, scale_shift,
-                  builder_->createTriOp(spv::OpBitFieldUExtract, type_uint_,
-                                        scale_bits,
-                                        builder_->makeUintConstant(4),
-                                        builder_->makeUintConstant(1)));
-              spv::Id scale_uint = builder_->createBinOp(
-                  spv::OpISub, type_uint_,
-                  builder_->createBinOp(spv::OpShiftLeftLogical, type_uint_,
-                                        const_uint_1, scale_shift),
-                  const_uint_1);
-              // Unsigned biased samples are already mapped [0, 1] to [-1, 1],
-              // so use half of the unsigned scale and subtract 0.5 to restore
-              // the guest's integer value.
-              spv::Id biased = builder_->createBinOp(
+            spv::Id normalized = builder_->createBinOp(
+                spv::OpINotEqual, type_bool_,
+                builder_->createBinOp(
+                    spv::OpBitwiseAnd, type_uint_, integer_scale_bits_packed,
+                    builder_->makeUintConstant(UINT32_C(1) << 24)),
+                builder_->makeUintConstant(0));
+            SpirvBuilder::IfBuilder if_normalized(
+                normalized, spv::SelectionControlMaskNone, *builder_);
+            spv::Id normalized_result = integer_scale_result;
+            if (instr.AllowsPointSampling(use_computed_lod)) {
+              // Reconstruct point sampled 4 to 6 bit unsigned components
+              // using the guest conversion (see GetIntegerScaleBits).
+              spv::Id has_grid = builder_->createBinOp(
                   spv::OpINotEqual, type_bool_,
-                  builder_->createTriOp(spv::OpBitFieldUExtract, type_uint_,
-                                        scale_bits,
-                                        builder_->makeUintConstant(5),
-                                        builder_->makeUintConstant(1)),
-                  builder_->makeUintConstant(0));
-              spv::Id scale_float = builder_->createNoContractionBinOp(
-                  spv::OpFMul, type_float_,
-                  builder_->createUnaryOp(spv::OpConvertUToF, type_float_,
-                                          scale_uint),
-                  builder_->createTriOp(spv::OpSelect, type_float_, biased,
-                                        builder_->makeFloatConstant(0.5f),
-                                        builder_->makeFloatConstant(1.0f)));
-              scaled_result[result_component_index] =
+                  builder_->createBinOp(
+                      spv::OpBitwiseAnd, type_uint_, integer_scale_bits_packed,
+                      builder_->makeUintConstant((UINT32_C(1) << 24) - 1)),
+                  const_uint_0_);
+              SpirvBuilder::IfBuilder if_grid(
+                  has_grid, spv::SelectionControlMaskNone, *builder_);
+              id_vector_temp_.clear();
+              for (uint32_t i = 0; i < 4; ++i) {
+                id_vector_temp_.push_back(builder_->makeUintConstant(i * 6));
+              }
+              spv::Id lane_bits = builder_->createBinOp(
+                  spv::OpBitwiseAnd, type_uint4_,
+                  builder_->createBinOp(
+                      spv::OpShiftRightLogical, type_uint4_,
+                      builder_->smearScalar(spv::NoPrecision,
+                                            integer_scale_bits_packed,
+                                            type_uint4_),
+                      builder_->makeCompositeConstant(type_uint4_,
+                                                      id_vector_temp_)),
+                  builder_->smearScalar(spv::NoPrecision,
+                                        builder_->makeUintConstant(0x3F),
+                                        type_uint4_));
+              spv::Id width = builder_->createBinOp(
+                  spv::OpBitwiseAnd, type_uint4_, lane_bits,
+                  builder_->smearScalar(spv::NoPrecision,
+                                        builder_->makeUintConstant(0xF),
+                                        type_uint4_));
+              spv::Id pow2_width = builder_->createUnaryOp(
+                  spv::OpConvertUToF, type_float4_,
+                  builder_->createBinOp(
+                      spv::OpShiftLeftLogical, type_uint4_,
+                      builder_->smearScalar(spv::NoPrecision,
+                                            builder_->makeUintConstant(2),
+                                            type_uint4_),
+                      width));
+              // The texel n from the host's n / (2^w - 1).
+              spv::Id texel = builder_->createUnaryBuiltinCall(
+                  type_float4_, ext_inst_glsl_std_450_, GLSLstd450RoundEven,
                   builder_->createNoContractionBinOp(
-                      spv::OpFAdd, type_float_,
+                      spv::OpFMul, type_float4_, integer_scale_result,
                       builder_->createNoContractionBinOp(
-                          spv::OpFMul, type_float_,
-                          result[result_component_index], scale_float),
-                      builder_->createTriOp(spv::OpSelect, type_float_, biased,
-                                            builder_->makeFloatConstant(-0.5f),
-                                            builder_->makeFloatConstant(0.0f)));
+                          spv::OpFSub, type_float4_, pow2_width,
+                          const_float4_1_)));
+              // n * (2^w + 1) / 2^(2w), where the packed component field
+              // is 1 to 15 (unsigned with a nonzero width field).
+              spv::Id snapped = builder_->createTriOp(
+                  spv::OpSelect, type_float4_,
+                  builder_->createBinOp(
+                      spv::OpULessThan, type_bool4_,
+                      builder_->createBinOp(
+                          spv::OpISub, type_uint4_, lane_bits,
+                          builder_->smearScalar(spv::NoPrecision,
+                                                builder_->makeUintConstant(1),
+                                                type_uint4_)),
+                      builder_->smearScalar(spv::NoPrecision,
+                                            builder_->makeUintConstant(15),
+                                            type_uint4_)),
+                  builder_->createNoContractionBinOp(
+                      spv::OpFDiv, type_float4_,
+                      builder_->createNoContractionBinOp(
+                          spv::OpFMul, type_float4_, texel,
+                          builder_->createNoContractionBinOp(
+                              spv::OpFAdd, type_float4_, pow2_width,
+                              const_float4_1_)),
+                      builder_->createNoContractionBinOp(
+                          spv::OpFMul, type_float4_, pow2_width, pow2_width)),
+                  integer_scale_result);
+              if_grid.makeEndIf();
+              normalized_result =
+                  if_grid.createMergePhi(snapped, integer_scale_result);
             }
+            // Only round unsigned normalized components to 16 fractional bits.
+            spv::Id rounded_result = builder_->createNoContractionBinOp(
+                spv::OpVectorTimesScalar, type_float4_, normalized_result,
+                builder_->makeFloatConstant(65536.0f));
+            rounded_result = builder_->createUnaryBuiltinCall(
+                type_float4_, ext_inst_glsl_std_450_, GLSLstd450RoundEven,
+                rounded_result);
+            rounded_result = builder_->createNoContractionBinOp(
+                spv::OpVectorTimesScalar, type_float4_, rounded_result,
+                builder_->makeFloatConstant(1.0f / 65536.0f));
+            id_vector_temp_.clear();
+            for (uint32_t i = 0; i < 4; ++i) {
+              id_vector_temp_.push_back(builder_->makeUintConstant(i * 6 + 4));
+            }
+            spv::Id lane_signs = builder_->createBinOp(
+                spv::OpBitwiseAnd, type_uint4_,
+                builder_->createBinOp(
+                    spv::OpShiftRightLogical, type_uint4_,
+                    builder_->smearScalar(spv::NoPrecision,
+                                          integer_scale_bits_packed,
+                                          type_uint4_),
+                    builder_->makeCompositeConstant(type_uint4_,
+                                                    id_vector_temp_)),
+                builder_->smearScalar(spv::NoPrecision,
+                                      builder_->makeUintConstant(3),
+                                      type_uint4_));
+            normalized_result = builder_->createTriOp(
+                spv::OpSelect, type_float4_,
+                builder_->createBinOp(spv::OpIEqual, type_bool4_, lane_signs,
+                                      const_uint4_0_),
+                rounded_result, normalized_result);
+            // Clamp normalized unsigned-biased components to -1. Post-filtering
+            // clamping can put mixtures with a stored value of 0 up to one
+            // component code below the result of clamping each texel before.
+            // TODO(boma): Guest clamping needs to be verified on real hardware.
+            normalized_result = builder_->createTriOp(
+                spv::OpSelect, type_float4_,
+                builder_->createBinOp(
+                    spv::OpIEqual, type_bool4_, lane_signs,
+                    builder_->smearScalar(
+                        spv::NoPrecision,
+                        builder_->makeUintConstant(
+                            uint32_t(xenos::TextureSign::kUnsignedBiased)),
+                        type_uint4_)),
+                builder_->createBinBuiltinCall(
+                    type_float4_, ext_inst_glsl_std_450_, GLSLstd450FMax,
+                    normalized_result,
+                    builder_->smearScalar(spv::NoPrecision, const_float_minus_1,
+                                          type_float4_)),
+                normalized_result);
+            if_normalized.makeBeginElse();
+            spv::Id const_uint_1 = builder_->makeUintConstant(1);
+            id_vector_temp_.clear();
+            for (uint32_t i = 0; i < 4; ++i) {
+              id_vector_temp_.push_back(builder_->makeUintConstant(i * 6));
+            }
+            spv::Id scale_bits = builder_->createBinOp(
+                spv::OpShiftRightLogical, type_uint4_,
+                builder_->smearScalar(spv::NoPrecision,
+                                      integer_scale_bits_packed, type_uint4_),
+                builder_->makeCompositeConstant(type_uint4_, id_vector_temp_));
+            scale_bits = builder_->createBinOp(
+                spv::OpBitwiseAnd, type_uint4_, scale_bits,
+                builder_->smearScalar(spv::NoPrecision,
+                                      builder_->makeUintConstant(0x3F),
+                                      type_uint4_));
+            spv::Id const_uint4_1 = builder_->smearScalar(
+                spv::NoPrecision, const_uint_1, type_uint4_);
+            // Restore integer values with 2^w - 1 for unsigned components
+            // and 2^(w - 1) - 1 for signed and unsigned-biased.
+            spv::Id scale_shift = builder_->createBinOp(
+                spv::OpIAdd, type_uint4_,
+                builder_->createBinOp(
+                    spv::OpBitwiseAnd, type_uint4_, scale_bits,
+                    builder_->smearScalar(spv::NoPrecision,
+                                          builder_->makeUintConstant(0xF),
+                                          type_uint4_)),
+                const_uint4_1);
+            // Signed (1) and biased (2) take one off the shift.
+            spv::Id scale_halved = builder_->createBinOp(
+                spv::OpULessThan, type_bool4_,
+                builder_->createBinOp(
+                    spv::OpISub, type_uint4_,
+                    builder_->createBinOp(
+                        spv::OpShiftRightLogical, type_uint4_, scale_bits,
+                        builder_->smearScalar(spv::NoPrecision,
+                                              builder_->makeUintConstant(4),
+                                              type_uint4_)),
+                    const_uint4_1),
+                builder_->smearScalar(spv::NoPrecision,
+                                      builder_->makeUintConstant(2),
+                                      type_uint4_));
+            scale_shift = builder_->createBinOp(
+                spv::OpISub, type_uint4_, scale_shift,
+                builder_->createTriOp(spv::OpSelect, type_uint4_, scale_halved,
+                                      const_uint4_1, const_uint4_0_));
+            spv::Id scale_uint = builder_->createBinOp(
+                spv::OpISub, type_uint4_,
+                builder_->createBinOp(spv::OpShiftLeftLogical, type_uint4_,
+                                      const_uint4_1, scale_shift),
+                const_uint4_1);
+            // For 1 bit unsigned-biased components, use a scale of 0.5 and
+            // an offset of -0.5 to recover -1 and 0.
+            spv::Id scale_float = builder_->createUnaryOp(
+                spv::OpConvertUToF, type_float4_, scale_uint);
+            spv::Id const_float4_half = builder_->smearScalar(
+                spv::NoPrecision, builder_->makeFloatConstant(0.5f),
+                type_float4_);
+            spv::Id scale_offset = builder_->createNoContractionBinOp(
+                spv::OpFSub, type_float4_,
+                builder_->createBinBuiltinCall(
+                    type_float4_, ext_inst_glsl_std_450_, GLSLstd450FMin,
+                    scale_float, const_float4_half),
+                const_float4_half);
+            scale_float = builder_->createBinBuiltinCall(
+                type_float4_, ext_inst_glsl_std_450_, GLSLstd450FMax,
+                scale_float, const_float4_half);
+            spv::Id scaled_result = builder_->createNoContractionBinOp(
+                spv::OpFAdd, type_float4_,
+                builder_->createNoContractionBinOp(spv::OpFMul, type_float4_,
+                                                   integer_scale_result,
+                                                   scale_float),
+                scale_offset);
+            if (instr.AllowsPointSampling(use_computed_lod)) {
+              // Host decode precision varies since NVIDIA bit replication turns
+              // 1/31 into 8/255, giving a scaled value of 0.9725. Point
+              // sampling gives the guest an integer texel value, while
+              // filtering keeps the fractional result.
+              spv::Id point_sampled = builder_->createBinOp(
+                  spv::OpINotEqual, type_bool_,
+                  builder_->createBinOp(
+                      spv::OpBitwiseAnd, type_uint_, integer_scale_bits_packed,
+                      builder_->makeUintConstant(UINT32_C(1) << 26)),
+                  const_uint_0_);
+              scaled_result = builder_->createTriOp(
+                  spv::OpSelect, type_float4_,
+                  builder_->smearScalar(spv::NoPrecision, point_sampled,
+                                        type_bool4_),
+                  builder_->createUnaryBuiltinCall(
+                      type_float4_, ext_inst_glsl_std_450_, GLSLstd450RoundEven,
+                      scaled_result),
+                  scaled_result);
+            }
+            if_normalized.makeEndIf();
+            integer_scale_result_converted =
+                if_normalized.createMergePhi(normalized_result, scaled_result);
           }
           if_integer_scale.makeEndIf();
           // Keep the original result when the scale branch is skipped.
-          uint32_t result_remaining_components = used_result_nonzero_components;
-          uint32_t result_component_index;
-          while (xe::bit_scan_forward(result_remaining_components,
-                                      &result_component_index)) {
-            result_remaining_components &=
-                ~(UINT32_C(1) << result_component_index);
-            result[result_component_index] = if_integer_scale.createMergePhi(
-                scaled_result[result_component_index],
-                result[result_component_index]);
-          }
+          integer_scale_result = if_integer_scale.createMergePhi(
+              integer_scale_result_converted, integer_scale_result);
+        }
+        uint32_t result_remaining_components = used_result_nonzero_components;
+        uint32_t result_component_index;
+        while (xe::bit_scan_forward(result_remaining_components,
+                                    &result_component_index)) {
+          result_remaining_components &=
+              ~(UINT32_C(1) << result_component_index);
+          result[result_component_index] = builder_->createCompositeExtract(
+              integer_scale_result, type_float_, result_component_index);
         }
 
         // Apply the exponent bias from the bits 13:18 of the fetch constant

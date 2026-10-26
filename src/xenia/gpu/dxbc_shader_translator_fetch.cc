@@ -2163,6 +2163,12 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
     // sampler filtering).
     if (instr.opcode == FetchOpcode::kTextureFetch) {
       assert_true(signs_temp != UINT32_MAX);
+
+      dxbc::Src integer_scale_bits_packed = LoadSystemConstant(
+          SystemConstants::Index::kTextureIntegerScaleBits,
+          offsetof(SystemConstants, texture_integer_scale_bits) +
+              sizeof(uint32_t) * tfetch_index,
+          dxbc::Src::kXXXX);
       for (uint32_t i = 0; i < 4; ++i) {
         if (!(used_result_nonzero_components & (1 << i))) {
           continue;
@@ -2171,8 +2177,43 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
         dxbc::Src component_src(dxbc::Src::R(system_temp_result_).Select(i));
         a_.OpSwitch(dxbc::Src::R(signs_temp).Select(i));
         a_.OpCase(dxbc::Src::LU(uint32_t(xenos::TextureSign::kUnsignedBiased)));
-        a_.OpMAd(component_dest, component_src, dxbc::Src::LF(2.0f),
-                 dxbc::Src::LF(-1.0f));
+        {
+          // Decode as signed offset binary: (n - 2^(w - 1)) / (2^(w - 1) - 1)
+          // This maps 128 to zero for 8 bit components, avoiding the 1/255
+          // bias of 2 * u - 1. Leave the result unclamped until num_format is
+          // applied, and keep 2 * u - 1 when the width is unknown or 1 bit.
+          uint32_t biased_temp = PushSystemTemp();
+          a_.OpUBFE(dxbc::Dest::R(biased_temp, 0b0001), dxbc::Src::LU(4),
+                    dxbc::Src::LU(i * 6), integer_scale_bits_packed);
+          // Y = 2^(w - 1).
+          a_.OpIShL(dxbc::Dest::R(biased_temp, 0b0010), dxbc::Src::LU(1),
+                    dxbc::Src::R(biased_temp, dxbc::Src::kXXXX));
+          a_.OpUToF(dxbc::Dest::R(biased_temp, 0b0010),
+                    dxbc::Src::R(biased_temp, dxbc::Src::kYYYY));
+          // Z = u * (2^w - 1) - 2^(w - 1).
+          a_.OpMAd(dxbc::Dest::R(biased_temp, 0b0100),
+                   dxbc::Src::R(biased_temp, dxbc::Src::kYYYY),
+                   dxbc::Src::LF(2.0f), dxbc::Src::LF(-1.0f));
+          a_.OpMul(dxbc::Dest::R(biased_temp, 0b0100), component_src,
+                   dxbc::Src::R(biased_temp, dxbc::Src::kZZZZ));
+          a_.OpAdd(dxbc::Dest::R(biased_temp, 0b0100),
+                   dxbc::Src::R(biased_temp, dxbc::Src::kZZZZ),
+                   -dxbc::Src::R(biased_temp, dxbc::Src::kYYYY));
+          // Y = 2^(w - 1) - 1, Z = Z / Y.
+          a_.OpAdd(dxbc::Dest::R(biased_temp, 0b0010),
+                   dxbc::Src::R(biased_temp, dxbc::Src::kYYYY),
+                   dxbc::Src::LF(-1.0f));
+          a_.OpDiv(dxbc::Dest::R(biased_temp, 0b0100),
+                   dxbc::Src::R(biased_temp, dxbc::Src::kZZZZ),
+                   dxbc::Src::R(biased_temp, dxbc::Src::kYYYY));
+          a_.OpMAd(dxbc::Dest::R(biased_temp, 0b0010), component_src,
+                   dxbc::Src::LF(2.0f), dxbc::Src::LF(-1.0f));
+          a_.OpMovC(component_dest, dxbc::Src::R(biased_temp, dxbc::Src::kXXXX),
+                    dxbc::Src::R(biased_temp, dxbc::Src::kZZZZ),
+                    dxbc::Src::R(biased_temp, dxbc::Src::kYYYY));
+          // Release biased_temp.
+          PopSystemTemp();
+        }
         a_.OpBreak();
         a_.OpCase(dxbc::Src::LU(uint32_t(xenos::TextureSign::kGamma)));
         uint32_t gamma_temp = PushSystemTemp();
@@ -2184,56 +2225,125 @@ void DxbcShaderTranslator::ProcessTextureFetchInstruction(
         a_.OpBreak();
         a_.OpEndSwitch();
       }
-      // num_format is applied after signedness. A fixed-point format's host
-      // view returns normalized values, so for an integer num_format restore
-      // the guest integer range here.
-      uint32_t integer_scale_bits_temp = PushSystemTemp();
+      // Apply num_format after signs/gamma.
       uint32_t integer_scale_temp = PushSystemTemp();
-      uint32_t integer_scale_flags_temp = PushSystemTemp();
-      dxbc::Dest integer_scale_bits_dest(dxbc::Dest::R(
-          integer_scale_bits_temp, used_result_nonzero_components));
-      dxbc::Src integer_scale_bits_src(dxbc::Src::R(integer_scale_bits_temp));
       dxbc::Dest integer_scale_dest(
           dxbc::Dest::R(integer_scale_temp, used_result_nonzero_components));
       dxbc::Src integer_scale_src(dxbc::Src::R(integer_scale_temp));
-      dxbc::Dest integer_scale_flags_dest(dxbc::Dest::R(
-          integer_scale_flags_temp, used_result_nonzero_components));
-      dxbc::Src integer_scale_flags_src(dxbc::Src::R(integer_scale_flags_temp));
-      dxbc::Src integer_scale_bits_packed = LoadSystemConstant(
-          SystemConstants::Index::kTextureIntegerScaleBits,
-          offsetof(SystemConstants, texture_integer_scale_bits) +
-              sizeof(uint32_t) * tfetch_index,
-          dxbc::Src::kXXXX);
-      // Uniform early out. Zero means leave the sample alone. Only integer
-      // num_format on fixed textures has scale bits.
-      a_.OpIf(true, integer_scale_bits_packed);
-      a_.OpUBFE(integer_scale_bits_dest, dxbc::Src::LU(6),
+      dxbc::Dest integer_scale_flags_dest(
+          dxbc::Dest::R(signs_temp, used_result_nonzero_components));
+      dxbc::Src integer_scale_flags_src(dxbc::Src::R(signs_temp));
+      // Uniform early out. Zero means leave the sample alone. Bit 26 is the
+      // coordinate snap, not a scale.
+      a_.OpAnd(dxbc::Dest::R(signs_temp, 0b0001), integer_scale_bits_packed,
+               dxbc::Src::LU((UINT32_C(1) << 26) - 1));
+      a_.OpIf(true, dxbc::Src::R(signs_temp, dxbc::Src::kXXXX));
+      a_.OpAnd(dxbc::Dest::R(signs_temp, 0b0001), integer_scale_bits_packed,
+               dxbc::Src::LU(UINT32_C(1) << 24));
+      a_.OpIf(true, dxbc::Src::R(signs_temp, dxbc::Src::kXXXX));
+      if (instr.AllowsPointSampling(use_computed_lod)) {
+        // Reconstruct point sampled 4 to 6 bit unsigned components
+        // using the guest conversion (see GetIntegerScaleBits).
+        a_.OpAnd(dxbc::Dest::R(signs_temp, 0b0001), integer_scale_bits_packed,
+                 dxbc::Src::LU((UINT32_C(1) << 24) - 1));
+        a_.OpIf(true, dxbc::Src::R(signs_temp, dxbc::Src::kXXXX));
+        // 2^w per component.
+        a_.OpUBFE(integer_scale_dest, dxbc::Src::LU(4),
+                  dxbc::Src::LU(0, 6, 12, 18), integer_scale_bits_packed);
+        a_.OpIShL(integer_scale_dest, dxbc::Src::LU(2), integer_scale_src);
+        a_.OpUToF(integer_scale_dest, integer_scale_src);
+        // The texel n from the host's n / (2^w - 1).
+        a_.OpAdd(integer_scale_flags_dest, integer_scale_src,
+                 dxbc::Src::LF(-1.0f));
+        a_.OpMul(integer_scale_flags_dest, dxbc::Src::R(system_temp_result_),
+                 integer_scale_flags_src);
+        a_.OpRoundNE(integer_scale_flags_dest, integer_scale_flags_src);
+        // n * (2^w + 1) / 2^(2w).
+        a_.OpMAd(integer_scale_flags_dest, integer_scale_flags_src,
+                 integer_scale_src, integer_scale_flags_src);
+        a_.OpMul(integer_scale_dest, integer_scale_src, integer_scale_src);
+        a_.OpDiv(integer_scale_flags_dest, integer_scale_flags_src,
+                 integer_scale_src);
+        // Apply only where the packed component field is 1 to 15
+        // (unsigned with a nonzero width field).
+        a_.OpUBFE(integer_scale_dest, dxbc::Src::LU(6),
+                  dxbc::Src::LU(0, 6, 12, 18), integer_scale_bits_packed);
+        a_.OpIAdd(integer_scale_dest, integer_scale_src, dxbc::Src::LI(-1));
+        a_.OpULT(integer_scale_dest, integer_scale_src, dxbc::Src::LU(15));
+        a_.OpMovC(
+            dxbc::Dest::R(system_temp_result_, used_result_nonzero_components),
+            integer_scale_src, integer_scale_flags_src,
+            dxbc::Src::R(system_temp_result_));
+        a_.OpEndIf();
+      }
+      // Only round unsigned normalized components to 16 fractional bits.
+      a_.OpMul(integer_scale_dest, dxbc::Src::R(system_temp_result_),
+               dxbc::Src::LF(65536.0f));
+      a_.OpRoundNE(integer_scale_dest, integer_scale_src);
+      a_.OpMul(integer_scale_dest, integer_scale_src,
+               dxbc::Src::LF(1.0f / 65536.0f));
+      a_.OpUBFE(integer_scale_flags_dest, dxbc::Src::LU(2),
+                dxbc::Src::LU(4, 10, 16, 22), integer_scale_bits_packed);
+      a_.OpMovC(
+          dxbc::Dest::R(system_temp_result_, used_result_nonzero_components),
+          integer_scale_flags_src, dxbc::Src::R(system_temp_result_),
+          integer_scale_src);
+      // Clamp normalized unsigned-biased components to -1. Post-filtering
+      // clamping can put mixtures with a stored value of 0 up to one component
+      // code below the result of clamping each texel before.
+      // TODO(boma): Guest clamping needs to be verified on real hardware.
+      a_.OpIEq(integer_scale_flags_dest, integer_scale_flags_src,
+               dxbc::Src::LU(uint32_t(xenos::TextureSign::kUnsignedBiased)));
+      a_.OpMax(integer_scale_dest, dxbc::Src::R(system_temp_result_),
+               dxbc::Src::LF(-1.0f));
+      a_.OpMovC(
+          dxbc::Dest::R(system_temp_result_, used_result_nonzero_components),
+          integer_scale_flags_src, integer_scale_src,
+          dxbc::Src::R(system_temp_result_));
+      a_.OpElse();
+      // Restore integer values with 2^w - 1 for unsigned components
+      // and 2^(w - 1) - 1 for signed and unsigned-biased.
+      a_.OpUBFE(integer_scale_dest, dxbc::Src::LU(4),
                 dxbc::Src::LU(0, 6, 12, 18), integer_scale_bits_packed);
-      a_.OpAnd(integer_scale_dest, integer_scale_bits_src, dxbc::Src::LU(0xF));
       a_.OpIAdd(integer_scale_dest, integer_scale_src, dxbc::Src::LU(1));
-      a_.OpUBFE(integer_scale_flags_dest, dxbc::Src::LU(1), dxbc::Src::LU(4),
-                integer_scale_bits_src);
-      a_.OpIAdd(integer_scale_dest, integer_scale_src,
-                -integer_scale_flags_src);
+      // All ones for signed (1) and biased (2), taking one off the shift.
+      a_.OpUBFE(integer_scale_flags_dest, dxbc::Src::LU(2),
+                dxbc::Src::LU(4, 10, 16, 22), integer_scale_bits_packed);
+      a_.OpIAdd(integer_scale_flags_dest, integer_scale_flags_src,
+                dxbc::Src::LI(-1));
+      a_.OpULT(integer_scale_flags_dest, integer_scale_flags_src,
+               dxbc::Src::LU(2));
+      a_.OpIAdd(integer_scale_dest, integer_scale_src, integer_scale_flags_src);
       a_.OpIShL(integer_scale_dest, dxbc::Src::LU(1), integer_scale_src);
       a_.OpIAdd(integer_scale_dest, integer_scale_src, dxbc::Src::LI(-1));
       a_.OpUToF(integer_scale_dest, integer_scale_src);
-      // Unsigned biased samples are already mapped from [0, 1] to [-1, 1], so
-      // use half of the unsigned scale and subtract 0.5 to restore the guest's
-      // integer value.
-      a_.OpUBFE(integer_scale_bits_dest, dxbc::Src::LU(1), dxbc::Src::LU(5),
-                integer_scale_bits_src);
-      a_.OpMovC(integer_scale_flags_dest, integer_scale_bits_src,
-                dxbc::Src::LF(0.5f), dxbc::Src::LF(1.0f));
-      a_.OpMul(integer_scale_dest, integer_scale_src, integer_scale_flags_src);
-      a_.OpMovC(integer_scale_flags_dest, integer_scale_bits_src,
-                dxbc::Src::LF(-0.5f), dxbc::Src::LF(0.0f));
+      // For 1 bit unsigned-biased components, use a scale of 0.5 and
+      // an offset of -0.5 to recover -1 and 0.
+      a_.OpMin(integer_scale_flags_dest, integer_scale_src,
+               dxbc::Src::LF(0.5f));
+      a_.OpAdd(integer_scale_flags_dest, integer_scale_flags_src,
+               dxbc::Src::LF(-0.5f));
+      a_.OpMax(integer_scale_dest, integer_scale_src, dxbc::Src::LF(0.5f));
       a_.OpMAd(
           dxbc::Dest::R(system_temp_result_, used_result_nonzero_components),
           dxbc::Src::R(system_temp_result_), integer_scale_src,
           integer_scale_flags_src);
+      if (instr.AllowsPointSampling(use_computed_lod)) {
+        // Host decode precision varies since NVIDIA bit replication turns 1/31
+        // into 8/255, giving a scaled value of 0.9725. Point sampling gives the
+        // guest an integer texel value, while filtering keeps the fractional
+        // result.
+        a_.OpAnd(dxbc::Dest::R(signs_temp, 0b0001), integer_scale_bits_packed,
+                 dxbc::Src::LU(UINT32_C(1) << 26));
+        a_.OpIf(true, dxbc::Src::R(signs_temp, dxbc::Src::kXXXX));
+        a_.OpRoundNE(
+            dxbc::Dest::R(system_temp_result_, used_result_nonzero_components),
+            dxbc::Src::R(system_temp_result_));
+        a_.OpEndIf();
+      }
       a_.OpEndIf();
-      PopSystemTemp(3);
+      a_.OpEndIf();
+      PopSystemTemp();
     }
     if (signs_temp != UINT32_MAX) {
       PopSystemTemp();
