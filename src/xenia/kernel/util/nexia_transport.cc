@@ -359,8 +359,6 @@ bool NexiaTransport::EnqueueFrame(std::vector<uint8_t> frame) {
 void NexiaTransport::WriterMain() {
   xe::threading::set_name("Nexia Transport TX");
 
-  const native_socket fd = static_cast<native_socket>(socket_);
-
   while (running_.load()) {
     std::vector<uint8_t> frame;
     {
@@ -382,6 +380,17 @@ void NexiaTransport::WriterMain() {
       // pool so the steady state does not touch the allocator at all.
       SendUdpDatagram(socket_, frame);
       last_send_ms_.store(NowMs());
+      ReturnBuffer(std::move(frame));
+      continue;
+    }
+
+    // Read the handle again every pass instead of caching it before the loop: a
+    // cached copy kept this thread sending into a socket that ReestablishUdp had
+    // already closed and replaced, which is the whole point of socket_ being
+    // atomic. Invalid means a rebuild is in flight - park rather than report the
+    // relay as lost.
+    const native_socket fd = static_cast<native_socket>(socket_);
+    if (fd == static_cast<native_socket>(~uintptr_t(0))) {
       ReturnBuffer(std::move(frame));
       continue;
     }

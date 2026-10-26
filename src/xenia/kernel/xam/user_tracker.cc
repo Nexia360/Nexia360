@@ -1947,6 +1947,13 @@ void UserTracker::StartPeriodicMaintenance(uint64_t xuid) const {
     return;
   }
 
+  // Held for the whole check-then-act below. Without it two threads could both
+  // see "no task" and each create a maintenance worker, the second assignment
+  // destroying the first PeriodicCallback - which joins that worker - from
+  // underneath a thread that was about to use it. The worker itself never takes
+  // this lock, so holding it across the join in Stop cannot deadlock.
+  std::lock_guard<std::recursive_mutex> task_lock(user->periodic_task_mutex_);
+
   if (user->GetPeriodicMaintenanceTask()) {
     return;
   }
@@ -1971,6 +1978,13 @@ void UserTracker::StopPeriodicMaintenance(uint64_t xuid) const {
   if (!user) {
     return;
   }
+
+  // Same lock as StartPeriodicMaintenance, so a stop cannot run between a
+  // starter check and its assignment and leave two live workers, and so the
+  // unique_ptr is never reassigned while another thread reads it. The join
+  // happens with the lock held; the maintenance worker does not take it, so
+  // there is nothing for the join to wait on behind the lock.
+  std::lock_guard<std::recursive_mutex> task_lock(user->periodic_task_mutex_);
 
   if (user->GetPeriodicMaintenanceTask()) {
     XELOGD(fmt::format("Stopped Periodic Maintenance: {:016X}", xuid));
