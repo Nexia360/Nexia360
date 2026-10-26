@@ -184,20 +184,32 @@ class PeriodicCallback {
   PeriodicCallback(std::chrono::milliseconds interval,
                    std::function<void()> callback, std::string thread_name) {
     assert_not_null(callback);
-    std::jthread worker =
-        std::jthread([interval, callback = std::move(callback),
-                      thread_name](std::stop_token stoken) {
-          xe::threading::set_name(thread_name);
+    worker_ = std::jthread([interval, callback = std::move(callback),
+                            thread_name](std::stop_token stoken) {
+      xe::threading::set_name(thread_name);
 
-          while (!stoken.stop_requested()) {
-            callback();
-            std::this_thread::sleep_for(interval);
-          }
-        });
+      while (!stoken.stop_requested()) {
+        callback();
 
-    periodic_stop_source_ = worker.get_stop_source();
+        // Sliced sleep rather than one sleep_for(interval): with ~jthread now
+        // joining, a single uninterruptible sleep would make every stop wait out
+        // the whole interval (5s for periodic maintenance, 45min for the UPnP
+        // port refresh).
+        for (auto remaining = interval;
+             remaining > std::chrono::milliseconds(0) &&
+             !stoken.stop_requested();
+             remaining -= std::chrono::milliseconds(50)) {
+          std::this_thread::sleep_for(
+              std::min(remaining, std::chrono::milliseconds(50)));
+        }
+      }
+    });
 
-    worker.detach();
+    // Must come after the jthread is created: the stop source is the one the
+    // worker's stop token actually observes. A default-constructed stop_source
+    // is a different, unrelated one, so request_stop() on it would not stop the
+    // thread and GetStopSource() would hand back something inert.
+    periodic_stop_source_ = worker_.get_stop_source();
   }
 
  public:
@@ -213,6 +225,11 @@ class PeriodicCallback {
   }
 
  private:
+  // Held as a member so ~jthread joins the worker: no callback can still be
+  // running once a PeriodicCallback is destroyed. It used to be detached, which
+  // meant request_stop() returned while the worker might still be inside
+  // callback(), touching objects the caller had already started tearing down.
+  std::jthread worker_;
   std::stop_source periodic_stop_source_;
 };
 

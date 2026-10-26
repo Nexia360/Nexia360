@@ -11,8 +11,10 @@
 #define XENIA_KERNEL_XAM_USER_TRACKER_H_
 
 #include <chrono>
+#include <mutex>
 #include <set>
 #include <span>
+#include <vector>
 
 #include "xenia/xbox.h"
 
@@ -153,6 +155,13 @@ class UserTracker {
  private:
   bool IsUserTracked(uint64_t xuid) const;
 
+  // Copy of tracked_xuids_ taken under tracked_xuids_mutex_. The set is walked
+  // from PeriodicMaintenance's worker thread while AddUser/RemoveUser mutate it
+  // from the profile manager thread, so the walkers iterate this snapshot
+  // instead of the live set. Returned by value so the lock is released before
+  // any of the (potentially blocking) work in the loop bodies.
+  std::vector<uint64_t> TrackedXUIDsSnapshot() const;
+
   void UpdateSettingValue(uint64_t xuid, uint32_t title_id,
                           UserSettingId setting_id, int32_t difference);
   std::optional<UserSetting> GetGpdSetting(UserProfile* user, uint32_t title_id,
@@ -169,7 +178,14 @@ class UserTracker {
 
   SpaInfo* spa_data_ = nullptr;
 
+  // Guarded by tracked_xuids_mutex_. PeriodicMaintenance runs on its own
+  // detached worker thread (PeriodicCallback spawns one) and walks this set
+  // every 5s, while AddUser/RemoveUser insert and erase it from the profile
+  // manager thread. A std::set rebalances on insert/erase, so an unlocked
+  // traversal racing either one can follow a node that has just been rotated
+  // away - the classic random access violation.
   std::set<uint64_t> tracked_xuids_;
+  mutable std::mutex tracked_xuids_mutex_;
 
   const std::chrono::seconds periodic_maintenance_interval_ = 5s;
   std::atomic<bool> backend_avalability_ = false;

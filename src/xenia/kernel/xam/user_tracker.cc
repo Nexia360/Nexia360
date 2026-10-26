@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <mutex>
 #include <ranges>
 #include <vector>
 
@@ -45,7 +46,10 @@ bool UserTracker::AddUser(uint64_t xuid) {
     return false;
   }
 
-  tracked_xuids_.insert(xuid);
+  {
+    std::lock_guard<std::mutex> lock(tracked_xuids_mutex_);
+    tracked_xuids_.insert(xuid);
+  }
 
   if (spa_data_) {
     AddTitleToPlayedList(xuid);
@@ -68,7 +72,10 @@ bool UserTracker::RemoveUser(uint64_t xuid) {
     return false;
   }
 
-  tracked_xuids_.erase(xuid);
+  {
+    std::lock_guard<std::mutex> lock(tracked_xuids_mutex_);
+    tracked_xuids_.erase(xuid);
+  }
   FlushUserData(xuid);
   return true;
 }
@@ -168,7 +175,7 @@ void UserTracker::AddTitleToPlayedList() {
     return;
   }
 
-  for (const uint64_t xuid : tracked_xuids_) {
+  for (const uint64_t xuid : TrackedXUIDsSnapshot()) {
     AddTitleToPlayedList(xuid);
   }
 }
@@ -232,7 +239,7 @@ void UserTracker::AddDefaultProperties() {
     return;
   }
 
-  for (const uint64_t xuid : tracked_xuids_) {
+  for (const uint64_t xuid : TrackedXUIDsSnapshot()) {
     AddDefaultProperties(xuid);
   }
 }
@@ -296,7 +303,7 @@ void UserTracker::AddDefaultContexts() {
     return;
   }
 
-  for (const uint64_t xuid : tracked_xuids_) {
+  for (const uint64_t xuid : TrackedXUIDsSnapshot()) {
     AddDefaultContexts(xuid);
   }
 }
@@ -593,7 +600,13 @@ std::u16string UserTracker::GetPropertyDescription(uint32_t id) const {
 
 // Privates
 bool UserTracker::IsUserTracked(uint64_t xuid) const {
+  std::lock_guard<std::mutex> lock(tracked_xuids_mutex_);
   return tracked_xuids_.find(xuid) != tracked_xuids_.cend();
+}
+
+std::vector<uint64_t> UserTracker::TrackedXUIDsSnapshot() const {
+  std::lock_guard<std::mutex> lock(tracked_xuids_mutex_);
+  return std::vector<uint64_t>(tracked_xuids_.cbegin(), tracked_xuids_.cend());
 }
 
 std::optional<TitleInfo> UserTracker::GetUserTitleInfo(
@@ -684,7 +697,7 @@ std::vector<TitleInfo> UserTracker::GetPlayedTitles(uint64_t xuid) const {
 }
 
 void UserTracker::UpdateMissingAchievemntsIcons() {
-  for (auto& user_xuid : tracked_xuids_) {
+  for (const uint64_t user_xuid : TrackedXUIDsSnapshot()) {
     auto user = kernel_state()->xam_state()->GetUserProfile(user_xuid);
     if (!user) {
       continue;
@@ -730,7 +743,7 @@ void UserTracker::UpdateSpaInfo(SpaInfo* spa_info) {
 }
 
 void UserTracker::UpdateTitleGpdFile() {
-  for (auto& user_xuid : tracked_xuids_) {
+  for (const uint64_t user_xuid : TrackedXUIDsSnapshot()) {
     auto user = kernel_state()->xam_state()->GetUserProfile(user_xuid);
     if (!user) {
       continue;
@@ -764,7 +777,7 @@ void UserTracker::UpdateTitleGpdFile() {
 }
 
 void UserTracker::UpdateProfileGpd() {
-  for (auto& user_xuid : tracked_xuids_) {
+  for (const uint64_t user_xuid : TrackedXUIDsSnapshot()) {
     auto user = kernel_state()->xam_state()->GetUserProfile(user_xuid);
     if (!user) {
       continue;
