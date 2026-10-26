@@ -186,21 +186,23 @@ UserProfile* ProfileManager::GetProfile(uint8_t user_index) const {
     return nullptr;
   }
 
+  std::lock_guard<std::recursive_mutex> lock(logged_profiles_mutex_);
+
   if (user_index == XUserIndexAny) {
     for (uint8_t i = 0; i < XUserMaxUserCount; i++) {
-      if (!logged_profiles_.count(i)) {
-        continue;
+      const auto any_it = logged_profiles_.find(i);
+      if (any_it != logged_profiles_.cend() && any_it->second) {
+        return any_it->second.get();
       }
-
-      return logged_profiles_.at(i).get();
     }
-  }
-
-  if (!logged_profiles_.count(user_index)) {
     return nullptr;
   }
 
-  return logged_profiles_.at(user_index).get();
+  // One lookup, not count() then at(). As written before, a concurrent erase
+  // between the two made at() throw std::out_of_range - a real, thrown
+  // exception rather than just undefined behaviour.
+  const auto it = logged_profiles_.find(user_index);
+  return it != logged_profiles_.cend() ? it->second.get() : nullptr;
 }
 
 bool ProfileManager::LoadAccount(const uint64_t xuid) {
@@ -286,30 +288,44 @@ bool ProfileManager::DismountProfile(const uint64_t xuid) {
 
 void ProfileManager::Login(const uint64_t xuid, const uint8_t user_index,
                            bool notify) {
-  if (logged_profiles_.size() >= XUserMaxUserCount) {
-    XELOGE(
-        "Cannot login account with XUID: {:016X} due to lack of free slots "
-        "(Max 4 accounts at once)",
-        xuid);
-    return;
-  }
+  uint8_t already_logged_in_slot = XUserIndexAny;
+  {
+    std::lock_guard<std::recursive_mutex> lock(logged_profiles_mutex_);
 
-  if (user_index < XUserMaxUserCount) {
-    const auto& profile = logged_profiles_.find(user_index);
-    if (profile != logged_profiles_.cend()) {
-      if (profile->second && profile->second->xuid() == xuid) {
-        // Do nothing! User is already signed in to that slot.
-        return;
+    if (logged_profiles_.size() >= XUserMaxUserCount) {
+      XELOGE(
+          "Cannot login account with XUID: {:016X} due to lack of free slots "
+          "(Max 4 accounts at once)",
+          xuid);
+      return;
+    }
+
+    if (user_index < XUserMaxUserCount) {
+      const auto profile = logged_profiles_.find(user_index);
+      if (profile != logged_profiles_.cend()) {
+        if (profile->second && profile->second->xuid() == xuid) {
+          // Do nothing! User is already signed in to that slot.
+          return;
+        }
       }
+    }
+
+    // Find if xuid is already logged in. We might want to logout.
+    // The null check on entry.second matters: every other reader of this map
+    // skips null entries, and this lambda used to dereference unconditionally.
+    const auto it = std::find_if(
+        logged_profiles_.cbegin(), logged_profiles_.cend(),
+        [xuid](const auto& entry) {
+          return entry.second && entry.second->xuid() == xuid;
+        });
+    if (it != logged_profiles_.cend()) {
+      already_logged_in_slot = it->first;
     }
   }
 
-  // Find if xuid is already logged in. We might want to logout.
-  auto it = std::find_if(
-      logged_profiles_.begin(), logged_profiles_.end(),
-      [xuid](const auto& entry) { return entry.second->xuid() == xuid; });
-  if (it != logged_profiles_.end()) {
-    Logout(it->first);
+  // Outside the lock - Logout takes it itself, and joins the maintenance worker.
+  if (already_logged_in_slot != XUserIndexAny) {
+    Logout(already_logged_in_slot);
   }
 
   if (!accounts_.count(xuid)) {
@@ -325,8 +341,11 @@ void ProfileManager::Login(const uint64_t xuid, const uint8_t user_index,
 
   MountProfile(xuid);
 
-  logged_profiles_[assigned_user_slot] =
-      std::make_unique<UserProfile>(xuid, &profile);
+  {
+    std::lock_guard<std::recursive_mutex> lock(logged_profiles_mutex_);
+    logged_profiles_[assigned_user_slot] =
+        std::make_unique<UserProfile>(xuid, &profile);
+  }
 
   user_tracker_->AddUser(xuid);
 
@@ -346,21 +365,43 @@ void ProfileManager::Login(const uint64_t xuid, const uint8_t user_index,
     }
   }
 
-  logged_profiles_[assigned_user_slot]->LoadFriends();
+  UserProfile* logged_profile = nullptr;
+  {
+    std::lock_guard<std::recursive_mutex> lock(logged_profiles_mutex_);
+    const auto it = logged_profiles_.find(assigned_user_slot);
+    if (it != logged_profiles_.cend()) {
+      logged_profile = it->second.get();
+    }
+  }
+
+  // Outside the lock: LoadFriends hits the friends DB and the backend.
+  if (logged_profile) {
+    logged_profile->LoadFriends();
+  }
 }
 
 void ProfileManager::Logout(const uint8_t user_index, bool notify) {
-  auto profile = logged_profiles_.find(user_index);
-  if (profile == logged_profiles_.cend()) {
-    return;
+  uint64_t xuid = 0;
+  {
+    std::lock_guard<std::recursive_mutex> lock(logged_profiles_mutex_);
+    const auto profile = logged_profiles_.find(user_index);
+    if (profile == logged_profiles_.cend()) {
+      return;
+    }
+    xuid = profile->second->xuid();
   }
 
-  user_tracker_->StopPeriodicMaintenance(profile->second->xuid());
-  user_tracker_->CleanupOwnedSessions(profile->second->xuid());
-  kernel_state_->xam_state()->user_tracker()->RemoveUser(
-      profile->second->xuid());
-  DismountProfile(profile->second->xuid());
-  logged_profiles_.erase(profile);
+  // Deliberately outside the lock: StopPeriodicMaintenance joins the periodic
+  // maintenance worker, and that worker is constantly calling GetProfile, which
+  // takes this same lock. Holding it across the join would deadlock.
+  user_tracker_->StopPeriodicMaintenance(xuid);
+  user_tracker_->CleanupOwnedSessions(xuid);
+  kernel_state_->xam_state()->user_tracker()->RemoveUser(xuid);
+  DismountProfile(xuid);
+  {
+    std::lock_guard<std::recursive_mutex> lock(logged_profiles_mutex_);
+    logged_profiles_.erase(user_index);
+  }
   if (notify) {
     kernel_state_->BroadcastNotification(kXNotificationSystemSignInChanged,
                                          GetUsedUserSlots().to_ulong());
@@ -424,7 +465,9 @@ std::vector<uint64_t> ProfileManager::FindProfiles() const {
 }
 
 uint8_t ProfileManager::FindFirstFreeProfileSlot() const {
-  if (!IsAnyProfileSignedIn()) {
+  std::lock_guard<std::recursive_mutex> lock(logged_profiles_mutex_);
+
+  if (logged_profiles_.empty()) {
     return 0;
   }
 
@@ -442,6 +485,8 @@ uint8_t ProfileManager::FindFirstFreeProfileSlot() const {
 }
 
 std::bitset<XUserMaxUserCount> ProfileManager::GetUsedUserSlots() const {
+  std::lock_guard<std::recursive_mutex> lock(logged_profiles_mutex_);
+
   std::bitset<XUserMaxUserCount> used_slots = {};
   for (const auto& [index, entry] : logged_profiles_) {
     if (!entry) {
@@ -456,6 +501,8 @@ std::bitset<XUserMaxUserCount> ProfileManager::GetUsedUserSlots() const {
 
 uint8_t ProfileManager::GetUserIndexAssignedToProfile(
     const uint64_t xuid) const {
+  std::lock_guard<std::recursive_mutex> lock(logged_profiles_mutex_);
+
   for (const auto& [index, entry] : logged_profiles_) {
     if (!entry) {
       continue;
@@ -472,6 +519,8 @@ uint8_t ProfileManager::GetUserIndexAssignedToProfile(
 
 uint8_t ProfileManager::GetUserIndexAssignedToLiveProfile(
     const uint64_t xuid_online) const {
+  std::lock_guard<std::recursive_mutex> lock(logged_profiles_mutex_);
+
   for (const auto& [index, entry] : logged_profiles_) {
     if (!entry) {
       continue;

@@ -11,6 +11,7 @@
 #define XENIA_KERNEL_XAM_PROFILE_MANAGER_H_
 
 #include <bitset>
+#include <mutex>
 #include <random>
 #include <string>
 #include <vector>
@@ -150,8 +151,14 @@ class ProfileManager {
   uint32_t GetAccountCount() const {
     return static_cast<uint32_t>(accounts_.size());
   }
-  bool IsAnyProfileSignedIn() const { return !logged_profiles_.empty(); }
+  // Both read the map, so both take the lock: Login/Logout insert and erase
+  // entries from other threads, and std::map's size is not read atomically.
+  bool IsAnyProfileSignedIn() const {
+    std::lock_guard<std::recursive_mutex> lock(logged_profiles_mutex_);
+    return !logged_profiles_.empty();
+  }
   uint32_t SignedInProfilesCount() const {
+    std::lock_guard<std::recursive_mutex> lock(logged_profiles_mutex_);
     return static_cast<uint32_t>(logged_profiles_.size());
   }
 
@@ -188,6 +195,18 @@ class ProfileManager {
   uint8_t FindFirstFreeProfileSlot() const;
 
   std::map<uint64_t, X_XAMACCOUNTINFO> accounts_;
+
+  // logged_profiles_ is traversed from the periodic-maintenance worker thread
+  // (every GetUserProfile / GetUserIndexAssignedToProfile call) while Login and
+  // Logout insert and erase entries from the UI and guest threads. std::map
+  // rebalances on insert/erase, so an unlocked traversal can follow a node that
+  // has just been rotated away - a random access violation.
+  //
+  // The lock covers the map access only - never the blocking work (mount,
+  // LoadFriends, RegisterPlayer) and never StopPeriodicMaintenance, which joins
+  // the very worker that would otherwise be waiting on this lock. Recursive so a
+  // reader reached through a function that already holds it cannot self-deadlock.
+  mutable std::recursive_mutex logged_profiles_mutex_;
   std::map<uint8_t, std::unique_ptr<UserProfile>> logged_profiles_;
 
   KernelState* kernel_state_;
