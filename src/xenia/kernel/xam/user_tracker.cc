@@ -102,28 +102,52 @@ bool UserTracker::UnlockAchievement(uint64_t xuid, uint32_t achievement_id) {
     return false;
   }
 
-  // Update data in profile gpd.
-  auto title_info = user->dashboard_gpd_.GetTitleInfo(spa_data_->title_id());
-  if (!title_info) {
-    return false;
+  // gpd_mutex_ is held only over the GPD mutation. games_gpd_[] inserts on a
+  // miss, so this block changes the map while the UI thread
+  // (RefreshTitleSummary) and the periodic-maintenance worker are reading it.
+  // The scope ends before UpdateSettingValue/FlushUserData below: those call
+  // GetUserProfile, which takes logged_profiles_mutex_, and keeping the two
+  // locks from ever nesting is what makes the ordering safe in both directions.
+  uint32_t achievement_gamerscore = 0;
+  {
+    std::lock_guard<std::recursive_mutex> lock(user->gpd_mutex_);
+
+    // Update data in profile gpd.
+    auto title_info = user->dashboard_gpd_.GetTitleInfo(spa_data_->title_id());
+    if (!title_info) {
+      return false;
+    }
+
+    // Update title gpd
+    auto title_gpd = &user->games_gpd_[spa_data_->title_id()];
+    // Achievement is unlocked, so we need to add achievement icon
+    title_gpd->AddImage(spa_achievement->image_id,
+                        spa_data_->GetIcon(spa_achievement->image_id));
+
+    auto gpd_achievement = title_gpd->GetAchievementEntry(spa_achievement->id);
+    if (!gpd_achievement) {
+      XELOGW(
+          "{}: Missing achievement data in title GPD. (User: {} Title: {:08X})",
+          __func__, user->name(), spa_data_->title_id());
+      return false;
+    }
+
+    title_info->achievements_unlocked++;
+    title_info->gamerscore_earned += spa_achievement->gamerscore;
+
+    gpd_achievement->flags = gpd_achievement->flags |
+                             static_cast<uint32_t>(AchievementFlags::kAchieved);
+
+    if (user->IsSignedInToLive()) {
+      gpd_achievement->flags =
+          gpd_achievement->flags |
+          static_cast<uint32_t>(AchievementFlags::kAchievedOnline);
+    }
+
+    gpd_achievement->unlock_time = Clock::QueryGuestSystemTime();
+
+    achievement_gamerscore = gpd_achievement->gamerscore;
   }
-
-  // Update title gpd
-  auto title_gpd = &user->games_gpd_[spa_data_->title_id()];
-  // Achievement is unlocked, so we need to add achievement icon
-  title_gpd->AddImage(spa_achievement->image_id,
-                      spa_data_->GetIcon(spa_achievement->image_id));
-
-  auto gpd_achievement = title_gpd->GetAchievementEntry(spa_achievement->id);
-  if (!gpd_achievement) {
-    XELOGW(
-        "{}: Missing achievement data in title GPD. (User: {} Title: {:08X})",
-        __func__, user->name(), spa_data_->title_id());
-    return false;
-  }
-
-  title_info->achievements_unlocked++;
-  title_info->gamerscore_earned += spa_achievement->gamerscore;
 
   const std::string achievement_name = spa_data_->GetStringTableEntry(
       spa_data_->default_language(), spa_achievement->label_id);
@@ -131,24 +155,13 @@ bool UserTracker::UnlockAchievement(uint64_t xuid, uint32_t achievement_id) {
   XELOGI("Player: {} Unlocked Achievement: {}", user->name(),
          achievement_name.c_str());
 
-  gpd_achievement->flags = gpd_achievement->flags |
-                           static_cast<uint32_t>(AchievementFlags::kAchieved);
-
-  if (user->IsSignedInToLive()) {
-    gpd_achievement->flags =
-        gpd_achievement->flags |
-        static_cast<uint32_t>(AchievementFlags::kAchievedOnline);
-  }
-
-  gpd_achievement->unlock_time = Clock::QueryGuestSystemTime();
-
   UpdateSettingValue(xuid, kDashboardID, UserSettingId::XPROFILE_GAMERCARD_CRED,
-                     gpd_achievement->gamerscore);
+                     achievement_gamerscore);
   UpdateSettingValue(xuid, kDashboardID,
                      UserSettingId::XPROFILE_GAMERCARD_ACHIEVEMENTS_EARNED, 1);
   UpdateSettingValue(xuid, spa_data_->title_id(),
                      UserSettingId::XPROFILE_GAMERCARD_TITLE_CRED_EARNED,
-                     gpd_achievement->gamerscore);
+                     achievement_gamerscore);
   UpdateSettingValue(
       xuid, spa_data_->title_id(),
       UserSettingId::XPROFILE_GAMERCARD_TITLE_ACHIEVEMENTS_EARNED, 1);
@@ -195,9 +208,23 @@ void UserTracker::AddTitleToPlayedList(uint64_t xuid) {
   }
 
   const uint32_t title_id = spa_data_->title_id();
-  auto title_gpd = user->games_gpd_.find(title_id);
-  if (title_gpd == user->games_gpd_.end()) {
-    user->games_gpd_.emplace(title_id, GpdInfoTitle(title_id));
+
+  // gpd_mutex_ is taken only around the map/GPD mutations and released before
+  // UpdateTitleGpdFile/UpdateProfileGpd/UpdateSettingValue. Those call
+  // GetUserProfile, which takes logged_profiles_mutex_; keeping the two locks
+  // from ever being held together is what makes the ordering safe whichever way
+  // they are entered. games_gpd_.emplace rebalances the map, and the UI thread
+  // (RefreshTitleSummary) and the maintenance worker read it concurrently.
+  bool title_gpd_added = false;
+  {
+    std::lock_guard<std::recursive_mutex> lock(user->gpd_mutex_);
+    if (user->games_gpd_.find(title_id) == user->games_gpd_.cend()) {
+      user->games_gpd_.emplace(title_id, GpdInfoTitle(title_id));
+      title_gpd_added = true;
+    }
+  }
+
+  if (title_gpd_added) {
     UpdateTitleGpdFile();
   }
 
@@ -207,16 +234,27 @@ void UserTracker::AddTitleToPlayedList(uint64_t xuid) {
 
   const uint64_t current_time = Clock::QueryGuestSystemTime();
 
-  auto title_info = user->dashboard_gpd_.GetTitleInfo(title_id);
-  if (!title_info) {
-    user->dashboard_gpd_.AddNewTitle(spa_data_);
+  bool title_added = false;
+  {
+    std::lock_guard<std::recursive_mutex> lock(user->gpd_mutex_);
+    auto title_info = user->dashboard_gpd_.GetTitleInfo(title_id);
+    if (!title_info) {
+      user->dashboard_gpd_.AddNewTitle(spa_data_);
+      title_info = user->dashboard_gpd_.GetTitleInfo(title_id);
+      title_added = true;
+    }
+    // Normally we only need to update last booted time. Everything else is
+    // filled during creation time OR SPA UPDATE TIME!
+    if (title_info) {
+      title_info->last_played = current_time;
+    }
+  }
+
+  // Only on the first boot of the title, as before the refactor.
+  if (title_added) {
     UpdateSettingValue(xuid, kDashboardID,
                        UserSettingId::XPROFILE_GAMERCARD_TITLES_PLAYED, 1);
-    title_info = user->dashboard_gpd_.GetTitleInfo(title_id);
   }
-  // Normally we only need to update last booted time. Everything else is filled
-  // during creation time OR SPA UPDATE TIME!
-  title_info->last_played = current_time;
 
   UpdateProfileGpd();
 }
@@ -226,6 +264,11 @@ void UserTracker::RemoveTitleFromPlayedList(uint64_t xuid, uint32_t title_id) {
   if (!user) {
     return;
   }
+
+  // Taken after GetUserProfile so logged_profiles_mutex_ is already released.
+  // RemoveTitle erases from dashboard_gpd_ while the UI thread and the
+  // maintenance worker are traversing it.
+  std::lock_guard<std::recursive_mutex> lock(user->gpd_mutex_);
 
   if (user->dashboard_gpd_.RemoveTitle(title_id)) {
     UpdateSettingValue(xuid, kDashboardID,
@@ -621,6 +664,11 @@ std::optional<TitleInfo> UserTracker::GetUserTitleInfo(
     return std::nullopt;
   }
 
+  // Readers need the lock too: a concurrent UpdateTitleInfo/RemoveTitle on the
+  // UI or maintenance thread rebalances the GPD containers, and an unlocked
+  // traversal can follow a node that has just been rotated away.
+  std::lock_guard<std::recursive_mutex> lock(user->gpd_mutex_);
+
   const auto title_data = user->dashboard_gpd_.GetTitleInfo(title_id);
   if (!title_data) {
     return std::nullopt;
@@ -653,6 +701,11 @@ std::vector<TitleInfo> UserTracker::GetPlayedTitles(uint64_t xuid) const {
   if (!user) {
     return {};
   }
+
+  // Readers need the lock too: a concurrent UpdateTitleInfo/RemoveTitle on the
+  // UI or maintenance thread rebalances the GPD containers, and an unlocked
+  // traversal can follow a node that has just been rotated away.
+  std::lock_guard<std::recursive_mutex> lock(user->gpd_mutex_);
 
   std::vector<TitleInfo> played_titles;
 
@@ -703,6 +756,11 @@ void UserTracker::UpdateMissingAchievemntsIcons() {
       continue;
     }
 
+    // Taken after GetUserProfile so logged_profiles_mutex_ is already released.
+    // AddImage mutates the GpdInfoTitle held in games_gpd_ while the UI thread
+    // and guest threads are reading it. WriteGpd below re-enters recursively.
+    std::lock_guard<std::recursive_mutex> lock(user->gpd_mutex_);
+
     auto game_gpd = user->games_gpd_.find(spa_data_->title_id());
     if (game_gpd == user->games_gpd_.cend()) {
       continue;
@@ -749,6 +807,11 @@ void UserTracker::UpdateTitleGpdFile() {
       continue;
     }
 
+    // Taken after GetUserProfile so logged_profiles_mutex_ is already released.
+    // This writes achievement entries into the GpdInfoTitle inside games_gpd_
+    // while the UI thread and guest threads read the same object.
+    std::lock_guard<std::recursive_mutex> lock(user->gpd_mutex_);
+
     auto game_gpd = user->games_gpd_.find(spa_data_->title_id());
     if (game_gpd == user->games_gpd_.cend()) {
       continue;
@@ -783,6 +846,12 @@ void UserTracker::UpdateProfileGpd() {
       continue;
     }
 
+    // Taken after GetUserProfile so logged_profiles_mutex_ is already released.
+    // title_data below is a pointer into dashboard_gpd_, and UpdateTitleInfo
+    // writes through it while the UI thread (RefreshTitleSummary) writes the
+    // same fields. FlushUserData re-enters recursively via WriteGpd.
+    std::lock_guard<std::recursive_mutex> lock(user->gpd_mutex_);
+
     auto title_data = user->dashboard_gpd_.GetTitleInfo(spa_data_->title_id());
     if (!title_data) {
       continue;
@@ -810,6 +879,11 @@ std::vector<Achievement> UserTracker::GetUserTitleAchievements(
   if (!user) {
     return {};
   }
+
+  // Readers need the lock too: a concurrent AddImage/UpdateTitleInfo on the UI
+  // or maintenance thread mutates the GpdInfoTitle inside games_gpd_ while this
+  // traverses it.
+  std::lock_guard<std::recursive_mutex> lock(user->gpd_mutex_);
 
   auto game_gpd = user->games_gpd_.find(title_id);
   if (game_gpd == user->games_gpd_.cend()) {
@@ -839,6 +913,10 @@ std::span<const uint8_t> UserTracker::GetAchievementIcon(
   if (!user) {
     return {};
   }
+
+  // Readers need the lock too: UpdateTitleGpdFile on the maintenance worker
+  // AddImage's into the same GpdInfoTitle this traverses.
+  std::lock_guard<std::recursive_mutex> lock(user->gpd_mutex_);
 
   auto game_gpd = user->games_gpd_.find(title_id);
   if (game_gpd == user->games_gpd_.cend()) {
@@ -957,6 +1035,10 @@ const Property* UserTracker::GetProperty(const uint64_t xuid,
 
 std::optional<UserSetting> UserTracker::GetGpdSetting(
     UserProfile* user, uint32_t title_id, uint32_t setting_id) const {
+  // Readers need the lock too: UpsertSetting and the maintenance worker write
+  // these GPDs concurrently.
+  std::lock_guard<std::recursive_mutex> lock(user->gpd_mutex_);
+
   auto game_gpd = user->games_gpd_.find(title_id);
   if (game_gpd != user->games_gpd_.cend()) {
     auto setting = game_gpd->second.GetSetting(setting_id);
@@ -994,6 +1076,11 @@ std::optional<UserSetting> UserTracker::GetSetting(UserProfile* user,
 
 std::vector<UserSettingId> UserTracker::GetSettingIds(UserProfile* user,
                                                       uint32_t title_id) const {
+  // GetGpd only holds gpd_mutex_ over its own lookup, so the GpdInfo pointer it
+  // hands back would otherwise be traversed unlocked while the maintenance
+  // worker writes settings/images into that same object.
+  std::lock_guard<std::recursive_mutex> lock(user->gpd_mutex_);
+
   const auto gpd = user->GetGpd(title_id);
   if (!gpd) {
     return {};
@@ -1168,6 +1255,12 @@ void UserTracker::UpdateSettingValue(uint64_t xuid, uint32_t title_id,
     return;
   }
 
+  // GetGpd releases gpd_mutex_ before returning, so the read-modify-write of
+  // the setting below has to happen under the lock itself. Two guest threads
+  // unlocking achievements at once would otherwise both read the same stale
+  // base_data.s32 and drop one of the two increments.
+  std::lock_guard<std::recursive_mutex> lock(user->gpd_mutex_);
+
   GpdInfo* info = user->GetGpd(title_id);
   if (!info) {
     return;
@@ -1202,6 +1295,11 @@ void UserTracker::UpsertSetting(uint64_t xuid, uint32_t title_id,
   if (!title_id) {
     title_id = spa_data_ ? spa_data_->title_id() : kernel_state()->title_id();
   }
+
+  // Same reason as UpdateSettingValue: UpsertSetting mutates the entry list of
+  // the GpdInfo that the maintenance worker and the UI thread are reading.
+  // FlushUserData below re-enters gpd_mutex_ recursively through WriteGpd.
+  std::lock_guard<std::recursive_mutex> lock(user->gpd_mutex_);
 
   GpdInfo* info = user->GetGpd(title_id);
   if (!info) {
@@ -1363,6 +1461,12 @@ std::span<const uint8_t> UserTracker::GetIcon(uint64_t xuid, uint32_t title_id,
     }
   }
 
+  // GetImage hands back a span that points straight into the GpdInfo entry list.
+  // AddImage on the maintenance worker does DeleteEntry + InsertEntry, which can
+  // free the bytes this span refers to before the caller has finished copying
+  // them, so the whole switch has to run under the lock.
+  std::lock_guard<std::recursive_mutex> lock(user->gpd_mutex_);
+
   switch (tile_type) {
     case XTileType::kAchievement: {
       if (title_id == kernel_state()->title_id()) {
@@ -1409,6 +1513,13 @@ void UserTracker::RefreshTitleSummary(uint64_t xuid, uint32_t title_id) {
   if (!user) {
     return;
   }
+
+  // Runs on the UI thread (TitleListUI::DrawTitleEntry) and writes the
+  // achievement/gamerscore counters straight into dashboard_gpd_, while the
+  // periodic-maintenance worker and guest threads read and write the same
+  // GpdInfo objects. Taken after GetUserProfile so logged_profiles_mutex_ is
+  // already released and the two locks never nest.
+  std::lock_guard<std::recursive_mutex> lock(user->gpd_mutex_);
 
   auto profile_gpd = user->GetGpd(kDashboardID);
   if (!profile_gpd) {

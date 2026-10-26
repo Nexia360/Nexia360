@@ -71,15 +71,18 @@ GpdInfo* UserProfile::GetGpd(const uint32_t title_id) {
 }
 
 const GpdInfo* UserProfile::GetGpd(const uint32_t title_id) const {
+  std::lock_guard<std::recursive_mutex> lock(gpd_mutex_);
+
   if (title_id == kDashboardID) {
     return &dashboard_gpd_;
   }
 
-  if (!games_gpd_.count(title_id)) {
-    return nullptr;
-  }
-
-  return &games_gpd_.at(title_id);
+  // One lookup, not count() then at(). Two separate traversals let a
+  // concurrent emplace/erase rebalance the map in between, which both made
+  // at() throw std::out_of_range and left the first traversal reading a node
+  // that had already been rotated away.
+  const auto it = games_gpd_.find(title_id);
+  return it != games_gpd_.cend() ? &it->second : nullptr;
 }
 
 void UserProfile::LoadProfileGpds() {
@@ -188,6 +191,11 @@ std::vector<uint8_t> UserProfile::LoadGpd(const uint32_t title_id) {
 }
 
 bool UserProfile::WriteGpd(const uint32_t title_id) {
+  // Held across Serialize(): another thread can be writing achievement counters
+  // into the same GpdInfo right now, and serializing mid-update writes a torn
+  // record to disk. Recursive, so re-entering GetGpd below is fine.
+  std::lock_guard<std::recursive_mutex> lock(gpd_mutex_);
+
   const GpdInfo* gpd = GetGpd(title_id);
   if (!gpd) {
     return false;

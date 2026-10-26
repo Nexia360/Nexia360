@@ -12,6 +12,7 @@
 
 #include <map>
 #include <memory>
+#include <mutex>
 #include <random>
 #include <string>
 #include <unordered_map>
@@ -237,6 +238,16 @@ class UserProfile {
   std::vector<object_ref<XSession>> owned_sessions_;
   std::unique_ptr<xe::threading::PeriodicCallback> periodic_maintenance_task_;
 
+  // Guarded by gpd_mutex_. dashboard_gpd_ and games_gpd_ are read and written
+  // from three different threads at once: the UI thread (TitleListUI ->
+  // RefreshTitleSummary writes title_data fields then WriteGpd), the periodic
+  // maintenance worker (UpdateTitleGpdFile / UpdateProfileGpd /
+  // UpdateMissingAchievemntsIcons / FlushUserData), and guest threads
+  // (UnlockAchievement, AddTitleToPlayedList). games_gpd_ is a std::map that
+  // emplace() rebalances, so an unlocked concurrent read could follow a rotated
+  // node. Recursive because these entry points nest (e.g. AddTitleToPlayedList
+  // calls UpdateTitleGpdFile, both take it).
+  mutable std::recursive_mutex gpd_mutex_;
   GpdInfoProfile dashboard_gpd_;
   std::map<uint32_t, GpdInfoTitle> games_gpd_;
   std::vector<Property> properties_;  // Includes contexts!

@@ -37,6 +37,11 @@ const std::optional<Achievement> GpdAchievementBackend::GetAchievementInfo(
     return std::nullopt;
   }
 
+  // Readers need the lock too: UnlockAchievement (guest thread) and
+  // UpdateTitleGpdFile (maintenance worker) AddImage into the same GpdInfoTitle
+  // this traverses, which can rebalance the map out from under the find().
+  std::lock_guard<std::recursive_mutex> lock(user->gpd_mutex_);
+
   auto entry = user->games_gpd_.find(title_id);
   if (entry == user->games_gpd_.cend()) {
     return std::nullopt;
