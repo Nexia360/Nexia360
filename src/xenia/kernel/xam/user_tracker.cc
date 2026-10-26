@@ -1578,6 +1578,29 @@ void UserTracker::PeriodicMaintenance(uint64_t xuid, size_t iteration_count) {
 
   const auto presence_manager = kernel_state()->presence_manager();
 
+  // Notifications must be created on the UI thread. ImGuiDrawer::notifications_
+  // is a plain vector that Paint() traverses unlocked every frame, and
+  // AddNotification even calls Presenter::AddUIDrawerFromUIThread - so pushing
+  // to it from this worker thread races the UI thread's traversal, and a
+  // reallocation mid-frame leaves Paint() following a freed buffer. Every other
+  // call site in the codebase marshals through CallInUIThread for exactly this
+  // reason; PeriodicMaintenance is the one place that did not.
+  const auto show_notification = [this](std::string title,
+                                        std::string description,
+                                        uint32_t user_index) {
+    auto* display_window = kernel_state()->emulator()->display_window();
+    if (!display_window) {
+      return;
+    }
+    auto* imgui_drawer = kernel_state()->emulator()->imgui_drawer();
+    display_window->app_context().CallInUIThread(
+        [imgui_drawer, title = std::move(title),
+         description = std::move(description), user_index]() {
+          new xe::ui::HostNotificationWindow(imgui_drawer, title, description,
+                                             static_cast<uint8_t>(user_index));
+        });
+  };
+
   const bool updated_presence_string =
       presence_manager->UpdateLocalPresence(user->xuid());
 
@@ -1668,13 +1691,11 @@ void UserTracker::PeriodicMaintenance(uint64_t xuid, size_t iteration_count) {
               service_name(static_cast<NETWORK_MODE>(cvars::network_mode));
 
           if (LoggedInToLive()) {
-            new xe::ui::HostNotificationWindow(
-                kernel_state()->emulator()->imgui_drawer(),
-                fmt::format("Connected to {}", service), service, 0);
+            show_notification(fmt::format("Connected to {}", service), service,
+                              0);
           } else {
-            new xe::ui::HostNotificationWindow(
-                kernel_state()->emulator()->imgui_drawer(),
-                fmt::format("{} is now available", service), service, 0);
+            show_notification(fmt::format("{} is now available", service),
+                              service, 0);
           }
         }
 
@@ -1689,13 +1710,11 @@ void UserTracker::PeriodicMaintenance(uint64_t xuid, size_t iteration_count) {
           const std::string service = service_name(current_mode);
 
           if (current_mode >= NETWORK_MODE::XBOXLIVE) {
-            new xe::ui::HostNotificationWindow(
-                kernel_state()->emulator()->imgui_drawer(),
-                fmt::format("Disconnected from {}", service), service, 0);
+            show_notification(fmt::format("Disconnected from {}", service),
+                              service, 0);
           } else {
-            new xe::ui::HostNotificationWindow(
-                kernel_state()->emulator()->imgui_drawer(),
-                fmt::format("{} is unavailable", service), service, 0);
+            show_notification(fmt::format("{} is unavailable", service), service,
+                              0);
           }
 
           backend_avalability_ = false;
@@ -1756,10 +1775,9 @@ void UserTracker::PeriodicMaintenance(uint64_t xuid, size_t iteration_count) {
                 ? std::string(inviter_friend.value().Gamertag)
                 : fmt::format("{:016X}", invite.inviter_xuid);
 
-        new xe::ui::HostNotificationWindow(
-            kernel_state()->emulator()->imgui_drawer(), "Game Invite",
-            fmt::format("{} invited you to a game", inviter_name),
-            invited_user_index);
+        show_notification("Game Invite",
+                          fmt::format("{} invited you to a game", inviter_name),
+                          invited_user_index);
 
         kernel_state()->BroadcastNotification(kXNotificationLiveInviteAccepted,
                                               invited_user_index);
