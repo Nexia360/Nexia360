@@ -573,11 +573,12 @@ bool COMMAND_PROCESSOR::ExecutePacketType3(uint32_t packet) XE_RESTRICT {
       if (trace_writer_.is_open()) {
         trace_writer_.WriteEvent(EventCommand::Type::kSwap);
         trace_writer_.Flush();
-        if (trace_state_ == TraceState::kSingleFrame) {
-          trace_state_ = TraceState::kDisabled;
+        if (trace_state_.load(std::memory_order_acquire) == TraceState::kSingleFrame) {
+          trace_state_.store(TraceState::kDisabled,
+                             std::memory_order_release);
           trace_writer_.Close();
         }
-      } else if (trace_state_ == TraceState::kSingleFrame) {
+      } else if (trace_state_.load(std::memory_order_acquire) == TraceState::kSingleFrame) {
         // New trace request - we only start tracing at the beginning of a
         // frame.
         uint32_t title_id = kernel_state_->GetExecutableModule()->title_id();
@@ -1419,7 +1420,7 @@ uint32_t COMMAND_PROCESSOR::ExecutePrimaryBuffer(uint32_t read_index,
 #if XE_ENABLE_TRACE_WRITER_INSTRUMENTATION == 1
   // If we have a pending trace stream open it now. That way we ensure we get
   // all commands.
-  if (!trace_writer_.is_open() && trace_state_ == TraceState::kStreaming) {
+  if (!trace_writer_.is_open() && trace_state_.load(std::memory_order_acquire) == TraceState::kStreaming) {
     uint32_t title_id = kernel_state_->GetExecutableModule()
                             ? kernel_state_->GetExecutableModule()->title_id()
                             : 0;

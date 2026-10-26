@@ -170,12 +170,15 @@ bool CommandProcessor::Initialize() {
 }
 
 void CommandProcessor::Shutdown() {
-  EndTracing();
-
   worker_running_ = false;
   write_ptr_index_event_->Set();
   worker_thread_->Wait(0, 0, 0, nullptr);
   worker_thread_.reset();
+
+  // Only now that the worker is gone. EndTracing() fcloses the trace FILE*, and
+  // the worker writes to it on every packet - closing it first was a
+  // use-after-free that surfaced as a random crash on shutdown.
+  EndTracing();
 }
 
 void CommandProcessor::InitializeShaderStorage(
@@ -188,38 +191,43 @@ void CommandProcessor::InitializeShaderStorage(
 
 void CommandProcessor::RequestFrameTrace(
     const std::filesystem::path& root_path) {
-  if (trace_state_ == TraceState::kStreaming) {
+  if (trace_state_.load(std::memory_order_acquire) == TraceState::kStreaming) {
     XELOGE("Streaming trace; cannot also trace frame.");
     return;
   }
-  if (trace_state_ == TraceState::kSingleFrame) {
+  if (trace_state_.load(std::memory_order_acquire) == TraceState::kSingleFrame) {
     XELOGE("Frame trace already pending; ignoring.");
     return;
   }
-  trace_state_ = TraceState::kSingleFrame;
+  // Path first, then the state release-store: the worker acquire-loads the
+  // state before reading the path, so it can never observe the pending state
+  // with a half-written path.
   trace_frame_path_ = root_path;
+  trace_state_.store(TraceState::kSingleFrame, std::memory_order_release);
 }
 
 void CommandProcessor::BeginTracing(const std::filesystem::path& root_path) {
-  if (trace_state_ == TraceState::kStreaming) {
+  if (trace_state_.load(std::memory_order_acquire) == TraceState::kStreaming) {
     XELOGE("Streaming already active; ignoring request.");
     return;
   }
-  if (trace_state_ == TraceState::kSingleFrame) {
+  if (trace_state_.load(std::memory_order_acquire) == TraceState::kSingleFrame) {
     XELOGE("Frame trace pending; ignoring streaming request.");
     return;
   }
-  // Streaming starts on the next primary buffer execute.
-  trace_state_ = TraceState::kStreaming;
+  // Streaming starts on the next primary buffer execute. Path first, then the
+  // state release-store, for the same reason as RequestFrameTrace.
   trace_stream_path_ = root_path;
+  trace_state_.store(TraceState::kStreaming, std::memory_order_release);
 }
 
 void CommandProcessor::EndTracing() {
   if (!trace_writer_.is_open()) {
     return;
   }
-  assert_true(trace_state_ == TraceState::kStreaming);
-  trace_state_ = TraceState::kDisabled;
+  assert_true(trace_state_.load(std::memory_order_acquire) ==
+              TraceState::kStreaming);
+  trace_state_.store(TraceState::kDisabled, std::memory_order_release);
   trace_writer_.Close();
 }
 

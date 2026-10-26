@@ -497,7 +497,11 @@ class CommandProcessor {
     kStreaming,
     kSingleFrame,
   };
-  TraceState trace_state_ = TraceState::kDisabled;
+  // Atomic: the UI thread sets it (RequestFrameTrace/BeginTracing/EndTracing)
+  // while the GPU worker thread reads and clears it (ExecutePrimaryBuffer, the
+  // PM4_XE_SWAP handler). Release on the write pairs with the worker's acquire
+  // so the path assigned just before it is visible too.
+  std::atomic<TraceState> trace_state_{TraceState::kDisabled};
   std::filesystem::path trace_stream_path_;
   std::filesystem::path trace_frame_path_;
 
