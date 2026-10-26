@@ -96,6 +96,30 @@ static bool ParseHexTitleId(const std::string& name, uint32_t& out) {
   return true;
 }
 
+// A content xuid folder name: sixteen hex digits, e.g. "0000000000000000" or
+// "E00012815284044F". Returns false for anything else, so a path that is not
+// shaped like content is left alone rather than half-resolved.
+static bool ParseHexXuid(const std::string& name, uint64_t& out) {
+  if (name.size() != 16) {
+    return false;
+  }
+  uint64_t value = 0;
+  for (char c : name) {
+    value <<= 4;
+    if (c >= '0' && c <= '9') {
+      value |= static_cast<uint64_t>(c - '0');
+    } else if (c >= 'A' && c <= 'F') {
+      value |= static_cast<uint64_t>(c - 'A' + 10);
+    } else if (c >= 'a' && c <= 'f') {
+      value |= static_cast<uint64_t>(c - 'a' + 10);
+    } else {
+      return false;
+    }
+  }
+  out = value;
+  return true;
+}
+
 std::string TitleUpdateManager::SanitizeId(const std::string& name) {
   std::string out;
   out.reserve(name.size());
@@ -269,6 +293,78 @@ std::filesystem::path TitleUpdateManager::GetContentRoot(uint32_t title_id,
     return {};
   }
   return library_root(title_id) / id / "Content" / fmt::format("{:016X}", xuid);
+}
+
+std::filesystem::path TitleUpdateManager::RelocateContentPath(
+    uint32_t title_id, const std::filesystem::path& path) const {
+  std::error_code ec;
+  if (title_id == 0 || path.empty() || std::filesystem::exists(path, ec)) {
+    return path;
+  }
+
+  // The recorded path is <content>/<xuid>/<TITLE>/<type>/<container>, and the
+  // only part that changes on migration is everything before the xuid. Walk the
+  // path looking for the title id component, then take the component before it
+  // as the xuid and everything after it as the tail that keeps its shape.
+  // Iterating a path yields its components, which is what is wanted here -
+  // native() would give the raw string instead.
+  std::vector<std::filesystem::path> parts;
+  for (const auto& part : path) {
+    parts.push_back(part);
+  }
+
+  size_t title_at = parts.size();
+  for (size_t i = parts.size(); i > 0; --i) {
+    const std::string name = xe::path_to_utf8(parts[i - 1]);
+    uint32_t found = 0;
+    if (ParseHexTitleId(name, found) && found == title_id) {
+      title_at = i - 1;
+      break;
+    }
+  }
+  // Need <xuid>/<TITLE>/<at least one more component>.
+  if (title_at == 0 || title_at + 1 >= parts.size()) {
+    return path;
+  }
+
+  uint64_t xuid = 0;
+  if (!ParseHexXuid(xe::path_to_utf8(parts[title_at - 1]), xuid)) {
+    return path;
+  }
+
+  std::filesystem::path tail;
+  for (size_t i = title_at + 1; i < parts.size(); ++i) {
+    tail /= parts[i];
+  }
+  if (tail.empty()) {
+    return path;
+  }
+
+  // "None" first: that is where the migration puts anything that predates a
+  // selection. Then the active update, then every other overlay, so a title
+  // whose content was imported into a specific update is still found.
+  std::vector<std::string> candidates;
+  candidates.push_back(kNoTitleUpdateId);
+  const std::string active = GetActive(title_id);
+  if (!active.empty()) {
+    candidates.push_back(active);
+  }
+  for (const auto& entry : List(title_id)) {
+    candidates.push_back(entry.id);
+  }
+
+  for (const auto& id : candidates) {
+    const auto candidate =
+        GetContentRoot(title_id, id, xuid) / tail;
+    if (std::filesystem::exists(candidate, ec)) {
+      XELOGD(
+          "TitleUpdateManager: {:08X} content path moved, resolved {} -> {}",
+          title_id, xe::path_to_utf8(path), xe::path_to_utf8(candidate));
+      return candidate;
+    }
+  }
+
+  return path;
 }
 
 std::filesystem::path TitleUpdateManager::GetActiveContentRoot(

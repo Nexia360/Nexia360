@@ -4171,11 +4171,27 @@ void EmulatorWindow::LoadRecentlyLaunchedTitles() {
   for (const kernel::PlayedTitle& title : emulator()->played_db()->GetRecent(
            limit, kernel::PlayedSort::kMostRecentlyPlayed)) {
     std::error_code ec;
-    if (title.path.empty() || !std::filesystem::exists(title.path, ec)) {
+    std::filesystem::path path = title.path;
+    if (path.empty()) {
       continue;
     }
+    if (!std::filesystem::exists(path, ec)) {
+      // Selecting a title update migrates that title's content out of the
+      // global content tree, and played.db keeps the path it was launched from
+      // before the move. Without this a game disappears from the list the
+      // moment its update is chosen, and launching it from the update selector
+      // reports a path that has just stopped existing.
+      if (auto* tu_manager = emulator_->title_update_manager()) {
+        path = tu_manager->RelocateContentPath(title.title_id, path);
+      }
+      if (!std::filesystem::exists(path, ec)) {
+        continue;
+      }
+    }
+    // The resolved path, not the recorded one - everything downstream (the
+    // launch, the tooltip, the TU selector's media id lookup) works off this.
     recently_launched_titles_.push_back(
-        {title.title_name, title.path, std::time_t(title.last_run_utc),
+        {title.title_name, path, std::time_t(title.last_run_utc),
          title.title_id, title.media_id, title.icon});
   }
 }

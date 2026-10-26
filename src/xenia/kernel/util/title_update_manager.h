@@ -49,6 +49,20 @@ class TitleUpdateManager {
   // The loader reads the patch directly from here - no content-tree link/copy.
   std::filesystem::path GetActiveLibraryPath(uint32_t title_id) const;
 
+  // If `path` is content this manager has moved out of the global content tree,
+  // return where it lives now; otherwise return it unchanged.
+  //
+  // Content is recorded where it was installed
+  //   <content>/<xuid>/<TITLE>/<type>/<container>
+  // and SetActive migrates it into the "None" overlay at
+  //   <Library>/<TITLE>/NO_TU/Content/<xuid>/<type>/<container>
+  // without anything rewriting the path stored in played.db. A title launched
+  // through the update selector therefore has its own file moved out from under
+  // it between being picked and being run. Everything from the xuid down keeps
+  // its shape, so only the part before it has to be found again.
+  std::filesystem::path RelocateContentPath(
+      uint32_t title_id, const std::filesystem::path& path) const;
+
   // Per-profile content root for the ACTIVE selection, which is NO_TU when the
   // user picked "None". Every content type except installers resolves under
   // here, so each update keeps its own saves and DLC. Created on demand, so a

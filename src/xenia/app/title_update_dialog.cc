@@ -317,7 +317,14 @@ void TitleUpdateDialog::OnDraw(ImGuiIO& io) {
       // DEFERRED, not CallInUIThread: that one runs the body inline when it is
       // already on the UI thread, so it launched mid-frame instead.
       EmulatorWindow* window = emulator_window_;
-      std::filesystem::path path = launch_path_;
+      // SetActive above may have just moved this title's content: selecting an
+      // update for a title whose package still sits in the global content tree
+      // runs the one-time migration out of it, and the path the recent list
+      // offered goes with it. Resolve before launching, or the launch reports a
+      // path that stopped existing one line earlier.
+      std::filesystem::path path =
+          manager ? manager->RelocateContentPath(title_id_, launch_path_)
+                  : launch_path_;
       window->app_context().CallInUIThreadDeferred(
           [window, path]() { window->RunTitle(path); });
     }
