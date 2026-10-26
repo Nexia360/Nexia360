@@ -19,6 +19,7 @@
 #include <string>
 #include <vector>
 
+#include "xenia/emulator.h"
 #include "xenia/kernel/util/title_update_downloader.h"
 #include "xenia/kernel/util/title_update_manager.h"
 #include "xenia/ui/imgui_dialog.h"
@@ -99,6 +100,24 @@ class TitleUpdateDialog final : public ui::ImGuiDialog {
   std::string downloading_name_;
   std::string download_status_;
   std::filesystem::path download_path_;
+
+  // ---- Refreshing the installed list after a download ---------------------
+  // InstallContentPackages() only starts the install: the extraction and the
+  // move into the per-title update library run on a detached thread, so the
+  // manifest still has no trace of the update when that call returns. These
+  // hold the entries it hands back so OnDraw can reload the list the moment the
+  // install thread has really finished, instead of making the user close and
+  // reopen the selector to find the update they just downloaded.
+  void RefreshIfInstalled();
+
+  std::shared_ptr<std::vector<Emulator::ContentInstallEntry>> install_entries_;
+  bool awaiting_install_ = false;
+
+  // Set the moment the user picks an update themselves. Reload() follows the
+  // active update, which is what an untouched dialog should do after an install
+  // activates what it imported - but a choice the user actually made must
+  // survive the refresh, so this says which of the two applies.
+  bool selection_touched_ = false;
 };
 
 }  // namespace app

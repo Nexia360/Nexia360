@@ -9,6 +9,7 @@
 
 #include "xenia/app/title_update_dialog.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <thread>
@@ -58,7 +59,24 @@ void TitleUpdateDialog::Reload() {
     entries_ = manager->List(title_id_);
     active_id_ = manager->GetActive(title_id_);
   }
-  selected_id_ = active_id_;
+
+  // A download refreshes this list while the dialog is open, so the selection
+  // has to be thought about rather than blindly reset. An untouched dialog
+  // follows the active update - which is what the user wants after an install,
+  // because the installer activates what it imported. A choice the user made
+  // wins, as long as it still exists: deleting the selected update (or having
+  // an install dedupe it away) falls back to the active one instead of leaving
+  // the dialog pointing at something no longer in the list.
+  const bool selection_still_offered =
+      selected_id_.empty() ||
+      std::any_of(entries_.cbegin(), entries_.cend(),
+                  [this](const kernel::util::TitleUpdateEntry& entry) {
+                    return entry.id == selected_id_;
+                  });
+  if (!selection_touched_ || !selection_still_offered) {
+    selected_id_ = active_id_;
+  }
+
   name_buffers_.clear();
   name_buffers_.resize(entries_.size());
   for (size_t i = 0; i < entries_.size(); ++i) {
@@ -68,7 +86,53 @@ void TitleUpdateDialog::Reload() {
   }
 }
 
+void TitleUpdateDialog::RefreshIfInstalled() {
+  if (!awaiting_install_ || !install_entries_) {
+    return;
+  }
+
+  // Read plain, exactly as ContentInstallDialog already reads these fields:
+  // one writer on the install thread, one reader here on the UI thread, and a
+  // stale read only costs a reload one frame later.
+  std::string failure;
+  for (const auto& entry : *install_entries_) {
+    if (entry.installation_state_ == Emulator::InstallState::failed) {
+      failure = entry.installation_error_message_.empty()
+                    ? "unknown error"
+                    : entry.installation_error_message_;
+      break;
+    }
+    if (entry.installation_state_ != Emulator::InstallState::installed) {
+      return;
+    }
+    // For a title update `installed` is not the finish line: the package is
+    // moved into the per-title library and written into the manifest only
+    // after that state is set, so reloading here would still show the old list.
+    // Anything else is done as soon as it is installed.
+    if (entry.content_type_ == XContentType::kInstaller &&
+        !entry.library_import_done_) {
+      return;
+    }
+  }
+
+  awaiting_install_ = false;
+  if (!failure.empty()) {
+    download_status_ = "Install failed: " + failure;
+    return;
+  }
+
+  // The update is in the library now. Reload picks it up, and since the
+  // installer activates what it imports, the new update also becomes the
+  // selected one - no need to close and reopen this dialog to use it.
+  Reload();
+  download_status_ = fmt::format("Installed {}", downloading_name_);
+}
+
 void TitleUpdateDialog::OnDraw(ImGuiIO& io) {
+  // Before anything is drawn: a download that finished since the last frame is
+  // installed by now, so the list has to show it this frame.
+  RefreshIfInstalled();
+
   if (!opened_) {
     ImGui::OpenPopup("Select Title Update");
     opened_ = true;
@@ -138,6 +202,7 @@ void TitleUpdateDialog::OnDraw(ImGuiIO& io) {
     if (ImGui::RadioButton("None (run without an update)",
                            selected_id_.empty())) {
       selected_id_.clear();
+      selection_touched_ = true;
     }
 
     bool mutated = false;
@@ -164,6 +229,7 @@ void TitleUpdateDialog::OnDraw(ImGuiIO& io) {
         ImGui::TableSetColumnIndex(0);
         if (ImGui::RadioButton("##select", selected_id_ == entry.id)) {
           selected_id_ = entry.id;
+          selection_touched_ = true;
         }
 
         ImGui::TableSetColumnIndex(1);
@@ -373,10 +439,17 @@ void TitleUpdateDialog::DrawDownloadSection() {
       download_status_ = "Installing...";
       // Installed under the name shown in the selector, so the row the user
       // clicked and the entry they end up with read the same.
-      emulator_window_->InstallContentPackages({download_path_},
-                                               downloading_name_);
-      Reload();
-      download_status_ = fmt::format("Installed {}", downloading_name_);
+      // The returned entries are watched by RefreshIfInstalled(): the install
+      // runs on a detached thread, so reloading here would read a manifest the
+      // installer has not written yet and the new update would be missing from
+      // the list until the dialog was reopened.
+      install_entries_ = emulator_window_->InstallContentPackages(
+          {download_path_}, downloading_name_);
+      awaiting_install_ = install_entries_ != nullptr;
+      if (!awaiting_install_) {
+        // Nothing was installed - the package was not a content package.
+        download_status_ = "Nothing to install in the downloaded file";
+      }
     } else {
       download_status_ = download_cancel_ ? "Cancelled" : "Download failed";
     }

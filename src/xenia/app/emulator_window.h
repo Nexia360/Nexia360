@@ -113,8 +113,13 @@ class EmulatorWindow {
 
   // Installs packages already on disk, skipping the file picker that
   // InstallContent() opens. Used by the title update downloader.
-  void InstallContentPackages(const std::vector<std::filesystem::path>& paths,
-                              const std::string& title_update_name = "");
+  // Returns the install entries so a caller can watch them finish: the actual
+  // install runs on a detached thread, so this returns immediately and the
+  // entries are what say when the package has really landed. Null when nothing
+  // was installed (no packages found, or every path was a flash/asset archive).
+  std::shared_ptr<std::vector<Emulator::ContentInstallEntry>>
+  InstallContentPackages(const std::vector<std::filesystem::path>& paths,
+                         const std::string& title_update_name = "");
   // Shows the title-update selector for the given file, then launches it.
   void OpenTitleUpdateSelector(const std::filesystem::path& path,
                                uint32_t title_id);

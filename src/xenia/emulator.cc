@@ -1232,6 +1232,12 @@ X_STATUS Emulator::InstallContentPackage(
         installation_info.title_id_,
         xe::path_to_utf8(installation_info.data_installation_path_.filename()),
         /*auto_activate=*/true, installation_info.title_update_name_);
+
+    // Only now is the update actually listable: the move into the per-title
+    // library and the manifest write both happened inside that call, and
+    // installation_state_ was already `installed` before it ran. A dialog that
+    // reloads its update list on the state alone still sees the old list.
+    installation_info.library_import_done_ = true;
   }
 
   return error_code;

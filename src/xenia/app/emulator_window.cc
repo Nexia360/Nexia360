@@ -1813,11 +1813,12 @@ std::string ReplaceDashboardFontsFromFlash(
 // The install half of InstallContent, without the file picker, so a package
 // obtained some other way - a downloaded title update - goes through exactly
 // the same path: header scan, DLC/TU targeting, then the install dialog.
-void EmulatorWindow::InstallContentPackages(
+std::shared_ptr<std::vector<Emulator::ContentInstallEntry>>
+EmulatorWindow::InstallContentPackages(
     const std::vector<std::filesystem::path>& paths,
     const std::string& title_update_name) {
   if (paths.empty()) {
-    return;
+    return nullptr;
   }
 
   std::vector<std::filesystem::path> packages;
@@ -1938,7 +1939,7 @@ void EmulatorWindow::InstallContentPackages(
     for (const auto& staging : *staging_dirs) {
       std::filesystem::remove_all(staging, ec);
     }
-    return;
+    return nullptr;
   }
 
   std::shared_ptr<std::vector<Emulator::ContentInstallEntry>>
@@ -1989,6 +1990,11 @@ void EmulatorWindow::InstallContentPackages(
   // the batch contains no add-on content, so this stays a single popup level.
   new DlcTargetDialog(imgui_drawer_.get(), *this, content_installation_status,
                       start_install);
+
+  // The install itself is still running on the detached thread above. Hand the
+  // entries back so the caller (the title update selector) can tell when the
+  // package has actually landed rather than assuming it already has.
+  return content_installation_status;
 }
 
 void EmulatorWindow::ExtractZarchive() {

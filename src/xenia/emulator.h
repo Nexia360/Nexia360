@@ -308,6 +308,16 @@ class Emulator {
     // disk, where the .xexp version is still the best available name.
     std::string title_update_name_{};
 
+    // Set once the install thread has finished EVERYTHING that has to happen
+    // before the package is visible to the host UI - which for a title update
+    // means after TitleUpdateManager::ImportFromContent has moved it into the
+    // per-title library and written the manifest. installation_state_ alone is
+    // not enough: it reaches `installed` before that import runs, so a dialog
+    // that reloads its list as soon as the state says installed still sees the
+    // old list. Plain bool, not atomic - this struct owns a unique_ptr and must
+    // stay move-only, and it is polled the same way installation_state_ is.
+    bool library_import_done_ = false;
+
     InstallState installation_state_{};
     X_STATUS installation_result_{};
     std::string installation_error_message_{};
