@@ -215,7 +215,18 @@ class PeriodicCallback {
  public:
   std::stop_source GetStopSource();
 
-  ~PeriodicCallback() { periodic_stop_source_.request_stop(); }
+  ~PeriodicCallback() {
+    periodic_stop_source_.request_stop();
+    // Join so no callback is still running once this object is gone. Joining
+    // from inside the callback would be joining this very thread, which jthread
+    // reports as a deadlock (and throws out of a destructor, i.e. terminate), so
+    // in that one case fall back to detaching and let the loop exit on its own.
+    if (worker_.get_id() == std::this_thread::get_id()) {
+      worker_.detach();
+    } else {
+      worker_.join();
+    }
+  }
 
   static std::unique_ptr<PeriodicCallback> CreateRepeating(
       std::chrono::milliseconds period, std::function<void()> callback,
