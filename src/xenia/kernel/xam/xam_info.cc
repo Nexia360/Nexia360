@@ -612,10 +612,41 @@ dword_result_t XamGetSystemVersion_entry() {
 }
 DECLARE_XAM_EXPORT1(XamGetSystemVersion, kNone, kStub);
 
+// The XCustom action family is how a title puts its own items on the guide and
+// hears back when the user picks one. Neither xenia, xenia-canary nor
+// xenia-edge implements any of it, and no SDK header for it is public, so
+// there is no behaviour to copy and no signature to trust.
+//
+// They are registered anyway, which is not the same as being a no-op: an
+// unregistered export has no trampoline, so calling it falls through to
+// UndefinedCallExtern, which is fatal unless ignore_undefined_externs is set
+// (x64_emitter.cc:788). Registering returns 0, exactly what that path returns
+// today, so nothing changes for a title that runs now - it only stops the
+// error, and stops the fatal case from being fatal. Tagged kStub, though that
+// is documentation only: shim_utils.h:594 ORs kImplemented into every
+// registered shim, so user_module.cc's import report counts anything that
+// resolves as implemented. The honest signal is the tag in the source.
+//
+// nexia.log shows this is not hypothetical: one title's import block reports
+// "95 implemented, 2 unimplemented" naming XCustomSetAction and
+// XCustomGetLastActionPress, and the log then records the undefined call.
+
 void XCustomRegisterDynamicActions_entry() {
   // ???
 }
 DECLARE_XAM_EXPORT1(XCustomRegisterDynamicActions, kNone, kStub);
+
+dword_result_t XCustomSetAction_entry(dword_t action) {
+  // Registered so the import resolves. See the note above.
+  return 0;
+}
+DECLARE_XAM_EXPORT1(XCustomSetAction, kNone, kStub);
+
+dword_result_t XCustomGetLastActionPress_entry(dword_t user_index) {
+  // Registered so the import resolves. See the note above.
+  return 0;
+}
+DECLARE_XAM_EXPORT1(XCustomGetLastActionPress, kNone, kStub);
 
 dword_result_t XGetAVPack_entry() {
   // Value from
