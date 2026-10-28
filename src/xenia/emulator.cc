@@ -884,11 +884,32 @@ X_STATUS Emulator::LaunchXnaGuestTitle(const std::filesystem::path& path) {
   XELOGI("XNA direct: booting {} for game {}", xe::path_to_utf8(launcher),
          xe::path_to_utf8(path));
 
-  // LaunchXexFile already does everything this needs: it mounts the
-  // launcher's folder, points game: and D: at it, loads the module, and
-  // because this is a system title registers \\SystemRoot and brings up
-  // xam.xex - which the launcher imports. Only the deployment type needs
-  // correcting afterwards: this is a download, not an installed title.
+  // The launcher's own folder has to be mounted, and LAST.
+  //
+  // LaunchXexFile does not mount anything - it only turns its argument into
+  // a GAME:\ path. Mounting is LaunchPath's job, and it does that in the
+  // caller before reaching here. Delegating without mounting left game:
+  // pointing at the package mounted above, so the loader asked the STFS
+  // device for Xna_TitleLauncher.xex and answered C0000225.
+  //
+  // Mounting it second is also what hands game: and D: to the launcher:
+  // MountPath re-points both at whatever it mounts last, and the running
+  // module's folder is what game: has to mean. The package stays reachable
+  // at \\Device\\Package_0.
+  X_STATUS mounted = MountPath(launcher, "\\Device\\Harddisk0\\Partition1");
+  if (XSUCCEEDED(mounted)) {
+    XELOGI("XNA direct: launcher folder at \\Device\\Harddisk0\\Partition1, "
+           "game: and D: now resolve there");
+  } else {
+    XELOGE("XNA direct: could not mount the launcher folder {}",
+           xe::path_to_utf8(launcher.parent_path()));
+    return mounted;
+  }
+
+  // LaunchXexFile then loads it, and because this is a system title it
+  // registers \\SystemRoot and brings up xam.xex - both of which the
+  // launcher imports. Only the deployment type needs correcting after:
+  // this is a download, not an installed title.
   X_STATUS result = LaunchXexFile(launcher);
   kernel_state_->deployment_type_ = XDeploymentType::kDownload;
   return result;
