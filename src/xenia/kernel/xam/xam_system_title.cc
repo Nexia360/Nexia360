@@ -16,8 +16,10 @@
 #include "xenia/emulator.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/shim_utils.h"
+#include "xenia/kernel/xam/content_manager.h"
 #include "xenia/kernel/xam/xam_private.h"
 #include "xenia/kernel/xenumerator.h"
+#include "xenia/vfs/devices/stfs_xbox.h"
 #include "xenia/kernel/xna/xna_avatar.h"
 #include "xenia/xbox.h"
 
@@ -408,17 +410,65 @@ dword_result_t XamContentGetHeaderInternal_entry(dword_t user_index,
 }
 DECLARE_XAM_EXPORT1(XamContentGetHeaderInternal, kContent, kStub);
 
-dword_result_t XamContentGetMetaDataInternal_entry(dword_t user_index,
-                                                   lpvoid_t data,
-                                                   lpvoid_t buffer,
-                                                   dword_t size,
-                                                   lpdword_t out_size) {
-  if (out_size) {
-    *out_size = 0;
+// The record the cross-title enumerator hands back carries no art, so this
+// is the only route by which a screen like Settings > Storage gets an
+// item's picture: it reads a whole XContentMetadata, thumbnail included.
+// Failing it is what leaves every row on the dashboard's generic fallback
+// icon, which is what the section-load log shows it reaching for.
+//
+// The shape follows the other internal content exports in this build: no
+// user index (in xam those are wrappers that pass 0xFE), and an overlapped
+// last. The buffer is one XContentMetadata.
+dword_result_t XamContentGetMetaDataInternal_entry(
+    pointer_t<XCONTENT_DATA_INTERNAL> content_data_ptr,
+    lpvoid_t content_metadata_ptr,
+    pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
+  if (!content_data_ptr || !content_metadata_ptr) {
+    return CompleteStub(X_ERROR_INVALID_PARAMETER, overlapped_ptr);
   }
-  return X_ERROR_FUNCTION_FAILED;
+
+  // The enumerator's record is the plain content data with xuid, title id,
+  // size and category added after it, so rebuild what the locator needs.
+  const XCONTENT_DATA_INTERNAL* internal = content_data_ptr;
+  XCONTENT_AGGREGATE_DATA data = *static_cast<const XCONTENT_DATA*>(internal);
+  data.title_id = internal->title_id;
+  data.xuid = internal->xuid;
+
+  auto* content_manager = kernel_state()->content_manager();
+
+  vfs::XContentMetadata metadata;
+  std::memset(&metadata, 0, sizeof(metadata));
+  metadata.content_type = data.content_type;
+  metadata.metadata_version = 2;
+  metadata.content_size = internal->content_size;
+  metadata.category = internal->category;
+  metadata.online_creator = internal->xuid;
+  metadata.set_display_name(XLanguage::kEnglish, data.display_name());
+  metadata.set_title_name(
+      xe::load_and_swap<std::u16string>(internal->title_name));
+
+  // The picture, from wherever this build keeps it: a container's own
+  // header, a profile's gamerpic, or the sidecar written into content kept
+  // extracted. GetContentThumbnail already knows all three.
+  std::vector<uint8_t> thumbnail;
+  if (XSUCCEEDED(content_manager->GetContentThumbnail(internal->xuid, data,
+                                                      &thumbnail)) &&
+      !thumbnail.empty() && thumbnail.size() <= sizeof(metadata.thumbnail)) {
+    std::memcpy(metadata.thumbnail, thumbnail.data(), thumbnail.size());
+    metadata.thumbnail_size = uint32_t(thumbnail.size());
+  }
+
+  std::memcpy(content_metadata_ptr, &metadata, sizeof(metadata));
+
+  // Warning level: this build's log level drops XELOGD, and whether the
+  // dashboard calls this at all, and with what, is the open question.
+  XELOGW("XamContentGetMetaDataInternal: '{}' type {:08X} thumbnail {} bytes",
+         data.file_name(), uint32_t(data.content_type.get()),
+         uint32_t(metadata.thumbnail_size));
+
+  return CompleteStub(X_ERROR_SUCCESS, overlapped_ptr);
 }
-DECLARE_XAM_EXPORT1(XamContentGetMetaDataInternal, kContent, kStub);
+DECLARE_XAM_EXPORT1(XamContentGetMetaDataInternal, kContent, kImplemented);
 
 dword_result_t XamContentQueryLicenseInternal_entry(dword_t user_index,
                                                     lpvoid_t data,
