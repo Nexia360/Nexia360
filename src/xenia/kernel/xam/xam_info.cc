@@ -1108,6 +1108,62 @@ dword_result_t XamNetworkStorageHasUserEnabledStorage_entry(
 }
 DECLARE_XAM_EXPORT1(XamNetworkStorageHasUserEnabledStorage, kNone, kStub);
 
+// Ordinals 0x614, 0x615 and 0x618. The dashboard calls all three while
+// building the storage screen - the log shows eight calls to
+// XamNetworkStorageGetNetworkDevice and three to
+// XamNetworkStorageDeviceHasCacheFile, right after it loads the memory#
+// page and its strings - and none of them had a shim, so each landed on an
+// undefined extern.
+//
+// This emulator has no network storage: nothing mounts one, no code sets one
+// up, and the only related thing in the tree is the sibling stub above that
+// already answers "the user has no such storage". So these answer the same
+// way rather than inventing a device to satisfy the caller.
+//
+// GetNetworkDevice is the one place where the old behaviour was arguably
+// worse than this. UndefinedCallExtern returns 0, which reads as success, so
+// the caller was told it had a network device while the record it asked for
+// was left exactly as it was. Saying not found lets the caller skip the row
+// instead of drawing one built from unset memory. That is a judgement about a
+// signature nobody has written down, so the arguments stay unnamed and the two
+// that report a status log once what they were handed.
+//
+// The failure is returned in its plain win32 form. This file uses both that
+// form and the HRESULT one for not found, and which one a given caller tests
+// for is not known either - but both are non-zero, so either way the message
+// the caller gets is "nothing here".
+dword_result_t XamNetworkStorageGetNetworkDevice_entry(dword_t arg0,
+                                                      dword_t arg1) {
+  static bool logged = false;
+  if (!logged) {
+    logged = true;
+    XELOGW("XamNetworkStorageGetNetworkDevice: no network storage, [{:08X}"
+           " {:08X}]",
+           arg0.value(), arg1.value());
+  }
+  return X_ERROR_NOT_FOUND;
+}
+DECLARE_XAM_EXPORT1(XamNetworkStorageGetNetworkDevice, kNone, kStub);
+
+dword_result_t XamNetworkStorageDeviceHasCacheFile_entry(dword_t arg0,
+                                                        dword_t arg1) {
+  // Answers the question rather than a status: there is no such device, so it
+  // has no cache file.
+  return 0;
+}
+DECLARE_XAM_EXPORT1(XamNetworkStorageDeviceHasCacheFile, kNone, kStub);
+
+dword_result_t XamNetworkStorageGetStatus_entry(dword_t arg0, dword_t arg1) {
+  static bool logged = false;
+  if (!logged) {
+    logged = true;
+    XELOGW("XamNetworkStorageGetStatus: no network storage, [{:08X} {:08X}]",
+           arg0.value(), arg1.value());
+  }
+  return X_ERROR_NOT_FOUND;
+}
+DECLARE_XAM_EXPORT1(XamNetworkStorageGetStatus, kNone, kStub);
+
 dword_result_t XamPackageManagerFindPackageContainingIndexedXEX_entry(
     dword_t unknown1, dword_t unknown2, dword_t unknown3, lpvoid_t result_ptr) {
   if (!result_ptr) {
