@@ -438,6 +438,111 @@ dword_result_t XamGetLocaleString_entry(dword_t id, dword_t buffer_length,
 }
 DECLARE_XAM_EXPORT1(XamGetLocaleString, kLocale, kImplemented);
 
+// Ordinal 0x1E6. No SDK header, and neither canary nor edge, records this
+// one's signature, so the arguments below are deliberately not named after a
+// guess at what each one means.
+//
+// What is known comes from the effect of leaving it out. With no shim the call
+// went to an undefined extern, and UndefinedCallExtern returns 0 - which for a
+// comparison function asserts that every pair is equal. The log shows the
+// dashboard calling it 50 times, more than any other missing export, so its
+// list was told nothing about order and fell back to the order items happened
+// to arrive in.
+//
+// Rather than trust one guessed argument order, this works out for itself which
+// arguments are the strings: an argument counts as one when it names committed
+// guest memory and holds a run of UTF-16 code units that terminates inside the
+// page it starts in. The first two that qualify are compared, which covers a
+// leading locale or flags argument and a trailing one alike. If nothing
+// qualifies the result is 0, exactly what used to be returned, so being wrong
+// about the signature costs nothing.
+//
+// The comparison is ordinal on the code units. Real collation would need
+// per-locale tables that are not in this tree; what the caller needs is a
+// consistent order, and this gives one.
+namespace {
+
+// Longest run accepted before giving up, and the lowest address treated as a
+// pointer at all: the guest's first page is never mapped, so anything below it
+// is a small integer such as a locale id or a set of flags.
+constexpr uint32_t kUniSortMaxChars = 512;
+constexpr uint32_t kUniSortMinPointer = 0x10000u;
+
+const char16_t* ResolveUniSortString(uint32_t guest_address) {
+  if (guest_address < kUniSortMinPointer || guest_address >= 0xE0000000u) {
+    return nullptr;
+  }
+  auto memory = kernel_state()->memory();
+  auto heap = memory->LookupHeap(guest_address);
+  if (!heap || !heap->IsPageCommitted(guest_address)) {
+    return nullptr;
+  }
+  const auto* host =
+      reinterpret_cast<const uint8_t*>(memory->TranslateVirtual(guest_address));
+  // Read no further than the end of the page the pointer is in. Nothing past
+  // that is known to be mapped, so a run that does not terminate inside it is
+  // rejected rather than followed.
+  const uint32_t page_end = (guest_address & ~0xFFFu) + 0x1000u;
+  uint32_t limit = (page_end - guest_address) / 2u;
+  if (limit > kUniSortMaxChars) {
+    limit = kUniSortMaxChars;
+  }
+  for (uint32_t i = 0; i < limit; ++i) {
+    if ((host[i * 2] | host[i * 2 + 1]) == 0) {
+      return reinterpret_cast<const char16_t*>(host);
+    }
+  }
+  return nullptr;
+}
+
+}  // namespace
+
+dword_result_t XamUniSortCmpString_entry(dword_t arg0, dword_t arg1,
+                                        dword_t arg2, dword_t arg3) {
+  const uint32_t args[4] = {arg0.value(), arg1.value(), arg2.value(),
+                            arg3.value()};
+  const char16_t* strings[2] = {nullptr, nullptr};
+  uint32_t found[2] = {0, 0};
+  uint32_t count = 0;
+  for (uint32_t i = 0; i < 4 && count < 2; ++i) {
+    const char16_t* str = ResolveUniSortString(args[i]);
+    if (str) {
+      strings[count] = str;
+      found[count] = i;
+      ++count;
+    }
+  }
+  if (count < 2) {
+    // Nothing looked like a pair of strings, so the signature is not what this
+    // assumed. Report a tie, as an undefined extern used to.
+    XELOGW("XamUniSortCmpString: no string pair in [{:08X} {:08X} {:08X}"
+           " {:08X}]",
+           args[0], args[1], args[2], args[3]);
+    return 0;
+  }
+
+  // One line, to say which arguments turned out to be the strings. Racing here
+  // only ever costs a repeated line.
+  static bool logged = false;
+  if (!logged) {
+    logged = true;
+    XELOGW("XamUniSortCmpString: comparing arguments {} and {}", found[0],
+           found[1]);
+  }
+
+  for (uint32_t i = 0;; ++i) {
+    const uint16_t c1 = xe::load_and_swap<uint16_t>(strings[0] + i);
+    const uint16_t c2 = xe::load_and_swap<uint16_t>(strings[1] + i);
+    if (c1 != c2) {
+      return c1 - c2;
+    }
+    if (!c1) {
+      return 0;
+    }
+  }
+}
+DECLARE_XAM_EXPORT1(XamUniSortCmpString, kLocale, kSketchy);
+
 dword_result_t XamGetLocaleFromOnlineCountry_entry(dword_t id) {
   return xeXamGetLocaleFromOnlineCountry(static_cast<uint8_t>(id));
 }
