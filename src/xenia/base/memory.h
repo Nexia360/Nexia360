@@ -154,7 +154,23 @@ void CloseFileMappingHandle(FileMappingHandle handle,
                             const std::filesystem::path& path);
 void* MapFileView(FileMappingHandle handle, void* base_address, size_t length,
                   PageAccess access, size_t file_offset);
+// A view inside a ReserveFileViewPages range replaces the reservation there,
+// which comes back when the view is unmapped.
 bool UnmapFileView(FileMappingHandle handle, void* base_address, size_t length);
+
+// Reserves a range that takes one view per page, where views mapped directly
+// need the allocation granularity. A page without a view faults. A range
+// inside a reservation is reserved already.
+bool ReserveFileViewPages(void* base_address, size_t length);
+// Maps a view of one page into a ReserveFileViewPages range. |file_offset| only
+// has to be page aligned.
+void* MapFileViewPages(FileMappingHandle handle, void* base_address,
+                       size_t length, PageAccess access, size_t file_offset);
+// Releases the views in a range of a ReserveFileViewPages reservation, which
+// comes back over them. A range that is the whole reservation gives the
+// address space back to the host.
+bool ReleaseFileViewPages(FileMappingHandle handle, void* base_address,
+                          size_t length);
 
 inline size_t hash_combine(size_t seed) { return seed; }
 

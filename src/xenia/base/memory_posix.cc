@@ -12,6 +12,8 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include <cerrno>
+#include <cstring>
 #include <algorithm>
 #include <cstddef>
 #include <cstdlib>
@@ -19,6 +21,7 @@
 #include <mutex>
 #include <sstream>
 
+#include "xenia/base/logging.h"
 #include "xenia/base/math.h"
 #include "xenia/base/platform.h"
 #include "xenia/base/string.h"
@@ -109,6 +112,46 @@ struct MappedFileRange {
 
 std::vector<MappedFileRange> mapped_file_ranges;
 std::mutex g_mapped_file_ranges_mutex;
+// Address space held by a PROT_NONE reservation that file views replace, and
+// that comes back when they are unmapped. Windows holds the same with
+// placeholders.
+static std::mutex g_view_reservations_mutex;
+static std::vector<MappedFileRange> g_view_reservations;
+
+// Index of the view reservation the range sits in, or -1. The caller holds
+// g_view_reservations_mutex.
+static ptrdiff_t FindViewReservation(const void* base_address, size_t length) {
+  const auto begin = reinterpret_cast<uintptr_t>(base_address);
+  for (size_t i = 0; i < g_view_reservations.size(); ++i) {
+    // Length is compared against the distance to the end so it cannot wrap.
+    if (begin >= g_view_reservations[i].region_begin &&
+        begin <= g_view_reservations[i].region_end &&
+        length <= g_view_reservations[i].region_end - begin) {
+      return ptrdiff_t(i);
+    }
+  }
+  return -1;
+}
+
+static bool IsViewReservation(const void* base_address, size_t length) {
+  std::lock_guard guard(g_view_reservations_mutex);
+  return FindViewReservation(base_address, length) >= 0;
+}
+
+// Puts a reservation over the range, dropping whatever is mapped in it.
+static bool ReserveRange(void* base_address, size_t length) {
+  void* result = mmap(base_address, length, PROT_NONE,
+                      MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+  if (result == base_address) {
+    return true;
+  }
+  // Callers drop the result, so the log is the only sign that a view stayed
+  // mapped where the reservation should have come back.
+  XELOGE("mmap(PROT_NONE, {}, 0x{:X}) failed: {} ({})", base_address, length,
+         strerror(errno), errno);
+  return false;
+}
+
 
 // Track shm file names for cleanup on exit
 std::vector<std::string> g_shm_file_names;
@@ -335,8 +378,14 @@ void* MapFileView(FileMappingHandle handle, void* base_address, size_t length,
                   PageAccess access, size_t file_offset) {
   uint32_t prot = ToPosixProtectFlags(access);
 
+  // A view over a reservation needs no range of its own.
+  const bool over_reservation =
+      base_address != nullptr && IsViewReservation(base_address, length);
+
   int flags = MAP_SHARED;
-  if (base_address != nullptr) {
+  if (over_reservation) {
+    flags |= MAP_FIXED;
+  } else if (base_address != nullptr) {
 #ifdef MAP_FIXED_NOREPLACE
     flags |= MAP_FIXED_NOREPLACE;
 #endif
@@ -357,6 +406,11 @@ void* MapFileView(FileMappingHandle handle, void* base_address, size_t length,
 
 bool UnmapFileView(FileMappingHandle handle, void* base_address,
                    size_t length) {
+  if (IsViewReservation(base_address, length)) {
+    // The reservation comes back, and the view was never tracked.
+    return ReserveRange(base_address, length);
+  }
+
   std::lock_guard guard(g_mapped_file_ranges_mutex);
   for (auto mapped_range = mapped_file_ranges.begin();
        mapped_range != mapped_file_ranges.end();) {
@@ -372,6 +426,55 @@ bool UnmapFileView(FileMappingHandle handle, void* base_address,
   // TODO: Implement partial file unmapping.
   assert_always("Error: Partial unmapping of files not yet supported.");
   return munmap(base_address, length) == 0;
+}
+
+bool ReserveFileViewPages(void* base_address, size_t length) {
+  std::lock_guard guard(g_view_reservations_mutex);
+  if (FindViewReservation(base_address, length) >= 0) {
+    // Part of a reservation already, with no view mapped in it.
+    return true;
+  }
+  int flags = MAP_PRIVATE | MAP_ANONYMOUS;
+#ifdef MAP_FIXED_NOREPLACE
+  flags |= MAP_FIXED_NOREPLACE;
+#endif
+  void* reservation = mmap(base_address, length, PROT_NONE, flags, -1, 0);
+  if (reservation == MAP_FAILED) {
+    return false;
+  }
+  if (reservation != base_address) {
+    // Without MAP_FIXED_NOREPLACE the base is only a hint, and a reservation
+    // elsewhere holds nothing the caller asked for.
+    munmap(reservation, length);
+    return false;
+  }
+  g_view_reservations.push_back(
+      {reinterpret_cast<uintptr_t>(base_address),
+       reinterpret_cast<uintptr_t>(base_address) + length});
+  return true;
+}
+
+void* MapFileViewPages(FileMappingHandle handle, void* base_address,
+                       size_t length, PageAccess access, size_t file_offset) {
+  return MapFileView(handle, base_address, length, access, file_offset);
+}
+
+bool ReleaseFileViewPages(FileMappingHandle handle, void* base_address,
+                          size_t length) {
+  std::lock_guard guard(g_view_reservations_mutex);
+  const ptrdiff_t index = FindViewReservation(base_address, length);
+  if (index < 0) {
+    return munmap(base_address, length) == 0;
+  }
+  const auto begin = reinterpret_cast<uintptr_t>(base_address);
+  if (g_view_reservations[index].region_begin == begin &&
+      g_view_reservations[index].region_end == begin + length) {
+    // The whole reservation, so the address space goes back to the host.
+    g_view_reservations.erase(g_view_reservations.begin() + index);
+    return munmap(base_address, length) == 0;
+  }
+  // Part of a reservation, so it comes back over the views released here.
+  return ReserveRange(base_address, length);
 }
 
 }  // namespace memory

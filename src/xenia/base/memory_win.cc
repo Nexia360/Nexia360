@@ -282,5 +282,121 @@ bool UnmapFileView(FileMappingHandle handle, void* base_address,
   return UnmapViewOfFile(base_address) ? true : false;
 }
 
+// Placeholders, added in 10.0.17134.0, are what let a view start on any page.
+#ifndef MEM_PRESERVE_PLACEHOLDER
+#define MEM_PRESERVE_PLACEHOLDER 0x00000002
+#endif
+#ifndef MEM_REPLACE_PLACEHOLDER
+#define MEM_REPLACE_PLACEHOLDER 0x00004000
+#endif
+#ifndef MEM_RESERVE_PLACEHOLDER
+#define MEM_RESERVE_PLACEHOLDER 0x00040000
+#endif
+
+namespace {
+#ifdef XE_BASE_MEMORY_WIN_USE_DESKTOP_FUNCTIONS
+// Looked up so the desktop build doesn't need onecore.lib.
+using VirtualAlloc2Fn = PVOID(WINAPI*)(HANDLE process, PVOID base_address,
+                                       SIZE_T size, ULONG allocation_type,
+                                       ULONG page_protection,
+                                       void* extended_parameters,
+                                       ULONG parameter_count);
+using MapViewOfFile3Fn = PVOID(WINAPI*)(HANDLE file_mapping, HANDLE process,
+                                        PVOID base_address, ULONG64 offset,
+                                        SIZE_T view_size, ULONG allocation_type,
+                                        ULONG page_protection,
+                                        void* extended_parameters,
+                                        ULONG parameter_count);
+struct PlaceholderFunctions {
+  VirtualAlloc2Fn virtual_alloc_2 = nullptr;
+  MapViewOfFile3Fn map_view_of_file_3 = nullptr;
+  PlaceholderFunctions() {
+    HMODULE kernelbase = GetModuleHandleW(L"kernelbase.dll");
+    if (kernelbase) {
+      virtual_alloc_2 = reinterpret_cast<VirtualAlloc2Fn>(
+          GetProcAddress(kernelbase, "VirtualAlloc2"));
+      map_view_of_file_3 = reinterpret_cast<MapViewOfFile3Fn>(
+          GetProcAddress(kernelbase, "MapViewOfFile3"));
+    }
+  }
+};
+const PlaceholderFunctions& GetPlaceholderFunctions() {
+  static const PlaceholderFunctions functions;
+  return functions;
+}
+#endif
+}  // namespace
+
+bool ReserveFileViewPages(void* base_address, size_t length) {
+  HANDLE process = GetCurrentProcess();
+#ifdef XE_BASE_MEMORY_WIN_USE_DESKTOP_FUNCTIONS
+  const auto& functions = GetPlaceholderFunctions();
+  if (!functions.virtual_alloc_2 || !functions.map_view_of_file_3) {
+    return false;
+  }
+  void* placeholder = functions.virtual_alloc_2(
+      process, base_address, length, MEM_RESERVE | MEM_RESERVE_PLACEHOLDER,
+      PAGE_NOACCESS, nullptr, 0);
+#else
+  void* placeholder = VirtualAlloc2FromApp(
+      process, base_address, length, MEM_RESERVE | MEM_RESERVE_PLACEHOLDER,
+      PAGE_NOACCESS, nullptr, 0);
+#endif
+  if (!placeholder) {
+    return false;
+  }
+  // A view replaces a whole placeholder and each page needs its own.
+  const size_t page = page_size();
+  for (size_t offset = 0; offset + page < length; offset += page) {
+    if (!VirtualFree(static_cast<uint8_t*>(placeholder) + offset, page,
+                     MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER)) {
+      ReleaseFileViewPages(nullptr, placeholder, length);
+      return false;
+    }
+  }
+  return true;
+}
+
+void* MapFileViewPages(FileMappingHandle handle, void* base_address,
+                       size_t length, PageAccess access, size_t file_offset) {
+  // Pages are separate placeholders and one view replaces one of them.
+  if (length != page_size()) {
+    return nullptr;
+  }
+  HANDLE process = GetCurrentProcess();
+#ifdef XE_BASE_MEMORY_WIN_USE_DESKTOP_FUNCTIONS
+  const auto& functions = GetPlaceholderFunctions();
+  if (!functions.map_view_of_file_3) {
+    return nullptr;
+  }
+  return functions.map_view_of_file_3(
+      handle, process, base_address, ULONG64(file_offset), length,
+      MEM_REPLACE_PLACEHOLDER, ToWin32ProtectFlags(access), nullptr, 0);
+#else
+  return MapViewOfFile3FromApp(
+      handle, process, base_address, ULONG64(file_offset), length,
+      MEM_REPLACE_PLACEHOLDER, ULONG(ToWin32ProtectFlags(access)), nullptr, 0);
+#endif
+}
+
+bool ReleaseFileViewPages(FileMappingHandle handle, void* base_address,
+                          size_t length) {
+  bool released = true;
+  const size_t page = page_size();
+  for (size_t offset = 0; offset < length; offset += page) {
+    uint8_t* address = static_cast<uint8_t*>(base_address) + offset;
+    MEMORY_BASIC_INFORMATION info;
+    if (!VirtualQuery(address, &info, sizeof(info)) || info.State == MEM_FREE) {
+      continue;
+    }
+    if (info.Type == MEM_MAPPED) {
+      released &= UnmapViewOfFile(address) != FALSE;
+    } else {
+      released &= VirtualFree(address, 0, MEM_RELEASE) != FALSE;
+    }
+  }
+  return released;
+}
+
 }  // namespace memory
 }  // namespace xe
