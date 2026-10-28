@@ -1057,6 +1057,29 @@ static bool IsGamerTileType(XTileType type) {
   }
 }
 
+// The dashboard calls this once, before it starts drawing gamer tiles, to
+// ask XAM to have the pictures ready. Nothing has to be done for that here:
+// XamReadTile and XamReadTileToTexture below already pull a picture from the
+// profile the moment it is asked for, so there is no cache to warm.
+//
+// Returning success without working is also precisely what used to happen.
+// With no shim registered the call landed on an undefined extern, and
+// UndefinedCallExtern returns 0 - which is X_ERROR_SUCCESS - so the
+// dashboard was already being told the tiles were prepared and carried on
+// normally. Registering this only removes the error line from the log.
+//
+// No parameters are named because the real signature is not known: no SDK
+// header has been found for it, and neither canary nor edge implements it.
+// Naming parameters that may not exist would be a guess, and reading guest
+// pointers that may not be pointers would be a risk rather than a fix.
+// Ignoring the arguments is safe as observed: the log shows the dashboard
+// carrying straight on past this call, so it is not blocked waiting on an
+// event we would have to signal.
+dword_result_t XamPrepareGamerTiles_entry() {
+  return X_ERROR_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XamPrepareGamerTiles, kUserProfiles, kStub);
+
 dword_result_t XamReadTile_entry(dword_t tile_type, dword_t title_id,
                                  qword_t item_id, dword_t user_index,
                                  lpdword_t output_ptr,
