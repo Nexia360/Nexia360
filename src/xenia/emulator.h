@@ -270,6 +270,14 @@ class Emulator {
 
   X_STATUS LaunchDefaultModule(const std::filesystem::path& path);
 
+  // Runs an XNA title the way the console did, by booting the dashboard's
+  // own Xna_TitleLauncher.xex as a guest title with the game mounted
+  // beside it, so the Compact Framework inside that launcher executes the
+  // game's IL. Only chosen when cvars::xna_direct is on; off runs that IL
+  // on the host CLR instead. Fails rather than falling back, so a run
+  // shows how far the launcher got.
+  X_STATUS LaunchXnaGuestTitle(const std::filesystem::path& path);
+
   enum class InstallState : uint8_t {
     preparing,
     pending,

@@ -26,6 +26,7 @@
 #include "xenia/base/cvar.h"
 #include "xenia/base/debugging.h"
 #include "xenia/base/exception_handler.h"
+#include "xenia/base/filesystem.h"
 #include "xenia/base/literals.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/mapped_memory.h"
@@ -88,6 +89,14 @@ DEFINE_string(
 DEFINE_bool(xna_bridge_selftest, false,
             "Call a kernel export from host code at launch to verify the "
             "XNA host bridge, and log what came back.",
+            "XNA");
+
+DEFINE_bool(xna_direct, true,
+            "Run an XNA title the way the console did: boot the "
+            "dashboard's own Xna_TitleLauncher.xex as a guest title and "
+            "let the Compact Framework inside it execute the game's IL. "
+            "Off runs that IL on the host CLR against the Compact "
+            "Framework assemblies instead.",
             "XNA");
 
 DEFINE_bool(allow_game_relative_writes, false,
@@ -726,6 +735,9 @@ X_STATUS Emulator::LaunchPath(const std::filesystem::path& path) {
       // the container itself.
       kernel::xna::XnaPackageInfo xna_info;
       if (kernel::xna::IsXnaPackage(path, &xna_info)) {
+        if (cvars::xna_direct) {
+          return LaunchXnaGuestTitle(path);
+        }
         X_STATUS result = CompleteLaunch(path, "");
         kernel_state_->deployment_type_ = XDeploymentType::kDownload;
         return result;
@@ -754,6 +766,9 @@ X_STATUS Emulator::LaunchPath(const std::filesystem::path& path) {
       // package the XNA launcher mounts for itself.
       kernel::xna::XnaPackageInfo xna_info;
       if (kernel::xna::IsXnaPackage(path, &xna_info)) {
+        if (cvars::xna_direct) {
+          return LaunchXnaGuestTitle(path);
+        }
         X_STATUS result = CompleteLaunch(path, "");
         kernel_state_->deployment_type_ = XDeploymentType::kDownload;
         return result;
@@ -805,6 +820,77 @@ X_STATUS Emulator::LaunchXexFile(const std::filesystem::path& path) {
     result = kernel_state_->FinishLoadingUserModule(module, false);
   }
 
+  return result;
+}
+
+X_STATUS Emulator::LaunchXnaGuestTitle(const std::filesystem::path& path) {
+  // What this does, and why it is not the same job as the host CLR path.
+  //
+  // An XBLIG was never a title of its own. It was a managed exe the
+  // console's Xna_TitleLauncher.xex - a system title shipped beside
+  // dash.xex - loaded into the Compact Framework and ran. So the thing
+  // that executes a game's IL is the console's own JIT, running as guest
+  // code, and Nexia only has to be the hardware underneath it.
+  //
+  // That is the whole point of doing it this way rather than hosting the
+  // IL on a desktop runtime: nothing is reimplemented. The Compact
+  // Framework, the console's Microsoft.Xna.Framework, the packet format
+  // and the content loaders are the real ones, bugs included.
+  //
+  // Wired but unproven - no run has ever booted this launcher, and the
+  // protocol by which it is told which game to load is not yet known.
+  // So it fails loudly instead of falling back to the host CLR: a quiet
+  // fallback would hide exactly how far it got, which is the one thing
+  // worth learning from a run. --xna_direct=false chooses the old path
+  // deliberately.
+  const auto launcher = xe::filesystem::GetExecutableFolder() / "Dashboard" /
+                        "Xna_TitleLauncher.xex";
+  std::error_code ec;
+  if (!std::filesystem::exists(launcher, ec)) {
+    XELOGE("XNA direct: no Xna_TitleLauncher.xex beside the dashboard at "
+           "{}; use --xna_direct=false to run on the host CLR instead",
+           xe::path_to_utf8(launcher));
+    return X_STATUS_NOT_FOUND;
+  }
+
+  // The game's files go on their own device, and they are mounted FIRST.
+  // MountPath re-points game: and D: at whatever it mounts last, and the
+  // launcher has to own those two - it is the running module, so its own
+  // folder is what game: means - which it takes when LaunchXexFile mounts
+  // the dashboard folder next. The package stays reachable at its device
+  // path, logged below because how the launcher is told that path is the
+  // open question.
+  const auto signature = GetFileSignature(path);
+  if (signature == FileSignatureType::LIVE ||
+      signature == FileSignatureType::CON ||
+      signature == FileSignatureType::PIRS) {
+    X_STATUS mounted = MountPath(path, "\\Device\\Package_0");
+    if (XSUCCEEDED(mounted)) {
+      XELOGI("XNA direct: game package mounted at Package_0");
+    } else {
+      XELOGE("XNA direct: could not mount the game package {}",
+             xe::path_to_utf8(path));
+      return mounted;
+    }
+  } else {
+    // A title built rather than downloaded arrives as a folder or as the
+    // managed exe itself, which is not a device anything can mount here.
+    // The launcher will then only be able to see the dashboard folder.
+    XELOGW("XNA direct: {} is not a container, so the launcher will only "
+           "see its own folder",
+           xe::path_to_utf8(path));
+  }
+
+  XELOGI("XNA direct: booting {} for game {}", xe::path_to_utf8(launcher),
+         xe::path_to_utf8(path));
+
+  // LaunchXexFile already does everything this needs: it mounts the
+  // launcher's folder, points game: and D: at it, loads the module, and
+  // because this is a system title registers \\SystemRoot and brings up
+  // xam.xex - which the launcher imports. Only the deployment type needs
+  // correcting afterwards: this is a download, not an installed title.
+  X_STATUS result = LaunchXexFile(launcher);
+  kernel_state_->deployment_type_ = XDeploymentType::kDownload;
   return result;
 }
 
@@ -1910,7 +1996,10 @@ X_STATUS Emulator::CompleteLaunch(const std::filesystem::path& path,
   // package, which an ordinary 360 title never has.
   {
     kernel::xna::XnaPackageInfo xna_info;
-    if (kernel::xna::IsXnaPackage(path, &xna_info)) {
+    // With xna_direct on this branch is not taken: the title arrives here
+    // already carrying the launcher as its module, so there is a real
+    // module to load below and no IL for the host to run.
+    if (!cvars::xna_direct && kernel::xna::IsXnaPackage(path, &xna_info)) {
       title_id_ = xna_info.title_id;
       // The kernel derives the title from the executable module, and a hosted
       // title has none - so without this everything keyed on the title, content
