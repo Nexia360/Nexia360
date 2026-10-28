@@ -10,11 +10,13 @@
 #ifndef XENIA_MEMORY_H_
 #define XENIA_MEMORY_H_
 
+#include <atomic>
 #include <cstdint>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -196,6 +198,12 @@ class BaseHeap {
   // address.
   bool QueryProtect(uint32_t address, uint32_t* out_protect);
 
+  // Whether the page holding |address| is committed.
+  bool IsPageCommitted(uint32_t address);
+
+  // True when no allocation covers any page in the range.
+  virtual bool IsRangeUnallocated(uint32_t address, uint32_t size);
+
   // Queries the currently strictest readability and writability for the entire
   // range.
   xe::memory::PageAccess QueryRangeAccess(uint32_t low_address,
@@ -289,6 +297,8 @@ class PhysicalHeap : public BaseHeap {
                uint32_t* out_region_size = nullptr) override;
   bool Protect(uint32_t address, uint32_t size, uint32_t protect,
                uint32_t* old_protect = nullptr) override;
+  // Also false where another view of the physical memory has it allocated.
+  bool IsRangeUnallocated(uint32_t address, uint32_t size) override;
 
   void EnableAccessCallbacks(uint32_t physical_address, uint32_t length,
                              bool enable_invalidation_notifications,
@@ -431,6 +441,13 @@ class Memory {
   // This is often something like 0x200000000.
   inline uint8_t* physical_membase() const { return physical_membase_; }
 
+  // The file mapping backing all guest memory views. Lets a consumer map its
+  // own separate view of guest RAM, e.g. to hand to a GPU heap import, without
+  // colliding with the write-watch protection on the managed views.
+  inline xe::memory::FileMappingHandle mapping_handle() const {
+    return mapping_;
+  }
+
   // Translates a guest physical address to a host address that can be accessed
   // as a normal pointer.
   // Note that the contents at the specified host address are big-endian.
@@ -571,6 +588,112 @@ class Memory {
   // Frees memory allocated with SystemHeapAlloc.
   void SystemHeapFree(uint32_t address, uint32_t* out_region_size = nullptr);
 
+  // Records the page table KeCreateUserMode was given, before the views exist.
+  void SetUserPageTable(uint32_t descriptor_address);
+
+  // What the page table says about a user mode address.
+  enum class UserPageState {
+    // Translated; out_physical_address holds the result.
+    kMapped,
+    // No entry for the page. The guest can fill one in.
+    kNoEntry,
+    // No table page covering the address. The guest can add one.
+    kNoTable,
+    // An entry names memory xenia doesn't keep physically, or there is no
+    // table at all. Adding an entry won't help.
+    kUnusable,
+    // 4 KB entries that aren't physically contiguous across the 64 KB a host
+    // view shows.
+    kScattered,
+    // The 64 KB a host view shows doesn't start on a physical 64 KB boundary,
+    // as in the skewed segments past 0xE0000000.
+    kUnaligned,
+  };
+
+  // How a user mode fault was handled.
+  enum class UserFaultResult {
+    // Not delivered to the guest.
+    kNotTaken,
+    // The guest's handler returned, so retry the access.
+    kTaken,
+    // |ex| was diverted, so the fault's own host frames are gone. User mode
+    // continues elsewhere, or a thunk runs the handler and resumes the access
+    // itself.
+    kDiverted,
+  };
+
+  // Delivers a user mode access the page table can't satisfy to the guest.
+  // |ex| gives the faulting host pc, and the hook may divert it.
+  using UserFaultHook = UserFaultResult (*)(uint32_t fault_address,
+                                            bool is_write, Exception* ex);
+  void set_user_fault_hook(UserFaultHook hook) { user_fault_hook_.store(hook); }
+
+  // Claims the address space user mode code runs in, which starts empty.
+  bool EnableUserModeViews();
+
+  // Drops every page mapped through the page table, which flushing the entire
+  // TB does.
+  void FlushUserPageTable();
+  // Drops the pages mapped through the page table whose entries changed since
+  // they were mapped, which flushing the user mode TB does.
+  void FlushChangedUserPages();
+
+  // Base of the user mode address space, null until it is created.
+  inline uint8_t* user_virtual_membase() const {
+    return user_virtual_membase_.load(std::memory_order_relaxed);
+  }
+
+  // On hosts whose pages hold more than one 4 KB page, JIT code translates
+  // guest addresses through tables of host_address - guest_address per 4 KB
+  // guest page, indexed by guest_address >> 12. Null on other hosts.
+  static constexpr uint32_t kGuestTlbEntryCount = 0x100000;
+  const uint64_t* kernel_tlb() const { return guest_tlbs_; }
+  const uint64_t* user_tlb(bool write) const {
+    return guest_tlbs_ ? guest_tlbs_ + kGuestTlbEntryCount * (write ? 2 : 1)
+                       : nullptr;
+  }
+  // Whether the tables are filled, which happens with the user mode views.
+  bool guest_tlbs_active() const {
+    return guest_tlbs_ && user_virtual_membase_.load(std::memory_order_acquire);
+  }
+
+  // The kernel address with the same contents as a user mode address.
+  uint32_t UserModeKernelAddress(uint32_t user_address) {
+    uint32_t physical_address;
+    if (TranslateUserPage(user_address, &physical_address) ==
+        UserPageState::kMapped) {
+      if (IsKernelVirtualFrame(physical_address)) {
+        return physical_address - kKernelVirtualFrameBias;
+      }
+      // The 0xA0000000 window shows every physical address the table can name.
+      return 0xA0000000 + physical_address;
+    }
+    if (user_address - kUserAliasBase < kUserAliasSize) {
+      return user_address + 0x80000000;
+    }
+    return user_address;
+  }
+
+  // Host memory to read what a kernel address shows. A physical window's view
+  // keeps the protection last set through that window, but the physical view
+  // keeps the latest set through any of them, so read through that.
+  const uint8_t* TranslateForRead(uint32_t kernel_address) {
+    auto heap = LookupHeap(kernel_address);
+    if (heap && heap->heap_type() == HeapType::kGuestPhysical) {
+      return TranslatePhysical<const uint8_t*>(
+          static_cast<PhysicalHeap*>(heap)->GetPhysicalAddress(kernel_address));
+    }
+    return TranslateVirtual<const uint8_t*>(kernel_address);
+  }
+
+  // The inverse of UserModeKernelAddress for the alias, which is all it covers.
+  static uint32_t KernelModeUserAddress(uint32_t kernel_address) {
+    if (kernel_address - 0xA0000000 < kUserAliasSize) {
+      return kernel_address - 0x80000000;
+    }
+    return kernel_address;
+  }
+
   // Gets the heap for the address space containing the given address.
   XE_NOALIAS
   const BaseHeap* LookupHeap(uint32_t address) const;
@@ -604,14 +727,193 @@ class Memory {
   int MapViews(uint8_t* mapping_base);
   void UnmapViews();
 
+  bool ClaimUserWindow(uint8_t* user_membase);
+
+  // The file offset the user mode address space shows at an address.
+  uint64_t UserViewFileOffset(uint32_t user_address) const;
+  // The file offset the kernel address space shows at an address.
+  uint64_t KernelViewFileOffset(uint32_t kernel_address) const;
+  // The CPU adds 4 KB to addresses at 0xE0000000 and above when the host maps
+  // at a coarser granularity so a window offset there is 4 KB above the
+  // address the page table names.
+  uint32_t UserWindowSkew(uint32_t window_offset) const {
+    return (system_allocation_granularity_ > 0x1000 &&
+            window_offset >= 0xE0000000 + 0x1000)
+               ? 0x1000
+               : 0;
+  }
+  // The kind byte the descriptor gives the segment of |user_address|.
+  uint8_t UserSegmentKind(uint32_t user_address);
+  // The physical address the page table translates a user mode address to,
+  // the PP and changed bits of its entry, and the host address of the entry.
+  UserPageState TranslateUserPage(uint32_t user_address,
+                                  uint32_t* out_physical_address,
+                                  uint32_t* out_protection = nullptr,
+                                  uint8_t** out_entry = nullptr);
+  // Whether one view of the 64 KB |page| starting at |physical_address| shows
+  // what the 4 KB entries of a small segment name, with one protection.
+  bool UserPageBlockIsContiguous(uint32_t page, uint32_t physical_address);
+  // Maps the page a fault at |window_offset| falls in, under the lock.
+  // Without |allow_fallback|, a page the table doesn't map stays unmapped.
+  bool MapUserPage(uint32_t window_offset, bool allow_fallback);
+  // Shows user mode page |index| per 4 KB piece, for entries no single view can
+  // show. Entries the table doesn't have stay unshown and fault. Under the
+  // lock.
+  bool SplitUserPage(uint32_t index);
+  // Shows one 4 KB piece of a split page, in a view of its own on 4 KB hosts
+  // and through its host page on others. Under the lock.
+  bool MapUserPiece(uint32_t piece, bool allow_fallback);
+  // Unmaps user mode page |index| and forgets what its pieces showed. Under
+  // the lock.
+  void ReleaseUserPage(uint32_t index);
+  // The descriptor and table words the translation of |piece| reads: kind,
+  // table frame and entry. Under the lock.
+  uint64_t UserPieceTableKey(uint32_t piece);
+  // The file offset and access a piece shows, from its entry or, with
+  // |allow_fallback|, the kernel address space. Under the lock.
+  bool ResolveUserPiece(uint32_t piece, bool allow_fallback,
+                        uint64_t* out_file_offset, bool* out_from_entry,
+                        xe::memory::PageAccess* out_access);
+  // Whether host pages hold more than one piece, so a split page is shown per
+  // host page and the rest is emulated.
+  bool UserHostPagesCoarse() const {
+    return system_page_size_ > kUserSmallPageSize;
+  }
+  uint32_t UserPiecesPerHostPage() const {
+    return system_page_size_ / kUserSmallPageSize;
+  }
+  // Maps the host page from |first_piece| as one view if its pieces show
+  // consecutive file pages. Under the lock.
+  void MapUserHostPage(uint32_t first_piece);
+  void SetUserHostPagesView(uint32_t first_piece, uint32_t count, bool view);
+  // Whether the host page holding |piece| is a view, always false on host pages
+  // of one piece.
+  bool UserHostPageIsView(uint32_t piece) const {
+    if (!UserHostPagesCoarse()) {
+      return false;
+    }
+    const uint32_t host_page = piece / UserPiecesPerHostPage();
+    return (user_host_page_view_[host_page / 64] >> (host_page % 64)) & 1;
+  }
+  // Protects the host pages holding |count| pieces from |first_piece| to the
+  // strictest access of their pieces. Under the lock.
+  void ProtectUserHostPages(uint32_t first_piece, uint32_t count);
+  // Protects the host memory showing |piece| after its access changed. Under
+  // the lock.
+  void ProtectUserPiece(uint32_t piece);
+  // Commits the guest address tables and points every entry at the kernel
+  // membase or |user_membase|.
+  bool FillGuestTlbs(uint8_t* user_membase);
+  // Points the user table entries of |count| pieces from |first_piece| at what
+  // the pieces show and allow. Under the lock.
+  void UpdateUserTlb(uint32_t first_piece, uint32_t count);
+  // Handles a fault at |window_offset| in the user mode views. Under the lock.
+  bool UserAccessViolation(global_unique_lock_type& global_lock_locked_once,
+                           uint32_t window_offset, bool is_write,
+                           Exception* ex);
+  // Runs the faulting access to a piece that allows it against the memory the
+  // piece shows. Under the lock.
+  bool EmulateUserAccess(global_unique_lock_type& global_lock_locked_once,
+                         Exception* ex);
+  static uint8_t* TranslateEmulatedUserAccess(void* context, uint64_t address,
+                                              bool is_write, size_t* span,
+                                              bool* natively_readable);
+  // Records the physical memory |count| user mode pieces from |first_piece|
+  // show. Under the lock.
+  void TrackUserPieces(uint32_t first_piece, uint32_t count,
+                       uint64_t file_offset);
+  // The host access an entry's PP bits give user mode code.
+  xe::memory::PageAccess UserEntryAccess(uint32_t protection) const;
+  // The host access a user mode piece gets from its entry, including its
+  // changed bit, and the write watch on the physical page it shows. Under the
+  // lock.
+  xe::memory::PageAccess UserPieceAccess(uint32_t piece) const;
+  // Protects |count| pieces from |first_piece| to their UserPieceAccess,
+  // read-write ones included. Under the lock.
+  void ProtectUserPieces(uint32_t first_piece, uint32_t count);
+  // Write protects the range's physical pages in every user mode page that
+  // shows them. Takes the lock.
+  void WatchUserWrites(uint32_t physical_address, uint32_t length);
+  // Reports a write fault at |window_offset| on a watched page. Under the lock.
+  // Returns whether the page was watched.
+  bool TriggerUserWriteWatch(uint32_t window_offset);
+  // Sets the changed bit of the guest's entry at |entry|.
+  static void SetUserEntryChanged(uint8_t* entry);
+  // Records whether |piece|, just mapped from the entry for |user_address|,
+  // waits for a write to set the entry's changed bit. Under the lock.
+  void TrackUserPieceChange(uint32_t piece, uint32_t user_address);
+  // Sets the changed bit of the entry behind a write fault at |window_offset|
+  // and lets the pieces it maps be written. Under the lock. Returns whether the
+  // piece was waiting for that write.
+  bool MarkUserPieceChanged(uint32_t window_offset);
+  // Calls |fn(piece)| for each user mode piece showing a physical 4 KB page.
+  // Under the lock.
+  template <typename Fn>
+  void ForEachUserPieceShowing(uint32_t physical_page, Fn fn) {
+    for (uint32_t piece :
+         user_block_pieces_[physical_page / kUserSmallPagesPerView]) {
+      if (user_piece_physical_[piece] == physical_page) {
+        fn(piece);
+      }
+    }
+  }
+
+  static constexpr uint32_t kUserAliasBase = 0x20000000;
+  static constexpr uint32_t kUserAliasSize = 0x20000000;
+
+  // The host allocation granularity, which is what one view shows.
+  static constexpr uint32_t kUserPageSize = 0x10000;
+  static constexpr uint32_t kUserPageCount = 0x100000000ull / kUserPageSize;
+  static constexpr uint32_t kUserSmallPageSize = 0x1000;
+  static constexpr uint32_t kUserSmallPagesPerView =
+      kUserPageSize / kUserSmallPageSize;
+  static constexpr uint32_t kPhysicalSmallPageCount =
+      0x20000000 / kUserSmallPageSize;
+  static constexpr uint32_t kUserLargePageSize = 0x1000000;
+
+  // The console kernel's page table maps itself here with one entry per 4 KB
+  // page of the address space. Titles read it to build user mode page tables.
+  // xenia has no such table so each read builds the entry for its page. Like
+  // every MMIO range it only handles 32-bit accesses.
+  static constexpr uint32_t kKernelPageTableBase = 0x3FC00000;
+  static constexpr uint32_t kKernelPageTableSize = 0x00400000;
+  static constexpr uint32_t kKernelPageTableValid = 0x1;
+  // xenia keeps virtual memory outside physical memory. The self-map gives a
+  // virtual page a frame this far above its address, which TranslateUserPage
+  // takes back to the page.
+  static constexpr uint32_t kKernelVirtualFrameBias = 0x40000000;
+  static bool IsKernelVirtualFrame(uint32_t physical_address) {
+    return physical_address - kKernelVirtualFrameBias < 0xA0000000;
+  }
+  void ReserveKernelPageTable();
+  uint32_t KernelPageTableEntry(uint32_t entry_address);
+  static uint32_t KernelPageTableReadThunk(void* ppc_context, void* context,
+                                           uint32_t address);
+  static void KernelPageTableWriteThunk(void* ppc_context, void* context,
+                                        uint32_t address, uint32_t value);
+  // A PTE is the physical address with the protection in its low bits.
+  static constexpr uint32_t kUserEntryProtection = 0x3;
+  // The console sets C in the entry on the first user mode write through it.
+  // XeFu clears it to find which pages the guest it emulates has written.
+  static constexpr uint32_t kUserEntryChanged = 0x80;
+  static constexpr uint32_t kUserTableSmall = 0x000;   // u16[512], by >> 23
+  static constexpr uint32_t kUserTableLarge = 0x400;   // u32[256], by >> 24
+  static constexpr uint32_t kUserTableMedium = 0x800;  // u16[32], by >> 27
+  static constexpr uint32_t kUserTableKind = 0x840;    // u8[16], by >> 28
+  // The segment kind bits that pick its page size. A kind with neither uses
+  // 4 KB pages. What the other bits mean isn't known.
+  static constexpr uint8_t kUserSegmentLarge = 0x1;   // 16 MB pages, inline
+  static constexpr uint8_t kUserSegmentMedium = 0x2;  // 64 KB pages, a table
+
   static uint32_t HostToGuestVirtualThunk(const void* context,
                                           const void* host_address);
 
   bool AccessViolationCallback(global_unique_lock_type global_lock_locked_once,
-                               void* host_address, bool is_write);
+                               void* host_address, bool is_write,
+                               Exception* ex);
   static bool AccessViolationCallbackThunk(
       global_unique_lock_type global_lock_locked_once, void* context,
-      void* host_address, bool is_write);
+      void* host_address, bool is_write, Exception* ex);
 
   std::filesystem::path file_name_;
   uint32_t system_page_size_ = 0;
@@ -636,6 +938,49 @@ class Memory {
     };
     uint8_t* all_views[9];
   } views_ = {{0}};
+
+  std::atomic<uint8_t*> user_virtual_membase_{nullptr};
+  // Changed under the global lock. UserModeKernelAddress reads it without.
+  // TODO(has207): UserModeKernelAddress is also handed kernel addresses, which
+  // the user mode table then translates as if they were user ones.
+  uint32_t user_page_table_ = 0;
+  // One bit per user mode page mapped from the table, under the global lock.
+  std::vector<uint64_t> user_page_mapped_;
+  // The split pages among them, with a bit per 4 KB piece that is shown.
+  std::unordered_map<uint32_t, uint16_t> user_page_split_;
+  // The user mode views are one more alias of physical memory and writes
+  // through them have to reach the same watches. All under the global lock.
+  static constexpr uint32_t kUserNoPage = UINT32_MAX;
+  // The physical 4 KB page each 4 KB piece of the user mode space shows.
+  std::vector<uint32_t> user_piece_physical_;
+  // The PageAccess each piece's entry allows user mode, read-write where no
+  // entry applies.
+  std::vector<uint8_t> user_piece_access_;
+  // The UserPieceTableKey of each piece when it was mapped, or UINT64_MAX to
+  // drop it at the next flush.
+  std::vector<uint64_t> user_piece_table_key_;
+  // The user mode pieces showing a page in each physical 64 KB block.
+  std::vector<std::vector<uint32_t>> user_block_pieces_;
+  // A bit per physical 4 KB page whose next user mode write is reported.
+  std::vector<uint64_t> user_write_watched_;
+  // A bit per 4 KB piece whose entry allows writes with its changed bit clear,
+  // kept read-only so its first write can set the bit.
+  std::vector<uint64_t> user_piece_unchanged_;
+  // On host pages bigger than a piece, the file page each piece shows, and a
+  // bit per host page mapped as a view. An access to any other host page is
+  // emulated through user_file_alias_, which maps the whole file.
+  std::vector<uint32_t> user_piece_file_page_;
+  std::vector<uint64_t> user_host_page_view_;
+  static constexpr uint64_t kUserFileAliasSize = 0x120000000ull;
+  uint8_t* user_file_alias_ = nullptr;
+  // The kernel, user read and user write tables. A user entry points into
+  // user_file_alias_ where its piece allows the access, else at the window.
+  // TODO(has207): a thread can use an entry briefly after it changes, missing
+  // a new watch or reaching a flushed page.
+  static constexpr size_t kGuestTlbsSize =
+      size_t(kGuestTlbEntryCount) * 3 * sizeof(uint64_t);
+  uint64_t* guest_tlbs_ = nullptr;
+  std::atomic<UserFaultHook> user_fault_hook_{nullptr};
 
   std::unique_ptr<cpu::MMIOHandler> mmio_handler_;
 
