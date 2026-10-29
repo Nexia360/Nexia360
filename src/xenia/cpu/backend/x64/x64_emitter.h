@@ -307,6 +307,9 @@ class X64Emitter : public Xbyak::CodeGenerator {
 
   void PushStackpoint();
   void PopStackpoint();
+  // Jumps to the dynamic blr target in rax on the caller's frame, or falls
+  // through when the records don't allow that.
+  void EmitDropCallingFrame();
 
   void EnsureSynchronizedGuestAndHostStack();
   FunctionDebugInfo* debug_info() const { return debug_info_; }

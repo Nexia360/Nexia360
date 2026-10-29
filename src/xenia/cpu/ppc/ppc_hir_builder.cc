@@ -85,7 +85,10 @@ void PPCHIRBuilder::Reset() {
 bool PPCHIRBuilder::Emit(GuestFunction* function, uint32_t flags) {
   SCOPE_profile_cpu_f("cpu");
 
-  Memory* memory = frontend_->memory();
+  Module* module = function->module();
+  if (frontend_->processor()->KeepsContextStores(module)) {
+    set_attributes(attributes() | FUNCTION_ATTRIB_KEEP_CONTEXT_STORES);
+  }
 
   function_ = function;
   start_address_ = function_->address();
@@ -122,8 +125,7 @@ bool PPCHIRBuilder::Emit(GuestFunction* function, uint32_t flags) {
   for (uint32_t address = start_address, offset = 0; address <= end_address;
        address += 4, offset++) {
     trace_info_.dest_count = 0;
-    uint32_t code =
-        xe::load_and_swap<uint32_t>(memory->TranslateVirtual(address));
+    uint32_t code = xe::load_and_swap<uint32_t>(module->TranslateCode(address));
     auto opcode = LookupOpcode(code);
     auto& opcode_info = GetOpcodeInfo(opcode);
 

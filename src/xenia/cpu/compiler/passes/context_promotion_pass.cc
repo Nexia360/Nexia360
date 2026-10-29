@@ -82,8 +82,9 @@ bool ContextPromotionPass::Run(HIRBuilder* builder) {
   // Remove all dead stores.
   // This will break debugging as we can't recover this information when
   // trying to extract stack traces/register values, so we don't do that.
-  if (cvars::full_optimization_even_with_debug ||
-      (!cvars::debug && !cvars::store_all_context_values)) {
+  if ((cvars::full_optimization_even_with_debug ||
+       (!cvars::debug && !cvars::store_all_context_values)) &&
+      !(builder->attributes() & FUNCTION_ATTRIB_KEEP_CONTEXT_STORES)) {
     block = builder->first_block();
     while (block) {
       RemoveDeadStoresBlock(block);

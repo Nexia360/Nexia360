@@ -9,6 +9,8 @@
 
 #include "xenia/cpu/xex_module.h"
 
+#include <cstring>
+
 #include "third_party/fmt/include/fmt/format.h"
 
 #include "xenia/base/byte_order.h"
@@ -316,31 +318,65 @@ int XexModule::ApplyPatch(XexModule* module) {
   // Update security info context with latest security info data
   module->ReadSecurityInfo();
 
+  // The patched headers can move the image. Settle the base with the same rule
+  // Load uses (security info load address, overridden by the base address
+  // header) BEFORE sizing it: image_size() counts pages with the page size of
+  // the heap at base_address_. The XNA 4.0 launcher TU moves 0x92000000 (4KB
+  // pages) to 0x82000000 (64KB pages); sized with the old heap its 0x170000
+  // image came out 0x17000, smaller than the original, so nothing was
+  // allocated or moved and the delta read past the end of the old image.
+  uint32_t new_base_address = module->xex_security_info()->load_address;
+  xe::be<uint32_t>* base_addr_opt = nullptr;
+  if (module->GetOptHeader(XEX_HEADER_IMAGE_BASE_ADDRESS, &base_addr_opt)) {
+    new_base_address = *base_addr_opt;
+  }
+  const bool relocated = new_base_address != original_base_address;
+  module->base_address_ = new_base_address;
+
   uint32_t new_image_size = module->image_size();
 
-  // Check if we need to alloc new memory for the patched xex
-  if (new_image_size > original_image_size) {
+  XELOGI(
+      "XEX patch for {}: base {:08X} -> {:08X}, image size {:08X} -> {:08X}",
+      module->name(), original_base_address, new_base_address,
+      original_image_size, new_image_size);
+
+  if (relocated) {
+    // Move the whole image to the new base at the same offsets (the delta
+    // addresses the flat image). The old bytes go through a host copy because
+    // the two ranges can be the same memory: 0x80000000 and 0x90000000 are
+    // views of one host mapping, so 0x92000000 and 0x82000000 are the same
+    // bytes under different pointers. Zeroing the new range in place wiped the
+    // old image and the delta ran over zeros ("PE signature mismatch").
+    const uint32_t carried = std::min(original_image_size, new_image_size);
+    std::vector<uint8_t> old_image(carried);
+    std::memcpy(old_image.data(),
+                memory()->TranslateVirtual(original_base_address), carried);
+
+    bool alloc_result =
+        memory()
+            ->LookupHeap(new_base_address)
+            ->AllocFixed(
+                new_base_address, new_image_size, 4096,
+                xe::kMemoryAllocationReserve | xe::kMemoryAllocationCommit,
+                xe::kMemoryProtectRead | xe::kMemoryProtectWrite);
+    if (!alloc_result) {
+      XELOGE("Unable to allocate XEX memory at {:08X}-{:08X}.",
+             new_base_address, new_image_size);
+      return 6;
+    }
+    uint8_t* new_image = memory()->TranslateVirtual(new_base_address);
+    std::memset(new_image, 0, new_image_size);
+    std::memcpy(new_image, old_image.data(), carried);
+    XELOGI("XEX patch: carried {:X} bytes to {:08X}, image starts {:08X}",
+           carried, new_base_address, xe::load_and_swap<uint32_t>(new_image));
+
+    // Keep the old range reserved until Unload: if it aliases the new one,
+    // releasing it would let another allocation land on the live image.
+    module->pre_patch_base_ = original_base_address;
+  } else if (new_image_size > original_image_size) {
+    // Same base, bigger image: extend it.
     uint32_t size_delta = new_image_size - original_image_size;
-    uint32_t addr_new_mem = module->base_address_ + original_image_size;
-
-    // Before we allocate new range we must check if patch haven't modified
-    // base_address.
-    uint32_t new_base_address = module->base_address();
-    xe::be<uint32_t>* base_addr_opt = nullptr;
-    if (module->GetOptHeader(XEX_HEADER_IMAGE_BASE_ADDRESS, &base_addr_opt)) {
-      new_base_address = *base_addr_opt;
-    }
-
-    if (original_base_address != new_base_address) {
-      XELOGW(
-          "Patch for module: {} changed base_address from {:08X} to {:08X}, "
-          "need to reallocate xex "
-          "data!",
-          module->name(), module->base_address_, new_base_address);
-      module->base_address_ = new_base_address;
-      addr_new_mem = new_base_address;
-      size_delta = new_image_size;
-    }
+    uint32_t addr_new_mem = new_base_address + original_image_size;
 
     bool alloc_result =
         memory()
@@ -356,14 +392,11 @@ int XexModule::ApplyPatch(XexModule* module) {
       assert_always();
       return 6;
     }
-
-    // For base_address change we need to copy data from previous allocation to
-    // new one
-    if (original_base_address != new_base_address) {
-      kernel_state_->memory()->Copy(new_base_address, original_base_address,
-                                    original_image_size);
-    }
   }
+
+  // The bytes the image currently has mapped at base_address_.
+  const uint32_t live_image_size =
+      relocated ? new_image_size : original_image_size;
 
   uint8_t orig_session_key[0x10];
   memcpy(orig_session_key, module->session_key_, 0x10);
@@ -434,9 +467,9 @@ int XexModule::ApplyPatch(XexModule* module) {
                                patch_header->delta_image_source_size;
 
   // If new size is smaller than original, null out the difference
-  if (image_target_size < original_image_size) {
+  if (image_target_size < live_image_size) {
     memset(base_exe + image_target_size, 0,
-           original_image_size - image_target_size);
+           live_image_size - image_target_size);
   }
 
   uint8_t digest[0x14];
@@ -476,7 +509,7 @@ int XexModule::ApplyPatch(XexModule* module) {
 
   if (!result_code) {
     // Decommit unused pages if new image size is smaller than original
-    if (original_image_size > new_image_size) {
+    if (!relocated && original_image_size > new_image_size) {
       uint32_t size_delta = original_image_size - new_image_size;
       uint32_t addr_free_mem = module->base_address_ + new_image_size;
 
@@ -1167,6 +1200,14 @@ bool XexModule::Unload() {
       XELOGE("XexModule::Unload('{}'): image at {:08X} was NOT released", name_,
              base_address_);
     }
+    if (pre_patch_base_ &&
+        !memory()->LookupHeap(pre_patch_base_)->Release(pre_patch_base_)) {
+      XELOGE(
+          "XexModule::Unload('{}'): pre-patch image at {:08X} was NOT "
+          "released",
+          name_, pre_patch_base_);
+    }
+    pre_patch_base_ = 0;
   }
 
   xex_header_mem_.resize(0);
@@ -1209,6 +1250,13 @@ bool XexModule::SetupLibraryImports(const std::string_view name,
 
     if (kernel_resolver) {
       kernel_export = kernel_resolver->GetExportByOrdinal(name, ordinal);
+      // A module that enters user mode runs guest code no module owns, and
+      // its indirect call sites are translated for that up front, so before
+      // precompiling.
+      if (kernel_export &&
+          std::strcmp(kernel_export->name, "KeCreateUserMode") == 0) {
+        processor_->EnableDynamicCode();
+      }
     } else if (user_module) {
       user_export_addr = user_module->GetProcAddressByOrdinal(ordinal);
     }
@@ -1356,6 +1404,27 @@ bool XexModule::SetupLibraryImports(const std::string_view name,
 
 bool XexModule::ContainsAddress(uint32_t address) {
   return address >= low_address_ && address < high_address_;
+}
+
+uint32_t XexModule::SectionInfoAt(uint32_t address) {
+  if (!base_address_ || address < base_address_) {
+    return 0;
+  }
+  auto heap = memory()->LookupHeap(base_address_);
+  const uint32_t page_size = heap->page_size();
+  auto sec_header = xex_security_info();
+  for (uint32_t i = 0, page = 0; i < sec_header->page_descriptor_count; i++) {
+    // Byteswap the bitfield manually.
+    xex2_page_descriptor desc;
+    desc.value = xe::byte_swap(sec_header->page_descriptors[i].value);
+    const uint32_t start_address = base_address_ + page * page_size;
+    const uint32_t end_address = start_address + desc.page_count * page_size;
+    if (address >= start_address && address < end_address) {
+      return desc.info;
+    }
+    page += desc.page_count;
+  }
+  return 0;
 }
 
 std::unique_ptr<Function> XexModule::CreateFunction(uint32_t address) {

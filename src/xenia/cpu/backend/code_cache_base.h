@@ -112,12 +112,27 @@ class CodeCacheBase : public CodeCache {
 
   bool has_indirection_table() { return indirection_table_base_ != nullptr; }
 
+  // Whether a guest address has an indirection slot. Code no module owns,
+  // which a guest runtime compiles into its own memory, may have none.
+  static constexpr uint32_t indirection_guest_base() {
+    return uint32_t(kIndirectionTableBase);
+  }
+  static constexpr uint32_t indirection_guest_size() {
+    return uint32_t(kIndirectionTableSize);
+  }
+  static constexpr bool HasIndirectionSlot(uint32_t guest_address) {
+    return guest_address >= indirection_guest_base() &&
+           guest_address - indirection_guest_base() + 4 <=
+               indirection_guest_size();
+  }
+
   void set_indirection_default(uint32_t default_value) {
     indirection_default_value_ = default_value;
   }
 
   void AddIndirection(uint32_t guest_address, uint32_t host_address) {
-    if (!indirection_table_base_) {
+    // Dynamic code outside the table's range has no slot; calls to it resolve.
+    if (!indirection_table_base_ || !HasIndirectionSlot(guest_address)) {
       return;
     }
     uint32_t* indirection_slot = reinterpret_cast<uint32_t*>(
@@ -219,8 +234,9 @@ class CodeCacheBase : public CodeCache {
     self().OnCodePlaced(guest_address, function_info, code_execute_address,
                         func_info.code_size.total);
 
-    // Fix up indirection table.
-    if (guest_address && indirection_table_base_) {
+    // Fix up indirection table. Dynamic code outside its range has no slot.
+    if (guest_address && indirection_table_base_ &&
+        HasIndirectionSlot(guest_address)) {
       uint32_t* indirection_slot = reinterpret_cast<uint32_t*>(
           indirection_table_base_ + (guest_address - kIndirectionTableBase));
       *indirection_slot =

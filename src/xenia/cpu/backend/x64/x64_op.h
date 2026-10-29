@@ -9,6 +9,8 @@
 #ifndef XENIA_CPU_BACKEND_X64_X64_OP_H_
 #define XENIA_CPU_BACKEND_X64_X64_OP_H_
 
+#include <type_traits>
+
 #include "xenia/cpu/backend/x64/x64_emitter.h"
 
 #include "xenia/cpu/hir/instr.h"
@@ -556,15 +558,31 @@ struct Sequence {
     }
   }
 
+  // src2 goes in dest, which callbacks must already allow to alias src2, or in
+  // xmm1 when dest is a GPR.
+  template <typename FN>
+  static void EmitBothConstantXmmOp(X64Emitter& e, const EmitArgType& i,
+                                    const FN& fn) {
+    e.LoadConstantXmm(e.xmm0, i.src1.constant());
+    if constexpr (std::is_same_v<typename decltype(i.dest)::reg_type,
+                                 Xbyak::Xmm>) {
+      e.LoadConstantXmm(i.dest.reg(), i.src2.constant());
+      fn(e, i.dest, e.xmm0, i.dest.reg());
+    } else {
+      e.LoadConstantXmm(e.xmm1, i.src2.constant());
+      fn(e, i.dest, e.xmm0, e.xmm1);
+    }
+  }
+
   template <typename FN>
   static void EmitCommutativeBinaryXmmOp(X64Emitter& e, const EmitArgType& i,
                                          const FN& fn) {
-    if (i.src1.is_constant) {
-      assert_true(!i.src2.is_constant);
+    if (i.src1.is_constant && i.src2.is_constant) {
+      EmitBothConstantXmmOp(e, i, fn);
+    } else if (i.src1.is_constant) {
       e.LoadConstantXmm(e.xmm0, i.src1.constant());
       fn(e, i.dest, e.xmm0, i.src2);
     } else if (i.src2.is_constant) {
-      assert_true(!i.src1.is_constant);
       e.LoadConstantXmm(e.xmm0, i.src2.constant());
       fn(e, i.dest, i.src1, e.xmm0);
     } else {
@@ -575,12 +593,12 @@ struct Sequence {
   template <typename FN>
   static void EmitAssociativeBinaryXmmOp(X64Emitter& e, const EmitArgType& i,
                                          const FN& fn) {
-    if (i.src1.is_constant) {
-      assert_true(!i.src2.is_constant);
+    if (i.src1.is_constant && i.src2.is_constant) {
+      EmitBothConstantXmmOp(e, i, fn);
+    } else if (i.src1.is_constant) {
       e.LoadConstantXmm(e.xmm0, i.src1.constant());
       fn(e, i.dest, e.xmm0, i.src2);
     } else if (i.src2.is_constant) {
-      assert_true(!i.src1.is_constant);
       e.LoadConstantXmm(e.xmm0, i.src2.constant());
       fn(e, i.dest, i.src1, e.xmm0);
     } else {

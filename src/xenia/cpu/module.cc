@@ -23,6 +23,10 @@ Module::~Module() = default;
 
 bool Module::ContainsAddress(uint32_t address) { return true; }
 
+const uint8_t* Module::TranslateCode(uint32_t address) const {
+  return memory_->TranslateVirtual<const uint8_t*>(address);
+}
+
 Symbol* Module::LookupSymbol(uint32_t address, bool wait) {
   auto global_lock = global_critical_region_.Acquire();
   const auto it = map_.find(address);
@@ -140,6 +144,11 @@ Symbol::Status Module::DefineFunction(Function* symbol) {
 
 Symbol::Status Module::DefineVariable(Symbol* symbol) {
   return DefineSymbol(symbol);
+}
+
+void Module::ForgetSymbol(uint32_t address) {
+  auto global_lock = global_critical_region_.Acquire();
+  map_.erase(address);
 }
 
 const std::vector<uint32_t> Module::GetAddressedFunctions() {

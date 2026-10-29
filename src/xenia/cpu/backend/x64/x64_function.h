@@ -25,8 +25,11 @@ class X64Function : public GuestFunction {
 
   uint8_t* machine_code() const override { return machine_code_; }
   size_t machine_code_length() const override { return machine_code_length_; }
+  // The bytes its frame takes below the return address.
+  size_t stack_size() const { return stack_size_; }
 
-  void Setup(uint8_t* machine_code, size_t machine_code_length);
+  void Setup(uint8_t* machine_code, size_t machine_code_length,
+             size_t stack_size);
 
  protected:
   bool CallImpl(ThreadState* thread_state, uint32_t return_address) override;
@@ -34,6 +37,7 @@ class X64Function : public GuestFunction {
  private:
   uint8_t* machine_code_ = nullptr;
   size_t machine_code_length_ = 0;
+  size_t stack_size_ = 0;
 };
 
 }  // namespace x64

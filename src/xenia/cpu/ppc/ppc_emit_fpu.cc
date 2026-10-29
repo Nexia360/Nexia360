@@ -371,7 +371,7 @@ int InstrEmit_fcmpu(PPCHIRBuilder& f, const InstrData& i) {
 int InstrEmit_mcrfs(PPCHIRBuilder& f, const InstrData& i) {
   // mcrfs CRFD, CRFS
   // CR[4*CRFD:4*CRFD+3] <- FPSCR[4*CRFS:4*CRFS+3]
-  // FPSCR[4*CRFS:4*CRFS+3] <- 0 (exception bits cleared)
+  // The exception bits of FPSCR[4*CRFS:4*CRFS+3] other than FEX and VX <- 0
 
   uint32_t crfd = i.X.RT >> 2;  // Destination CR field
   uint32_t crfs = i.X.RA >> 2;  // Source FPSCR field
@@ -387,9 +387,12 @@ int InstrEmit_mcrfs(PPCHIRBuilder& f, const InstrData& i) {
   // Store to CR field (need to shift to proper position in 64-bit CR)
   f.StoreCR(crfd, f.Shl(f.ZeroExtend(fpscr_field, INT64_TYPE), 4 * (7 - crfd)));
 
-  // Clear the FPSCR field (set to 0)
-  uint32_t mask = ~(0xF << shift);
-  f.StoreFPSCR(f.And(fpscr, f.LoadConstantUint32(mask)));
+  // FX, OX, UX, ZX, XX and the VX causes. Status and control bits such as FR,
+  // FI, FPRF and RN stay.
+  uint32_t clear = (0xF << shift) & 0x9FF80700;
+  if (clear) {
+    f.StoreFPSCR(f.And(fpscr, f.LoadConstantUint32(~clear)));
+  }
 
   return 0;
 }
@@ -403,14 +406,46 @@ int InstrEmit_mffsx(PPCHIRBuilder& f, const InstrData& i) {
   return 0;
 }
 
+// mtfsb can't set the FEX and VX summaries (bits 1 and 2) directly and setting
+// an exception bit that was clear also sets FX.
+static int InstrEmit_mtfsb(PPCHIRBuilder& f, const InstrData& i, bool value) {
+  const uint32_t bit = i.X.RT;
+  if (bit != 1 && bit != 2) {
+    const uint32_t mask = 1u << (31 - bit);
+    Value* fpscr = f.LoadFPSCR();
+    Value* v;
+    if (value) {
+      // OX, UX, ZX, XX and the VX causes (bits 3-12 and 21-23).
+      const bool exception =
+          (bit >= 3 && bit <= 12) || (bit >= 21 && bit <= 23);
+      // A VX cause sets the VX summary too.
+      const uint32_t vx = exception && bit >= 7 ? 0x20000000 : 0;
+      v = f.Or(fpscr, f.LoadConstantInt32(mask | vx));
+      if (exception) {
+        Value* was_clear = f.Not(f.Shl(fpscr, int8_t(bit)));
+        v = f.Or(v, f.And(was_clear, f.LoadConstantInt32(0x80000000)));
+      }
+    } else {
+      v = f.And(fpscr, f.LoadConstantInt32(~mask));
+    }
+    f.StoreFPSCR(v);
+    // Update the system rounding mode.
+    if (mask & 0x7) {
+      f.SetRoundingMode(f.And(v, f.LoadConstantInt32(7)));
+    }
+  }
+  if (i.X.Rc) {
+    f.CopyFPSCRToCR1();
+  }
+  return 0;
+}
+
 int InstrEmit_mtfsb0x(PPCHIRBuilder& f, const InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  return InstrEmit_mtfsb(f, i, false);
 }
 
 int InstrEmit_mtfsb1x(PPCHIRBuilder& f, const InstrData& i) {
-  XEINSTRNOTIMPLEMENTED();
-  return 1;
+  return InstrEmit_mtfsb(f, i, true);
 }
 
 int InstrEmit_mtfsfx(PPCHIRBuilder& f, const InstrData& i) {
@@ -450,11 +485,11 @@ int InstrEmit_mtfsfx(PPCHIRBuilder& f, const InstrData& i) {
 }
 
 int InstrEmit_mtfsfix(PPCHIRBuilder& f, const InstrData& i) {
-  // FPSCR[crfD] <- IMM
+  // FPSCR[crfD] <- IMM, the top 4 bits of the RB field.
 
   // Create a mask.
   uint32_t mask = 0xF << (0x1C - (i.X.RT & 0x1C));
-  uint32_t value = i.X.RB << (0x1C - (i.X.RT & 0x1C));
+  uint32_t value = (i.X.RB >> 1) << (0x1C - (i.X.RT & 0x1C));
 
   Value* fpscr = f.LoadFPSCR();
   fpscr = f.And(fpscr, f.LoadConstantInt32(~mask));

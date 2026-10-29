@@ -71,8 +71,22 @@ static bool SameValueOrEqualConstant(hir::Value* x, hir::Value* y) {
     return true;
   }
 
-  if (x->IsConstant() && y->IsConstant()) {
-    return x->AsUint64() == y->AsUint64();
+  if (x->IsConstant() && y->IsConstant() && x->type == y->type) {
+    // Compare raw bits: AsUint64 only handles integer constants.
+    switch (x->type) {
+      case hir::INT8_TYPE:
+        return x->constant.u8 == y->constant.u8;
+      case hir::INT16_TYPE:
+        return x->constant.u16 == y->constant.u16;
+      case hir::INT32_TYPE:
+      case hir::FLOAT32_TYPE:
+        return x->constant.u32 == y->constant.u32;
+      case hir::INT64_TYPE:
+      case hir::FLOAT64_TYPE:
+        return x->constant.u64 == y->constant.u64;
+      default:
+        return false;
+    }
   }
 
   return false;

@@ -81,17 +81,23 @@ class StackLayout {
    *  | xmm15 (Win32)    | (unused)         | rsp + 0x0F0
    *  |                  |                  |
    *  +------------------+------------------+
-   *  | (return address) | (return address) | rsp + 0x100
+   *  | host MXCSR       | (unused)         | rsp + 0x100
+   *  |                  |                  |
    *  +------------------+------------------+
-   *  | (rcx home)       | (rcx home)       | rsp + 0x108
+   *  | (return address) | (return address) | rsp + 0x110
    *  +------------------+------------------+
-   *  | (rdx home)       | (rdx home)       | rsp + 0x110
+   *  | (rcx home)       | (rcx home)       | rsp + 0x118
+   *  +------------------+------------------+
+   *  | (rdx home)       | (rdx home)       | rsp + 0x120
    *  +------------------+------------------+
    */
   XEPACKEDSTRUCT(Thunk, {
     uint64_t arg_temp[3];
     uint64_t r[9];
     vec128_t xmm[10];
+    // HostToGuestThunk: the host MXCSR, restored when the guest returns.
+    uint32_t host_mxcsr;
+    uint32_t pad[3];
   });
   static_assert(sizeof(Thunk) % 16 == 0,
                 "sizeof(Thunk) must be a multiple of 16!");

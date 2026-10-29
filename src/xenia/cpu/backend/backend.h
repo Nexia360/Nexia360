@@ -94,6 +94,20 @@ class Backend {
   * */
   virtual void PrepareForReentry(void* ctx) {}
 
+  // Drops what every guest thread cached about where code in [start, end] was
+  // compiled to, for a guest that has since written other code there. The
+  // thread that wrote the code is rarely the one that runs it.
+  virtual void InvalidateDynamicCalls(uint32_t start, uint32_t end) {}
+
+  // Extra stackpoint records for a guest thread that runs on more than one
+  // host stack, or null from a backend that keeps none. Swapping exchanges the
+  // records in the context with the ones in the state, so swaps have to be
+  // undone in reverse before returning to guest code the other set recorded,
+  // and a state has to be swapped out before it is destroyed.
+  virtual void* CreateStackpointState() { return nullptr; }
+  virtual void DestroyStackpointState(void* state) {}
+  virtual void SwapStackpointState(void* ctx, void* state) {}
+
   // returns true if populated st
   virtual bool PopulatePseudoStacktrace(GuestPseudoStackTrace* st) {
     return false;

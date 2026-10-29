@@ -286,12 +286,11 @@ RegExp ComputeMemoryAddressOffset(X64Emitter& e, const T& guest,
       return e.GetMembaseReg() + e.rdx;
 
     } else {
-      // Clear the top 32 bits, as they are likely garbage.
-      // TODO(benvanik): find a way to avoid doing this.
-
-      e.mov(e.eax, guest.reg().cvt32());
+      // A 32-bit lea wraps the guest address the way the guest computes it,
+      // and clears the top 32 bits, which are likely garbage.
+      e.lea(e.eax, e.ptr[guest.reg().cvt32() + offset_const]);
     }
-    return e.GetMembaseReg() + e.rax + offset_const;
+    return e.GetMembaseReg() + e.rax;
   }
 }
 

@@ -43,6 +43,9 @@ class EntryTable {
   Entry::Status GetOrCreate(uint32_t address, Entry** out_entry);
   void Delete(uint32_t address);
   void Clear();
+  // Drops every ready entry overlapping [start, end] and returns what they
+  // compiled, so the caller can let their modules forget them too.
+  std::vector<Function*> DeleteRange(uint32_t start, uint32_t end);
 
   std::vector<Function*> FindWithAddress(uint32_t address);
 

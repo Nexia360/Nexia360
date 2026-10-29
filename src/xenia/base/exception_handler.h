@@ -224,6 +224,24 @@ class Exception {
       AccessViolationOperation::kUnknown;
 };
 
+// Resumes the faulting thread in |thunk|, which must not return, rather than at
+// the faulting instruction. Diverting the pc keeps the fault's rsp, so realign
+// to the rsp%16 == 8 a call leaves, or the thunk's aligned SSE spills fault.
+// The null slot ends a stack walk. AArch64 sp is always aligned.
+inline void DivertToThunk(Exception* ex, void (*thunk)()) {
+#if XE_ARCH_AMD64
+  uint64_t& rsp = ex->ModifyIntRegister(
+      uint32_t(X64Register::kRsp) - uint32_t(X64Register::kIntRegisterFirst));
+  rsp = (rsp & ~uint64_t(15)) - 8;
+  *reinterpret_cast<uint64_t*>(rsp) = 0;
+#endif  // XE_ARCH_AMD64
+  ex->set_resume_pc(reinterpret_cast<uint64_t>(thunk));
+}
+
+// Puts the calling thread's FPCR or MXCSR in the host ABI default: round to
+// nearest, no flush-to-zero, exceptions masked.
+void SetHostDefaultFpControl();
+
 class ExceptionHandler {
  public:
   typedef bool (*Handler)(Exception* ex, void* data);

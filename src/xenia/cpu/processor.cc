@@ -87,6 +87,67 @@ class BuiltinModule : public Module {
   std::string name_;
 };
 
+class DynamicCodeModule : public Module {
+ public:
+  explicit DynamicCodeModule(Processor* processor)
+      : Module(processor), name_("dynamic") {}
+
+  const std::string& name() const override { return name_; }
+  bool is_executable() const override { return false; }
+
+  // User mode addresses alias physical memory, so ask about the kernel address.
+  bool ContainsAddress(uint32_t address) override {
+    const uint32_t kernel_address = memory_->UserModeKernelAddress(address);
+    auto heap = memory_->LookupHeap(kernel_address);
+    uint32_t protect = 0;
+    return heap && heap->QueryProtect(kernel_address, &protect) &&
+           (protect & kMemoryProtectRead);
+  }
+
+  // A physical window's view keeps the protection last set through that
+  // window, but the physical view keeps the latest set through any of them,
+  // which is what ContainsAddress checks. So read code through that.
+  const uint8_t* TranslateCode(uint32_t address) const override {
+    return memory_->TranslateForRead(memory_->UserModeKernelAddress(address));
+  }
+
+ protected:
+  std::unique_ptr<Function> CreateFunction(uint32_t address) override {
+    auto function = processor_->backend()->CreateGuestFunction(this, address);
+    // Dynamic code has no .pdata so only the swept range bounds the scan. It's
+    // used only where the range ends on an unconditional branch. A range that
+    // covers part of a function, like a patch or an old sweep of reused
+    // memory, rarely does and doesn't cut the function off. A branch that
+    // links counts too: XeFu ends its blocks with a bl that never returns.
+    const uint32_t end = function ? processor_->SweptCodeEnd(address) : 0;
+    const uint32_t last = ((end + 3) & ~uint32_t(3)) - 4;
+    if (end && last > address && ContainsAddress(last) &&
+        IsUnconditionalBranch(
+            xe::load_and_swap<uint32_t>(TranslateCode(last)))) {
+      function->set_end_address(last);
+    }
+    return function;
+  }
+
+ private:
+  // b, blr or bctr, with or without link.
+  static bool IsUnconditionalBranch(uint32_t code) {
+    switch (code >> 26) {
+      case 18:
+        return true;
+      case 19: {
+        const uint32_t extended = (code >> 1) & 0x3FF;
+        const uint32_t bo = (code >> 21) & 0x1F;
+        return (extended == 16 || extended == 528) && (bo & 0x14) == 0x14;
+      }
+      default:
+        return false;
+    }
+  }
+
+  std::string name_;
+};
+
 Processor::Processor(xe::Memory* memory, ExportResolver* export_resolver)
     : memory_(memory), export_resolver_(export_resolver) {}
 
@@ -94,6 +155,7 @@ Processor::~Processor() {
   {
     auto global_lock = global_critical_region_.Acquire();
     modules_.clear();
+    dynamic_code_module_.reset();
   }
 
   frontend_.reset();
@@ -297,6 +359,19 @@ void Processor::FlushCode() {
       }
     });
   }
+  // Dynamic code belongs to the title that compiled it, and its functions
+  // point into the code freed below - a relaunched runtime called straight
+  // into the old cache. The next title that enters user mode enables it again
+  // when its imports bind.
+  dynamic_code_module_.reset();
+  dynamic_code_enabled_.store(false, std::memory_order_relaxed);
+  keep_dynamic_context_stores_.store(false, std::memory_order_relaxed);
+  swept_code_ranges_.clear();
+  dynamic_code_pieces_.clear();
+  if (backend_) {
+    // Every thread's cache of dynamic call targets points into it too.
+    backend_->InvalidateDynamicCalls(0, UINT32_MAX);
+  }
   auto* code_cache = backend_ ? backend_->code_cache() : nullptr;
   const size_t flushed = code_cache ? code_cache->Flush() : 0;
   XELOGI(
@@ -306,6 +381,146 @@ void Processor::FlushCode() {
   for (const auto& module : modules_) {
     XELOGI("   surviving module '{}'", module->name());
   }
+}
+
+void Processor::InvalidateCodeRange(uint32_t address, uint32_t length) {
+  if (!length) {
+    return;
+  }
+  const uint32_t end = address + length - 1;
+  auto global_lock = global_critical_region_.Acquire();
+  RecordSweptCode(address, length);
+  auto forget = [this, address, end](Function* function) {
+    if (!function) {
+      return;
+    }
+    // The entry is what a call looks up, but the module would hand back the
+    // same already defined symbol and never compile the new code.
+    if (function->module()) {
+      function->module()->ForgetSymbol(function->address());
+    }
+    // The dynamic call cache keys a function by its entry, which the range
+    // misses for a patch inside it or code compiled under another name.
+    if (function->address() < address || function->address() > end) {
+      backend_->InvalidateDynamicCalls(function->address(),
+                                       function->address());
+    }
+  };
+  for (Function* function : entry_table_.DeleteRange(address, end)) {
+    forget(function);
+  }
+  // Dynamic code compiled under another name for the same memory.
+  if (!dynamic_code_pieces_.empty()) {
+    for (uint64_t page = address & ~uint64_t(0xFFF); page <= end;
+         page += 0x1000) {
+      const uint32_t piece = uint32_t(std::max<uint64_t>(page, address));
+      const uint64_t key = CodeRangeKey(piece);
+      const uint64_t end_key =
+          key + (std::min<uint64_t>(page + 0x1000, uint64_t(end) + 1) - piece);
+      // No piece crosses a page, which makes the page's first key the lowest
+      // that can overlap.
+      auto it = dynamic_code_pieces_.lower_bound(key & ~uint64_t(0xFFF));
+      while (it != dynamic_code_pieces_.end() && it->first < end_key) {
+        if (it->second.end_key <= key) {
+          ++it;
+          continue;
+        }
+        const uint32_t function_address = it->second.function_address;
+        it = dynamic_code_pieces_.erase(it);
+        for (Function* function :
+             entry_table_.DeleteRange(function_address, function_address)) {
+          forget(function);
+        }
+      }
+    }
+  }
+  backend_->InvalidateDynamicCalls(address, end);
+}
+
+void Processor::RecordDynamicCode(const Function* function) {
+  const uint64_t start = function->address();
+  // The end address is the last instruction's.
+  const uint64_t end = std::max<uint64_t>(function->end_address(), start) + 4;
+  auto global_lock = global_critical_region_.Acquire();
+  for (uint64_t piece = start; piece < end;) {
+    const uint64_t piece_end =
+        std::min<uint64_t>((piece & ~uint64_t(0xFFF)) + 0x1000, end);
+    const uint64_t key = CodeRangeKey(uint32_t(piece));
+    const uint64_t end_key = key + (piece_end - piece);
+    // A recompile of the same function reuses its piece rather than piling up.
+    auto [first, last] = dynamic_code_pieces_.equal_range(key);
+    auto same = std::find_if(first, last, [function](const auto& existing) {
+      return existing.second.function_address == function->address();
+    });
+    if (same != last) {
+      same->second.end_key = std::max(same->second.end_key, end_key);
+    } else {
+      dynamic_code_pieces_.emplace(
+          key, DynamicCodePiece{end_key, function->address()});
+    }
+    piece = piece_end;
+  }
+}
+
+void Processor::RecordSweptCode(uint32_t address, uint32_t length) {
+  if (!dynamic_code_enabled_.load()) {
+    // Only dynamic code is bounded this way, and nothing prunes the map.
+    return;
+  }
+  // Spans are keyed by physical address, so a range whose pages aren't
+  // physically contiguous would claim someone else's memory.
+  const uint64_t span_start = CodeRangeKey(address);
+  const uint64_t span_end = span_start + length;
+  if (CodeRangeKey(address + length - 1) != span_end - 1) {
+    return;
+  }
+  // Spans stay exact rather than merging, since back-to-back blocks must not
+  // bound each other. A sweep replaces any span it overlaps, except a single
+  // instruction patched past a span's start, which keeps the block's end.
+  auto range = swept_code_ranges_.lower_bound(span_start);
+  if (range != swept_code_ranges_.begin()) {
+    auto previous = range;
+    --previous;
+    if (previous->second > span_start) {
+      if (length == 4 && previous->second >= span_end) {
+        return;
+      }
+      range = previous;
+    }
+  }
+  while (range != swept_code_ranges_.end() && range->first < span_end) {
+    range = swept_code_ranges_.erase(range);
+  }
+  swept_code_ranges_.emplace(span_start, span_end);
+}
+
+uint64_t Processor::CodeRangeKey(uint32_t address) {
+  const uint32_t kernel_address = memory_->UserModeKernelAddress(address);
+  auto heap = memory_->LookupHeap(kernel_address);
+  if (heap && heap->heap_type() == HeapType::kGuestPhysical) {
+    const uint32_t physical_address =
+        memory_->GetPhysicalAddress(kernel_address);
+    if (physical_address != UINT32_MAX) {
+      return kPhysicalCodeKey | physical_address;
+    }
+  }
+  return kernel_address;
+}
+
+uint32_t Processor::SweptCodeEnd(uint32_t address) {
+  auto global_lock = global_critical_region_.Acquire();
+  const uint64_t key = CodeRangeKey(address);
+  auto range = swept_code_ranges_.upper_bound(key);
+  if (range == swept_code_ranges_.begin()) {
+    return 0;
+  }
+  --range;
+  if (key >= range->second) {
+    return 0;
+  }
+  // The range may be keyed by another address for the same memory, so convert
+  // back to this one.
+  return address + uint32_t(range->second - key);
 }
 
 Function* Processor::ResolveFunction(uint32_t address) {
@@ -337,9 +552,14 @@ Function* Processor::ResolveFunction(uint32_t address) {
       }
     }
 
+    // A sweep must not find dynamic code ready before its pieces are recorded.
+    auto global_lock = global_critical_region_.Acquire();
     entry->function = function;
     entry->end_address = function->end_address();
     status = entry->status = Entry::STATUS_READY;
+    if (module_for == dynamic_code_module_.get()) {
+      RecordDynamicCode(function);
+    }
   }
   if (status == Entry::STATUS_READY) {
     // Ready to use.
@@ -358,8 +578,20 @@ Module* Processor::LookupModule(uint32_t address) {
       return module.get();
     }
   }
+  if (dynamic_code_module_ && dynamic_code_module_->ContainsAddress(address)) {
+    return dynamic_code_module_.get();
+  }
   return nullptr;
 }
+
+void Processor::EnableDynamicCode() {
+  auto global_lock = global_critical_region_.Acquire();
+  if (!dynamic_code_module_) {
+    dynamic_code_module_ = std::make_unique<DynamicCodeModule>(this);
+  }
+  dynamic_code_enabled_.store(true, std::memory_order_relaxed);
+}
+
 Function* Processor::LookupFunction(uint32_t address) {
   // TODO(benvanik): fast reject invalid addresses/log errors.
 

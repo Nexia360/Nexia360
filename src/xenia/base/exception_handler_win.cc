@@ -85,6 +85,9 @@ LONG CALLBACK ExceptionHandlerCallback(PEXCEPTION_POINTERS ex_info) {
   if (ex_info->ExceptionRecord->ExceptionCode == 0x406D1388) {
     return EXCEPTION_CONTINUE_SEARCH;
   }
+  // The faulting thread may hold the guest's FP control. Continuing restores
+  // the interrupted value from the context record.
+  SetHostDefaultFpControl();
 
   HostThreadContext thread_context;
   CaptureThreadContext(thread_context, ex_info->ContextRecord);

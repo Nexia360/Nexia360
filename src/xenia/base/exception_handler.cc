@@ -9,7 +9,25 @@
 
 #include "xenia/base/exception_handler.h"
 
+#include "xenia/base/platform.h"
+
+#if XE_ARCH_AMD64
+#include <xmmintrin.h>
+#elif XE_ARCH_ARM64 && XE_COMPILER_MSVC
+#include <intrin.h>
+#endif
+
 namespace xe {
+
+void SetHostDefaultFpControl() {
+#if XE_ARCH_AMD64
+  _mm_setcsr(0x1F80);
+#elif XE_ARCH_ARM64 && XE_COMPILER_MSVC
+  _WriteStatusReg(ARM64_FPCR, 0);
+#elif XE_ARCH_ARM64
+  asm volatile("msr fpcr, %0" ::"r"(uint64_t(0)) : "memory");
+#endif
+}
 
 // Based on VIXL Instruction::IsLoad and IsStore.
 // https://github.com/Linaro/vixl/blob/d48909dd0ac62197edb75d26ed50927e4384a199/src/aarch64/instructions-aarch64.cc#L484

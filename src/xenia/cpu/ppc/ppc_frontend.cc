@@ -81,6 +81,10 @@ void LeaveGlobalLock(PPCContext* ppc_context, void* arg0, void* arg1) {
 }
 
 void SyscallHandler(PPCContext* ppc_context, void* arg0, void* arg1) {
+  if (auto hook = ppc_context->processor->syscall_hook();
+      hook && hook(ppc_context)) {
+    return;
+  }
   uint64_t syscall_number = ppc_context->r[0];
   switch (syscall_number) {
     default:

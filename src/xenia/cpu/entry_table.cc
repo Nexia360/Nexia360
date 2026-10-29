@@ -100,6 +100,27 @@ void EntryTable::Clear() {
   map_.clear();
 }
 
+std::vector<Function*> EntryTable::DeleteRange(uint32_t start, uint32_t end) {
+  auto global_lock = global_critical_region_.Acquire();
+  std::vector<Function*> removed;
+  // The map is sorted by start address, but a function starting anywhere
+  // below the range can reach into it, so every entry up to its end is
+  // checked.
+  const uint32_t last =
+      end == UINT32_MAX ? map_.size() : map_.IndexForKey(end + 1);
+  for (uint32_t i = last; i-- > 0;) {
+    Entry* entry = *map_.ValueAt(i);
+    if (entry->status != Entry::STATUS_READY || entry->end_address < start) {
+      continue;
+    }
+    // Left allocated, like Delete does: code that is already running holds
+    // pointers into it and only the next lookup needs to miss.
+    removed.push_back(entry->function);
+    map_.EraseAt(i);
+  }
+  return removed;
+}
+
 std::vector<Function*> EntryTable::FindWithAddress(uint32_t address) {
   auto global_lock = global_critical_region_.Acquire();
   std::vector<Function*> fns;

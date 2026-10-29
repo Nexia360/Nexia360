@@ -10,7 +10,8 @@ xe_platform_sources(xenia-kernel ${CMAKE_CURRENT_SOURCE_DIR} RECURSIVE)
 # editor_app, plus editor_session, editor_render and editor_input - added
 # 2026-09-17, plus editor_render.cc, xam/xui_timeline.cc, xam/xui_lua.cc and
 # xam/xui_scene_screen.cc, and util/played_db.cc plus xam/xui_game_library.cc
-# added 2026-09-19, plus xam/xam_uri.cc added 2026-09-19
+# added 2026-09-19, plus xam/xam_uri.cc added 2026-09-19, plus
+# xboxkrnl/xboxkrnl_usermode.cc added 2026-10-28
 
 set(XE_XNA_MANAGED_DIR ${CMAKE_CURRENT_SOURCE_DIR}/xna/managed)
 set(XE_XNA_HOST_CSPROJ ${XE_XNA_MANAGED_DIR}/Nexia.Xna.Host.csproj)

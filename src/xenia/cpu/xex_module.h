@@ -232,6 +232,10 @@ class XexModule : public xe::cpu::Module {
 
   InfoCacheFlags* GetInstructionAddressFlags(uint32_t guest_addr);
 
+  // The section type (XEX_SECTION_*) of the image page holding |address|, or
+  // 0 when the address is outside the image.
+  uint32_t SectionInfoAt(uint32_t address);
+
   virtual void Precompile() override;
 
  protected:
@@ -275,6 +279,10 @@ class XexModule : public xe::cpu::Module {
   bool finished_load_ = false;  // PE/imports/symbols/etc all loaded?
 
   uint32_t base_address_ = 0;
+  // Base before a relocating patch; kept reserved because it can alias the
+  // patched image's host memory (0x8xxxxxxx and 0x9xxxxxxx share a mapping).
+  // Released at Unload.
+  uint32_t pre_patch_base_ = 0;
   uint32_t low_address_ = 0;
   uint32_t high_address_ = 0;
 

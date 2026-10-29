@@ -192,6 +192,8 @@ struct TRAP_TRUE_I8
     e.test(i.src1, i.src1);
     e.jnz(dotrap, X64Emitter::T_NEAR);
     e.L(after);
+    // The trap path calls into the host, which restores mxcsr_fpu.
+    e.ForgetMxcsrMode();
   }
 };
 struct TRAP_TRUE_I16
@@ -248,7 +250,7 @@ struct CALL_TRUE_I8
     assert_true(i.src2.value->is_guest());
     e.test(i.src1, i.src1);
     Xbyak::Label skip;
-    e.jz(skip);
+    e.jz(skip, CodeGenerator::T_NEAR);
     e.Call(i.instr, static_cast<GuestFunction*>(i.src2.value));
     e.L(skip);
     e.ForgetMxcsrMode();
@@ -260,7 +262,7 @@ struct CALL_TRUE_I16
     assert_true(i.src2.value->is_guest());
     e.test(i.src1, i.src1);
     Xbyak::Label skip;
-    e.jz(skip);
+    e.jz(skip, CodeGenerator::T_NEAR);
     e.Call(i.instr, static_cast<GuestFunction*>(i.src2.value));
     e.L(skip);
     e.ForgetMxcsrMode();
@@ -272,7 +274,7 @@ struct CALL_TRUE_I32
     assert_true(i.src2.value->is_guest());
     e.test(i.src1, i.src1);
     Xbyak::Label skip;
-    e.jz(skip);
+    e.jz(skip, CodeGenerator::T_NEAR);
     e.Call(i.instr, static_cast<GuestFunction*>(i.src2.value));
     e.L(skip);
     e.ForgetMxcsrMode();
@@ -284,7 +286,7 @@ struct CALL_TRUE_I64
     assert_true(i.src2.value->is_guest());
     e.test(i.src1, i.src1);
     Xbyak::Label skip;
-    e.jz(skip);
+    e.jz(skip, CodeGenerator::T_NEAR);
     e.Call(i.instr, static_cast<GuestFunction*>(i.src2.value));
     e.L(skip);
     e.ForgetMxcsrMode();
@@ -310,19 +312,21 @@ EMITTER_OPCODE_TABLE(OPCODE_CALL_TRUE, CALL_TRUE_I8, CALL_TRUE_I16,
 // ============================================================================
 // OPCODE_CALL_INDIRECT
 // ============================================================================
+// CallIndirect wants the guest target in edx, so a constant goes there.
+static const Xbyak::Reg64& CallTargetReg(X64Emitter& e, const I64Op& target) {
+  if (target.is_constant) {
+    e.mov(e.edx, static_cast<uint32_t>(target.constant()));
+    return e.rdx;
+  }
+  return target.reg();
+}
 struct CALL_INDIRECT
     : Sequence<CALL_INDIRECT, I<OPCODE_CALL_INDIRECT, VoidOp, I64Op>> {
   static void Emit(X64Emitter& e, const EmitArgType& i) {
-    if (i.src1.is_constant) [[unlikely]] {
-      if (i.src1.constant() == 0) {
-        e.nop();
-      } else {
-        // This isn't valid, but at least we will have log info about potential
-        // usecase.
-        e.CallIndirect(i.instr, i.src1);
-      }
+    if (i.src1.is_constant && i.src1.constant() == 0) [[unlikely]] {
+      e.nop();
     } else {
-      e.CallIndirect(i.instr, i.src1);
+      e.CallIndirect(i.instr, CallTargetReg(e, i.src1));
     }
     e.ForgetMxcsrMode();
   }
@@ -339,7 +343,7 @@ struct CALL_INDIRECT_TRUE_I8
     e.test(i.src1, i.src1);
     Xbyak::Label skip;
     e.jz(skip, CodeGenerator::T_NEAR);
-    e.CallIndirect(i.instr, i.src2);
+    e.CallIndirect(i.instr, CallTargetReg(e, i.src2));
     e.L(skip);
   }
 };
@@ -350,7 +354,7 @@ struct CALL_INDIRECT_TRUE_I16
     e.test(i.src1, i.src1);
     Xbyak::Label skip;
     e.jz(skip, CodeGenerator::T_NEAR);
-    e.CallIndirect(i.instr, i.src2);
+    e.CallIndirect(i.instr, CallTargetReg(e, i.src2));
     e.L(skip);
   }
 };
@@ -362,13 +366,13 @@ struct CALL_INDIRECT_TRUE_I32
       e.mov(e.ecx, i.src1);
       Xbyak::Label skip;
       e.jrcxz(skip);
-      e.CallIndirect(i.instr, i.src2);
+      e.CallIndirect(i.instr, CallTargetReg(e, i.src2));
       e.L(skip);
     } else {
       e.test(i.src1, i.src1);
       Xbyak::Label skip;
       e.jz(skip, CodeGenerator::T_NEAR);
-      e.CallIndirect(i.instr, i.src2);
+      e.CallIndirect(i.instr, CallTargetReg(e, i.src2));
       e.L(skip);
     }
   }
@@ -381,13 +385,13 @@ struct CALL_INDIRECT_TRUE_I64
       e.mov(e.rcx, i.src1);
       Xbyak::Label skip;
       e.jrcxz(skip);
-      e.CallIndirect(i.instr, i.src2);
+      e.CallIndirect(i.instr, CallTargetReg(e, i.src2));
       e.L(skip);
     } else {
       e.test(i.src1, i.src1);
       Xbyak::Label skip;
       e.jz(skip, CodeGenerator::T_NEAR);
-      e.CallIndirect(i.instr, i.src2);
+      e.CallIndirect(i.instr, CallTargetReg(e, i.src2));
       e.L(skip);
     }
   }

@@ -25,9 +25,11 @@ X64Function::~X64Function() {
   // machine_code_ is freed by code cache.
 }
 
-void X64Function::Setup(uint8_t* machine_code, size_t machine_code_length) {
+void X64Function::Setup(uint8_t* machine_code, size_t machine_code_length,
+                        size_t stack_size) {
   machine_code_ = machine_code;
   machine_code_length_ = machine_code_length;
+  stack_size_ = stack_size;
 }
 
 bool X64Function::CallImpl(ThreadState* thread_state, uint32_t return_address) {

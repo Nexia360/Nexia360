@@ -10,6 +10,7 @@
 #include "xenia/cpu/ppc/ppc_emit-private.h"
 
 #include "xenia/base/assert.h"
+#include "xenia/base/logging.h"
 #include "xenia/cpu/cpu_flags.h"
 #include "xenia/cpu/ppc/ppc_context.h"
 #include "xenia/cpu/ppc/ppc_frontend.h"
@@ -82,10 +83,21 @@ int InstrEmit_branch(PPCHIRBuilder& f, const char* src, uint64_t cia,
     } else {
       // Call function.
       auto function = f.LookupFunction(nia_value);
-      if (cond) {
-        if (!expect_true) {
-          cond = f.IsFalse(cond);
+      if (cond && !expect_true) {
+        cond = f.IsFalse(cond);
+      }
+      if (!function) {
+        // No loaded module owns the target. Resolve it at the call site like
+        // a computed branch instead of handing the backend a null symbol.
+        XELOGE("Unresolved direct call target {:08X} from {:08X}", nia_value,
+               static_cast<uint32_t>(cia));
+        Value* target = f.LoadConstantUint64(nia_value);
+        if (cond) {
+          f.CallIndirectTrue(cond, target, call_flags);
+        } else {
+          f.CallIndirect(target, call_flags);
         }
+      } else if (cond) {
         f.CallTrue(cond, function, call_flags);
       } else {
         f.Call(function, call_flags);
@@ -457,6 +469,9 @@ int InstrEmit_sc(PPCHIRBuilder& f, const InstrData& i) {
   // LEV=2 is to signify 'call import' from Xenia.
   // TODO(gibbed): syscalls!
   if (i.SC.LEV == 0) {
+    // The resume address, for the syscall handler.
+    f.StoreContext(offsetof(PPCContext, scratch),
+                   f.LoadConstantUint64(i.address + 4));
     f.CallExtern(f.builtins()->syscall_handler);
     return 0;
   }

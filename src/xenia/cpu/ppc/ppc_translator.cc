@@ -282,7 +282,7 @@ bool PPCTranslator::Translate(GuestFunction* function,
 void PPCTranslator::Reset() { builder_->ResetPools(); }
 void PPCTranslator::DumpSource(GuestFunction* function,
                                StringBuffer* string_buffer) {
-  Memory* memory = frontend_->memory();
+  Module* module = function->module();
 
   string_buffer->AppendFormat(
       "{} fn {:08X}-{:08X} {}\n", function->module()->name().c_str(),
@@ -295,8 +295,7 @@ void PPCTranslator::DumpSource(GuestFunction* function,
   auto block_it = blocks.begin();
   for (uint32_t address = start_address, offset = 0; address <= end_address;
        address += 4, offset++) {
-    uint32_t code =
-        xe::load_and_swap<uint32_t>(memory->TranslateVirtual(address));
+    uint32_t code = xe::load_and_swap<uint32_t>(module->TranslateCode(address));
 
     // Check labels.
     if (block_it != blocks.end() && block_it->start_address == address) {

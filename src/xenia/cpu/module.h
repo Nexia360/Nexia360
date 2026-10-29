@@ -38,6 +38,11 @@ class Module {
 
   virtual bool ContainsAddress(uint32_t address);
 
+  // Host memory holding the instruction at |address|, which is just the
+  // address translated for every module but one whose code lives behind
+  // another address.
+  virtual const uint8_t* TranslateCode(uint32_t address) const;
+
   Symbol* LookupSymbol(uint32_t address, bool wait = true);
   virtual Symbol::Status DeclareFunction(uint32_t address,
                                          Function** out_function);
@@ -45,6 +50,11 @@ class Module {
 
   Symbol::Status DefineFunction(Function* symbol);
   Symbol::Status DefineVariable(Symbol* symbol);
+
+  // Drops the symbol at |address| so the next declaration compiles the code
+  // there again. The old symbol stays owned here rather than being deleted,
+  // because code that is already running still points into it.
+  void ForgetSymbol(uint32_t address);
 
   const std::vector<uint32_t> GetAddressedFunctions();
   void ForEachFunction(std::function<void(Function*)> callback);

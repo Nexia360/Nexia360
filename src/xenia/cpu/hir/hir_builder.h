@@ -35,6 +35,8 @@ namespace hir {
 
 enum FunctionAttributes {
   FUNCTION_ATTRIB_INLINE = (1 << 1),
+  // Keeps every context store, so a fault mid-block sees current registers.
+  FUNCTION_ATTRIB_KEEP_CONTEXT_STORES = (1 << 2),
 };
 
 class HIRBuilder {

@@ -169,7 +169,7 @@ struct PPCDecodeData {
     uint32_t RB() const { return bits_.RB; }
     uint32_t FB() const { return RB(); }
     uint32_t SH() const { return RB(); }
-    uint32_t IMM() const { return RB(); }
+    uint32_t IMM() const { return RB() >> 1; }
     bool Rc() const { return bits_.Rc ? true : false; }
 
     uint32_t CRFD() const { return bits_.RT >> 2; }

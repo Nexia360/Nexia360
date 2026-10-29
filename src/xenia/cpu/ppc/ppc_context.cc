@@ -38,8 +38,27 @@ uint64_t PPCContext::cr() const {
   return final_bits;
 }
 
+// Splits a CR value into its eight fields the way cr() packs them. User mode
+// entry and resume load CR from the guest's frame with it (xenia-edge
+// c5777398f); as a stub every user mode transition dropped CR.
 void PPCContext::set_cr(uint64_t value) {
-  assert_always("not yet implemented");
+  for (int i = 0; i < 8; ++i) {
+    union {
+      uint32_t value;
+      struct {
+        uint8_t lt;
+        uint8_t gt;
+        uint8_t eq;
+        uint8_t so;
+      };
+    } crf;
+    const uint32_t bits = uint32_t(value >> ((7 - i) * 4));
+    crf.lt = (bits >> 3) & 0x1;
+    crf.gt = (bits >> 2) & 0x1;
+    crf.eq = (bits >> 1) & 0x1;
+    crf.so = bits & 0x1;
+    *(&cr0.value + i) = crf.value;
+  }
 }
 
 std::string PPCContext::GetRegisterName(PPCRegister reg) {
