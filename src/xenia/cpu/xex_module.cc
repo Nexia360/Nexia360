@@ -335,10 +335,9 @@ int XexModule::ApplyPatch(XexModule* module) {
 
   uint32_t new_image_size = module->image_size();
 
-  XELOGI(
-      "XEX patch for {}: base {:08X} -> {:08X}, image size {:08X} -> {:08X}",
-      module->name(), original_base_address, new_base_address,
-      original_image_size, new_image_size);
+  XELOGI("XEX patch for {}: base {:08X} -> {:08X}, image size {:08X} -> {:08X}",
+         module->name(), original_base_address, new_base_address,
+         original_image_size, new_image_size);
 
   if (relocated) {
     // Move the whole image to the new base at the same offsets (the delta

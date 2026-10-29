@@ -192,9 +192,9 @@ class PeriodicCallback {
         callback();
 
         // Sliced sleep rather than one sleep_for(interval): with ~jthread now
-        // joining, a single uninterruptible sleep would make every stop wait out
-        // the whole interval (5s for periodic maintenance, 45min for the UPnP
-        // port refresh).
+        // joining, a single uninterruptible sleep would make every stop wait
+        // out the whole interval (5s for periodic maintenance, 45min for the
+        // UPnP port refresh).
         for (auto remaining = interval;
              remaining > std::chrono::milliseconds(0) &&
              !stoken.stop_requested();
@@ -219,8 +219,9 @@ class PeriodicCallback {
     periodic_stop_source_.request_stop();
     // Join so no callback is still running once this object is gone. Joining
     // from inside the callback would be joining this very thread, which jthread
-    // reports as a deadlock (and throws out of a destructor, i.e. terminate), so
-    // in that one case fall back to detaching and let the loop exit on its own.
+    // reports as a deadlock (and throws out of a destructor, i.e. terminate),
+    // so in that one case fall back to detaching and let the loop exit on its
+    // own.
     if (worker_.get_id() == std::this_thread::get_id()) {
       worker_.detach();
     } else {

@@ -948,8 +948,7 @@ void EmulatorApp::EmulatorThread() {
       }
     }
     if (cvars::launch_flags != 0) {
-      XELOGI("Launch flags from the command line: {:08X}",
-             cvars::launch_flags);
+      XELOGI("Launch flags from the command line: {:08X}", cvars::launch_flags);
     }
   }
 

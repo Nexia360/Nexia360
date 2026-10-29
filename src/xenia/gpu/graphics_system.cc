@@ -221,9 +221,9 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
 
 void GraphicsSystem::Shutdown() {
   if (command_processor_) {
-    // No EndTracing() here: it fcloses the trace FILE*, and the CP worker thread
-    // is still running until Shutdown() joins it. CommandProcessor::Shutdown()
-    // closes the trace after the join.
+    // No EndTracing() here: it fcloses the trace FILE*, and the CP worker
+    // thread is still running until Shutdown() joins it.
+    // CommandProcessor::Shutdown() closes the trace after the join.
     command_processor_->Shutdown();
     command_processor_.reset();
   }

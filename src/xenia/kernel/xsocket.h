@@ -288,18 +288,18 @@ class XSocket : public XObject {
   uint64_t native_handle_ = X_INVALID_SOCKET;
   bool socket_closed_ = false;
 
-  AddressFamily af_;     // Address family
-  Type type_;            // Type (DGRAM/Stream/etc)
-  Protocol proto_;       // Protocol (TCP/UDP/etc)
-  bool vdp_;             // VDP Protocol
+  AddressFamily af_;  // Address family
+  Type type_;         // Type (DGRAM/Stream/etc)
+  Protocol proto_;    // Protocol (TCP/UDP/etc)
+  bool vdp_;          // VDP Protocol
   // Set by setsockopt(SOL_SOCKET, SO_MARKINSECURE / SO_GRANTINSECURE). The
   // title is speaking raw IP to a real address, so this socket must never go
   // through the hub relay - the relay addresses peers by XUID, which an
   // insecure socket has none of. Tracked per option and OR'd, so clearing one
   // does not cancel the other.
   // (Replaces secure_, which was written once here and never read.)
-  bool mark_insecure_ = false;   // SO_MARKINSECURE, outbound
-  bool grant_insecure_ = false;  // SO_GRANTINSECURE, inbound
+  bool mark_insecure_ = false;    // SO_MARKINSECURE, outbound
+  bool grant_insecure_ = false;   // SO_GRANTINSECURE, inbound
   bool marked_insecure_ = false;  // the two above, OR'd
 
   bool bound_ = false;  // Explicitly bound to an IP address?

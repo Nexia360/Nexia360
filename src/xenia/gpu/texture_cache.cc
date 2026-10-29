@@ -364,8 +364,8 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
     uint32_t old_host_swizzle = binding.host_swizzle;
     binding.host_swizzle =
         GuestToHostSwizzle(fetch.swizzle, GetHostFormatSwizzle(binding.key));
-    binding.integer_scale_bits = GetIntegerScaleBits(fetch,
-                                                     binding.swizzled_signs);
+    binding.integer_scale_bits =
+        GetIntegerScaleBits(fetch, binding.swizzled_signs);
 
     // Check if need to load the unsigned and the signed versions of the texture
     // (if the format is emulated with different host bit representations for

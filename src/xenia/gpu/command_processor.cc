@@ -195,7 +195,8 @@ void CommandProcessor::RequestFrameTrace(
     XELOGE("Streaming trace; cannot also trace frame.");
     return;
   }
-  if (trace_state_.load(std::memory_order_acquire) == TraceState::kSingleFrame) {
+  if (trace_state_.load(std::memory_order_acquire) ==
+      TraceState::kSingleFrame) {
     XELOGE("Frame trace already pending; ignoring.");
     return;
   }
@@ -211,7 +212,8 @@ void CommandProcessor::BeginTracing(const std::filesystem::path& root_path) {
     XELOGE("Streaming already active; ignoring request.");
     return;
   }
-  if (trace_state_.load(std::memory_order_acquire) == TraceState::kSingleFrame) {
+  if (trace_state_.load(std::memory_order_acquire) ==
+      TraceState::kSingleFrame) {
     XELOGE("Frame trace pending; ignoring streaming request.");
     return;
   }

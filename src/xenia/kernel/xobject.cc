@@ -433,8 +433,8 @@ static bool MatchesDispatchType(XObject::Type type, int32_t as_type) {
       return type == XObject::Type::Semaphore;
     case 6:  // ThreadObject
       return type == XObject::Type::Thread;
-    case 8:   // TimerNotificationObject
-    case 9:   // TimerSynchronizationObject
+    case 8:  // TimerNotificationObject
+    case 9:  // TimerSynchronizationObject
       return type == XObject::Type::Timer;
     default:
       // Nothing is built for the rest, so nothing can be checked against them.

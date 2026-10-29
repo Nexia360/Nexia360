@@ -313,17 +313,18 @@ void ProfileManager::Login(const uint64_t xuid, const uint8_t user_index,
     // Find if xuid is already logged in. We might want to logout.
     // The null check on entry.second matters: every other reader of this map
     // skips null entries, and this lambda used to dereference unconditionally.
-    const auto it = std::find_if(
-        logged_profiles_.cbegin(), logged_profiles_.cend(),
-        [xuid](const auto& entry) {
-          return entry.second && entry.second->xuid() == xuid;
-        });
+    const auto it =
+        std::find_if(logged_profiles_.cbegin(), logged_profiles_.cend(),
+                     [xuid](const auto& entry) {
+                       return entry.second && entry.second->xuid() == xuid;
+                     });
     if (it != logged_profiles_.cend()) {
       already_logged_in_slot = it->first;
     }
   }
 
-  // Outside the lock - Logout takes it itself, and joins the maintenance worker.
+  // Outside the lock - Logout takes it itself, and joins the maintenance
+  // worker.
   if (already_logged_in_slot != XUserIndexAny) {
     Logout(already_logged_in_slot);
   }

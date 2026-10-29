@@ -354,12 +354,10 @@ std::filesystem::path TitleUpdateManager::RelocateContentPath(
   }
 
   for (const auto& id : candidates) {
-    const auto candidate =
-        GetContentRoot(title_id, id, xuid) / tail;
+    const auto candidate = GetContentRoot(title_id, id, xuid) / tail;
     if (std::filesystem::exists(candidate, ec)) {
-      XELOGD(
-          "TitleUpdateManager: {:08X} content path moved, resolved {} -> {}",
-          title_id, xe::path_to_utf8(path), xe::path_to_utf8(candidate));
+      XELOGD("TitleUpdateManager: {:08X} content path moved, resolved {} -> {}",
+             title_id, xe::path_to_utf8(path), xe::path_to_utf8(candidate));
       return candidate;
     }
   }

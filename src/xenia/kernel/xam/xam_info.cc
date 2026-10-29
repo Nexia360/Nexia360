@@ -1215,20 +1215,21 @@ DECLARE_XAM_EXPORT1(XamNetworkStorageHasUserEnabledStorage, kNone, kStub);
 // for is not known either - but both are non-zero, so either way the message
 // the caller gets is "nothing here".
 dword_result_t XamNetworkStorageGetNetworkDevice_entry(dword_t arg0,
-                                                      dword_t arg1) {
+                                                       dword_t arg1) {
   static bool logged = false;
   if (!logged) {
     logged = true;
-    XELOGW("XamNetworkStorageGetNetworkDevice: no network storage, [{:08X}"
-           " {:08X}]",
-           arg0.value(), arg1.value());
+    XELOGW(
+        "XamNetworkStorageGetNetworkDevice: no network storage, [{:08X}"
+        " {:08X}]",
+        arg0.value(), arg1.value());
   }
   return X_ERROR_NOT_FOUND;
 }
 DECLARE_XAM_EXPORT1(XamNetworkStorageGetNetworkDevice, kNone, kStub);
 
 dword_result_t XamNetworkStorageDeviceHasCacheFile_entry(dword_t arg0,
-                                                        dword_t arg1) {
+                                                         dword_t arg1) {
   // Answers the question rather than a status: there is no such device, so it
   // has no cache file.
   return 0;

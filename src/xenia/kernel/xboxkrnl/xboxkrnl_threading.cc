@@ -423,9 +423,10 @@ dword_result_t KeQueryBasePriorityThread_entry(lpvoid_t thread_ptr) {
   int32_t priority = 0;
 
   if (!IsValidGuestDispatchPointer(thread_ptr.guest_address())) {
-    XELOGE("KeQueryBasePriorityThread: guest thread pointer {:08X} is not "
-           "usable",
-           thread_ptr.guest_address());
+    XELOGE(
+        "KeQueryBasePriorityThread: guest thread pointer {:08X} is not "
+        "usable",
+        thread_ptr.guest_address());
     return 0;
   }
   auto thread = XObject::GetNativeObject<XThread>(kernel_state(), thread_ptr);

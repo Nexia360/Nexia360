@@ -12,11 +12,11 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <unistd.h>
-#include <cerrno>
-#include <cstring>
 #include <algorithm>
+#include <cerrno>
 #include <cstddef>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <mutex>
 #include <sstream>
@@ -151,7 +151,6 @@ static bool ReserveRange(void* base_address, size_t length) {
          strerror(errno), errno);
   return false;
 }
-
 
 // Track shm file names for cleanup on exit
 std::vector<std::string> g_shm_file_names;

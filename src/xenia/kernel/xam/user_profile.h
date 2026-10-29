@@ -222,12 +222,13 @@ class UserProfile {
   };
 
   // Both accessors take periodic_task_mutex_. Start runs on the profile-manager
-  // thread (from AddUser) while Stop runs on whichever thread logs a user out, hits
-  // the exception callback, or handles GPU loss. Reassigning the unique_ptr while
-  // another thread reads it races on the pointer itself, and the check-then-act in
-  // StartPeriodicMaintenance would otherwise let two threads both see "no task" and
-  // each spawn a maintenance worker. Recursive so Start/Stop, which hold it across
-  // their own check and set, can call these without self-deadlock.
+  // thread (from AddUser) while Stop runs on whichever thread logs a user out,
+  // hits the exception callback, or handles GPU loss. Reassigning the
+  // unique_ptr while another thread reads it races on the pointer itself, and
+  // the check-then-act in StartPeriodicMaintenance would otherwise let two
+  // threads both see "no task" and each spawn a maintenance worker. Recursive
+  // so Start/Stop, which hold it across their own check and set, can call these
+  // without self-deadlock.
   xe::threading::PeriodicCallback* GetPeriodicMaintenanceTask() const {
     std::lock_guard<std::recursive_mutex> lock(periodic_task_mutex_);
     return periodic_maintenance_task_.get();
@@ -246,11 +247,11 @@ class UserProfile {
   X_INVITE_INFO self_invite = {};
   std::vector<object_ref<XSession>> owned_sessions_;
   // periodic_task_mutex_ guards periodic_maintenance_task_ itself. It is a
-  // separate leaf lock from gpd_mutex_ on purpose: destroying the task joins the
-  // maintenance worker, and that worker is inside PeriodicMaintenance calling
-  // GetGpd/WriteGpd, so holding gpd_mutex_ across the join would deadlock against
-  // the thread doing the join. Recursive so Start/Stop can hold it over their whole
-  // check-then-act and still call the accessors.
+  // separate leaf lock from gpd_mutex_ on purpose: destroying the task joins
+  // the maintenance worker, and that worker is inside PeriodicMaintenance
+  // calling GetGpd/WriteGpd, so holding gpd_mutex_ across the join would
+  // deadlock against the thread doing the join. Recursive so Start/Stop can
+  // hold it over their whole check-then-act and still call the accessors.
   std::unique_ptr<xe::threading::PeriodicCallback> periodic_maintenance_task_;
   mutable std::recursive_mutex periodic_task_mutex_;
 

@@ -429,9 +429,8 @@ int XSocket::SetOption(uint32_t level, uint32_t optname, void* optval_ptr,
       // The value is a BOOL and a title may pass FALSE to un-mark, so test it
       // rather than the call. A nonzero test over the whole word needs no
       // byte-swap.
-      const bool enable =
-          optlen >= sizeof(uint32_t) && optval_ptr &&
-          *reinterpret_cast<const uint32_t*>(optval_ptr) != 0;
+      const bool enable = optlen >= sizeof(uint32_t) && optval_ptr &&
+                          *reinterpret_cast<const uint32_t*>(optval_ptr) != 0;
       SetMarkedInsecure(enable, optname);
     }
     return X_ERROR_SUCCESS;

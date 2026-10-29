@@ -254,8 +254,8 @@ std::filesystem::path ContentManager::ResolvePackagePath(
       xna::XnaPackageInfo xna_info;
       if (std::filesystem::exists(candidate, ec) &&
           xna::IsXnaPackage(candidate, &xna_info)) {
-        XELOGI("ContentManager: '{}' is the XNA library package {}",
-               final_name, xe::path_to_utf8(candidate));
+        XELOGI("ContentManager: '{}' is the XNA library package {}", final_name,
+               xe::path_to_utf8(candidate));
         return candidate;
       }
     }

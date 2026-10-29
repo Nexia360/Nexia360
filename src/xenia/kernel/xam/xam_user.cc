@@ -1075,9 +1075,7 @@ static bool IsGamerTileType(XTileType type) {
 // Ignoring the arguments is safe as observed: the log shows the dashboard
 // carrying straight on past this call, so it is not blocked waiting on an
 // event we would have to signal.
-dword_result_t XamPrepareGamerTiles_entry() {
-  return X_ERROR_SUCCESS;
-}
+dword_result_t XamPrepareGamerTiles_entry() { return X_ERROR_SUCCESS; }
 DECLARE_XAM_EXPORT1(XamPrepareGamerTiles, kUserProfiles, kStub);
 
 dword_result_t XamReadTile_entry(dword_t tile_type, dword_t title_id,

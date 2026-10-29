@@ -204,8 +204,9 @@ class ProfileManager {
   //
   // The lock covers the map access only - never the blocking work (mount,
   // LoadFriends, RegisterPlayer) and never StopPeriodicMaintenance, which joins
-  // the very worker that would otherwise be waiting on this lock. Recursive so a
-  // reader reached through a function that already holds it cannot self-deadlock.
+  // the very worker that would otherwise be waiting on this lock. Recursive so
+  // a reader reached through a function that already holds it cannot
+  // self-deadlock.
   mutable std::recursive_mutex logged_profiles_mutex_;
   std::map<uint8_t, std::unique_ptr<UserProfile>> logged_profiles_;
 

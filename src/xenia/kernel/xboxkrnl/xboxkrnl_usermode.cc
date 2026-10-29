@@ -280,8 +280,7 @@ void RestoreInterruptedUserCr(UserModeState* state) {
 }
 
 // Runs guest code from a host frame that nothing returns to.
-void RunGuest(UserModeState* state, cpu::Function* function,
-              uint32_t address) {
+void RunGuest(UserModeState* state, cpu::Function* function, uint32_t address) {
   if (!function) {
     XELOGE("User mode: no guest code at {:08X}", address);
     return;
@@ -505,9 +504,8 @@ UserModeState* CreateUserMode(XThread* thread) {
 // true if the handler returned; |out_address| is where it resumes, possibly
 // moved. Returns false if the handler left user mode and the kernel later
 // resumed the trap, having loaded the registers itself.
-bool TrapIntoHandler(PPCContext* context, UserModeState* state,
-                     uint32_t record, uint32_t resume_address,
-                     uint32_t* out_address) {
+bool TrapIntoHandler(PPCContext* context, UserModeState* state, uint32_t record,
+                     uint32_t resume_address, uint32_t* out_address) {
   auto trapped = state->running;
   state->in_user_code = false;
   SaveInterruptedUserCr(state);

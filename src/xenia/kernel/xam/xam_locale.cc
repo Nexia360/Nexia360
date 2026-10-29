@@ -498,7 +498,7 @@ const char16_t* ResolveUniSortString(uint32_t guest_address) {
 }  // namespace
 
 dword_result_t XamUniSortCmpString_entry(dword_t arg0, dword_t arg1,
-                                        dword_t arg2, dword_t arg3) {
+                                         dword_t arg2, dword_t arg3) {
   const uint32_t args[4] = {arg0.value(), arg1.value(), arg2.value(),
                             arg3.value()};
   const char16_t* strings[2] = {nullptr, nullptr};
@@ -515,9 +515,10 @@ dword_result_t XamUniSortCmpString_entry(dword_t arg0, dword_t arg1,
   if (count < 2) {
     // Nothing looked like a pair of strings, so the signature is not what this
     // assumed. Report a tie, as an undefined extern used to.
-    XELOGW("XamUniSortCmpString: no string pair in [{:08X} {:08X} {:08X}"
-           " {:08X}]",
-           args[0], args[1], args[2], args[3]);
+    XELOGW(
+        "XamUniSortCmpString: no string pair in [{:08X} {:08X} {:08X}"
+        " {:08X}]",
+        args[0], args[1], args[2], args[3]);
     return 0;
   }
 

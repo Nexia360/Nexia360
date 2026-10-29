@@ -16,10 +16,10 @@
 #include <vector>
 
 #include "xenia/base/byte_stream.h"
-#include "xenia/cpu/stack_walker.h"
 #include "xenia/base/clock.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/threading.h"
+#include "xenia/cpu/stack_walker.h"
 #include "xenia/emulator.h"
 #include "xenia/hid/input_system.h"
 #include "xenia/kernel/user_module.h"

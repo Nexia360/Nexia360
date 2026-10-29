@@ -852,9 +852,10 @@ X_STATUS Emulator::LaunchXnaGuestTitle(const std::filesystem::path& path) {
                         "Xna_TitleLauncher.xex";
   std::error_code ec;
   if (!std::filesystem::exists(launcher, ec)) {
-    XELOGE("XNA direct: no Xna_TitleLauncher.xex beside the dashboard at "
-           "{}; use --xna_direct=false to run on the host CLR instead",
-           xe::path_to_utf8(launcher));
+    XELOGE(
+        "XNA direct: no Xna_TitleLauncher.xex beside the dashboard at "
+        "{}; use --xna_direct=false to run on the host CLR instead",
+        xe::path_to_utf8(launcher));
     return X_STATUS_NOT_FOUND;
   }
 
@@ -881,9 +882,10 @@ X_STATUS Emulator::LaunchXnaGuestTitle(const std::filesystem::path& path) {
     // A title built rather than downloaded arrives as a folder or as the
     // managed exe itself, which is not a device anything can mount here.
     // The launcher will then only be able to see the dashboard folder.
-    XELOGW("XNA direct: {} is not a container, so the launcher will only "
-           "see its own folder",
-           xe::path_to_utf8(path));
+    XELOGW(
+        "XNA direct: {} is not a container, so the launcher will only "
+        "see its own folder",
+        xe::path_to_utf8(path));
   }
 
   XELOGI("XNA direct: booting {} for game {}", xe::path_to_utf8(launcher),
@@ -903,8 +905,9 @@ X_STATUS Emulator::LaunchXnaGuestTitle(const std::filesystem::path& path) {
   // at \\Device\\Package_0.
   X_STATUS mounted = MountPath(launcher, "\\Device\\Harddisk0\\Partition1");
   if (XSUCCEEDED(mounted)) {
-    XELOGI("XNA direct: launcher folder at \\Device\\Harddisk0\\Partition1, "
-           "game: and D: now resolve there");
+    XELOGI(
+        "XNA direct: launcher folder at \\Device\\Harddisk0\\Partition1, "
+        "game: and D: now resolve there");
   } else {
     XELOGE("XNA direct: could not mount the launcher folder {}",
            xe::path_to_utf8(launcher.parent_path()));
@@ -1747,8 +1750,8 @@ static std::string DescribeHostAddress(uint64_t address) {
                          reinterpret_cast<LPCWSTR>(address), &module)) {
     wchar_t path[MAX_PATH];
     const DWORD length = GetModuleFileNameW(module, path, MAX_PATH);
-    std::string name = xe::path_to_utf8(std::filesystem::path(
-        std::wstring(path, length)).filename());
+    std::string name = xe::path_to_utf8(
+        std::filesystem::path(std::wstring(path, length)).filename());
     return fmt::format("{}+0x{:X}", name,
                        address - reinterpret_cast<uint64_t>(module));
   }
@@ -1881,9 +1884,8 @@ bool Emulator::ExceptionCallback(Exception* ex) {
       crash_msg.append(fmt::format("Access Violation: {} at guest 0x{:08X}\n",
                                    op_str, uint32_t(host_fault - membase)));
     } else {
-      crash_msg.append(
-          fmt::format("Access Violation: {} at host 0x{:016X}\n", op_str,
-                      host_fault));
+      crash_msg.append(fmt::format("Access Violation: {} at host 0x{:016X}\n",
+                                   op_str, host_fault));
     }
   } else if (ex->code() == Exception::Code::kIllegalInstruction) {
     crash_msg.append("Illegal Instruction\n");

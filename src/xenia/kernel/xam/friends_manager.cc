@@ -271,8 +271,8 @@ std::set<uint64_t> FriendsManager::GetFriendsXUIDs(const uint64_t xuid) const {
 
   // The lock has to cover the traversal, not the insert. AddFriends push_back's
   // onto friends_ under this same mutex, and a push_back that reallocates while
-  // this loop is walking the vector leaves the iterator pointing into the buffer
-  // that was just freed.
+  // this loop is walking the vector leaves the iterator pointing into the
+  // buffer that was just freed.
   std::lock_guard<std::mutex> lock(user->friends_mutex_);
 
   for (const auto& peer : user->friends_) {

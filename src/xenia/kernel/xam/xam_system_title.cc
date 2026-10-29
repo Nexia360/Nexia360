@@ -19,8 +19,8 @@
 #include "xenia/kernel/xam/content_manager.h"
 #include "xenia/kernel/xam/xam_private.h"
 #include "xenia/kernel/xenumerator.h"
-#include "xenia/vfs/devices/stfs_xbox.h"
 #include "xenia/kernel/xna/xna_avatar.h"
+#include "xenia/vfs/devices/stfs_xbox.h"
 #include "xenia/xbox.h"
 
 // Exports the flash system titles call that a game never does. AvatarEditor.xex
@@ -421,8 +421,7 @@ DECLARE_XAM_EXPORT1(XamContentGetHeaderInternal, kContent, kStub);
 // last. The buffer is one XContentMetadata.
 dword_result_t XamContentGetMetaDataInternal_entry(
     pointer_t<XCONTENT_DATA_INTERNAL> content_data_ptr,
-    lpvoid_t content_metadata_ptr,
-    pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
+    lpvoid_t content_metadata_ptr, pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
   if (!content_data_ptr || !content_metadata_ptr) {
     return CompleteStub(X_ERROR_INVALID_PARAMETER, overlapped_ptr);
   }

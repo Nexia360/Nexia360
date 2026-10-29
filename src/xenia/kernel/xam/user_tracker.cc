@@ -1461,10 +1461,10 @@ std::span<const uint8_t> UserTracker::GetIcon(uint64_t xuid, uint32_t title_id,
     }
   }
 
-  // GetImage hands back a span that points straight into the GpdInfo entry list.
-  // AddImage on the maintenance worker does DeleteEntry + InsertEntry, which can
-  // free the bytes this span refers to before the caller has finished copying
-  // them, so the whole switch has to run under the lock.
+  // GetImage hands back a span that points straight into the GpdInfo entry
+  // list. AddImage on the maintenance worker does DeleteEntry + InsertEntry,
+  // which can free the bytes this span refers to before the caller has finished
+  // copying them, so the whole switch has to run under the lock.
   std::lock_guard<std::recursive_mutex> lock(user->gpd_mutex_);
 
   switch (tile_type) {
@@ -1824,8 +1824,8 @@ void UserTracker::PeriodicMaintenance(uint64_t xuid, size_t iteration_count) {
             show_notification(fmt::format("Disconnected from {}", service),
                               service, 0);
           } else {
-            show_notification(fmt::format("{} is unavailable", service), service,
-                              0);
+            show_notification(fmt::format("{} is unavailable", service),
+                              service, 0);
           }
 
           backend_avalability_ = false;

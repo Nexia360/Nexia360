@@ -224,8 +224,7 @@ Memory::~Memory() {
                                        0x100000000ull);
     }
     if (user_file_alias_) {
-      xe::memory::UnmapFileView(mapping_, user_file_alias_,
-                                kUserFileAliasSize);
+      xe::memory::UnmapFileView(mapping_, user_file_alias_, kUserFileAliasSize);
       user_file_alias_ = nullptr;
     }
     if (guest_tlbs_) {
@@ -801,8 +800,7 @@ bool Memory::AccessViolationCallback(
     global_unique_lock_type global_lock_locked_once, void* host_address,
     bool is_write, Exception* ex) {
   const size_t host = reinterpret_cast<size_t>(host_address);
-  const size_t user_membase =
-      reinterpret_cast<size_t>(user_virtual_membase());
+  const size_t user_membase = reinterpret_cast<size_t>(user_virtual_membase());
   // The user mode views are protected by their entries and write watches.
   // No MMIO range or no-access page applies to them.
   if (user_membase && host - user_membase < 0x100000000ull) {

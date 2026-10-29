@@ -544,8 +544,7 @@ struct ParsedTextureFetchInstruction {
            attributes.mip_filter != xenos::TextureFilter::kLinear &&
            (!use_computed_lod ||
             attributes.aniso_filter == xenos::AnisoFilter::kDisabled ||
-            attributes.aniso_filter ==
-            xenos::AnisoFilter::kUseFetchConst);
+            attributes.aniso_filter == xenos::AnisoFilter::kUseFetchConst);
   }
 
   // Disassembles the instruction into ucode assembly text.

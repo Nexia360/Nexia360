@@ -385,10 +385,10 @@ void NexiaTransport::WriterMain() {
     }
 
     // Read the handle again every pass instead of caching it before the loop: a
-    // cached copy kept this thread sending into a socket that ReestablishUdp had
-    // already closed and replaced, which is the whole point of socket_ being
-    // atomic. Invalid means a rebuild is in flight - park rather than report the
-    // relay as lost.
+    // cached copy kept this thread sending into a socket that ReestablishUdp
+    // had already closed and replaced, which is the whole point of socket_
+    // being atomic. Invalid means a rebuild is in flight - park rather than
+    // report the relay as lost.
     const native_socket fd = static_cast<native_socket>(socket_);
     if (fd == static_cast<native_socket>(~uintptr_t(0))) {
       ReturnBuffer(std::move(frame));
