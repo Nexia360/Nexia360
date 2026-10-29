@@ -30,6 +30,7 @@
 #include "xenia/base/debugging.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/profiling.h"
+#include "xenia/base/string_util.h"
 #include "xenia/base/threading.h"
 #include "xenia/config.h"
 #include "xenia/debug/ui/debug_window.h"
@@ -128,6 +129,25 @@ DECLARE_bool(force_mount_devkit);
 DEFINE_transient_path(target, "",
                       "Specifies the target .xex or .iso to execute.",
                       "General");
+
+// Launch data for a title started straight from the command line. The
+// dashboard normally supplies both of these when it asks another title
+// to start, so a title launched with --target otherwise gets whatever
+// the last relaunch left behind, which is rarely what you want by hand.
+// --launch_data is hex, so the XNA launcher's record is
+//   --launch_data=CAFEBABE<42 byte content name, NUL padded><device id>
+DEFINE_transient_string(
+    launch_data, "",
+    "Hex-encoded launch data for the title given with --target, as the "
+    "dashboard would have passed it. For a title that only ever runs "
+    "launched by another title.",
+    "General");
+
+DEFINE_CVar(launch_flags, 0,
+            "Launch flags for the title given with --target, as the "
+            "dashboard would have passed them.",
+            "General", true, uint32_t);
+
 #ifndef XE_PLATFORM_WIN32
 DEFINE_transient_bool(portable, false,
                       "Specifies if Xenia should run in portable mode.",
@@ -890,6 +910,49 @@ void EmulatorApp::EmulatorThread() {
     path = cvars::target;
   }
 
+  // xam is an HLE module brought up with the emulator, so it is here
+  // already, before anything is launched.
+  auto xam = emulator_->kernel_state()->GetKernelModule<kernel::xam::XamModule>(
+      "xam.xex");
+
+  // What the last title asked to be started next. Read BEFORE launching:
+  // it is also what tells this process to start that title, so reading
+  // it after a --target launch both misses it and clears it while a
+  // title is already running and may be asking for its own launch data.
+  bool launched_from_loader_data = false;
+  if (xam) {
+    xam->LoadLoaderData();
+    // Launch data only means something with the title it names. With
+    // no title to start it belongs to a relaunch that is not happening,
+    // so giving it to a title started another way guesses at the caller.
+    if (xam->loader_data().host_path.empty()) {
+      xam->loader_data().launch_data.clear();
+    }
+  }
+
+  // The command line says so outright, so it wins over whatever the last
+  // relaunch left in the file. Set before the launch: a title asks for
+  // its launch data during early init, and by the time RunTitle returns
+  // the guest is already running.
+  if (xam && (!cvars::launch_data.empty() || cvars::launch_flags != 0)) {
+    auto& loader_data = xam->loader_data();
+    loader_data.launch_flags = cvars::launch_flags;
+    loader_data.launch_data.clear();
+    if (!cvars::launch_data.empty()) {
+      if (!xe::string_util::hex_string_to_array(loader_data.launch_data,
+                                                cvars::launch_data)) {
+        XELOGE("--launch_data is not hex: {}", cvars::launch_data);
+      } else {
+        XELOGI("Launch data from the command line: {} byte(s)",
+               uint32_t(loader_data.launch_data.size()));
+      }
+    }
+    if (cvars::launch_flags != 0) {
+      XELOGI("Launch flags from the command line: {:08X}",
+             cvars::launch_flags);
+    }
+  }
+
   if (!path.empty()) {
     // Normalize the path and make absolute.
     auto abs_path = std::filesystem::absolute(path);
@@ -903,13 +966,7 @@ void EmulatorApp::EmulatorThread() {
     }
   }
 
-  auto xam = emulator_->kernel_state()->GetKernelModule<kernel::xam::XamModule>(
-      "xam.xex");
-
-  bool launched_from_loader_data = false;
   if (xam) {
-    xam->LoadLoaderData();
-
     if (!xam->loader_data().host_path.empty()) {
       const std::filesystem::path host_path = xam->loader_data().host_path;
       launched_from_loader_data = true;
