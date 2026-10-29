@@ -132,6 +132,10 @@ class UserProfile {
     return account_info_.GetReservedFlags();
   };
   uint32_t GetCachedFlags() const { return account_info_.GetCachedFlags(); };
+  uint32_t GetUserFlags() const {
+    return account_info_.GetCachedFlags() | account_info_.GetReservedFlags();
+  };
+
   uint32_t GetCountry() const {
     return static_cast<uint32_t>(account_info_.GetCountry());
   };
@@ -161,7 +165,7 @@ class UserProfile {
       icon_type = XTileType::kGamerTileSmall;
     }
 
-    if (profile_images_.find(icon_type) == profile_images_.cend()) {
+    if (!profile_images_.contains(icon_type)) {
       return {};
     }
 
@@ -268,6 +272,7 @@ class UserProfile {
   GpdInfoProfile dashboard_gpd_;
   std::map<uint32_t, GpdInfoTitle> games_gpd_;
   std::vector<Property> properties_;  // Includes contexts!
+  std::mutex prop_mutex;              // 5841089C
 
   std::vector<X_ONLINE_FRIEND> friends_;
   std::mutex friends_mutex_;
@@ -293,6 +298,7 @@ class UserProfile {
                         std::span<const uint8_t> icon_data);
   std::vector<uint8_t> LoadGpd(const uint32_t title_id);
   bool WriteGpd(const uint32_t title_id);
+  bool RemoveGpd(const uint32_t title_id);
 };
 
 }  // namespace xam

@@ -71,13 +71,17 @@ Memory* XObject::memory() const { return kernel_state_->memory(); }
 XObject::Type XObject::type() const { return type_; }
 
 void XObject::RetainHandle() {
-  kernel_state_->object_table()->RetainHandle(handles_[0]);
+  auto global_lock = global_critical_region::AcquireDirect();
+  if (!handles_.empty()) {
+    kernel_state_->object_table()->RetainHandle(handles_[0]);
+  }
 }
 
 bool XObject::ReleaseHandle() {
+  auto global_lock = global_critical_region::AcquireDirect();
   // FIXME: Return true when handle is actually released.
-  return kernel_state_->object_table()->ReleaseHandle(handles_[0]) ==
-         X_STATUS_SUCCESS;
+  return !handles_.empty() && kernel_state_->object_table()->ReleaseHandle(
+                                  handles_[0]) == X_STATUS_SUCCESS;
 }
 
 void XObject::Retain() { ++pointer_ref_count_; }
@@ -103,6 +107,7 @@ X_STATUS XObject::Delete() {
 bool XObject::SaveObject(ByteStream* stream) {
   stream->Write<uint32_t>(allocated_guest_object_);
   stream->Write<uint32_t>(guest_object_ptr_);
+  stream->Write<uint32_t>(guest_object_type_ptr_.load());
 
   stream->Write(uint32_t(handles_.size()));
   stream->Write(&handles_[0], handles_.size() * sizeof(X_HANDLE));
@@ -113,6 +118,7 @@ bool XObject::SaveObject(ByteStream* stream) {
 bool XObject::RestoreObject(ByteStream* stream) {
   allocated_guest_object_ = stream->Read<uint32_t>() > 0;
   guest_object_ptr_ = stream->Read<uint32_t>();
+  guest_object_type_ptr_.store(stream->Read<uint32_t>());
 
   handles_.resize(stream->Read<uint32_t>());
   stream->Read(&handles_[0], handles_.size() * sizeof(X_HANDLE));
@@ -123,6 +129,28 @@ bool XObject::RestoreObject(ByteStream* stream) {
   }
 
   return true;
+}
+
+void XObject::SetNativeType() {
+  // Use the host object type for these objects.
+  if (allocated_guest_object_) {
+    return;
+  }
+
+  // ObOpenObjectByPointer takes an Object Manager object, whose body follows
+  // an X_OBJECT_HEADER. Generic dispatch lookups must not inspect this prefix.
+  if (guest_object_ptr_ < sizeof(X_OBJECT_HEADER)) {
+    return;
+  }
+  const uint32_t header_ptr = guest_object_ptr_ - sizeof(X_OBJECT_HEADER);
+  if (!header_ptr ||
+      memory()->QueryRangeAccess(header_ptr, sizeof(X_OBJECT_HEADER)) ==
+          memory::PageAccess::kNoAccess) {
+    return;
+  }
+  auto header = memory()->TranslateVirtual<X_OBJECT_HEADER*>(header_ptr);
+
+  guest_object_type_ptr_.store(header->object_type_ptr);
 }
 
 object_ref<XObject> XObject::Restore(KernelState* kernel_state, Type type,
@@ -422,19 +450,19 @@ void XObject::SetNativePointer(uint32_t native_ptr, bool uninitialized) {
 
 // The guest dispatcher types the switch below builds objects for, against the
 // host object a stashed handle resolved to.
-static bool MatchesDispatchType(XObject::Type type, int32_t as_type) {
+static bool MatchesDispatchType(XObject::Type type, X_OBJECT_TYPES as_type) {
   switch (as_type) {
-    case 0:  // EventNotificationObject
-    case 1:  // EventSynchronizationObject
+    case X_OBJECT_TYPES::EventNotificationObject:
+    case X_OBJECT_TYPES::EventSynchronizationObject:
       return type == XObject::Type::Event;
-    case 2:  // MutantObject
+    case X_OBJECT_TYPES::MutantObject:
       return type == XObject::Type::Mutant;
-    case 5:  // SemaphoreObject
+    case X_OBJECT_TYPES::SemaphoreObject:
       return type == XObject::Type::Semaphore;
-    case 6:  // ThreadObject
+    case X_OBJECT_TYPES::ThreadObject:
       return type == XObject::Type::Thread;
-    case 8:  // TimerNotificationObject
-    case 9:  // TimerSynchronizationObject
+    case X_OBJECT_TYPES::TimerNotificationObject:
+    case X_OBJECT_TYPES::TimerSynchronizationObject:
       return type == XObject::Type::Timer;
     default:
       // Nothing is built for the rest, so nothing can be checked against them.
@@ -442,8 +470,31 @@ static bool MatchesDispatchType(XObject::Type type, int32_t as_type) {
   }
 }
 
+void XObject::UpdateNativeHandle(X_HANDLE removed_handle) {
+  if (!guest_object_ptr_ || memory()->QueryRangeAccess(
+                                guest_object_ptr_, sizeof(X_DISPATCH_HEADER)) !=
+                                memory::PageAccess::kReadWrite) {
+    return;
+  }
+  auto* header =
+      memory()->TranslateVirtual<X_DISPATCH_HEADER*>(guest_object_ptr_);
+  if (header->wait_list.flink_ptr != kXObjSignature ||
+      header->wait_list.blink_ptr != removed_handle) {
+    return;
+  }
+  if (!handles_.empty()) {
+    StashHandle(header, handles_.front());
+  } else {
+    const uint32_t wait_list =
+        guest_object_ptr_ + uint32_t(offsetof(X_DISPATCH_HEADER, wait_list));
+    header->wait_list.flink_ptr = wait_list;
+    header->wait_list.blink_ptr = wait_list;
+  }
+}
+
 object_ref<XObject> XObject::GetNativeObject(KernelState* kernel_state,
-                                             void* native_ptr, int32_t as_type,
+                                             void* native_ptr,
+                                             X_OBJECT_TYPES as_type,
                                              bool already_locked) {
   assert_not_null(native_ptr);
 
@@ -459,11 +510,13 @@ object_ref<XObject> XObject::GetNativeObject(KernelState* kernel_state,
     global_critical_region::mutex().lock();
   }
 
-  XObject* result;
+  XObject* result = nullptr;
 
   auto header = reinterpret_cast<X_DISPATCH_HEADER*>(native_ptr);
-  if (as_type == -1) {
-    as_type = header->type;
+  X_OBJECT_TYPES type = as_type;
+
+  if (as_type == X_OBJECT_TYPES::UndefinedObject) {
+    type = header->type;
   }
 
   if (header->wait_list.flink_ptr == kXObjSignature) {
@@ -476,19 +529,24 @@ object_ref<XObject> XObject::GetNativeObject(KernelState* kernel_state,
     // over from the previous title then became, say, an event, and the first
     // XThread call on it walked off into nothing.
     uint32_t handle = header->wait_list.blink_ptr;
-    result = kernel_state->object_table()
-                 ->LookupObject<XObject>(handle, true)
-                 .release();
+    // LookupNativeObject also rejects a handle whose object now lives at a
+    // different guest address.
+    result = kernel_state->object_table()->LookupNativeObject(
+        handle, kernel_state->memory()->HostToGuestVirtual(native_ptr));
     if (result && !MatchesDispatchType(result->type(), as_type)) {
       XELOGE(
           "XObject::GetNativeObject: stale handle {:08X} at {:08X} is a {} "
           "now, not dispatch type {} - treating as uninitialized",
           handle, kernel_state->memory()->HostToGuestVirtual(native_ptr),
-          uint32_t(result->type()), as_type);
+          uint32_t(result->type()), uint32_t(as_type));
       result->Release();
       result = nullptr;
     }
-    if (!result) {
+    if (result) {
+      // The only place the guest hands us a raw dispatch header, so the only
+      // place a direct write to it can be picked up.
+      result->SyncFromGuest();
+    } else {
       // Fall through and build a fresh object over the guest structure.
       header->wait_list.flink_ptr = 0;
     }
@@ -496,52 +554,46 @@ object_ref<XObject> XObject::GetNativeObject(KernelState* kernel_state,
   if (header->wait_list.flink_ptr != kXObjSignature) {
     // First use, create new.
     // https://www.nirsoft.net/kernel_struct/vista/KOBJECTS.html
-    XObject* object = nullptr;
-    switch (as_type) {
-      case 0:  // EventNotificationObject
-      case 1:  // EventSynchronizationObject
-      {
+    switch (type) {
+      case X_OBJECT_TYPES::EventNotificationObject:
+      case X_OBJECT_TYPES::EventSynchronizationObject: {
         auto ev = new XEvent(kernel_state);
         ev->InitializeNative(native_ptr, header);
-        object = ev;
+        result = ev;
       } break;
-      case 2:  // MutantObject
-      {
+      case X_OBJECT_TYPES::MutantObject: {
         auto mutant = new XMutant(kernel_state);
         mutant->InitializeNative(native_ptr, header);
-        object = mutant;
+        result = mutant;
       } break;
-      case 5:  // SemaphoreObject
-      {
+      case X_OBJECT_TYPES::SemaphoreObject: {
         auto sem = new XSemaphore(kernel_state);
         auto success = sem->InitializeNative(native_ptr, header);
         // Can't report failure to the guest at late initialization:
         assert_true(success);
-        object = sem;
+        result = sem;
       } break;
-      case 3:   // ProcessObject
-      case 4:   // QueueObject
-      case 6:   // ThreadObject
-      case 7:   // GateObject
-      case 8:   // TimerNotificationObject
-      case 9:   // TimerSynchronizationObject
-      case 18:  // ApcObject
-      case 19:  // DpcObject
-      case 20:  // DeviceQueueObject
-      case 21:  // EventPairObject
-      case 22:  // InterruptObject
-      case 23:  // ProfileObject
-      case 24:  // ThreadedDpcObject
+      case X_OBJECT_TYPES::ProcessObject:
+      case X_OBJECT_TYPES::QueueObject:
+      case X_OBJECT_TYPES::ThreadObject:
+      case X_OBJECT_TYPES::Spare1Object:
+      case X_OBJECT_TYPES::TimerNotificationObject:
+      case X_OBJECT_TYPES::TimerSynchronizationObject:
+      case X_OBJECT_TYPES::ApcObject:
+      case X_OBJECT_TYPES::DpcObject:
+      case X_OBJECT_TYPES::DeviceQueueObject:
+      case X_OBJECT_TYPES::EventPairObject:
+      case X_OBJECT_TYPES::InterruptObject:
+      case X_OBJECT_TYPES::ProfileObject:
       default:
         assert_always();
         result = nullptr;
     }
     // Stash pointer in struct.
     // FIXME: This assumes the object contains a dispatch header (some don't!)
-    if (object) {
-      StashHandle(header, object->handle());
+    if (result) {
+      StashHandle(header, result->handle());
     }
-    result = object;
   }
 
   if (!already_locked) {

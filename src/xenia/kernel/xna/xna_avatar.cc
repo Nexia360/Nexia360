@@ -35,6 +35,7 @@
 #include "xenia/kernel/xam/user_settings.h"
 #include "xenia/kernel/xam/user_tracker.h"
 #include "xenia/kernel/xam/xam_state.h"
+#include "xenia/kernel/xam/xcontent/xcontent_package_container.h"
 #include "xenia/vfs/devices/xcontent_container_device.h"
 #include "xenia/vfs/entry.h"
 #include "xenia/vfs/file.h"
@@ -98,8 +99,18 @@ void CopyMatrices(const avatar::Matrix* local, float* out) {
 
 bool ReadPackageFile(const std::filesystem::path& package,
                      const std::string_view name, std::vector<uint8_t>* out) {
-  auto device = vfs::XContentContainerDevice::CreateContentDevice(
-      "\\NexiaAvatarAsset", package);
+  // The device reads through the package's mapped file, so the package has to
+  // outlive it. Never registered, so nothing else can see it.
+  auto* state = kernel_state();
+  if (!state) {
+    return false;
+  }
+  xam::ContentPackageContainer container(state->file_system(),
+                                         "\\NexiaAvatarAsset", package);
+  if (!container.IsValidPackage()) {
+    return false;
+  }
+  auto device = container.MountPackage();
   if (!device || !device->Initialize()) {
     return false;
   }

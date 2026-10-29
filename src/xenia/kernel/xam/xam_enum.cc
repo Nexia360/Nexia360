@@ -29,7 +29,11 @@ uint32_t xeXamEnumerate(uint32_t handle, uint32_t flags, lpvoid_t buffer_ptr,
     return X_ERROR_INVALID_HANDLE;
   }
 
-  auto run = [e, buffer_ptr, buffer_size, overlapped_ptr](
+  // FLAGS
+  // 0x2 - Probably: Return single entry
+  // 0x20 - Include results from ODD
+
+  auto run = [e, buffer_ptr, buffer_size, flags, overlapped_ptr](
                  uint32_t& extended_error, uint32_t& length) -> X_RESULT {
     X_RESULT result;
     uint32_t item_count = 0;
@@ -68,7 +72,7 @@ dword_result_t XamEnumerate_entry(dword_t handle, dword_t flags,
                                   lpvoid_t buffer, dword_t buffer_length,
                                   lpdword_t items_returned,
                                   pointer_t<XAM_OVERLAPPED> overlapped) {
-  uint32_t dummy;
+  uint32_t dummy = 0;
   auto result = xeXamEnumerate(handle, flags, buffer, buffer_length,
                                !overlapped ? &dummy : nullptr, overlapped);
   if (!overlapped && items_returned) {

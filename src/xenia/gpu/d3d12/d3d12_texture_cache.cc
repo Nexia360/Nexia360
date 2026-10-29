@@ -140,6 +140,32 @@ bool D3D12TextureCache::Initialize() {
   }
   scaled_resolve_heap_count_ = 0;
 
+  // GetSamplerParameters drops samplers for non-filterable formats.
+  for (uint32_t i = 0; i < xe::countof(host_formats_); ++i) {
+    const HostFormat& host_format = host_formats_[i];
+    uint64_t format_bit = uint64_t(1) << i;
+    if (host_format.dxgi_format_unsigned != DXGI_FORMAT_UNKNOWN) {
+      D3D12_FEATURE_DATA_FORMAT_SUPPORT format_support = {
+          host_format.dxgi_format_unsigned};
+      if (SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT,
+                                                &format_support,
+                                                sizeof(format_support))) &&
+          (format_support.Support1 & D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE)) {
+        host_filterable_unsigned_ |= format_bit;
+      }
+    }
+    if (host_format.dxgi_format_signed != DXGI_FORMAT_UNKNOWN) {
+      D3D12_FEATURE_DATA_FORMAT_SUPPORT format_support = {
+          host_format.dxgi_format_signed};
+      if (SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT,
+                                                &format_support,
+                                                sizeof(format_support))) &&
+          (format_support.Support1 & D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE)) {
+        host_filterable_signed_ |= format_bit;
+      }
+    }
+  }
+
   // Create the loading root signature.
   D3D12_ROOT_PARAMETER root_parameters[3];
   // Parameter 0 is constants (changed multiple times when untiling).
@@ -765,6 +791,7 @@ D3D12TextureCache::SamplerParameters D3D12TextureCache::GetSamplerParameters(
       xenos::ClampModeUsesBorder(parameters.clamp_y) ||
       xenos::ClampModeUsesBorder(parameters.clamp_z)) {
     parameters.border_color = fetch.border_color;
+    parameters.force_bc_w_to_max = fetch.force_bc_w_to_max;
   } else {
     parameters.border_color = xenos::BorderColor::k_ABGR_Black;
   }
@@ -797,7 +824,6 @@ D3D12TextureCache::SamplerParameters D3D12TextureCache::GetSamplerParameters(
   parameters.mip_min_level = mip_min_level;
   bool has_mips = mip_max_level > mip_min_level;
   // high cache miss count here, prefetch fetch earlier
-  //  TODO(Triang3l): Disable filtering for texture formats not supporting it.
   xenos::AnisoFilter aniso_filter =
       binding.aniso_filter == xenos::AnisoFilter::kUseFetchConst
           ? fetch.aniso_filter
@@ -821,6 +847,27 @@ D3D12TextureCache::SamplerParameters D3D12TextureCache::GetSamplerParameters(
     parameters.mip_linear = mip_filter == xenos::TextureFilter::kLinear;
   }
   parameters.mip_base_map = mip_base_map;
+
+  // Fall back to point sampling if the host formats don't report
+  // D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE.
+  if (parameters.mag_linear || parameters.min_linear || parameters.mip_linear ||
+      parameters.aniso_filter != xenos::AnisoFilter::kDisabled) {
+    TextureKey texture_key;
+    uint8_t texture_swizzled_signs;
+    BindingInfoFromFetchConstant(fetch, texture_key, &texture_swizzled_signs);
+    uint64_t format_bit =
+        texture_key.is_valid ? uint64_t(1) << uint32_t(texture_key.format) : 0;
+    if (!texture_key.is_valid ||
+        (texture_util::IsAnySignNotSigned(texture_swizzled_signs) &&
+         (host_filterable_unsigned_ & format_bit) == 0) ||
+        (texture_util::IsAnySignSigned(texture_swizzled_signs) &&
+         (host_filterable_signed_ & format_bit) == 0)) {
+      parameters.mag_linear = 0;
+      parameters.min_linear = 0;
+      parameters.mip_linear = 0;
+      parameters.aniso_filter = xenos::AnisoFilter::kDisabled;
+    }
+  }
 
   return parameters;
 }
@@ -893,6 +940,9 @@ void D3D12TextureCache::WriteSampler(SamplerParameters parameters,
       desc.BorderColor[2] = 0.0f;
       desc.BorderColor[3] = 0.0f;
       break;
+  }
+  if (parameters.force_bc_w_to_max) {
+    desc.BorderColor[3] = 1.0f;
   }
   desc.MinLOD = float(parameters.mip_min_level);
   if (parameters.mip_base_map) {
@@ -1440,8 +1490,8 @@ bool D3D12TextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
 
   // The loop counter can mean two things depending on whether the packed mip
   // tail is stored as mip 0, because in this case, it would be ambiguous since
-  // both the base and the mips would be on "level 0", but stored in separate
-  // places.
+  // both the base and the mips would be on "level 0", but loaded using separate
+  // layouts.
   uint32_t loop_level_first, loop_level_last;
   if (level_packed == 0) {
     // Packed mip tail is the level 0 - may need to load mip tails for the base,

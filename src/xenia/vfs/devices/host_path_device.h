@@ -10,7 +10,9 @@
 #ifndef XENIA_VFS_DEVICES_HOST_PATH_DEVICE_H_
 #define XENIA_VFS_DEVICES_HOST_PATH_DEVICE_H_
 
+#include <filesystem>
 #include <string>
+#include <vector>
 
 #include "xenia/vfs/device.h"
 
@@ -22,7 +24,8 @@ class HostPathEntry;
 class HostPathDevice : public Device {
  public:
   HostPathDevice(const std::string_view mount_path,
-                 const std::filesystem::path& host_path, bool read_only);
+                 const std::filesystem::path& host_path, bool read_only,
+                 bool package = false);
   ~HostPathDevice() override;
 
   bool Initialize() override;
@@ -30,6 +33,7 @@ class HostPathDevice : public Device {
   Entry* ResolvePath(const std::string_view path) override;
 
   bool is_read_only() const override { return read_only_; }
+  bool is_io_queued() const override { return is_package_; }
 
   const std::string& name() const override { return name_; }
   uint32_t attributes() const override { return 0; }
@@ -46,11 +50,16 @@ class HostPathDevice : public Device {
 
  private:
   void PopulateEntry(HostPathEntry* parent_entry);
+  // Walks one directory, with the canonical path of every directory already
+  // on this branch, so a symlink into one of them is not followed again.
+  void PopulateEntry(HostPathEntry* parent_entry,
+                     std::vector<std::filesystem::path>& ancestors);
 
   std::string name_;
   std::filesystem::path host_path_;
   std::unique_ptr<Entry> root_entry_;
   bool read_only_;
+  bool is_package_;
 };
 
 }  // namespace vfs

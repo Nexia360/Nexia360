@@ -2,13 +2,13 @@
  ******************************************************************************
  * Xenia : Xbox 360 Emulator Research Project                                 *
  ******************************************************************************
- * Copyright 2022 Ben Vanik. All rights reserved.                             *
+ * Copyright 2026 Xenia Canary. All rights reserved.                          *
  * Released under the BSD license - see LICENSE in the root for more details. *
  ******************************************************************************
  */
 
-#ifndef XENIA_HID_WINKEY_WINKEY_INPUT_DRIVER_H_
-#define XENIA_HID_WINKEY_WINKEY_INPUT_DRIVER_H_
+#ifndef XENIA_HID_KEYBOARD_KEYBOARD_INPUT_DRIVER_H_
+#define XENIA_HID_KEYBOARD_KEYBOARD_INPUT_DRIVER_H_
 
 #include <atomic>
 #include <queue>
@@ -19,14 +19,20 @@
 
 namespace xe {
 namespace hid {
-namespace winkey {
+namespace keyboard {
 
 enum class KeyboardMode { Disabled, Enabled, Passthrough };
 
-class WinKeyInputDriver final : public InputDriver {
+class KeyboardInputDriver final : public InputDriver {
  public:
-  explicit WinKeyInputDriver(xe::ui::Window* window, size_t window_z_order);
-  ~WinKeyInputDriver() override;
+  explicit KeyboardInputDriver(xe::ui::Window* window, size_t window_z_order);
+  ~KeyboardInputDriver() override;
+
+  uint8_t VirtualKeyToHIDUsage(uint16_t vk) const;
+
+  bool IsPassthroughEnabled();
+
+  bool IsKeyboardForUserEnabled(uint32_t user_index);
 
   X_STATUS Setup() override;
 
@@ -34,16 +40,39 @@ class WinKeyInputDriver final : public InputDriver {
                            X_INPUT_CAPABILITIES* out_caps) override;
   X_RESULT GetState(uint32_t user_index, X_INPUT_STATE* out_state) override;
   X_RESULT SetState(uint32_t user_index, X_INPUT_VIBRATION* vibration) override;
+
   X_RESULT GetKeystroke(uint32_t user_index, uint32_t flags,
                         X_INPUT_KEYSTROKE* out_keystroke) override;
+
   virtual InputType GetInputType() const override;
 
  protected:
+  class KeyboardWindowInputListener final : public ui::WindowInputListener {
+   public:
+    explicit KeyboardWindowInputListener(KeyboardInputDriver& driver)
+        : driver_(driver) {}
+
+    void OnKeyDown(ui::KeyEvent& e) override;
+    void OnKeyUp(ui::KeyEvent& e) override;
+    void OnKeyChar(ui::KeyEvent& e) override;
+    void OnMouseDown(ui::MouseEvent& e) override;
+    void OnMouseMove(ui::MouseEvent& e) override;
+    void OnMouseUp(ui::MouseEvent& e) override;
+
+   private:
+    KeyboardInputDriver& driver_;
+  };
+
   struct KeyEvent {
     ui::VirtualKey virtual_key = ui::VirtualKey::kNone;
     int repeat_count = 0;
     bool transition = false;  // going up(false) or going down(true)
     bool prev_state = false;  // down(true) or up(false)
+    bool shift_pressed = false;
+    bool ctrl_pressed = false;
+    bool alt_pressed = false;
+    bool capital_pressed = false;
+    uint32_t unicode = 0;
   };
 
   struct KeyBinding {
@@ -51,21 +80,7 @@ class WinKeyInputDriver final : public InputDriver {
     ui::VirtualKey output_key = ui::VirtualKey::kNone;
     bool uppercase = false;
     bool lowercase = false;
-  };
-
-  class WinKeyWindowInputListener final : public ui::WindowInputListener {
-   public:
-    explicit WinKeyWindowInputListener(WinKeyInputDriver& driver)
-        : driver_(driver) {}
-
-    void OnKeyDown(ui::KeyEvent& e) override;
-    void OnKeyUp(ui::KeyEvent& e) override;
-    void OnMouseDown(ui::MouseEvent& e) override;
-    void OnMouseMove(ui::MouseEvent& e) override;
-    void OnMouseUp(ui::MouseEvent& e) override;
-
-   private:
-    WinKeyInputDriver& driver_;
+    bool is_pressed = false;
   };
 
   void ParseKeyBinding(ui::VirtualKey virtual_key,
@@ -73,6 +88,8 @@ class WinKeyInputDriver final : public InputDriver {
                        const std::string_view binding);
 
   void OnKey(ui::KeyEvent& e, bool is_down);
+
+  void OnChar(ui::KeyEvent& e);
 
   // Rebuilds key_bindings_ from mousehook.json. Called at construction and
   // whenever the config's bindings generation changes.
@@ -85,12 +102,13 @@ class WinKeyInputDriver final : public InputDriver {
   void OnMouseMove(ui::MouseEvent& e);
   void OnMouseButton(ui::MouseEvent& e, bool is_down);
 
-  WinKeyWindowInputListener window_input_listener_;
-
   xe::global_critical_region global_critical_region_;
-  std::queue<KeyEvent> key_events_;
+
+  std::deque<KeyEvent> key_events_;
   std::vector<KeyBinding> key_bindings_;
-  uint8_t key_map_[256];
+
+  KeyboardWindowInputListener window_input_listener_;
+
   uint32_t packet_number_ = 1;
 
   // Mousehook motion/button state lives in MousehookConfig so it can be applied
@@ -98,7 +116,7 @@ class WinKeyInputDriver final : public InputDriver {
   bool cursor_hidden_ = false;
 };
 
-}  // namespace winkey
+}  // namespace keyboard
 }  // namespace hid
 }  // namespace xe
 

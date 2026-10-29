@@ -22,6 +22,7 @@
 #include "xenia/cpu/export_resolver.h"
 #include "xenia/kernel/XLiveAPI.h"
 #include "xenia/kernel/kernel.h"
+#include "xenia/kernel/nui.h"
 #include "xenia/kernel/smc.h"
 #include "xenia/kernel/util/kernel_fwd.h"
 #include "xenia/kernel/util/native_list.h"
@@ -48,6 +49,10 @@ class Processor;
 
 namespace xe {
 namespace kernel {
+
+namespace test {
+class KernelStateTest;
+}  // namespace test
 
 constexpr fourcc_t kKernelSaveSignature = make_fourcc("KRNL");
 
@@ -177,6 +182,7 @@ class KernelState {
   cpu::Processor* processor() const { return processor_; }
   vfs::VirtualFileSystem* file_system() const { return file_system_; }
 
+  xex2_opt_execution_info* GetExecutionInfo() const;
   uint32_t title_id() const;
 
   // Names the running title when there is no executable module to read it
@@ -194,6 +200,8 @@ class KernelState {
   xam::XamState* xam_state() const { return xam_state_.get(); }
 
   SystemManagementController* smc() const { return smc_.get(); }
+
+  NUIController* nui() const { return nui_.get(); }
 
   xam::AchievementManager* achievement_manager() const {
     return xam_state()->achievement_manager();
@@ -370,6 +378,11 @@ class KernelState {
   std::array<uint32_t, 0x11> xbdm_counters_address = {};
 
  private:
+  // Object Manager tests use the real kernel without Emulator UI or storage.
+  KernelState(Memory* memory, cpu::Processor* processor,
+              vfs::VirtualFileSystem* file_system);
+  friend class test::KernelStateTest;
+
   void LoadKernelModule(object_ref<KernelModule> kernel_module);
   void InitializeProcess(X_KPROCESS* process, uint32_t type,
                          char priority_class, char default_priority,
@@ -378,10 +391,10 @@ class KernelState {
                          int tls_static_data_address);
   void InitializeKernelGuestGlobals();
 
-  std::vector<xam::XCONTENT_AGGREGATE_DATA> FindTitleUpdate(
+  std::vector<xam::XCONTENT_DATA_INTERNAL> FindTitleUpdate(
       const uint32_t title_id) const;
   const object_ref<UserModule> LoadTitleUpdate(
-      const xam::XCONTENT_AGGREGATE_DATA* title_update,
+      const xam::XCONTENT_DATA_INTERNAL* title_update,
       const object_ref<UserModule> module);
   bool IsPatchSignatureProper(const object_ref<UserModule> title_module,
                               const object_ref<UserModule> patch_module) const;
@@ -401,6 +414,7 @@ class KernelState {
   std::unique_ptr<SystemManagementController> smc_;
   std::unique_ptr<XmpVolumePatch> xmp_volume_patch_;
   std::unique_ptr<XConfig> xconfig_;
+  std::unique_ptr<NUIController> nui_;
 
   KernelVersion kernel_version_;
 
@@ -413,6 +427,7 @@ class KernelState {
   std::vector<object_ref<XNotifyListener>> notify_listeners_;
   bool has_notified_startup_ = false;
   bool has_notified_live_startup_ = false;
+  bool has_notified_xmp_startup_ = false;
 
   object_ref<UserModule> executable_module_;
   // Set for a hosted title, which has no executable module - see title_id().

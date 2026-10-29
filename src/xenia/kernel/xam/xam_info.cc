@@ -42,6 +42,7 @@
 #include "xenia/kernel/user_module.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xam/app_manager.h"
+#include "xenia/kernel/xam/xam.h"
 #include "xenia/kernel/xam/xam_module.h"
 #include "xenia/kernel/xam/xam_private.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_error.h"
@@ -97,8 +98,14 @@ namespace xam {
 // https://github.com/tpn/winsdk-10/blob/master/Include/10.0.14393.0/km/wdm.h#L15539
 typedef enum _MODE { KernelMode, UserMode, MaximumMode } MODE;
 
-dword_result_t XamFeatureEnabled_entry(dword_t app_id) { return 0; }
-DECLARE_XAM_EXPORT1(XamFeatureEnabled, kNone, kStub);
+dword_result_t XamFeatureEnabled_entry(qword_t feature_bit) {
+  const std::bitset<36> feature(0x40ffffffff);
+  if (feature.test(feature_bit)) {
+    return 1;
+  }
+  return 0;
+}
+DECLARE_XAM_EXPORT1(XamFeatureEnabled, kNone, kImplemented);
 
 dword_result_t XamGetStagingMode_entry() { return cvars::staging_mode; }
 
@@ -457,8 +464,9 @@ dword_result_t keXamBuildResourceLocator(uint64_t module,
     path = fmt::format(u"section://{:X},{}#{}", (uint32_t)module, container,
                        resource);
   }
+  const uint32_t char_count = buffer_count / sizeof(char16_t);
   xe::string_util::copy_and_swap_truncating(buffer_ptr.as<char16_t*>(), path,
-                                            buffer_count);
+                                            char_count);
   return 0;
 }
 
@@ -520,25 +528,39 @@ DECLARE_XAM_EXPORT1(XamBuildXamResourceLocator, kNone, kImplemented);
 
 dword_result_t XamGetCachedTitleName_entry(dword_t title_id,
                                            dword_t title_name_address,
-                                           lpdword_t title_name_size_ptr) {
-  if (!title_name_address || !title_name_size_ptr) {
+                                           lpdword_t title_name_length_ptr) {
+  char16_t* title_name_ptr =
+      kernel_state()->memory()->TranslateVirtual<char16_t*>(title_name_address);
+
+  if (!title_id) {
+    *title_name_ptr = 0;
+    *title_name_length_ptr = 1;
+
     return X_ERROR_INVALID_PARAMETER;
   }
 
-  assert_false(title_id != kernel_state()->title_id());
-
-  char16_t* title_name_ptr =
-      kernel_state()->memory()->TranslateVirtual<char16_t*>(title_name_address);
+  if (title_id != kernel_state()->title_id()) {
+    if (const auto profile = kernel_state()->xam_state()->GetUserProfile(0u);
+        profile) {
+      const auto title =
+          kernel_state()->xam_state()->user_tracker()->GetUserTitleInfo(
+              profile->xuid(), title_id);
+      if (title) {
+        xe::string_util::copy_and_swap_truncating(
+            title_name_ptr, title->title_name, title->title_name.size() + 1);
+        *title_name_length_ptr = title->title_name.size() + 1;
+        return X_ERROR_SUCCESS;
+      }
+    }
+  }
 
   std::u16string title_name = xe::to_utf16(
       kernel_state()->emulator()->game_info_database()->GetTitleName());
 
-  size_t title_name_size = string_util::size_in_bytes(title_name, true);
+  xe::string_util::copy_and_swap_truncating(title_name_ptr, title_name,
+                                            title_name.size() + 1);
 
-  string_util::copy_and_swap_truncating(title_name_ptr, title_name,
-                                        title_name_size);
-
-  *title_name_size_ptr = static_cast<uint32_t>(title_name_size);
+  *title_name_length_ptr = title_name.size() + 1;
 
   return X_ERROR_SUCCESS;
 }
@@ -670,6 +692,23 @@ dword_result_t XamIsCurrentTitleDash_entry(const ppc_context_t& ctx) {
 }
 DECLARE_XAM_EXPORT1(XamIsCurrentTitleDash, kNone, kImplemented);
 
+dword_result_t XamSetDashContext_entry(dword_t value,
+                                       const ppc_context_t& ctx) {
+  // checks XexCheckExecutablePrivilege(8) but we don't care
+  if (value != ctx->kernel_state->dash_context_) {
+    ctx->kernel_state->dash_context_ = value;
+    kernel_state()->BroadcastNotification(
+        kXNotificationSystemDashContextChanged, 0);
+  }
+  return 0;
+}
+DECLARE_XAM_EXPORT1(XamSetDashContext, kNone, kImplemented);
+
+dword_result_t XamGetDashContext_entry(const ppc_context_t& ctx) {
+  return ctx->kernel_state->dash_context_;
+}
+DECLARE_XAM_EXPORT1(XamGetDashContext, kNone, kImplemented);
+
 dword_result_t XamGetExecutionId_entry(lpdword_t info_ptr) {
   auto module = kernel_state()->GetExecutableModule();
   assert_not_null(module);
@@ -691,16 +730,18 @@ dword_result_t XamLoaderSetLaunchData_entry(lpvoid_t data, dword_t size,
                                             const ppc_context_t& ctx) {
   auto xam = kernel_state()->GetKernelModule<XamModule>("xam.xex");
   auto& loader_data = xam->loader_data();
-  loader_data.launch_data.resize(size);
-  std::memcpy(loader_data.launch_data.data(), data, size);
+  const uint32_t copy_size = std::min(size.value(), MAX_LAUNCH_DATA_SIZE);
+  loader_data.launch_data.resize(copy_size);
+  std::memcpy(loader_data.launch_data.data(), data, copy_size);
   loader_data.launch_data_set_by_title = true;
   // What a title hands the next one - the XNA launcher's relaunch records
   // say how the game it ran ended.
   const uint8_t* bytes = loader_data.launch_data.data();
   XELOGI("XamLoaderSetLaunchData: {} byte(s), {:08X} {:08X} {:08X}",
-         uint32_t(size), size >= 4 ? xe::load_and_swap<uint32_t>(bytes) : 0,
-         size >= 8 ? xe::load_and_swap<uint32_t>(bytes + 4) : 0,
-         size >= 12 ? xe::load_and_swap<uint32_t>(bytes + 8) : 0);
+         uint32_t(size),
+         copy_size >= 4 ? xe::load_and_swap<uint32_t>(bytes) : 0,
+         copy_size >= 8 ? xe::load_and_swap<uint32_t>(bytes + 4) : 0,
+         copy_size >= 12 ? xe::load_and_swap<uint32_t>(bytes + 8) : 0);
   // Who decided: the guest call chain, from the frames' back chain. A callee
   // saves its LR at 8 bytes below its caller's stack pointer, so each frame's
   // back chain names the next LR. The XNA launcher's exit code comes from
@@ -1181,8 +1222,7 @@ dword_result_t XamOfflineTimerGetData_entry(lpvoid_t data_ptr) {
 }
 DECLARE_XAM_EXPORT1(XamOfflineTimerGetData, kNone, kImplemented);
 
-dword_result_t XamGetOnlineCountryFeatures_entry(dword_t country) { return 0; }
-DECLARE_XAM_EXPORT1(XamGetOnlineCountryFeatures, kNone, kStub);
+// XamGetOnlineCountryFeatures is implemented in xam_locale.cc.
 
 dword_result_t XamNetworkStorageHasUserEnabledStorage_entry(
     dword_t user_index) {
@@ -2247,7 +2287,17 @@ DECLARE_XAM_EXPORT1(XamSetDvrStorage, kNone, kStub);
 dword_result_t XamLookupCommonStringByIndex_entry(dword_t string_index) {
   return 0;
 }
-DECLARE_XAM_EXPORT1(XamLookupCommonStringByIndex, kNone, kImplemented);
+DECLARE_XAM_EXPORT1(XamLookupCommonStringByIndex, kNone, kStub);
+
+dword_result_t XamUpdateGetBaseSystemVersion_entry() {
+  return kBaseKernelBuildVersion;
+}
+DECLARE_XAM_EXPORT1(XamUpdateGetBaseSystemVersion, kNone, kStub);
+
+dword_result_t XamUpdateGetCurrentSystemVersion_entry() {
+  return kBaseKernelBuildVersion;
+}
+DECLARE_XAM_EXPORT1(XamUpdateGetCurrentSystemVersion, kNone, kStub);
 
 }  // namespace xam
 }  // namespace kernel

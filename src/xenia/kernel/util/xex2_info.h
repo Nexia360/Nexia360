@@ -16,6 +16,69 @@
 
 #include "xenia/base/byte_order.h"
 
+// https://github.com/emoose/xbox-reversing/blob/5f85b9ec8c771577532ca1cfa20c691e9033f2c2/templates/xbox-360/XEX2FlagsAndEnums.bt#L9
+enum xex2_header_keys : uint32_t {
+  XEX_HEADER_HEADER_SIZE =
+      0x00000101,  // XEX0 only? seems it should always match SizeOfHeaders in
+                   // main XEX header
+  XEX_HEADER_XEX_SECTIONS = 0x000001FF,  // XEX? only? 1434 seems to create this
+  XEX0_XEXQ__HEADER_VERSION_DEPENDENT =
+      0x00000201,  // stores XEX0 flags (title/system, exe/dll) in
+                   // executables/In XEX? it is original base address
+  XEX_HEADER_RESOURCE_INFO = 0x000002FF,
+  XEX_HEADER_FILE_FORMAT_INFO = 0x000003FF,
+  XEX_HEADER_BASE_REFERENCE = 0x00000405,
+  XEX_HEADER_DELTA_PATCH_DESCRIPTOR = 0x000005FF,
+  XEX_HEADER_KEY_VAULT_PRIVS_ALT = 0x00004004,
+  XEX_HEADER_KEY_VAULT_PRIVS = 0x000040FF,
+  XEX_HEADER_TIME_RANGE_ALT = 0x00004104,
+  XEX_HEADER_TIME_RANGE = 0x000041FF,
+  XEX_HEADER_CONSOLE_ID_TABLE = 0x000042FF,
+  XEX_HEADER_DISC_PROFILE_ID = 0x00004304,
+  XEX_HEADER_BOUNDING_PATH = 0x000080FF,
+  XEXQ_HEADER_BUILD_VERSIONS = 0x00008102,
+  XEX_HEADER_DEVICE_ID = 0x00008105,
+  XEX_HEADER_ORIGINAL_BASE_ADDRESS = 0x00010001,
+  XEX0_HEADER_EXECUTION_INFO = 0x00010005,
+  XEX_HEADER_ENTRY_POINT = 0x00010100,
+  XEXH_HEADER_ENABLED_FOR_FASTCAP = 0x00010200,
+  XEX_HEADER_IMAGE_BASE_ADDRESS = 0x00010201,
+  XEX25_HEADER_IMPORT = 0x000102FF,  // XEX25 key
+  XEXH_HEADER_PE_EXPORTS = 0x00010300,
+  XEX_HEADER_IMPORT_LIBRARIES = 0x000103FF,  //  XEX0_SPA_FILE_NAME
+  XEX1_XEX25_HEADER_VERSION_DEPENDENT =
+      0x00010400,  // XEX1_HEADER_PE_EXPORTS, XEX25_HEADER_STACK_SIZE & XEX% key
+  XEX25_HEADER_TLS_INFO = 0x00010504,  // XEX% key
+  XEX_HEADER_CHECKSUM_TIMESTAMP = 0x00018002,
+  XEX_HEADER_ENABLED_FOR_CALLCAP = 0x00018102,
+  XEX_HEADER_ENABLED_FOR_FASTCAP = 0x00018200,
+  XEX_HEADER_ORIGINAL_PE_NAME = 0x000183FF,
+  XEX_HEADER_STATIC_LIBRARIES = 0x000200FF,
+  XEX_HEADER_TLS_INFO = 0x00020104,
+  XEX_HEADER_BUILD_VERSIONS = 0x000201FF,  // XEX% key
+  XEX_HEADER_DEFAULT_STACK_SIZE = 0x00020200,
+  XEX_HEADER_DEFAULT_FILESYSTEM_CACHE_SIZE = 0x00020301,
+  XEX_HEADER_DEFAULT_HEAP_SIZE = 0x00020401,
+  XEX_HEADER_PAGE_HEAP_SIZE_AND_FLAGS = 0x00028002,
+  XEX_HEADER_SYSTEM_FLAGS = 0x00030000,     // Privileges
+  XEX_HEADER_SYSTEM_FLAGS_32 = 0x00030100,  // Privileges_32
+  XEX_HEADER_SYSTEM_FLAGS_64 = 0x00030200,  // Privileges_64
+  XEX_HEADER_EXECUTION_INFO = 0x00040006,
+  XEX_HEADER_SERVICE_ID_LIST = 0x000401FF,
+  XEX_HEADER_TITLE_WORKSPACE_SIZE = 0x00040201,
+  XEX_HEADER_GAME_RATINGS = 0x00040310,
+  XEXH_HEADER_SPA_NAME = 0x000403FF,  // XEX- only?
+  XEX_HEADER_LAN_KEY = 0x00040404,
+  XEX_HEADER_XBOX360_LOGO = 0x000405FF,
+  XEX_HEADER_MULTIDISC_MEDIA_IDS = 0x000406FF,
+  XEX_HEADER_ALTERNATE_TITLE_IDS = 0x000407FF,
+  XEX_HEADER_ADDITIONAL_TITLE_MEMORY = 0x00040801,
+  XEXQ_HEADER_IS_EXECUTABLE = 0x000E0001,  // XEX? only? maybe means NoExports?
+  XEX_HEADER_IMPORTS_BY_NAME = 0x00E10302,
+  XEX_HEADER_EXPORTS_BY_NAME = 0x00E10402,
+  XEX_HEADER_USER_MODE_IMPORT_DEPS = 0x00E105FF,
+};
+
 union xe_xex2_version_t {
   uint32_t value;
   struct {
@@ -194,43 +257,6 @@ enum xex2_system_flags : uint32_t {
   XEX_SYSTEM_ALLOW_AVATAR_GET_METADATA_BY_XUID = 0x20000000,
   XEX_SYSTEM_ALLOW_CONTROLLER_SWAPPING = 0x40000000,
   XEX_SYSTEM_DASH_EXTENSIBILITY_MODULE = 0x80000000,
-};
-
-// https://github.com/emoose/xbox-reversing/blob/5f85b9ec8c771577532ca1cfa20c691e9033f2c2/templates/xbox-360/XEX2FlagsAndEnums.bt#L9
-enum xex2_header_keys : uint32_t {
-  XEX_HEADER_RESOURCE_INFO = 0x000002FF,
-  XEX_HEADER_FILE_FORMAT_INFO = 0x000003FF,
-  XEX_HEADER_DELTA_PATCH_DESCRIPTOR = 0x000005FF,
-  XEX_HEADER_BASE_REFERENCE = 0x00000405,
-  XEX_HEADER_DISC_PROFILE_ID = 0x00004304,
-  XEX_HEADER_BOUNDING_PATH = 0x000080FF,
-  XEX_HEADER_DEVICE_ID = 0x00008105,
-  XEX_HEADER_ORIGINAL_BASE_ADDRESS = 0x00010001,
-  XEX_HEADER_ENTRY_POINT = 0x00010100,
-  XEX_HEADER_IMAGE_BASE_ADDRESS = 0x00010201,
-  XEX_HEADER_IMPORT_LIBRARIES = 0x000103FF,
-  XEX_HEADER_CHECKSUM_TIMESTAMP = 0x00018002,
-  XEX_HEADER_ENABLED_FOR_CALLCAP = 0x00018102,
-  XEX_HEADER_ENABLED_FOR_FASTCAP = 0x00018200,
-  XEX_HEADER_ORIGINAL_PE_NAME = 0x000183FF,
-  XEX_HEADER_STATIC_LIBRARIES = 0x000200FF,
-  XEX_HEADER_TLS_INFO = 0x00020104,
-  XEX_HEADER_DEFAULT_STACK_SIZE = 0x00020200,
-  XEX_HEADER_DEFAULT_FILESYSTEM_CACHE_SIZE = 0x00020301,
-  XEX_HEADER_DEFAULT_HEAP_SIZE = 0x00020401,
-  XEX_HEADER_PAGE_HEAP_SIZE_AND_FLAGS = 0x00028002,
-  XEX_HEADER_SYSTEM_FLAGS = 0x00030000,     // Privileges
-  XEX_HEADER_SYSTEM_FLAGS_32 = 0x00030100,  // Privileges_32
-  XEX_HEADER_SYSTEM_FLAGS_64 = 0x00030200,  // Privileges_64
-  XEX_HEADER_EXECUTION_INFO = 0x00040006,
-  XEX_HEADER_TITLE_WORKSPACE_SIZE = 0x00040201,
-  XEX_HEADER_GAME_RATINGS = 0x00040310,
-  XEX_HEADER_LAN_KEY = 0x00040404,
-  XEX_HEADER_XBOX360_LOGO = 0x000405FF,
-  XEX_HEADER_MULTIDISC_MEDIA_IDS = 0x000406FF,
-  XEX_HEADER_ALTERNATE_TITLE_IDS = 0x000407FF,
-  XEX_HEADER_ADDITIONAL_TITLE_MEMORY = 0x00040801,
-  XEX_HEADER_EXPORTS_BY_NAME = 0x00E10402,
 };
 
 // ESRB (Entertainment Software Rating Board)
@@ -532,16 +558,6 @@ union xex2_version {
   };
 };
 
-struct xex2_opt_lan_key {
-  uint8_t key[0x10];
-};
-
-struct xex2_opt_ms_logo {
-  xe::be<uint32_t> section_size;
-  xe::be<uint32_t> logo_size;
-  xe::be<uint32_t> logo;  // uint8_t*
-};
-
 struct xex2_opt_bound_path {
   xe::be<uint32_t> size;
   char path[1];
@@ -608,7 +624,15 @@ enum xex2_system_flags_32 : uint32_t {
   XEX_SYSTEM_TITLE_SET_PRESENCE_STRING = 0x00000010,
   XEX_SYSTEM_CAMERA_ANGLE_CONTROL = 0x00000020,
   XEX_SYSTEM_SKELETAL_TRACKING_REQUIRED = 0x00000040,
-  XEX_SYSTEM_SKELETAL_TRACKING_SUPPORTED = 0x00000080
+  XEX_SYSTEM_SKELETAL_TRACKING_SUPPORTED = 0x00000080,
+  XEX_SYSTEM_USE_LARGE_HDS_FILE_CACHE = 0x00000100,
+  XEX_SYSTEM_TITLE_SUPPORTS_DEEP_LINK = 0x00000200,
+  XEX_SYSTEM_TITLE_BODY_PROFILE = 0x00000400,
+  XEX_SYSTEM_TITLE_WIN_USB = 0x00000800,
+  XEX_SYSTEM_TITLE_SUPPORTS_DEEP_LINK_REFRESH = 0x00001000,
+  XEX_SYSTEM_LOCAL_ONLY_SOCKETS = 0x00002000,
+  XEX_SYSTEM_TITLE_CONTENT_ACQUIRE_AND_DOWNLOAD = 0x00004000,
+  XEX_SYSTEM_ALLOW_SYSTEM_FOREGROUND = 0x00008000
 };
 
 inline const std::unordered_map<uint32_t, std::string>
@@ -626,7 +650,20 @@ inline const std::unordered_map<uint32_t, std::string>
         {XEX_SYSTEM_SKELETAL_TRACKING_REQUIRED,
          "XEX_SYSTEM_SKELETAL_TRACKING_REQUIRED"},
         {XEX_SYSTEM_SKELETAL_TRACKING_SUPPORTED,
-         "XEX_SYSTEM_SKELETAL_TRACKING_SUPPORTED"}};
+         "XEX_SYSTEM_SKELETAL_TRACKING_SUPPORTED"},
+        {XEX_SYSTEM_USE_LARGE_HDS_FILE_CACHE,
+         "XEX_SYSTEM_USE_LARGE_HDS_FILE_CACHE"},
+        {XEX_SYSTEM_TITLE_SUPPORTS_DEEP_LINK,
+         "XEX_SYSTEM_TITLE_SUPPORTS_DEEP_LINK"},
+        {XEX_SYSTEM_TITLE_BODY_PROFILE, "XEX_SYSTEM_TITLE_BODY_PROFILE"},
+        {XEX_SYSTEM_TITLE_WIN_USB, "XEX_SYSTEM_TITLE_WIN_USB"},
+        {XEX_SYSTEM_TITLE_SUPPORTS_DEEP_LINK_REFRESH,
+         "XEX_SYSTEM_TITLE_SUPPORTS_DEEP_LINK_REFRESH"},
+        {XEX_SYSTEM_LOCAL_ONLY_SOCKETS, "XEX_SYSTEM_LOCAL_ONLY_SOCKETS"},
+        {XEX_SYSTEM_TITLE_CONTENT_ACQUIRE_AND_DOWNLOAD,
+         "XEX_SYSTEM_TITLE_CONTENT_ACQUIRE_AND_DOWNLOAD"},
+        {XEX_SYSTEM_ALLOW_SYSTEM_FOREGROUND,
+         "XEX_SYSTEM_ALLOW_SYSTEM_FOREGROUND"}};
 
 struct xex2_resource {
   char name[8];              // 0x0
@@ -680,6 +717,38 @@ struct xex2_opt_delta_patch_descriptor {
   }
 };
 
+struct XEX_BASE_REFERENCE {
+  xe::be<uint32_t> unk1;  // 0x0
+  xe::be<uint32_t> unk2;  // 0x4
+  xe::be<uint32_t> unk3;  // 0x8
+  xe::be<uint32_t> unk4;  // 0xC
+  xe::be<uint32_t> unk5;  // 0x10
+};
+static_assert_size(XEX_BASE_REFERENCE, 0x14);
+
+struct XEX_DISC_PROFILE_ID {
+  xe::be<uint32_t> unk1;  // 0x0
+  xe::be<uint32_t> unk2;  // 0x4
+  xe::be<uint32_t> unk3;  // 0x8
+  xe::be<uint32_t> unk4;  // 0xC
+};
+static_assert_size(XEX_DISC_PROFILE_ID, 0x10);
+
+struct XEX_DEVICE_ID {
+  xe::be<uint32_t> unk1;  // 0x0
+  xe::be<uint32_t> unk2;  // 0x4
+  xe::be<uint32_t> unk3;  // 0x8
+  xe::be<uint32_t> unk4;  // 0xC
+  xe::be<uint32_t> unk5;  // 0x10
+};
+static_assert_size(XEX_DEVICE_ID, 0x14);
+
+struct XEX_PAGE_HEAP_SIZE_AND_FLAGS {
+  xe::be<uint32_t> unk1;  // 0x0
+  xe::be<uint32_t> unk2;  // 0x4
+};
+static_assert_size(XEX_PAGE_HEAP_SIZE_AND_FLAGS, 0x8);
+
 struct xex2_opt_execution_info {
   xe::be<uint32_t> media_id;            // 0x0
   xe::be<uint32_t> version_value;       // 0x4
@@ -702,6 +771,16 @@ struct xex2_opt_execution_info {
   }
 };
 static_assert_size(xex2_opt_execution_info, 0x18);
+
+struct xex2_opt_lan_key {
+  uint8_t key[0x10];
+};
+
+struct xex2_opt_ms_logo {
+  xe::be<uint32_t> section_size;
+  xe::be<uint32_t> logo_size;
+  xe::be<uint32_t> logo;  // uint8_t*
+};
 
 struct xex2_opt_import_libraries {
   xe::be<uint32_t> size;  // 0x0
@@ -775,7 +854,7 @@ struct xex2_security_info {
   xe::be<uint32_t> header_size;              // 0x0
   xe::be<uint32_t> image_size;               // 0x4
   char rsa_signature[0x100];                 // 0x8
-  xe::be<uint32_t> unk_108;                  // 0x108 unk length
+  xe::be<uint32_t> info_size;                // 0x108
   xe::be<xex2_image_flags> image_flags;      // 0x10C
   xe::be<uint32_t> load_address;             // 0x110
   char section_digest[0x14];                 // 0x114
@@ -801,6 +880,21 @@ struct xex1_security_info {
   char aes_key[0x10];
   char xgd2_media_id[0x10];
   xe::be<uint32_t> region;
+  xe::be<uint32_t> image_flags;
+  xe::be<uint32_t> export_table;
+  xe::be<uint32_t> allowed_media_types;
+  xe::be<uint32_t> page_descriptor_count;
+  xex2_page_descriptor page_descriptors[1];
+};
+
+struct xex25_security_info {
+  xe::be<uint32_t> header_size;
+  xe::be<uint32_t> image_size;
+  char rsa_signature[0x100];
+  char image_digest[0x14];
+  char import_table_digest[0x14];
+  xe::be<uint32_t> load_address;
+  char aes_key[0x10];
   xe::be<uint32_t> image_flags;
   xe::be<uint32_t> export_table;
   xe::be<uint32_t> allowed_media_types;

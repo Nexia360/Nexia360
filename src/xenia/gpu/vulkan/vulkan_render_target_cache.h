@@ -13,6 +13,7 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <unordered_map>
@@ -89,9 +90,14 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
   struct Framebuffer {
     VkFramebuffer framebuffer = VK_NULL_HANDLE;
     VkExtent2D host_extent{};
+    RenderPassKey render_pass_key;
+    std::array<VkImageView, 1 + xenos::kMaxColorRenderTargets> attachments{};
     Framebuffer() = default;
-    Framebuffer(VkFramebuffer framebuffer, const VkExtent2D& host_extent)
-        : framebuffer(framebuffer), host_extent(host_extent) {}
+    Framebuffer(VkFramebuffer framebuffer, const VkExtent2D& host_extent,
+                RenderPassKey render_pass_key)
+        : framebuffer(framebuffer),
+          host_extent(host_extent),
+          render_pass_key(render_pass_key) {}
   };
 
   VulkanRenderTargetCache(const RegisterFile& register_file,
@@ -121,15 +127,22 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
 
   // Performs the resolve to a shared memory area according to the current
   // register values, and also clears the render targets if needed. Must be in a
-  // frame for calling.
+  // frame for calling. copy_dest_info_out, if not null, receives the
+  // destination info with the format normalized to the xenos::TextureFormat
+  // the copy was actually performed with (only meaningful when a nonzero
+  // length was written).
+  // written_scaled_out: whether the data went to the scaled resolve address
+  // space rather than shared memory (native resolves don't).
   bool Resolve(const Memory& memory, VulkanSharedMemory& shared_memory,
                VulkanTextureCache& texture_cache, uint32_t& written_address_out,
-               uint32_t& written_length_out);
+               uint32_t& written_length_out,
+               reg::RB_COPY_DEST_INFO* copy_dest_info_out = nullptr,
+               bool* written_scaled_out = nullptr);
 
   bool Update(bool is_rasterization_done,
               reg::RB_DEPTHCONTROL normalized_depth_control,
-              uint32_t normalized_color_mask,
-              const Shader& vertex_shader) override;
+              uint32_t normalized_color_mask, const Shader& vertex_shader,
+              int32_t window_offset_tiles) override;
   // Binding information for the last successful update.
   RenderPassKey last_update_render_pass_key() const {
     return last_update_render_pass_key_;
@@ -159,6 +172,9 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
     return depth_unorm24_vulkan_format_supported_;
   }
   bool depth_float24_round() const { return depth_float24_round_; }
+  bool depth_float24_convert_in_pixel_shader() const {
+    return depth_float24_convert_in_pixel_shader_;
+  }
 
   bool msaa_2x_attachments_supported() const {
     return msaa_2x_attachments_supported_;
@@ -169,6 +185,20 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
   bool IsMsaa2xSupported(bool subpass_has_attachments) const {
     return subpass_has_attachments ? msaa_2x_attachments_supported_
                                    : msaa_2x_no_attachments_supported_;
+  }
+
+  // Xenos sample locations for pipelines at the guest sample count.
+  // nullptr for the default locations.
+  const VkSampleLocationsInfoEXT* GetSampleLocationsInfo(
+      xenos::MsaaSamples msaa_samples, bool subpass_has_attachments) const {
+    if (msaa_samples != xenos::MsaaSamples::k2X &&
+        msaa_samples != xenos::MsaaSamples::k4X) {
+      return nullptr;
+    }
+    const VkSampleLocationsInfoEXT& info =
+        sample_locations_info_[subpass_has_attachments]
+                              [msaa_samples == xenos::MsaaSamples::k4X];
+    return info.sampleLocationsCount ? &info : nullptr;
   }
 
   // Returns the render pass object, or VK_NULL_HANDLE if failed to create.
@@ -192,7 +222,11 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
   uint32_t GetMaxRenderTargetWidth() const override;
   uint32_t GetMaxRenderTargetHeight() const override;
 
-  RenderTarget* CreateRenderTarget(RenderTargetKey key) override;
+  RenderTarget* CreateRenderTarget(RenderTargetKey key,
+                                   uint32_t height) override;
+  RenderTarget* GrowRenderTarget(
+      RenderTarget* source, uint32_t height,
+      const std::vector<Transfer>& transfers) override;
 
   bool IsHostDepthEncodingDifferent(
       xenos::DepthRenderTargetFormat format) const override;
@@ -302,6 +336,13 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
       kResolveCopyShaders[size_t(draw_util::ResolveCopyShaderIndex::kCount)];
   std::array<VkPipeline, size_t(draw_util::ResolveCopyShaderIndex::kCount)>
       resolve_copy_pipelines_{};
+  // Unscaled variants for fully native resolves. Only created with resolution
+  // scaling, otherwise the main set is already unscaled. A separate set
+  // because the scaled shaders can't just run at 1x1, their push constants
+  // and destination address space assume the scaled resolve buffer.
+  VkPipelineLayout resolve_copy_native_pipeline_layout_ = VK_NULL_HANDLE;
+  std::array<VkPipeline, size_t(draw_util::ResolveCopyShaderIndex::kCount)>
+      resolve_copy_native_pipelines_{};
 
   // On the fragment shader interlock path, the render pass key is used purely
   // for passing parameters to pipeline setup - there's always only one render
@@ -338,14 +379,14 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
         VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
     // Takes ownership of the Vulkan objects passed to the constructor.
-    VulkanRenderTarget(RenderTargetKey key,
+    VulkanRenderTarget(RenderTargetKey key, uint32_t height,
                        VulkanRenderTargetCache& render_target_cache,
                        VkImage image, VkDeviceMemory memory,
                        VkImageView view_depth_color,
                        VkImageView view_depth_stencil, VkImageView view_stencil,
                        VkImageView view_color_transfer_separate,
                        size_t descriptor_set_index_transfer_source)
-        : RenderTarget(key),
+        : RenderTarget(key, height),
           render_target_cache_(render_target_cache),
           image_(image),
           memory_(memory),
@@ -439,19 +480,31 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
     uint32_t temporary_sort_index_ = 0;
   };
 
+  std::deque<std::pair<uint64_t, std::unique_ptr<RenderTarget>>>
+      retired_render_targets_;
+  std::deque<std::pair<uint64_t, VkFramebuffer>> retired_framebuffers_;
+  void InvalidateRenderTargetFramebuffers(
+      const VulkanRenderTarget& render_target);
+
+  // Pushes the barrier to the new usage and records it.
+  void TransitionRenderTarget(VulkanRenderTarget& render_target,
+                              VkPipelineStageFlags dst_stage_mask,
+                              VkAccessFlags dst_access_mask,
+                              VkImageLayout new_layout);
+
   struct FramebufferKey {
     RenderPassKey render_pass_key;
 
     // Same as RenderTargetKey::pitch_tiles_at_32bpp.
     uint32_t pitch_tiles_at_32bpp : 8;  // 8
-    // [0, 2047].
-    uint32_t depth_base_tiles : xenos::kEdramBaseTilesBits;    // 19
-    uint32_t color_0_base_tiles : xenos::kEdramBaseTilesBits;  // 30
+    // Below the EDRAM tile count.
+    uint32_t depth_base_tiles : xenos::kEdramBaseTilesBits;  // 21
 
-    uint32_t color_1_base_tiles : xenos::kEdramBaseTilesBits;  // 43
-    uint32_t color_2_base_tiles : xenos::kEdramBaseTilesBits;  // 54
+    uint32_t color_0_base_tiles : xenos::kEdramBaseTilesBits;  // 45
+    uint32_t color_1_base_tiles : xenos::kEdramBaseTilesBits;  // 58
 
-    uint32_t color_3_base_tiles : xenos::kEdramBaseTilesBits;  // 75
+    uint32_t color_2_base_tiles : xenos::kEdramBaseTilesBits;  // 77
+    uint32_t color_3_base_tiles : xenos::kEdramBaseTilesBits;  // 90
 
     // Including all the padding, for a stable hash.
     FramebufferKey() { Reset(); }
@@ -586,6 +639,10 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
       xenos::MsaaSamples host_depth_source_msaa_samples
           : xenos::kMsaaSamplesBits;
       uint32_t source_resource_format : xenos::kRenderTargetFormatBits;
+      // Scale classes of the two sides. The shader bakes each side's tile
+      // size and conversion between the scale spaces.
+      uint32_t dest_scale_native : 1;
+      uint32_t source_scale_native : 1;
 
       // Last bits because this affects the pipeline layout - after sorting,
       // only change it as fewer times as possible. Depth buffers have an
@@ -650,15 +707,16 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
     uint32_t constant;
     struct {
       // All in tiles.
-      uint32_t dest_pitch : xenos::kEdramPitchTilesBits;
-      uint32_t source_pitch : xenos::kEdramPitchTilesBits;
+      uint32_t dest_pitch : RenderTargetKey::kPitchTilesBits;
+      uint32_t source_pitch : RenderTargetKey::kPitchTilesBits;
       // Destination base in tiles minus source base in tiles (not vice versa
       // because this is a transform of the coordinate system, not addresses
-      // themselves).
-      // + 1 bit because this is a signed difference between two EDRAM bases.
+      // themselves), wrapped, the shader wraps the sum anyway.
       // 0 for host_depth_source_is_copy (ignored in this case anyway as
       // destination == source anyway).
-      int32_t source_to_dest : xenos::kEdramBaseTilesBits + 1;
+      uint32_t source_to_dest : xenos::kEdramBaseTilesBits;
+      // The source render target is in the next period (64bpp color only).
+      uint32_t source_next_period : 1;
     };
     TransferAddressConstant() : constant(0) {
       static_assert_size(*this, sizeof(constant));
@@ -717,6 +775,12 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
       // Last bit because this affects the pipeline - after sorting, only change
       // it at most once. Depth buffers have an additional stencil SRV.
       uint32_t is_depth : 1;
+      // Dumping to the scaled EDRAM layout duplicates this native render
+      // target's guest pixels.
+      uint32_t source_scale_native : 1;
+      // source_scale_native only.
+      // Address the EDRAM buffer with the plain 1x1 tile layout.
+      uint32_t native_layout : 1;
     };
 
     DumpPipelineKey() : key(0) { static_assert_size(*this, sizeof(key)); }
@@ -777,8 +841,9 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
     uint32_t offsets;
     struct {
       // May be beyond the EDRAM tile count in case of EDRAM addressing
-      // wrapping, thus + 1 bit.
-      uint32_t dispatch_first_tile : xenos::kEdramBaseTilesBits + 1;
+      // wrapping, and another tile count beyond for a render target in the next
+      // period, thus + 2 bits.
+      uint32_t dispatch_first_tile : xenos::kEdramBaseTilesBits + 2;
       uint32_t source_base_tiles : xenos::kEdramBaseTilesBits;
     };
     DumpOffsets() : offsets(0) { static_assert_size(*this, sizeof(offsets)); }
@@ -857,7 +922,7 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
   // resolve_clear_rectangle is expected to be provided by
   // PrepareHostRenderTargetsResolveClear which should do all the needed size
   // bound checks.
-  void PerformTransfersAndResolveClears(
+  bool PerformTransfersAndResolveClears(
       uint32_t render_target_count, RenderTarget* const* render_targets,
       const std::vector<Transfer>* render_target_transfers,
       const uint64_t* render_target_resolve_clear_values = nullptr,
@@ -866,17 +931,25 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
   VkPipeline GetDumpPipeline(DumpPipelineKey key);
 
   // Writes contents of host render targets within rectangles from
-  // ResolveInfo::GetCopyEdramTileSpan to edram_buffer_.
+  // ResolveInfo::GetCopyEdramTileSpan to edram_buffer_ - with the plain 1x1
+  // tile layout if native_layout is set.
   void DumpRenderTargets(uint32_t dump_base, uint32_t dump_row_length_used,
-                         uint32_t dump_rows, uint32_t dump_pitch);
+                         uint32_t dump_rows, uint32_t dump_pitch,
+                         bool native_layout);
 
   bool gamma_render_target_as_unorm16_ = false;
 
   bool depth_unorm24_vulkan_format_supported_ = false;
   bool depth_float24_round_ = false;
+  bool depth_float24_convert_in_pixel_shader_ = false;
 
   bool msaa_2x_attachments_supported_ = false;
   bool msaa_2x_no_attachments_supported_ = false;
+
+  // Indexed by subpass_has_attachments, then whether MSAA is 4x.
+  // sampleLocationsCount is 0 when using the default sample locations.
+  VkSampleLocationsInfoEXT sample_locations_info_[2][2] = {};
+  VkSampleLocationEXT sample_locations_[2][2][4];
 
   // VK_NULL_HANDLE if failed to create.
   std::unordered_map<RenderPassKey, VkRenderPass, RenderPassKey::Hasher>

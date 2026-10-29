@@ -10,6 +10,8 @@
 #ifndef XENIA_KERNEL_XEVENT_H_
 #define XENIA_KERNEL_XEVENT_H_
 
+#include <mutex>
+
 #include "xenia/base/threading.h"
 #include "xenia/kernel/xobject.h"
 #include "xenia/xbox.h"
@@ -31,7 +33,7 @@ class XEvent : public XObject {
   ~XEvent() override;
 
   void Initialize(bool manual_reset, bool initial_state);
-  void InitializeNative(void* native_ptr, X_DISPATCH_HEADER* header);
+  void InitializeNative(void* native_ptr, const X_DISPATCH_HEADER* header);
 
   int32_t Set(uint32_t priority_increment, bool wait);
   int32_t Pulse(uint32_t priority_increment, bool wait);
@@ -51,10 +53,15 @@ class XEvent : public XObject {
 
  protected:
   xe::threading::WaitHandle* GetWaitHandle() override { return event_.get(); }
+  void WaitCallback() override;
+  void SyncFromGuest() override;
 
  private:
   bool manual_reset_ = false;
   std::unique_ptr<xe::threading::Event> event_;
+
+  std::mutex state_lock_;
+  bool host_signaled_ = false;
 };
 
 }  // namespace kernel

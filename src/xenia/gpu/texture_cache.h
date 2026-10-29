@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <type_traits>
 #include <unordered_map>
 
 #include "xenia/base/assert.h"
@@ -97,7 +98,13 @@ class TextureCache {
   virtual void BeginSubmission(uint64_t new_submission_index);
   virtual void BeginFrame();
 
-  void MarkRangeAsResolved(uint32_t start_unscaled, uint32_t length_unscaled);
+  // Marks the range as containing resolved data and invalidates textures
+  // overlapping it. resolution_scaled is whether the data went to the scaled
+  // resolve address space, or to shared memory, such as resolves done at
+  // native resolution when a scale threshold is set. The latter clears the
+  // scaled state of the range.
+  void MarkRangeAsResolved(uint32_t start_unscaled, uint32_t length_unscaled,
+                           bool resolution_scaled);
   // Ensures the memory backing the range in the scaled resolve address space is
   // allocated and returns whether it is.
   virtual bool EnsureScaledResolveMemoryCommitted(
@@ -199,13 +206,8 @@ class TextureCache {
     uint32_t is_valid : 1;  // 98
 
     TextureKey() { MakeInvalid(); }
-    TextureKey(const TextureKey& key) {
-      std::memcpy(this, &key, sizeof(*this));
-    }
-    TextureKey& operator=(const TextureKey& key) {
-      std::memcpy(this, &key, sizeof(*this));
-      return *this;
-    }
+    TextureKey(const TextureKey&) = default;
+    TextureKey& operator=(const TextureKey&) = default;
     void MakeInvalid() {
       // Zero everything, including the padding, for a stable hash.
       std::memset(this, 0, sizeof(*this));
@@ -223,6 +225,17 @@ class TextureCache {
       return depth_or_array_size_minus_1 + 1;
     }
 
+    // Returns true if this is a wide 1D texture (> 8192 wide) mapped to 2D.
+    bool IsWide1D() const {
+      return dimension == xenos::DataDimension::k1D && height_minus_1 > 0;
+    }
+    uint32_t Get1DWidth() const {
+      if (IsWide1D()) {
+        return GetWidth() * GetHeight();
+      }
+      return GetWidth();
+    }
+
     texture_util::TextureGuestLayout GetGuestLayout() const {
       return texture_util::GetGuestTextureLayout(
           dimension, pitch, GetWidth(), GetHeight(), GetDepthOrArraySize(),
@@ -235,6 +248,10 @@ class TextureCache {
     }
     void LogAction(const char* action) const;
   };
+  static_assert(
+      std::is_trivially_copyable_v<TextureKey>,
+      "TextureKey is compared and hashed by raw bytes; a trivial copy "
+      "is required so padding is carried and stays zero.");
 
   class Texture {
    public:

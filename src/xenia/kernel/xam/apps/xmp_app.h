@@ -56,6 +56,14 @@ struct XMP_SONGDESCRIPTOR {
 };
 static_assert_size(XMP_SONGDESCRIPTOR, 36);
 
+struct XMP_UNK_SONG_STRUCT {
+  xe::be<uint32_t> unk1;  // 0x0 - 1
+  uint8_t data1[0x2C];    // 0x4
+  xe::be<uint32_t> unk2;  // 0x30 - 3
+  uint8_t unknown[0x460];
+};
+static_assert_size(XMP_UNK_SONG_STRUCT, 0x494);
+
 constexpr uint32_t kMaxXmpMetadataStringLength = 40;
 
 struct XMP_SONGINFO {
@@ -74,6 +82,15 @@ struct XMP_SONGINFO {
 };
 static_assert_size(XMP_SONGINFO, 0x3E0);
 
+struct MSAL_MEDIASOURCEINFO {
+  uint8_t data1[0x28];     // 0x0
+  xe::be<uint32_t> unkn1;  // 0x28 - 1, 6, 7
+  xe::be<uint32_t> unkn2;  // 0x2C - 2, flag?
+  xe::be<uint32_t> unkn3;  // 0x30 - 1, 5
+  uint8_t unknown[0x80];   // 0x34
+};
+static_assert_size(MSAL_MEDIASOURCEINFO, 0xB4);
+
 struct XMP_PLAY_TITLE_PLAYLIST {
   xe::be<apu::XMP_CLIENT> xmp_client;
   xe::be<uint32_t> storage_ptr;
@@ -83,7 +100,7 @@ static_assert_size(XMP_PLAY_TITLE_PLAYLIST, 0xC);
 
 struct XMP_STOP {
   xe::be<apu::XMP_CLIENT> xmp_client;
-  xe::be<uint32_t> allow_restart;
+  xe::be<uint32_t> no_wait;
 };
 static_assert_size(XMP_STOP, 0x8);
 
@@ -128,8 +145,8 @@ static_assert_size(XMP_CREATE_TITLE_PLAYLIST, 0x24);
 
 struct XMP_GET_CURRENT_SONG {
   xe::be<apu::XMP_CLIENT> xmp_client;
-  xe::be<uint32_t> unk_ptr;
-  xe::be<uint32_t> info_ptr;
+  xe::be<uint32_t> unk_ptr;   // XMP_UNK_SONG_STRUCT
+  xe::be<uint32_t> info_ptr;  // XMP_SONGINFO
 };
 static_assert_size(XMP_GET_CURRENT_SONG, 0xC);
 
@@ -156,7 +173,7 @@ static_assert_size(XMP_GET_PLAYBACK_CONTROLLER, 0xC);
 struct XMP_CREATE_USER_PLAYLIST_ENUMERATOR {
   xe::be<apu::XMP_CLIENT> xmp_client;
   xe::be<uint32_t> flags;
-  xe::be<uint32_t> object_ptr;
+  xe::be<uint32_t> private_enum_structure_ptr;
 };
 static_assert_size(XMP_CREATE_USER_PLAYLIST_ENUMERATOR, 0xC);
 
@@ -194,6 +211,13 @@ struct XMP_DASH_INIT {
 };
 static_assert_size(XMP_DASH_INIT, 0x18);
 
+struct XMP_GET_NUM_SONGS_IN_TITLE_PLAYLIST {
+  xe::be<apu::XMP_CLIENT> xmp_client;
+  xe::be<uint32_t> playlist_ptr;
+  xe::be<uint32_t> song_count_ptr;
+};
+static_assert_size(XMP_GET_NUM_SONGS_IN_TITLE_PLAYLIST, 0xC);
+
 struct XMP_CAPTURE_OUTPUT {
   xe::be<apu::XMP_CLIENT> xmp_client;
   xe::be<uint32_t> callback;
@@ -209,6 +233,13 @@ struct XMP_SET_MEDIA_SOURCE_WORKSPACE {
   xe::be<uint32_t> storage_length;
 };
 static_assert_size(XMP_SET_MEDIA_SOURCE_WORKSPACE, 0x10);
+
+struct XMP_GET_MEDIA_SOURCE {
+  xe::be<apu::XMP_CLIENT> xmp_client;
+  xe::be<uint32_t> unk1;
+  xe::be<uint32_t> media_resources_ptr;  // *MSAL_MEDIASOURCEINFO
+};
+static_assert_size(XMP_GET_MEDIA_SOURCE, 0xC);
 
 struct XMP_GET_DASH_INIT_STATE {
   xe::be<apu::XMP_CLIENT> xmp_client;
@@ -269,13 +300,25 @@ class XmpApp : public App {
                                    uint32_t flags, uint32_t out_song_handles,
                                    uint32_t out_playlist_handle);
   X_HRESULT XMPDeleteTitlePlaylist(uint32_t playlist_handle);
-  X_HRESULT XMPPlayTitlePlaylist(uint32_t playlist_handle,
+  X_HRESULT XMPPlayTitlePlaylist(apu::XMP_CLIENT xmp_client,
+                                 uint32_t playlist_handle,
                                  uint32_t song_handle);
-  X_HRESULT XMPContinue();
-  X_HRESULT XMPStop(uint32_t unk);
-  X_HRESULT XMPPause();
-  X_HRESULT XMPNext();
-  X_HRESULT XMPPrevious();
+  X_HRESULT XMPAccessCheck(apu::XMP_CLIENT xmp_client);
+  X_HRESULT XMPContinue(apu::XMP_CLIENT xmp_client);
+  X_HRESULT XMPStop(apu::XMP_CLIENT xmp_client, bool no_wait);
+  X_HRESULT XMPPause(apu::XMP_CLIENT xmp_client);
+  X_HRESULT XMPNext(apu::XMP_CLIENT xmp_client);
+  X_HRESULT XMPPrevious(apu::XMP_CLIENT xmp_client);
+  X_HRESULT XMPSetPlaybackBehavior(apu::XMP_CLIENT xmp_client,
+                                   PlaybackMode playback_mode,
+                                   RepeatMode repeat_mode,
+                                   PlaybackFlags playback_flags);
+  X_HRESULT XMPGetPlaybackBehavior(apu::XMP_CLIENT xmp_client,
+                                   uint32_t playback_mode_ptr,
+                                   uint32_t repeat_mode_ptr,
+                                   uint32_t playback_flags_ptr);
+  X_HRESULT XMPSetVolume(apu::XMP_CLIENT xmp_client, float volume);
+  X_HRESULT XMPGetVolume(apu::XMP_CLIENT xmp_client, uint32_t volume_ptr);
   X_HRESULT XMPGetTitlePlaylistBufferSize(apu::XMP_CLIENT xmp_client,
                                           uint32_t song_count,
                                           uint32_t storage_ptr);

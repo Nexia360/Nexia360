@@ -40,17 +40,17 @@ DEFINE_uint32(
     texture_cache_memory_limit_soft, 384,
     "Maximum host texture memory usage (in megabytes) above which old textures "
     "will be destroyed.",
-    "GPU");
+    "GPU.Debug");
 DEFINE_uint32(
     texture_cache_memory_limit_soft_lifetime, 30,
     "Seconds a texture should be unused to be considered old enough to be "
     "deleted if texture memory usage exceeds texture_cache_memory_limit_soft.",
-    "GPU");
+    "GPU.Debug");
 DEFINE_uint32(
     texture_cache_memory_limit_hard, 768,
     "Maximum host texture memory usage (in megabytes) above which textures "
     "will be destroyed as soon as possible.",
-    "GPU");
+    "GPU.Debug");
 DEFINE_uint32(
     texture_cache_memory_limit_render_to_texture, 24,
     "Part of the host texture memory budget (in megabytes) that will be scaled "
@@ -60,11 +60,11 @@ DEFINE_uint32(
     "render-to-texture (resolve) targets and 384 - 24 = 360 MB of regular "
     "textures - so with 2x2 resolution scaling, the soft limit will be 360 + "
     "96 MB, and with 3x3, it will be 360 + 216 MB.",
-    "GPU");
+    "GPU.Debug");
 DEFINE_bool(tiled_shared_memory, true,
             "Enable tiled/sparse resources for efficient large address space "
             "support. Disable for graphics debugger compatibility.",
-            "GPU");
+            "GPU.Debug");
 
 namespace xe {
 namespace gpu {
@@ -266,7 +266,8 @@ void TextureCache::BeginFrame() {
 }
 
 void TextureCache::MarkRangeAsResolved(uint32_t start_unscaled,
-                                       uint32_t length_unscaled) {
+                                       uint32_t length_unscaled,
+                                       bool resolution_scaled) {
   if (length_unscaled == 0) {
     return;
   }
@@ -287,8 +288,17 @@ void TextureCache::MarkRangeAsResolved(uint32_t start_unscaled,
       if (i == block_last && (page_last & 31) != 31) {
         add_bits &= (UINT32_C(1) << ((page_last & 31) + 1)) - 1;
       }
-      scaled_resolve_pages_[i] |= add_bits;
-      scaled_resolve_pages_l2_[i >> 6] |= UINT64_C(1) << (i & 63);
+      if (resolution_scaled) {
+        scaled_resolve_pages_[i] |= add_bits;
+        scaled_resolve_pages_l2_[i >> 6] |= UINT64_C(1) << (i & 63);
+      } else {
+        // Native resolve data is in shared memory.
+        // Clear the same way the CPU write watch does.
+        scaled_resolve_pages_[i] &= ~add_bits;
+        if (!scaled_resolve_pages_[i]) {
+          scaled_resolve_pages_l2_[i >> 6] &= ~(UINT64_C(1) << (i & 63));
+        }
+      }
     }
   }
 
@@ -1022,15 +1032,28 @@ void TextureCache::BindingInfoFromFetchConstant(
     // dimensions for LOD queries. Zero extents skip the upload and watches.
     return;
   }
+  uint32_t pitch = fetch.pitch;
   if (fetch.dimension == xenos::DataDimension::k1D) {
     bool is_invalid_1d = false;
-    // TODO(Triang3l): Support long 1D textures.
+    // Handle wide 1D textures (> 8192 wide) by mapping them to a 2D grid.
+    // The shaders will convert 1D coordinates to 2D using the original width
+    // from the fetch constant.
     if (width_minus_1 >= xenos::kTexture2DCubeMaxWidthHeight) {
-      XELOGE(
-          "1D texture is too wide ({}) - ignoring! Report the game to Xenia "
-          "developers",
-          width_minus_1 + 1);
-      is_invalid_1d = true;
+      uint32_t total_width = width_minus_1 + 1;
+      uint32_t row_width = xenos::kTexture2DCubeMaxWidthHeight;
+      uint32_t num_rows = (total_width + row_width - 1) / row_width;
+      num_rows = std::min(num_rows, xenos::kTexture1DWideMaxRows);
+      width_minus_1 = row_width - 1;
+      height_minus_1 = num_rows - 1;
+      // Disable mipmaps for wide 1D textures. The shader's coordinate remapping
+      // assumes base level dimensions (num_rows), but at mip level N, the 2D
+      // texture becomes (8192 >> N) x (num_rows >> N), which breaks the mapping
+      // when num_rows >> N becomes 1 while the shader still expects multiple
+      // rows. Mipmaps are rarely used with 1D lookup textures anyway.
+      mip_max_level = 0;
+      // The guest pitch is meaningless for a texture the guest believes is 1D
+      // (the 9 bit field couldn't even express the line width).
+      pitch = xenos::kTexture2DCubeMaxWidthHeight >> 5;
     }
     assert_false(fetch.tiled);
     if (fetch.tiled) {
@@ -1061,7 +1084,7 @@ void TextureCache::BindingInfoFromFetchConstant(
   key_out.width_minus_1 = width_minus_1;
   key_out.height_minus_1 = height_minus_1;
   key_out.depth_or_array_size_minus_1 = depth_or_array_size_minus_1;
-  key_out.pitch = fetch.pitch;
+  key_out.pitch = pitch;
   key_out.mip_max_level = mip_max_level;
   key_out.tiled = fetch.tiled;
   key_out.packed_mips = fetch.packed_mips;

@@ -187,6 +187,18 @@ uint8_t xeXamGetCountryFromOnlineCountry(uint8_t id) {
   return id < xe::countof(table) ? table[id] : 0;
 }
 
+uint32_t xeXamGetOnlineCountryFeatures(uint8_t id) {
+  const auto country_id = static_cast<XOnlineCountry>(id);
+
+  for (const auto& [country, features] : kOnlineCountryFeatures) {
+    if (country == country_id) {
+      return features;
+    }
+  }
+
+  return 0x80000000;
+}
+
 uint8_t xeXamGetLocaleFromCountry(uint8_t id) {
   static uint8_t constexpr table[] = {
       0,  43, 0, 0, 40, 2,  1,  0,  3,  0, 0, 0, 0,  4,  0,  0,  5,  0,  33,
@@ -416,6 +428,21 @@ dword_result_t XamProfileGetLiveLegalLocale_entry(qword_t xuid,
 }
 DECLARE_XAM_EXPORT1(XamProfileGetLiveLegalLocale, kLocale, kImplemented);
 
+dword_result_t XapipGetLocale_entry(dword_t buffer_length,
+                                    lpstring_t buffer_ptr) {
+  char16_t buffer[7];
+  auto result = XamProfileGetLiveLegalLocale_entry(0, 7, buffer);
+  if (result == X_E_SUCCESS) {
+    // XamProfileGetLiveLegalLocale writes guest (big-endian) characters.
+    string_util::copy_truncating(
+        buffer_ptr, to_utf8(xe::load_and_swap<std::u16string>(buffer)),
+        buffer_length);
+  }
+
+  return result;
+}
+DECLARE_XAM_EXPORT1(XapipGetLocale, kLocale, kImplemented);
+
 dword_result_t XamGetLocaleString_entry(dword_t id, dword_t buffer_length,
                                         lpu16string_t buffer) {
   if (buffer_length >= 0x80000000u) {
@@ -582,6 +609,11 @@ dword_result_t XamGetCountryFromOnlineCountry_entry(dword_t id) {
 }
 DECLARE_XAM_EXPORT1(XamGetCountryFromOnlineCountry, kLocale, kImplemented);
 
+dword_result_t XamGetOnlineCountryFeatures_entry(dword_t id) {
+  return xeXamGetOnlineCountryFeatures(static_cast<uint8_t>(id));
+}
+DECLARE_XAM_EXPORT1(XamGetOnlineCountryFeatures, kLocale, kImplemented);
+
 dword_result_t XamGetLocaleEx_entry(dword_t max_country_id,
                                     dword_t max_locale_id) {
   return xeXamGetLocaleEx(static_cast<uint8_t>(max_country_id),
@@ -623,7 +655,8 @@ void XFormatDateString(uint64_t filetime, uint32_t buffer_address,
                          static_cast<unsigned>(year_month_day.month()),
                          static_cast<unsigned>(year_month_day.day()),
                          static_cast<int>(year_month_day.year()));
-  xe::string_util::copy_and_swap_truncating(buffer, str, buffer_size);
+  const uint32_t char_count = buffer_size / sizeof(char16_t);
+  xe::string_util::copy_and_swap_truncating(buffer, str, char_count);
 }
 
 void XamFormatDateString_entry(dword_t locale_format, qword_t filetime,
@@ -650,7 +683,8 @@ void XFormatTimeString(uint64_t filetime, uint32_t buffer_address,
 
   auto str = fmt::format(u"{:02d}:{:02d}", time.hours().count(),
                          time.minutes().count());
-  xe::string_util::copy_and_swap_truncating(buffer, str, buffer_size);
+  const uint32_t char_count = buffer_size / sizeof(char16_t);
+  xe::string_util::copy_and_swap_truncating(buffer, str, char_count);
 }
 
 void XamFormatTimeString_entry(dword_t user_index, qword_t filetime,
@@ -728,6 +762,27 @@ dword_result_t XamGetLanguage_entry() {
 }
 DECLARE_XAM_EXPORT1(XamGetLanguage, kNone, kImplemented);
 
+dword_result_t XTLGetLanguageV2_entry() {
+  auto desired_language =
+      static_cast<XLanguage>(kernel_state()->xconfig()->ReadSetting<uint32_t>(
+          XCONFIG_USER_CATEGORY,
+          XCONFIG_USER_CATEGORY_ENTRIES::XCONFIG_USER_LANGUAGE));
+
+  uint32_t region = xeXGetGameRegion();
+  if (desired_language < XLanguage::kSwedish) {
+    return static_cast<uint32_t>(desired_language);
+  }
+  if ((region & 0xff00) != 0x100) {
+    return static_cast<uint32_t>(XLanguage::kEnglish);
+  }
+  if (region == 0x101) {
+    return static_cast<uint32_t>(XLanguage::kJapanese);
+  } else {
+    return static_cast<uint32_t>(XLanguage::kKorean);
+  }
+}
+DECLARE_XAM_EXPORT1(XTLGetLanguageV2, kNone, kImplemented);
+
 pointer_result_t XamGetLanguageLocaleFallbackString_entry(dword_t language) {
   assert_false(language >= static_cast<uint32_t>(XLanguage::kMaxLanguages));
   return kernel_state()->xam_state()->GetLanguageFallbackAddress(language);
@@ -773,9 +828,10 @@ dword_result_t XamGetLanguageTypeface_entry(dword_t language,
 DECLARE_XAM_EXPORT1(XamGetLanguageTypeface, kNone, kImplemented);
 
 pointer_result_t XamGetLanguageTypefacePatch_entry(dword_t language) {
-  return 0;
+  assert_false(language >= static_cast<uint32_t>(XLanguage::kMaxLanguages));
+  return kernel_state()->xam_state()->GetLanguageTypefacePatch(language);
 }
-DECLARE_XAM_EXPORT1(XamGetLanguageTypefacePatch, kNone, kStub);
+DECLARE_XAM_EXPORT1(XamGetLanguageTypefacePatch, kNone, kSketchy);
 
 dword_result_t XamGetCountry_entry() {
   return kernel_state()->xconfig()->ReadSetting<uint32_t>(

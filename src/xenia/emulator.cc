@@ -115,6 +115,7 @@ DEFINE_int32(priority_class, 0,
              "General");
 
 DECLARE_bool(upnp);
+DECLARE_int32(console_type);
 
 namespace xe {
 using namespace xe::literals;
@@ -237,7 +238,7 @@ Emulator::~Emulator() {
 
 X_STATUS Emulator::Setup(
     ui::Window* display_window, ui::ImGuiDrawer* imgui_drawer,
-    bool require_cpu_backend,
+    bool require_cpu_backend, bool with_presentation,
     std::function<std::unique_ptr<apu::AudioSystem>(cpu::Processor*)>
         audio_system_factory,
     std::function<std::unique_ptr<gpu::GraphicsSystem>()>
@@ -362,7 +363,11 @@ X_STATUS Emulator::Setup(
   // HLE kernel modules.
   LOAD_KERNEL_MODULE(xboxkrnl::XboxkrnlModule);
   LOAD_KERNEL_MODULE(xam::XamModule);
-  LOAD_KERNEL_MODULE(xbdm::XbdmModule);
+
+  // 415608C3 anti-cheat checks if XDBM is loaded.
+  if (cvars::console_type >= 0) {
+    LOAD_KERNEL_MODULE(xbdm::XbdmModule);
+  }
 #undef LOAD_KERNEL_MODULE
   plugin_loader_ = std::make_unique<xe::patcher::PluginLoader>(
       kernel_state_.get(), storage_root() / "plugins");
@@ -372,7 +377,7 @@ X_STATUS Emulator::Setup(
   result = graphics_system_->Setup(
       processor_.get(), kernel_state_.get(),
       display_window_ ? &display_window_->app_context() : nullptr,
-      display_window_ != nullptr);
+      with_presentation);
   if (result) {
     XELOGE("{}: Failed to setup graphics_system!", __func__);
     return result;
@@ -464,6 +469,10 @@ const std::unique_ptr<vfs::Device> Emulator::CreateVfsDevice(
     const std::filesystem::path& path, const std::string_view mount_path) {
   // Must check if the type has changed e.g. XamSwapDisc
   switch (GetFileSignature(path)) {
+    case FileSignatureType::XEX0:
+    case FileSignatureType::XEXQ:
+    case FileSignatureType::XEXH:
+    case FileSignatureType::XEX25:
     case FileSignatureType::XEX1:
     case FileSignatureType::XEX2:
     case FileSignatureType::ELF: {
@@ -474,8 +483,8 @@ const std::unique_ptr<vfs::Device> Emulator::CreateVfsDevice(
     case FileSignatureType::LIVE:
     case FileSignatureType::CON:
     case FileSignatureType::PIRS: {
-      return vfs::XContentContainerDevice::CreateContentDevice(mount_path,
-                                                               path);
+      return kernel_state_->content_manager()->MountPackageUnregistered(
+          mount_path, kernel_state_->content_manager()->OpenPackage(path));
     } break;
     case FileSignatureType::XISO: {
       return std::make_unique<vfs::DiscImageDevice>(mount_path, path);
@@ -483,6 +492,7 @@ const std::unique_ptr<vfs::Device> Emulator::CreateVfsDevice(
     case FileSignatureType::ZAR: {
       return std::make_unique<vfs::DiscZarchiveDevice>(mount_path, path);
     } break;
+    case FileSignatureType::XBE:
     case FileSignatureType::EXE:
     case FileSignatureType::Unknown:
     default:
@@ -621,6 +631,9 @@ X_STATUS Emulator::MountPath(const std::filesystem::path& path,
         "corrupted.");
     return X_STATUS_NO_SUCH_FILE;
   }
+
+  const std::string mpath = std::string(device->mount_path());
+
   // The previous title's device is still registered here - TerminateTitle only
   // drops UPDATE: - and RegisterDevice appends without replacing while
   // ResolvePath takes the FIRST device whose mount path matches. So mounting
@@ -629,7 +642,7 @@ X_STATUS Emulator::MountPath(const std::filesystem::path& path,
   // from anywhere but the previous title's own folder failed with
   // "File not found: GAME:\<name>". The title is already gone by the time
   // anything reaches here, so the stale mount goes with it.
-  file_system_->UnregisterDevice(mount_path);
+  file_system_->UnregisterDevice(mpath);
   if (!file_system_->RegisterDevice(std::move(device))) {
     XELOGE("Unable to register the input file to {}.", mount_path);
     return X_STATUS_NO_SUCH_FILE;
@@ -640,8 +653,8 @@ X_STATUS Emulator::MountPath(const std::filesystem::path& path,
   file_system_->UnregisterSymbolicLink("plugins:");
 
   // Create symlinks to the device.
-  file_system_->RegisterSymbolicLink(kDefaultGameSymbolicLink, mount_path);
-  file_system_->RegisterSymbolicLink(kDefaultPartitionSymbolicLink, mount_path);
+  file_system_->RegisterSymbolicLink(kDefaultGameSymbolicLink, mpath);
+  file_system_->RegisterSymbolicLink(kDefaultPartitionSymbolicLink, mpath);
 
   return X_STATUS_SUCCESS;
 }
@@ -670,6 +683,14 @@ Emulator::FileSignatureType Emulator::GetFileSignature(
   fclose(file);
 
   switch (magic_value) {
+    case xe::cpu::kXEX0Signature:
+      return FileSignatureType::XEX0;
+    case xe::cpu::kXEXQSignature:
+      return FileSignatureType::XEXQ;
+    case xe::cpu::kXEXHSignature:
+      return FileSignatureType::XEXH;
+    case xe::cpu::kXEX25Signature:
+      return FileSignatureType::XEX25;
     case xe::cpu::kXEX1Signature:
       return FileSignatureType::XEX1;
     case xe::cpu::kXEX2Signature:
@@ -682,6 +703,8 @@ Emulator::FileSignatureType Emulator::GetFileSignature(
       return FileSignatureType::PIRS;
     case xe::vfs::kXSFSignature:
       return FileSignatureType::XISO;
+    case xe::cpu::kXBESignature:
+      return FileSignatureType::XBE;
     case xe::cpu::kElfSignature:
       return FileSignatureType::ELF;
     default:
@@ -724,6 +747,10 @@ X_STATUS Emulator::LaunchPath(const std::filesystem::path& path) {
   X_STATUS mount_result = X_STATUS_SUCCESS;
 
   switch (GetFileSignature(path)) {
+    case FileSignatureType::XEX0:
+    case FileSignatureType::XEXQ:
+    case FileSignatureType::XEXH:
+    case FileSignatureType::XEX25:
     case FileSignatureType::XEX1:
     case FileSignatureType::XEX2:
     case FileSignatureType::ELF: {
@@ -752,6 +779,10 @@ X_STATUS Emulator::LaunchPath(const std::filesystem::path& path) {
     case FileSignatureType::XISO: {
       mount_result = MountPath(path, "\\Device\\Cdrom0");
       return mount_result ? mount_result : LaunchDiscImage(path);
+    } break;
+    case FileSignatureType::XBE: {
+      XELOGE("OG Xbox games are not supported");
+      return X_STATUS_NOT_SUPPORTED;
     } break;
     case FileSignatureType::ZAR: {
       mount_result = MountPath(path, "\\Device\\Cdrom0");
@@ -1044,7 +1075,7 @@ X_STATUS Emulator::DataMigration(const uint64_t xuid) {
   // Everything else goes to common
   const auto titles_to_move = xe::filesystem::FilterByName(
       xe::filesystem::ListDirectories(content_root_),
-      std::regex("[A-F0-9]{8}"));
+      std::regex("[A-Fa-f0-9]{8}"));
 
   for (const auto& title : titles_to_move) {
     if (xe::path_to_utf8(title.name) == "FFFE07D1" ||
@@ -1055,7 +1086,7 @@ X_STATUS Emulator::DataMigration(const uint64_t xuid) {
 
     const auto content_type_dirs = xe::filesystem::FilterByName(
         xe::filesystem::ListDirectories(title.path / title.name),
-        std::regex("[A-F0-9]{8}"));
+        std::regex("[A-Fa-f0-9]{8}"));
 
     for (const auto& content_type : content_type_dirs) {
       const std::string used_xuid =
@@ -1193,13 +1224,20 @@ X_STATUS Emulator::ProcessContentPackageHeader(
   installation_info.content_type_ = XContentType::kInvalid;
   installation_info.data_installation_path_ = xe::path_to_utf8(path.filename());
 
-  const auto header = vfs::XContentContainerDevice::ReadContainerHeader(path);
+  auto package = kernel_state_->content_manager()->OpenPackage(path);
+  if (!package) {
+    installation_info.installation_state_ = InstallState::failed;
+    installation_info.installation_result_ = X_STATUS_INVALID_PARAMETER;
+    installation_info.installation_error_message_ = "Cannot open package!";
+    return X_STATUS_INVALID_PARAMETER;
+  }
+
+  const auto header = package->GetContainerHeader();
 
   if (!header || !header->content_header.is_magic_valid()) {
     installation_info.installation_state_ = InstallState::failed;
     installation_info.installation_result_ = X_STATUS_INVALID_PARAMETER;
     installation_info.installation_error_message_ = "Invalid Package Type!";
-    XELOGE("Failed to initialize device");
     return X_STATUS_INVALID_PARAMETER;
   }
 
@@ -1214,31 +1252,39 @@ X_STATUS Emulator::ProcessContentPackageHeader(
     xuid = profile->xuid();
   }
 
-  installation_info.data_installation_path_ = fmt::format(
-      "{:016X}/{:08X}/{:08X}/{}", xuid,
-      header->content_metadata.execution_info.title_id.get(),
-      static_cast<uint32_t>(header->content_metadata.content_type.get()),
-      path.filename());
+  installation_info.filename_ = path.filename();
+  installation_info.data_installation_path_ =
+      content_root() /
+      fmt::format(
+          "{:016X}/{:08X}/{:08X}/", xuid,
+          header->content_metadata.execution_info.title_id.get(),
+          static_cast<uint32_t>(header->content_metadata.content_type.get()));
 
-  installation_info.header_installation_path_ = fmt::format(
-      "{:016X}/{:08X}/Headers/{:08X}/{}", xuid,
-      header->content_metadata.execution_info.title_id.get(),
-      static_cast<uint32_t>(header->content_metadata.content_type.get()),
-      path.filename());
+  installation_info.header_installation_path_ =
+      content_root() /
+      fmt::format(
+          "{:016X}/{:08X}/Headers/{:08X}/{}.header", xuid,
+          header->content_metadata.execution_info.title_id.get(),
+          static_cast<uint32_t>(header->content_metadata.content_type.get()),
+          path.filename());
 
   installation_info.name_ =
       xe::to_utf8(header->content_metadata.display_name(XLanguage::kEnglish));
+  installation_info.name_.append(
+      fmt::format(" (filename: {})", installation_info.filename_));
+
   installation_info.content_type_ =
       static_cast<XContentType>(header->content_metadata.content_type);
   installation_info.title_id_ =
       header->content_metadata.execution_info.title_id.get();
-  installation_info.content_size_ = header->content_metadata.content_size;
+  installation_info.content_size_ = package->GetPackageSize();
   installation_info.xuid_ = xuid;
   installation_info.installation_state_ = InstallState::pending;
 
   installation_info.icon_ = imgui_drawer_->LoadImGuiIcon(
       std::span<const uint8_t>(header->content_metadata.title_thumbnail,
                                header->content_metadata.title_thumbnail_size));
+
   return X_STATUS_SUCCESS;
 }
 
@@ -1277,10 +1323,10 @@ X_STATUS Emulator::InstallContentPackage(
     }
   }
 
-  std::unique_ptr<vfs::XContentContainerDevice> device =
-      vfs::XContentContainerDevice::CreateContentDevice("", path);
+  auto package =
+      kernel_state_->content_manager()->OpenAndMountPackage(path, "");
 
-  if (!device || !device->Initialize()) {
+  if (!package) {
     installation_info.installation_state_ = InstallState::failed;
     installation_info.installation_error_message_ =
         "Device initialization failed!";
@@ -1303,17 +1349,19 @@ X_STATUS Emulator::InstallContentPackage(
         "Refusing to install a title update for {:08X} while that title is "
         "running",
         installation_info.title_id_);
+    kernel_state_->content_manager()->CloseContentByDeviceName(
+        package->GetDevicePath());
     return X_STATUS_ACCESS_DENIED;
   }
 
   // DLC and saves live inside a title update's own Content folder, not in the
   // global tree - that is where ContentManager resolves them from. Without
   // this redirect an installed add-on lands somewhere the guest never looks.
-  std::filesystem::path installation_path =
-      content_root() / installation_info.data_installation_path_;
+  std::filesystem::path installation_dir =
+      installation_info.data_installation_path_;
 
   std::filesystem::path header_path =
-      content_root() / installation_info.header_installation_path_;
+      installation_info.header_installation_path_;
 
   if (!installation_info.target_update_id_.empty() &&
       installation_info.content_type_ != XContentType::kInstaller &&
@@ -1337,11 +1385,11 @@ X_STATUS Emulator::InstallContentPackage(
     if (!tu_content.empty()) {
       const auto type_str = fmt::format(
           "{:08X}", static_cast<uint32_t>(installation_info.content_type_));
-      const auto file_name = installation_info.path_.filename();
+      std::filesystem::path header_name = installation_info.filename_;
+      header_name += ".header";
 
-      // ExtractContentHeader appends ".header" itself, so pass the bare name.
-      installation_path = tu_content / type_str / file_name;
-      header_path = tu_content / "Headers" / type_str / file_name;
+      installation_dir = tu_content / type_str;
+      header_path = tu_content / "Headers" / type_str / header_name;
     }
   }
 
@@ -1351,6 +1399,8 @@ X_STATUS Emulator::InstallContentPackage(
       installation_info.installation_state_ = InstallState::failed;
       installation_info.installation_error_message_ = ec.message();
       installation_info.installation_result_ = X_STATUS_ACCESS_DENIED;
+      kernel_state_->content_manager()->CloseContentByDeviceName(
+          package->GetDevicePath());
       return X_STATUS_ACCESS_DENIED;
     }
   }
@@ -1360,40 +1410,60 @@ X_STATUS Emulator::InstallContentPackage(
     installation_info.installation_state_ = InstallState::failed;
     installation_info.installation_error_message_ = "Insufficient disk space!";
     installation_info.installation_result_ = X_STATUS_DISK_FULL;
+    kernel_state_->content_manager()->CloseContentByDeviceName(
+        package->GetDevicePath());
     return X_STATUS_DISK_FULL;
   }
 
-  if (std::filesystem::exists(installation_path)) {
+  if (std::filesystem::exists(installation_dir)) {
     // TODO(Gliniak): Popup
     // Do you want to overwrite already existing data?
   } else {
-    std::error_code error_code;
-    std::filesystem::create_directories(installation_path, error_code);
+    std::error_code error_code = xe::filesystem::CreateFolder(installation_dir);
     if (error_code) {
       installation_info.installation_state_ = InstallState::failed;
       installation_info.installation_error_message_ =
           "Cannot Create Content Directory!";
       installation_info.installation_result_ = error_code.value();
+      kernel_state_->content_manager()->CloseContentByDeviceName(
+          package->GetDevicePath());
       return error_code.value();
     }
   }
 
-  installation_info.content_size_ = device->data_size();
   installation_info.installation_state_ = InstallState::installing;
 
-  vfs::VirtualFileSystem::ExtractContentHeader(device.get(), header_path);
+  // A title update stays extracted with its header beside it: the update
+  // library imports it as a folder, reads default.xexp from it and mounts it as
+  // a host path. Everything else read-only is kept as the container.
+  const bool extract_title_update =
+      installation_info.content_type_ == XContentType::kInstaller;
 
-  X_STATUS error_code = vfs::VirtualFileSystem::ExtractContentFiles(
-      device.get(), installation_path,
-      installation_info.currently_installed_size_);
-  if (error_code != X_ERROR_SUCCESS) {
-    installation_info.installation_state_ = InstallState::failed;
-    return error_code;
+  X_STATUS error_code = kernel_state_->content_manager()->InstallContentPackage(
+      package, installation_dir / installation_info.filename_, header_path,
+      installation_info.currently_installed_size_, extract_title_update);
+
+  if (error_code == X_ERROR_SUCCESS && extract_title_update) {
+    // force_extract skips the header, which the library moves with the update.
+    kernel::xam::ContentManager::ExtractContentHeader(
+        header_path, *package->GetContainerHeader());
   }
 
-  installation_info.installation_state_ = InstallState::installed;
-  installation_info.currently_installed_size_ = installation_info.content_size_;
+  if (error_code != X_ERROR_SUCCESS) {
+    installation_info.installation_state_ = InstallState::failed;
+    installation_info.installation_error_message_ =
+        "Cannot install package file!";
+    installation_info.installation_result_ = error_code;
+  } else {
+    installation_info.installation_state_ = InstallState::installed;
+    installation_info.currently_installed_size_ =
+        installation_info.content_size_;
+  }
+
   kernel_state()->BroadcastNotification(kXNotificationLiveContentInstalled, 0);
+
+  kernel_state_->content_manager()->CloseContentByDeviceName(
+      package->GetDevicePath());
 
   if (installation_info.content_type_ == XContentType::kProfile) {
     kernel_state_->xam_state()->profile_manager()->ReloadProfiles();
@@ -1401,11 +1471,12 @@ X_STATUS Emulator::InstallContentPackage(
 
   // Title updates are moved into the per-title library and (by default) linked
   // active, so the user can name and swap between them.
-  if (installation_info.content_type_ == XContentType::kInstaller &&
+  if (error_code == X_ERROR_SUCCESS &&
+      installation_info.content_type_ == XContentType::kInstaller &&
       title_update_manager_) {
     title_update_manager_->ImportFromContent(
         installation_info.title_id_,
-        xe::path_to_utf8(installation_info.data_installation_path_.filename()),
+        xe::path_to_utf8(installation_info.filename_),
         /*auto_activate=*/true, installation_info.title_update_name_);
 
     // Only now is the update actually listable: the move into the per-title
@@ -1414,6 +1485,54 @@ X_STATUS Emulator::InstallContentPackage(
     // reloads its update list on the state alone still sees the old list.
     installation_info.library_import_done_ = true;
   }
+
+  return error_code;
+}
+
+X_STATUS Emulator::ExtractContentPackage(
+    const std::filesystem::path& path, ContentInstallEntry& installation_info) {
+  installation_info.installation_state_ = InstallState::preparing;
+
+  auto package =
+      kernel_state_->content_manager()->OpenAndMountPackage(path, "");
+
+  if (!package) {
+    installation_info.installation_state_ = InstallState::failed;
+    installation_info.installation_error_message_ = "Cannot mount package!";
+    return X_STATUS_INVALID_PARAMETER;
+  }
+
+  const auto disk_space =
+      std::filesystem::space(installation_info.data_installation_path_);
+  if (disk_space.available < installation_info.content_size_ * 1.1f) {
+    installation_info.installation_state_ = InstallState::failed;
+    installation_info.installation_error_message_ = "Insufficient disk space!";
+    installation_info.installation_result_ = X_STATUS_DISK_FULL;
+    kernel_state_->content_manager()->CloseContentByDeviceName(
+        package->GetDevicePath());
+    return X_STATUS_DISK_FULL;
+  }
+
+  installation_info.installation_state_ = InstallState::installing;
+
+  X_STATUS error_code = kernel_state_->content_manager()->InstallContentPackage(
+      package,
+      installation_info.data_installation_path_ / installation_info.filename_,
+      installation_info.header_installation_path_,
+      installation_info.currently_installed_size_, true);
+
+  installation_info.installation_result_ = error_code;
+  installation_info.installation_state_ = error_code == X_STATUS_SUCCESS
+                                              ? InstallState::installed
+                                              : InstallState::failed;
+
+  if (installation_info.currently_installed_size_ < package->GetPackageSize() &&
+      error_code == X_STATUS_SUCCESS) {
+    installation_info.currently_installed_size_ = package->GetPackageSize();
+  }
+
+  kernel_state_->content_manager()->CloseContentByDeviceName(
+      package->GetDevicePath());
 
   return error_code;
 }
@@ -1440,8 +1559,8 @@ X_STATUS Emulator::ExtractZarchivePackage(
   }
 
   uint64_t progress = 0;
-  return vfs::VirtualFileSystem::ExtractContentFiles(device.get(), extract_dir,
-                                                     progress);
+  return vfs::VirtualFileSystem::ExtractDeviceFiles(device.get(), extract_dir,
+                                                    progress);
 }
 
 X_STATUS Emulator::CreateZarchivePackage(
@@ -1716,6 +1835,24 @@ bool Emulator::RestoreFromFile(const std::filesystem::path& path) {
 
 const std::filesystem::path Emulator::GetNewDiscPath(
     std::string window_message) {
+  // GTK only allows widgets to be built on the UI thread, and XamSwapDisc
+  // calls this from a guest thread.
+  ui::Window* window = display_window();
+  if (window && !window->app_context().IsInUIThread()) {
+    std::filesystem::path path;
+    if (!window->app_context().CallInUIThreadSynchronous(
+            [this, &window_message, &path]() {
+              path = ShowDiscPicker(window_message);
+            })) {
+      return std::filesystem::path();
+    }
+    return path;
+  }
+  return ShowDiscPicker(window_message);
+}
+
+const std::filesystem::path Emulator::ShowDiscPicker(
+    std::string window_message) {
   std::filesystem::path path = "";
 
   auto file_picker = xe::ui::FilePicker::Create();
@@ -1827,10 +1964,8 @@ bool Emulator::ExceptionCallback(Exception* ex) {
     return false;
   }
 
-  // Within range. Pause the emulator and eat the exception.
-  Pause();
-
-  // Dump information into the log.
+  // Within range. Dump information into the log before pausing, Pause() can
+  // block (e.g. waiting on the GPU/audio systems) and the dump would be lost.
   auto current_thread = kernel::XThread::GetCurrentThread();
   assert_not_null(current_thread);
 
@@ -1955,6 +2090,11 @@ bool Emulator::ExceptionCallback(Exception* ex) {
                     context->v[i].u32[2], context->v[i].u32[3]));
   }
   XELOGE("{}", crash_msg);
+  FlushLog();
+
+  // Pause the emulator and eat the exception.
+  Pause();
+
   std::string crash_dlg = fmt::format(
       "The guest has crashed.\n\n"
       "Xenia has now paused itself.\n\n"
@@ -2013,9 +2153,8 @@ void Emulator::AddGameConfigLoadCallback(GameConfigLoadCallback* callback) {
   assert_true(!display_window_ ||
               display_window_->app_context().IsInUIThread());
   // Check if already added.
-  if (std::find(game_config_load_callbacks_.cbegin(),
-                game_config_load_callbacks_.cend(),
-                callback) != game_config_load_callbacks_.cend()) {
+  if (std::ranges::find(std::as_const(game_config_load_callbacks_), callback) !=
+      game_config_load_callbacks_.cend()) {
     return;
   }
   game_config_load_callbacks_.push_back(callback);
@@ -2026,8 +2165,8 @@ void Emulator::RemoveGameConfigLoadCallback(GameConfigLoadCallback* callback) {
   // Game config load callbacks handling is entirely in the UI thread.
   assert_true(!display_window_ ||
               display_window_->app_context().IsInUIThread());
-  auto it = std::find(game_config_load_callbacks_.cbegin(),
-                      game_config_load_callbacks_.cend(), callback);
+  auto it =
+      std::ranges::find(std::as_const(game_config_load_callbacks_), callback);
   if (it == game_config_load_callbacks_.cend()) {
     return;
   }
@@ -2060,12 +2199,13 @@ std::string Emulator::FindLaunchModule() {
           kDefaultGameSymbolicLink);
 
       file_path /= std::filesystem::path(xam->loader_data().launch_path);
+      const auto registered_path =
+          xe::path_to_utf8(file_path.parent_path()) + kGuestPathSeparator;
 
       kernel_state_->file_system()->RegisterSymbolicLink(
-          kDefaultPartitionSymbolicLink,
-          xe::path_to_utf8(file_path.parent_path()));
+          kDefaultPartitionSymbolicLink, registered_path);
       kernel_state_->file_system()->RegisterSymbolicLink(
-          kDefaultGameSymbolicLink, xe::path_to_utf8(file_path.parent_path()));
+          kDefaultGameSymbolicLink, registered_path);
 
       return xe::path_to_utf8(file_path);
     }

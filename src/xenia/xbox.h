@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <map>
 #include <string>
+#include <utility>
 
 #include "xenia/base/assert.h"
 // clang-format off
@@ -125,11 +126,13 @@ typedef uint32_t X_HRESULT;
 #define X_E_FALSE                               static_cast<X_HRESULT>(0x80000000L)
 #define X_E_SUCCESS                             X_HRESULT_FROM_WIN32(X_ERROR_SUCCESS)
 #define X_E_ACCESS_DENIED                       X_HRESULT_FROM_WIN32(X_ERROR_ACCESS_DENIED)
+#define X_E_PENDING                             X_HRESULT_FROM_WIN32(0x8000000AL)
 #define X_E_NOT_IMPLEMENTED                     static_cast<X_HRESULT>(0x80004001L)
 #define X_E_FAIL                                static_cast<X_HRESULT>(0x80004005L)
 #define X_E_NO_MORE_FILES                       X_HRESULT_FROM_WIN32(X_ERROR_NO_MORE_FILES)
 #define X_E_NOT_SUPPORTED                       X_HRESULT_FROM_WIN32(X_ERROR_NOT_SUPPORTED)
 #define X_E_INVALIDARG                          X_HRESULT_FROM_WIN32(X_ERROR_INVALID_PARAMETER)
+#define X_E_INSUFFICIENT_BUFFER                 X_HRESULT_FROM_WIN32(X_ERROR_INSUFFICIENT_BUFFER)
 #define X_E_DEVICE_NOT_CONNECTED                X_HRESULT_FROM_WIN32(X_ERROR_DEVICE_NOT_CONNECTED)
 #define X_E_NOTFOUND                            X_HRESULT_FROM_WIN32(X_ERROR_NOT_FOUND)
 #define X_E_NO_SUCH_USER                        X_HRESULT_FROM_WIN32(X_ERROR_NO_SUCH_USER)
@@ -311,7 +314,7 @@ enum FIRMWARE_REENTRY {
 
 // Found by dumping the kSectionStringTable sections of various games:
 // and the language list at
-// https://free60project.github.io/wiki/Profile_Account/
+// https://free60.org/System-Software/Profile_Account/
 enum class XLanguage : uint32_t {
   kInvalid = 0,
   kEnglish = 1,
@@ -446,8 +449,60 @@ enum class XOnlineCountry : uint32_t {
   kZimbabwe = 110
 };
 
+// {country, features}
+inline constexpr std::pair<XOnlineCountry, uint32_t> kOnlineCountryFeatures[] =
+    {
+        {XOnlineCountry::kArgentina, 4},
+        {XOnlineCountry::kAustralia, 12},
+        {XOnlineCountry::kAustria, 12},
+        {XOnlineCountry::kBelgium, 12},
+        {XOnlineCountry::kBrazil, 4},
+        {XOnlineCountry::kCanada, 12},
+        {XOnlineCountry::kChile, 0},
+        {XOnlineCountry::kColombia, 0},
+        {XOnlineCountry::kCzechRepublic, 0},
+        {XOnlineCountry::kDenmark, 12},
+        {XOnlineCountry::kEgypt, 0},
+        {XOnlineCountry::kFinland, 12},
+        {XOnlineCountry::kFrance, 12},
+        {XOnlineCountry::kGermany, 12},
+        {XOnlineCountry::kGreece, 0},
+        {XOnlineCountry::kHongKong, 4},
+        {XOnlineCountry::kHungary, 0},
+        {XOnlineCountry::kIndia, 0},
+        {XOnlineCountry::kIreland, 12},
+        {XOnlineCountry::kIsrael, 0},
+        {XOnlineCountry::kItaly, 12},
+        {XOnlineCountry::kJapan, 8},
+        {XOnlineCountry::kKorea, 4},
+        {XOnlineCountry::kMalaysia, 0},
+        {XOnlineCountry::kMexico, 12},
+        {XOnlineCountry::kNetherlands, 12},
+        {XOnlineCountry::kNewZealand, 12},
+        {XOnlineCountry::kNorway, 12},
+        {XOnlineCountry::kPoland, 4},
+        {XOnlineCountry::kPortugal, 4},
+        // Not a public country, xam lists it with no features.
+        {static_cast<XOnlineCountry>(236), 0},
+        {XOnlineCountry::kRussianFederation, 0},
+        {XOnlineCountry::kSaudiArabia, 0},
+        {XOnlineCountry::kSingapore, 4},
+        {XOnlineCountry::kSlovakRepublic, 0},
+        {XOnlineCountry::kSouthAfrica, 0},
+        {XOnlineCountry::kSpain, 12},
+        {XOnlineCountry::kSweden, 12},
+        {XOnlineCountry::kSwitzerland, 12},
+        {XOnlineCountry::kTaiwan, 4},
+        {XOnlineCountry::kThailand, 0},
+        {XOnlineCountry::kTurkey, 4},
+        {XOnlineCountry::kGreatBritain, 12},
+        {XOnlineCountry::kUnitedArabEmirates, 0},
+        {XOnlineCountry::kUnitedStates, 12},
+        {XOnlineCountry::kVietNam, 0},
+};
+
 enum class XContentType : uint32_t {
-  kFolder = 0xffffffff,
+  kAll = 0xFFFFFFFF,  // Iterate all types
   kInvalid = 0x00000000,
   kSavedGame = 0x00000001,
   kMarketplaceContent = 0x00000002,
@@ -486,7 +541,7 @@ enum class XContentType : uint32_t {
 };
 
 inline const std::map<XContentType, std::string> XContentTypeMap = {
-    {XContentType::kFolder, "Folder"},
+    {XContentType::kAll, "All"},
     {XContentType::kSavedGame, "Saved Game"},
     {XContentType::kMarketplaceContent, "Marketplace Content"},
     {XContentType::kPublisher, "Publisher"},
@@ -543,9 +598,20 @@ enum X_MARKETPLACE_ENTRYPOINT : uint32_t {
   ContentList_Background = 4,
   ContentItem_Background = 5,
   ForcedNameChangeV1 = 6,
+  PrepaidCode = 7,
   ForcedNameChangeV2 = 8,
-  ProfileNameChange = 9,
-  ActiveDownloads = 12
+  GamerTagPurchase = 9,
+  SignUpCreditCard = 10,
+  SignUpParentCreditCard = 11,
+  ActiveDownloads = 12,
+  ViewDownloadDetails = 13,
+  GoldUpsell = 15,
+  TermsOfUse = 16,
+  PaymentOptions = 19,
+  PurchaseOrder = 21,
+  AccountSecurity = 23,
+  ViewTermsOfUse = 24,
+  MaxEntrypoint = 25
 };
 
 enum X_MARKETPLACE_DOWNLOAD_ITEMS_ENTRYPOINTS : uint32_t {

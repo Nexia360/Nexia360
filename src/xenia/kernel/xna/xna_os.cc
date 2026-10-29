@@ -248,11 +248,7 @@ void ShowSystemUi(bool shown) {
   if (!state || !state->xam_state()) {
     return;
   }
-  if (shown) {
-    state->xam_state()->xam_dialogs_shown_++;
-  } else {
-    state->xam_state()->xam_dialogs_shown_--;
-  }
+  state->xam_state()->is_xam_dialog_present_.store(shown);
 }
 
 uint32_t GuideBeginMessageBox(uint32_t slot, const char* title,

@@ -22,38 +22,31 @@
 namespace xe {
 namespace vfs {
 
-// https://free60project.github.io/wiki/STFS.html
+// https://free60.org/System-Software/Formats/STFS/
 
 class StfsContainerDevice : public XContentContainerDevice {
  public:
   StfsContainerDevice(const std::string_view mount_path,
-                      const std::filesystem::path& host_path);
+                      StfsVolumeDescriptor* descriptor,
+                      std::unique_ptr<MappedMemory> data);
   ~StfsContainerDevice() override;
 
-  void SetBackingData(std::vector<uint8_t> data) {
-    backing_data_ = std::move(data);
-  }
   void set_allow_nested_mount(bool allow) { allow_nested_mount_ = allow; }
 
-  bool Initialize() override;
-
   bool is_read_only() const override {
-    return GetContainerHeader()
-        ->content_metadata.volume_descriptor.stfs.flags.bits.read_only_format;
+    return descriptor_->flags.bits.read_only_format;
   }
+  bool is_io_queued() const override { return true; }
 
   uint32_t component_name_max_length() const override { return 40; }
 
   uint32_t total_allocation_units() const override {
-    return GetContainerHeader()
-        ->content_metadata.volume_descriptor.stfs.total_block_count;
+    return descriptor_->total_block_count;
   }
   uint32_t available_allocation_units() const override {
     if (!is_read_only()) {
-      auto& descriptor =
-          GetContainerHeader()->content_metadata.volume_descriptor.stfs;
       return kBlocksPerHashLevel[2] -
-             (descriptor.total_block_count - descriptor.free_block_count);
+             (descriptor_->total_block_count - descriptor_->free_block_count);
     }
     return 0;
   }
@@ -66,8 +59,7 @@ class StfsContainerDevice : public XContentContainerDevice {
   const uint32_t kEntriesPerDirectoryBlock =
       kBlockSize / sizeof(StfsDirectoryEntry);
 
-  void SetupContainer() override;
-  Result LoadHostFiles() override;
+  Result LoadHostFiles(const size_t data_file_count) override;
 
   Result Read() override;
   std::unique_ptr<StfsContainerEntry> ReadEntry(
@@ -86,7 +78,6 @@ class StfsContainerDevice : public XContentContainerDevice {
   void UpdateCachedHashTables(uint32_t block_index,
                               uint8_t highest_hash_level_to_update,
                               uint32_t& secondary_table_offset);
-  const uint8_t GetBlocksPerHashTableFromContainerHeader() const;
 
   // Copies a whole entry out of this package by walking its block list.
   static bool ReadEntryBytes(StfsContainerEntry* entry,
@@ -105,10 +96,10 @@ class StfsContainerDevice : public XContentContainerDevice {
   uint32_t block_step_[2];
 
   std::unordered_map<size_t, StfsHashTable> cached_hash_tables_;
-  std::unique_ptr<MappedMemory> data_;
 
-  // Set when this device is backed by memory rather than a host file.
-  std::vector<uint8_t> backing_data_;
+  std::unique_ptr<MappedMemory> data_;
+  StfsVolumeDescriptor* descriptor_;
+
   // False on a nested device, so a package inside a package cannot recurse.
   bool allow_nested_mount_ = true;
   // Storage for entries grafted in by MountNestedNxeArt. Both vectors must

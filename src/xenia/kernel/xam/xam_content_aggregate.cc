@@ -8,6 +8,9 @@
  */
 
 #include <filesystem>
+#include <set>
+#include <string>
+#include <tuple>
 #include <unordered_set>
 #include <vector>
 
@@ -26,7 +29,6 @@
 #include "xenia/kernel/xam/xam_state.h"
 #include "xenia/kernel/xenumerator.h"
 #include "xenia/kernel/xna/xna_launcher.h"
-#include "xenia/vfs/devices/xcontent_container_device.h"
 #include "xenia/vfs/file.h"
 #include "xenia/xbox.h"
 
@@ -36,7 +38,7 @@ namespace xe {
 namespace kernel {
 namespace xam {
 
-void AddODDContentTest(object_ref<XStaticEnumerator<XCONTENT_AGGREGATE_DATA>> e,
+void AddODDContentTest(object_ref<XStaticEnumerator<XCONTENT_DATA_AGGREGATE>> e,
                        XContentType content_type) {
   auto root_entry = kernel_state()->file_system()->ResolvePath(
       "GAME:\\Content\\0000000000000000");
@@ -95,7 +97,7 @@ void AddODDContentTest(object_ref<XStaticEnumerator<XCONTENT_AGGREGATE_DATA>> e,
 // the title-id sweep above never reaches one: the dashboard asks with xuid 0,
 // and a profile is not stored there. The profile manager already knows them
 // all, which is where Settings > Storage gets its list.
-static void AppendProfileItems(XStaticEnumerator<XCONTENT_DATA_INTERNAL>* e) {
+static void AppendProfileItems(ContentEnumerator* e) {
   auto* profile_manager = kernel_state()->xam_state()->profile_manager();
   if (!profile_manager) {
     return;
@@ -106,23 +108,18 @@ static void AppendProfileItems(XStaticEnumerator<XCONTENT_DATA_INTERNAL>* e) {
   }
 
   for (const auto& [xuid, account] : *accounts) {
-    auto item = e->AppendItem();
-    if (!item) {
-      continue;
-    }
-    std::memset(item, 0, sizeof(*item));
-    item->device_id = static_cast<uint32_t>(DummyDeviceId::HDD);
-    item->content_type = XContentType::kProfile;
-    item->title_id = kDashboardID;
-    item->xuid = xuid;
-    item->license_mask = 0xFFFFFFFF;
+    XCONTENT_DATA_INTERNAL item{};
+    item.device_id = static_cast<uint32_t>(DummyDeviceId::HDD);
+    item.content_type = XContentType::kProfile;
+    item.title_id = kDashboardID;
+    item.xuid = xuid;
+    item.license_mask = 0xFFFFFFFF;
 
     const std::string gamertag = account.GetGamertagString();
-    item->set_display_name(xe::to_utf16(gamertag));
-    item->set_file_name(fmt::format("{:016X}", xuid));
-    xe::string_util::copy_and_swap_truncating(item->title_name,
-                                              xe::to_utf16(gamertag),
-                                              xe::countof(item->title_name));
+    item.set_display_name(xe::to_utf16(gamertag));
+    item.set_file_name(fmt::format("{:016X}", xuid));
+    xe::string_util::copy_and_swap_truncating(
+        item.title_name, xe::to_utf16(gamertag), xe::countof(item.title_name));
 
     // What Storage shows as the profile's size.
     std::error_code ec;
@@ -136,17 +133,17 @@ static void AppendProfileItems(XStaticEnumerator<XCONTENT_DATA_INTERNAL>* e) {
         }
       }
     }
-    item->content_size = bytes;
+    item.content_size = bytes;
 
     XELOGD("  profile item xuid {:016X} '{}' {} bytes", xuid, gamertag, bytes);
+    e->AppendItem(item);
   }
 }
 
 // Every package in the XNA library, as a content record the dashboard can
 // show and launch. The file name is the package's own, which is what
 // XamContentLaunchImage resolves back to a path.
-static void AppendXnaLibraryItems(
-    XStaticEnumerator<XCONTENT_DATA_INTERNAL>* e) {
+static void AppendXnaLibraryItems(ContentEnumerator* e) {
   const auto library =
       kernel_state()->emulator()->storage_root() / "xna_library";
   std::error_code ec;
@@ -164,16 +161,12 @@ static void AppendXnaLibraryItems(
       continue;
     }
 
-    auto item = e->AppendItem();
-    if (!item) {
-      continue;
-    }
-    std::memset(item, 0, sizeof(*item));
-    item->device_id = static_cast<uint32_t>(DummyDeviceId::HDD);
-    item->content_type = XContentType::kArcadeTitle;
-    item->title_id = info.title_id;
-    item->xuid = 0;
-    item->license_mask = 0xFFFFFFFF;
+    XCONTENT_DATA_INTERNAL item{};
+    item.device_id = static_cast<uint32_t>(DummyDeviceId::HDD);
+    item.content_type = XContentType::kArcadeTitle;
+    item.title_id = info.title_id;
+    item.xuid = 0;
+    item.license_mask = 0xFFFFFFFF;
 
     // The display name carries the extension the exe had; the dashboard shows
     // this verbatim.
@@ -182,13 +175,14 @@ static void AppendXnaLibraryItems(
     if (dot != std::string::npos) {
       name = name.substr(0, dot);
     }
-    item->set_display_name(xe::to_utf16(name));
-    item->set_file_name(xe::path_to_utf8(entry.path().filename()));
+    item.set_display_name(xe::to_utf16(name));
+    item.set_file_name(xe::path_to_utf8(entry.path().filename()));
     xe::string_util::copy_and_swap_truncating(
-        item->title_name, xe::to_utf16(name), xe::countof(item->title_name));
+        item.title_name, xe::to_utf16(name), xe::countof(item.title_name));
 
-    XELOGD("  xna item title {:08X} '{}' file '{}'", item->title_id.get(), name,
-           item->file_name());
+    XELOGD("  xna item title {:08X} '{}' file '{}'", item.title_id.get(), name,
+           item.file_name());
+    e->AppendItem(item);
   }
 }
 
@@ -205,8 +199,19 @@ dword_result_t XamContentAggregateCreateEnumerator_entry(qword_t xuid,
     return X_E_INVALIDARG;
   }
 
-  auto e =
-      make_object<XStaticEnumerator<XCONTENT_DATA_INTERNAL>>(kernel_state(), 1);
+  const XContentType content_type_enum =
+      static_cast<XContentType>(content_type.value());
+
+  // Not sure if that's correct. In dashboard 1888 allocates memory for
+  // XCONTENT_DATA_AGGREGATE struct, but in later calls use
+  // XCONTENT_DATA_INTERNAL. The only difference is content_type, so let's use
+  // it for now.
+  const size_t data_size = content_type_enum == XContentType::kAll
+                               ? sizeof(XCONTENT_DATA_INTERNAL)
+                               : sizeof(XCONTENT_DATA_AGGREGATE);
+
+  auto e = object_ref<ContentEnumerator>(
+      new ContentEnumerator(kernel_state(), 1, data_size));
   X_KENUMERATOR_CONTENT_AGGREGATE* extra;
   auto result = e->Initialize(XUserIndexAny, 0xFE, 0x2000E, 0x20010, 0, &extra);
   if (XFAILED(result)) {
@@ -216,10 +221,9 @@ dword_result_t XamContentAggregateCreateEnumerator_entry(qword_t xuid,
   extra->magic = kXObjSignature;
   extra->handle = e->handle();
 
-  const XContentType content_type_enum =
-      static_cast<XContentType>(content_type.value());
-
   if (!device_info || device_info->device_type == DeviceType::HDD) {
+    // Title id 0 means every title, not the running one - the dashboard asks
+    // that way for My Games.
     std::vector<uint32_t> title_ids;
     if (title_id) {
       title_ids.push_back(title_id.value());
@@ -229,8 +233,7 @@ dword_result_t XamContentAggregateCreateEnumerator_entry(qword_t xuid,
       if (exe_module && exe_module->xex_module()) {
         const auto& alt_ids =
             exe_module->xex_module()->opt_alternate_title_ids();
-        std::copy(alt_ids.cbegin(), alt_ids.cend(),
-                  std::back_inserter(title_ids));
+        std::ranges::copy(alt_ids, std::back_inserter(title_ids));
       }
     } else {
       auto* content_manager = kernel_state()->content_manager();
@@ -243,50 +246,63 @@ dword_result_t XamContentAggregateCreateEnumerator_entry(qword_t xuid,
       title_ids.assign(all_ids.cbegin(), all_ids.cend());
     }
 
+    // Profiles are reported by AppendProfileItems below, with the gamertag and
+    // size Storage shows. ListContent's own profile records would repeat them.
+    const bool append_profiles = content_type_enum == XContentType::kProfile ||
+                                 content_type_enum == XContentType::kInvalid ||
+                                 content_type_enum == XContentType::kAll;
+    if (content_type_enum == XContentType::kProfile) {
+      title_ids.clear();
+    }
+
+    // One record per package. A title can reach the same package more than
+    // once - the dashboard's own id widens to every common title, and a title
+    // update's content root is walked as well as the global tree.
+    std::set<std::tuple<uint64_t, uint32_t, uint32_t, std::string>> seen;
+
     for (const auto& title_id : title_ids) {
       // Get all content data.
       auto content_datas = kernel_state()->content_manager()->ListContent(
           static_cast<uint32_t>(DummyDeviceId::HDD),
           xuid == -1 ? 0 : static_cast<uint64_t>(xuid), title_id,
-          content_type_enum);
+          content_type_enum, XContentFlag::kNone);
       for (const auto& content_data : content_datas) {
-        auto item = e->AppendItem();
-        assert_not_null(item);
-        if (!item) {
+        if (append_profiles &&
+            content_data.content_type == XContentType::kProfile) {
           continue;
         }
-        std::memset(item, 0, sizeof(*item));
-        item->device_id = content_data.device_id;
-        item->content_type = content_data.content_type;
-        item->display_name_raw = content_data.display_name_raw;
-        std::memcpy(item->file_name_raw, content_data.file_name_raw,
-                    sizeof(content_data.file_name_raw));
-        item->padding[0] = 0;
-        item->padding[1] = 0;
-        item->title_id = content_data.title_id;
-        item->xuid = content_data.xuid;
+        if (!seen.emplace(content_data.xuid.get(), content_data.title_id.get(),
+                          uint32_t(content_data.content_type.get()),
+                          content_data.file_name())
+                 .second) {
+          continue;
+        }
+
+        // The package's own record: name, size and title name come from its
+        // header (or from the folder, for content that has none).
+        XCONTENT_DATA_INTERNAL item = content_data;
+        item.padding[0] = 0;
+        item.padding[1] = 0;
 
         const uint32_t license_cvar =
             static_cast<uint32_t>(cvars::license_mask);
-        item->license_mask = license_cvar;
+        item.license_mask = item.license_mask.get() | license_cvar;
         if (license_cvar == 0xFFFFFFFF || license_cvar == 1) {
           // Bit 0 is the purchased bit - see ContentManager::OpenContent.
-          item->license_mask = item->license_mask.get() | 1;
+          item.license_mask = item.license_mask.get() | 1;
         }
 
-        const auto package_path =
-            kernel_state()->content_manager()->FindPackagePath(
-                xuid == -1 ? 0 : uint64_t(xuid), content_data);
-        if (std::filesystem::is_regular_file(package_path)) {
-          auto header =
-              vfs::XContentContainerDevice::ReadContainerHeader(package_path);
-          if (header) {
-            const auto& metadata = header->content_metadata;
-            item->category = metadata.category;
-            item->content_size = metadata.content_size;
-            xe::string_util::copy_and_swap_truncating(
-                item->title_name, metadata.title_name(),
-                xe::countof(item->title_name));
+        // The dashboard classifies on category as well as content type, and
+        // the record ListContent builds does not carry it.
+        auto* content_manager = kernel_state()->content_manager();
+        const auto package_path = content_manager->FindPackagePath(
+            xuid == -1 ? 0 : uint64_t(xuid), content_data);
+        if (auto package = content_manager->OpenPackage(package_path);
+            package && package->IsValidPackage()) {
+          const auto* metadata = package->GetContainerMetadata();
+          item.category = metadata->category;
+          if (!item.content_size) {
+            item.content_size = metadata->content_size;
           }
         }
 
@@ -296,9 +312,9 @@ dword_result_t XamContentAggregateCreateEnumerator_entry(qword_t xuid,
         // My Games, has nothing to launch it with, and drops the tile.
         // Reporting it as an arcade title is what makes it launchable, and
         // Nexia hosts it directly.
-        if (item->content_type == XContentType::kMarketplaceContent &&
+        if (item.content_type == XContentType::kMarketplaceContent &&
             xna::IsXnaPackage(package_path, nullptr)) {
-          item->content_type = XContentType::kArcadeTitle;
+          item.content_type = XContentType::kArcadeTitle;
         }
 
         // Temporary: one line per item, so the exact record the dashboard is
@@ -306,10 +322,11 @@ dword_result_t XamContentAggregateCreateEnumerator_entry(qword_t xuid,
         XELOGE(
             "  item title {:08X} type {:08X} device {:08X} license {:08X} "
             "cat {:08X} '{}' file '{}'",
-            item->title_id.get(), uint32_t(item->content_type.get()),
-            item->device_id.get(), item->license_mask.get(),
-            item->category.get(), xe::to_utf8(item->display_name()),
-            item->file_name());
+            item.title_id.get(), uint32_t(item.content_type.get()),
+            item.device_id.get(), item.license_mask.get(), item.category.get(),
+            xe::to_utf8(item.display_name()), item.file_name());
+
+        e->AppendItem(item);
       }
     }
 

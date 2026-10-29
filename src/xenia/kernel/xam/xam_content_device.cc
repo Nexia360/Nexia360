@@ -115,8 +115,8 @@ dword_result_t XamContentGetDeviceState_entry(dword_t device_id,
   if (device_info == nullptr) {
     if (overlapped_ptr) {
       kernel_state()->CompleteOverlappedImmediateEx(
-          overlapped_ptr, X_ERROR_FUNCTION_FAILED, X_ERROR_DEVICE_NOT_CONNECTED,
-          0);
+          overlapped_ptr, X_ERROR_FUNCTION_FAILED,
+          X_HRESULT_FROM_WIN32(X_ERROR_DEVICE_NOT_CONNECTED), 0);
       return X_ERROR_IO_PENDING;
     } else {
       return X_ERROR_DEVICE_NOT_CONNECTED;
@@ -168,10 +168,20 @@ dword_result_t XamContentGetDeviceData_entry(
 }
 DECLARE_XAM_EXPORT1(XamContentGetDeviceData, kContent, kImplemented);
 
+const std::map<DeviceType, std::u16string_view> XDeviceTypeMap = {
+    {DeviceType::HDD, u"Hard Drive"},
+    {DeviceType::MU, u"Memory Unit"},
+    {DeviceType::System, u"System"},
+    {DeviceType::ODD, u"Optical Drive"},
+    {DeviceType::TransferCable, u"Transfer Cable"},
+    {DeviceType::Sapphire, u"Sapphire"},
+    {DeviceType::USBMASS, u"USB Storage"},
+};
+
 // The same record, with the friendly name in the console's language - real xam
 // (0x816EF020) asks the xam app for it by message 0x00020031 rather than
-// reading the device's own label. Ours are already named in English and there
-// is nothing else to ask, so the names match GetDeviceData.
+// reading the device's own label. There is nothing here to ask, so the name is
+// the English one for the device's type.
 //
 // The part that is NOT cosmetic is the clamp xam applies afterwards: a device
 // of type USBMASS is reported as MU to anything that is not a system title.
@@ -183,7 +193,20 @@ dword_result_t XamContentGetLocalizedDeviceData_entry(
   if (result != X_ERROR_SUCCESS) {
     return result;
   }
-  if (device_data->device_type == static_cast<uint32_t>(DeviceType::USBMASS) &&
+
+  // enforces name by device type
+  const auto device_type =
+      static_cast<DeviceType>(static_cast<uint32_t>(device_data->device_type));
+  const std::u16string_view device_name = XDeviceTypeMap.contains(device_type)
+                                              ? XDeviceTypeMap.at(device_type)
+                                              : u"Storage Device";
+  std::fill_n(device_data->name_chars, xe::countof(device_data->name_chars),
+              u'\0');
+  xe::string_util::copy_and_swap_truncating(
+      device_data->name_chars, device_name,
+      xe::countof(device_data->name_chars));
+
+  if (device_type == DeviceType::USBMASS &&
       !IsSystemTitle(kernel_state()->title_id())) {
     device_data->device_type = static_cast<uint32_t>(DeviceType::MU);
   }
@@ -211,7 +234,7 @@ dword_result_t XamContentCreateDeviceEnumerator_entry(dword_t content_type,
 
   for (const auto& device_info : dummy_device_infos_) {
     if (device_info->device_type == DeviceType::ODD &&
-        (content_flags & vfs::XContentFlag::kExcludeReadOnlyDevices)) {
+        (content_flags & XContentFlag::kExcludeReadOnlyDevices)) {
       continue;
     }
 

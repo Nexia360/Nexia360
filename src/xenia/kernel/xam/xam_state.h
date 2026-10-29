@@ -72,9 +72,7 @@ class XamState {
 
   void SetContentRegisterCallback(uint32_t callback);
 
-  bool IsUIActive() const {
-    return xam_dialogs_shown_ > 0 || xam_nui_dialogs_shown_ > 0;
-  }
+  bool IsUIActive() const { return is_xam_dialog_present_.load(); }
 
   uint32_t GetOnlineSchemaAddress() const { return online_schema_data_address; }
 
@@ -87,6 +85,8 @@ class XamState {
     return language_fallback_address_[index];
   }
 
+  uint32_t GetLanguageTypefacePatch(uint32_t language) const;
+
   uint32_t GetIptvNameAddress() const { return iptv_name_address_; }
 
   X_DASH_APP_INFO dash_app_info_ = {};
@@ -94,8 +94,7 @@ class XamState {
   X_DASH_BACKSTACK_DATA dash_backstack_data_[2] = {};
   uint32_t content_register_callback = 0;
 
-  std::atomic<int32_t> xam_dialogs_shown_ = {0};
-  std::atomic<int32_t> xam_nui_dialogs_shown_ = {0};
+  std::atomic<bool> is_xam_dialog_present_ = false;
 
   // True while the user has the emulator's own profile modal open. Opening it
   // is an explicit request to change accounts, so the player picker is still
@@ -111,6 +110,7 @@ class XamState {
   void WriteOnlineSchemaBlob(const uint8_t* blob, uint32_t size);
   bool BuildOnlineSchemaFromJson(const std::string& json);
   void LoadLanguageLocaleFallback();
+  void LoadLanguageTypefacePatch();
   void LoadIptvServiceName();
   void LoadOnlineFriends();
 
@@ -131,6 +131,7 @@ class XamState {
   uint32_t online_schema_data_address;
   bool online_schema_fetched_ = false;
   std::array<uint32_t, 0x12> language_fallback_address_{};
+  std::array<uint32_t, 0x7> language_type_face_patch_{};
   uint32_t iptv_name_address_{};
 };
 

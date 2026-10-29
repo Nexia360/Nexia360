@@ -30,25 +30,45 @@ namespace kernel {
 constexpr fourcc_t kXObjSignature = make_fourcc('X', 'E', 'N', '\0');
 
 class KernelState;
+namespace util {
+class ObjectTable;
+}  // namespace util
 
 template <typename T>
 class object_ref;
 
-enum X_DISPATCHER_FLAGS : uint8_t {
-  DISPATCHER_MANUAL_RESET_EVENT = 0,
-  DISPATCHER_AUTO_RESET_EVENT = 1,  // EventSynchronizationObject
-  DISPATCHER_MUTANT = 2,
-  DISPATCHER_QUEUE = 4,
-  DISPATCHER_SEMAPHORE = 5,  // SemaphoreObject
-  DISPATCHER_THREAD = 6,
-  DISPATCHER_MANUAL_RESET_TIMER = 8,
-  DISPATCHER_AUTO_RESET_TIMER = 9,
+enum X_OBJECT_TYPES : uint8_t {
+  EventNotificationObject = 0x0,     // Manual Reset
+  EventSynchronizationObject = 0x1,  // Auto Reset
+  MutantObject = 0x2,
+  ProcessObject = 0x3,
+  QueueObject = 0x4,
+  SemaphoreObject = 0x5,
+  ThreadObject = 0x6,
+  Spare1Object = 0x7,  // GateObject?
+  TimerNotificationObject = 0x8,
+  TimerSynchronizationObject = 0x9,
+  Spare2Object = 0xA,
+  Spare3Object = 0xB,
+  Spare4Object = 0xC,
+  Spare5Object = 0xD,
+  Spare6Object = 0xE,
+  Spare7Object = 0xF,
+  Spare8Object = 0x10,
+  Spare9Object = 0x11,
+  ApcObject = 0x12,
+  DpcObject = 0x13,
+  DeviceQueueObject = 0x14,
+  EventPairObject = 0x15,
+  InterruptObject = 0x16,
+  ProfileObject = 0x17,
+  UndefinedObject = 0xFF,
 };
 
 // https://www.nirsoft.net/kernel_struct/vista/DISPATCHER_HEADER.html
 typedef struct {
   struct {
-    uint8_t type;  // X_DISPATCHER_FLAGS
+    X_OBJECT_TYPES type;
 
     union {
       uint8_t abandoned;
@@ -73,42 +93,15 @@ typedef struct {
 } X_DISPATCH_HEADER;
 static_assert_size(X_DISPATCH_HEADER, 0x10);
 
-// https://www.nirsoft.net/kernel_struct/vista/OBJECT_HEADER.html
 struct X_OBJECT_HEADER {
-  xe::be<uint32_t> pointer_count;
-  union {
-    xe::be<uint32_t> handle_count;
-    xe::be<uint32_t> next_to_free;
-  };
-  uint8_t name_info_offset;
-  uint8_t handle_info_offset;
-  uint8_t quota_info_offset;
-  uint8_t flags;
-  union {
-    xe::be<uint32_t> object_create_info;  // X_OBJECT_CREATE_INFORMATION
-    xe::be<uint32_t> quota_block_charged;
-  };
-  xe::be<uint32_t> object_type_ptr;  // -0x8 POBJECT_TYPE
-  xe::be<uint32_t> unk_04;           // -0x4
-
+  xe::be<int32_t> pointer_count;
+  xe::be<int32_t> handle_count;
+  xe::be<uint32_t> object_type_ptr;  // X_OBJECT_TYPE*
+  xe::be<int16_t> flags;
+  xe::be<int8_t> hash_index;
   // Object lives after this header.
-  // (There's actually a body field here which is the object itself)
 };
-
-// https://www.nirsoft.net/kernel_struct/vista/OBJECT_CREATE_INFORMATION.html
-struct X_OBJECT_CREATE_INFORMATION {
-  xe::be<uint32_t> attributes;                  // 0x0
-  xe::be<uint32_t> root_directory_ptr;          // 0x4
-  xe::be<uint32_t> parse_context_ptr;           // 0x8
-  xe::be<uint32_t> probe_mode;                  // 0xC
-  xe::be<uint32_t> paged_pool_charge;           // 0x10
-  xe::be<uint32_t> non_paged_pool_charge;       // 0x14
-  xe::be<uint32_t> security_descriptor_charge;  // 0x18
-  xe::be<uint32_t> security_descriptor;         // 0x1C
-  xe::be<uint32_t> security_qos_ptr;            // 0x20
-
-  // Security QoS here (SECURITY_QUALITY_OF_SERVICE) too!
-};
+static_assert_size(X_OBJECT_HEADER, 0x10);
 
 class XObject {
  public:
@@ -149,27 +142,29 @@ class XObject {
       default:
         return false;
     }
-    return false;
   }
 
-  static Type MapGuestTypeToHost(uint16_t type) {
-    // todo: this is not fully filled in
-    switch (type) {
-      case 0:
-      case 1:
+  static Type MapGuestTypeToHost(X_OBJECT_TYPES flag) {
+    // TODO: This is not fully filled in.
+    switch (flag) {
+      case X_OBJECT_TYPES::EventNotificationObject:
+      case X_OBJECT_TYPES::EventSynchronizationObject:
         return Type::Event;
-      case 2:
+      case X_OBJECT_TYPES::MutantObject:
         return Type::Mutant;
-      case 5:
+      case X_OBJECT_TYPES::SemaphoreObject:
         return Type::Semaphore;
-      case 6:
+      case X_OBJECT_TYPES::ThreadObject:
         return Type::Thread;
-      case 8:
-      case 9:
+      case X_OBJECT_TYPES::TimerNotificationObject:
+      case X_OBJECT_TYPES::TimerSynchronizationObject:
         return Type::Timer;
+      default:
+        return Type::Undefined;
+        // assert_always();
     }
-    return Type::Undefined;
   }
+
   XObject(Type type);
   XObject(KernelState* kernel_state, Type type, bool host_object = false);
   virtual ~XObject();
@@ -197,6 +192,7 @@ class XObject {
 
   const std::string& name() const { return name_; }
   uint32_t guest_object() const { return guest_object_ptr_; }
+  uint32_t guest_object_type() const { return guest_object_type_ptr_.load(); }
 
   // Has this object been created for use by the host?
   // Host objects are persisted through reloads/etc.
@@ -226,6 +222,8 @@ class XObject {
 
   void SetAttributes(uint32_t obj_attributes_ptr);
 
+  void SetNativeType();
+
   X_STATUS Wait(uint32_t wait_reason, uint32_t processor_mode,
                 uint32_t alertable, uint64_t* opt_timeout);
   static X_STATUS SignalAndWait(XObject* signal_object, XObject* wait_object,
@@ -236,13 +234,13 @@ class XObject {
                                uint32_t processor_mode, uint32_t alertable,
                                uint64_t* opt_timeout);
 
-  static object_ref<XObject> GetNativeObject(KernelState* kernel_state,
-                                             void* native_ptr,
-                                             int32_t as_type = -1,
-                                             bool already_locked = false);
+  static object_ref<XObject> GetNativeObject(
+      KernelState* kernel_state, void* native_ptr,
+      X_OBJECT_TYPES as_type = UndefinedObject, bool already_locked = false);
   template <typename T>
   static object_ref<T> GetNativeObject(KernelState* kernel_state,
-                                       void* native_ptr, int32_t as_type = -1,
+                                       void* native_ptr,
+                                       X_OBJECT_TYPES as_type = UndefinedObject,
                                        bool already_locked = false);
 
   // Priority increment stored by the most recent signal operation
@@ -257,6 +255,7 @@ class XObject {
 
   // Called on successful wait.
   virtual void WaitCallback() {}
+  virtual void SyncFromGuest() {}
   virtual xe::threading::WaitHandle* GetWaitHandle() { return nullptr; }
 
   // Creates the kernel object for guest code to use. Typically not needed.
@@ -284,6 +283,10 @@ class XObject {
   bool host_object_ = false;
 
  private:
+  friend class util::ObjectTable;
+  // Called under the object-table lock after a slot loses its last reference.
+  void UpdateNativeHandle(X_HANDLE removed_handle);
+
   std::atomic<int32_t> pointer_ref_count_;
 
   Type type_;
@@ -294,6 +297,8 @@ class XObject {
   // if we allocated it!
   uint32_t guest_object_ptr_ = 0;
   bool allocated_guest_object_ = false;
+  // Guest type recorded by ObOpenObjectByPointer.
+  std::atomic<uint32_t> guest_object_type_ptr_{0};
 };
 
 template <typename T>
@@ -426,7 +431,7 @@ object_ref<T> retain_object(T* ptr) {
 
 template <typename T>
 object_ref<T> XObject::GetNativeObject(KernelState* kernel_state,
-                                       void* native_ptr, int32_t as_type,
+                                       void* native_ptr, X_OBJECT_TYPES as_type,
                                        bool already_locked) {
   auto object =
       GetNativeObject(kernel_state, native_ptr, as_type, already_locked);

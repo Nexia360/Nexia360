@@ -64,7 +64,9 @@ jobs:
           dotnet-version: 9.0.x
 
       - name: Download submodules
-        run: git submodule update --init --depth=1 -j $env:NUMBER_OF_PROCESSORS
+        run: |- # Exclude unneeded submodules
+          $SUBMODULES=(Select-String -CaseSensitive '(?<=path = )(?!third_party\/xbyak_aarch64).+' .gitmodules).Matches.Value
+          git submodule update --init --depth=1 -j $env:NUMBER_OF_PROCESSORS $SUBMODULES
 
       - name: Build Nexia360
         run: python xenia-build.py build --config=Release --target=xenia-app

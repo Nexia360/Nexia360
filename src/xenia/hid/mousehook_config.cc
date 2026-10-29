@@ -51,11 +51,11 @@ struct BindingTableEntry {
 };
 
 static const BindingTableEntry kBindingTable[] = {
-#define XE_HID_WINKEY_BINDING(button, description, cvar_name, \
-                              cvar_default_value)             \
+#define XE_HID_KEYBOARD_BINDING(button, description, cvar_name, \
+                                cvar_default_value)             \
   {#cvar_name, ui::VirtualKey::kXInputPad##button, cvar_default_value},
-#include "xenia/hid/winkey/winkey_binding_table.inc"
-#undef XE_HID_WINKEY_BINDING
+#include "xenia/hid/keyboard/keyboard_binding_table.inc"
+#undef XE_HID_KEYBOARD_BINDING
 };
 
 // Mousehook's own defaults, overriding the stock ones above. Keyboard-and-mouse

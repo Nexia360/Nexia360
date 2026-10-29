@@ -59,6 +59,9 @@ class D3D12TextureCache final : public TextureCache {
       xenos::AnisoFilter aniso_filter : 3;  // 17
       uint32_t mip_min_level : 4;           // 21
       uint32_t mip_base_map : 1;            // 22
+      // Force the border color alpha to 1.0 (only meaningful with a border
+      // clamp mode).
+      uint32_t force_bc_w_to_max : 1;  // 23
       // Maximum mip level is in the texture resource itself, but mip_base_map
       // limits fetching to mip_min_level (level 0 when the base is available).
     };
@@ -144,6 +147,27 @@ class D3D12TextureCache final : public TextureCache {
   void MarkCurrentScaledResolveRangeUAVWritesCommitNeeded() {
     assert_true(IsDrawResolutionScaled());
     GetCurrentScaledResolveBuffer().SetUAVBarrierPending();
+  }
+  // The range specified in the last successful MakeScaledResolveRangeCurrent
+  // call, in the scaled physical memory address space.
+  uint64_t GetCurrentScaledResolveRangeStartScaled() const {
+    assert_true(IsDrawResolutionScaled());
+    return scaled_resolve_current_range_start_scaled_;
+  }
+  uint64_t GetCurrentScaledResolveRangeLengthScaled() const {
+    assert_true(IsDrawResolutionScaled());
+    return scaled_resolve_current_range_length_scaled_;
+  }
+  // The resource of the buffer containing the current scaled resolve range,
+  // and the offset of the start of the buffer within the scaled physical
+  // memory address space (the buffer index is also its gigabyte offset).
+  ID3D12Resource* GetCurrentScaledResolveBufferResource() {
+    assert_true(IsDrawResolutionScaled());
+    return GetCurrentScaledResolveBuffer().resource();
+  }
+  uint64_t GetCurrentScaledResolveBufferBaseOffset() const {
+    assert_true(IsDrawResolutionScaled());
+    return uint64_t(GetCurrentScaledResolveBufferIndex()) << 30;
   }
 
   // Returns the ID3D12Resource of the front buffer texture (in
@@ -798,6 +822,10 @@ class D3D12TextureCache final : public TextureCache {
 
   D3D12CommandProcessor& command_processor_;
   bool bindless_resources_used_;
+
+  // Bits per format, for checking if the host format should be point-filtered.
+  uint64_t host_filterable_unsigned_ = 0;
+  uint64_t host_filterable_signed_ = 0;
 
   Microsoft::WRL::ComPtr<ID3D12RootSignature> load_root_signature_;
   std::array<Microsoft::WRL::ComPtr<ID3D12PipelineState>, kLoadShaderCount>

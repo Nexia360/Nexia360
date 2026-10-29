@@ -243,14 +243,14 @@ bool xeDrawCreateProfile(xe::ui::ImGuiDrawer* imgui_drawer, Emulator* emulator,
         profile_manager->Login(last_user_profile_xuid);
       }
     }
-    std::fill(std::begin(args.gamertag), std::end(args.gamertag), '\0');
+    std::ranges::fill(args.gamertag, '\0');
     ImGui::CloseCurrentPopup();
   }
   ImGui::EndDisabled();
   ImGui::SameLine();
 
   if (ImGui::Button("Cancel", half_width_btn)) {
-    std::fill(std::begin(args.gamertag), std::end(args.gamertag), '\0');
+    std::ranges::fill(args.gamertag, '\0');
     ImGui::CloseCurrentPopup();
   }
 

@@ -27,8 +27,9 @@ class Device {
 
   virtual bool Initialize() = 0;
 
-  const std::string& mount_path() const { return mount_path_; }
+  const std::string_view mount_path() const { return mount_path_; }
   virtual bool is_read_only() const { return true; }
+  virtual bool is_io_queued() const { return false; }
 
   virtual void Dump(StringBuffer* string_buffer) = 0;
   virtual Entry* ResolvePath(const std::string_view path) = 0;

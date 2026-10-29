@@ -9,6 +9,7 @@
 
 #include <regex>
 
+#include "xenia/kernel/xam/content_manager.h"
 #include "xenia/kernel/xam/profile_manager.h"
 
 #include "xenia/base/filesystem.h"
@@ -17,8 +18,8 @@
 #include "xenia/hid/input_system.h"
 #include "xenia/kernel/XLiveAPI.h"
 #include "xenia/kernel/kernel_state.h"
-#include "xenia/kernel/util/crypto_utils.h"
 #include "xenia/kernel/util/friends_util.h"
+#include "xenia/kernel/xboxkrnl/xboxkrnl_crypt.h"
 #include "xenia/vfs/devices/host_path_device.h"
 
 DEFINE_string(logged_profile_slot_0_xuid, "",
@@ -42,25 +43,26 @@ bool ProfileManager::DecryptAccountFile(const uint8_t* data, size_t data_size,
   if (!data || data_size < kAccountFileSize) {
     return false;
   }
-  const uint8_t* key = util::GetXeKey(0x19, devkit);
+  uint8_t* key = const_cast<uint8_t*>(xboxkrnl::XeKeysGetKeyData(0x19, devkit));
   if (!key) {
     return false;  // this shouldn't happen...
   }
 
   // Generate RC4 key from data hash
   uint8_t rc4_key[0x14];
-  util::HmacSha(key, 0x10, data, 0x10, 0, 0, 0, 0, rc4_key, 0x14);
+  xboxkrnl::XeCryptHmacSha_entry(key, 0x10, const_cast<uint8_t*>(data), 0x10,
+                                 nullptr, 0, nullptr, 0, rc4_key, 0x14);
 
   uint8_t dec_data[sizeof(X_XAMACCOUNTINFO) + 8];
 
   // Decrypt data
-  util::RC4(rc4_key, 0x10, data + 0x10, sizeof(dec_data), dec_data,
-            sizeof(dec_data));
+  std::memcpy(dec_data, data + 0x10, sizeof(dec_data));
+  xboxkrnl::XeCryptRc4_entry(rc4_key, 0x10, dec_data, sizeof(dec_data));
 
   // Verify decrypted data against hash
   uint8_t data_hash[0x14];
-  util::HmacSha(key, 0x10, dec_data, sizeof(dec_data), 0, 0, 0, 0, data_hash,
-                0x14);
+  xboxkrnl::XeCryptHmacSha_entry(key, 0x10, dec_data, sizeof(dec_data), nullptr,
+                                 0, nullptr, 0, data_hash, 0x14);
 
   if (std::memcmp(data, data_hash, 0x10) == 0) {
     // Copy account data to output
@@ -73,7 +75,7 @@ bool ProfileManager::DecryptAccountFile(const uint8_t* data, size_t data_size,
 
 void ProfileManager::EncryptAccountFile(const X_XAMACCOUNTINFO* input,
                                         uint8_t* output, bool devkit) {
-  const uint8_t* key = util::GetXeKey(0x19, devkit);
+  uint8_t* key = const_cast<uint8_t*>(xboxkrnl::XeKeysGetKeyData(0x19, devkit));
   if (!key) {
     return;  // this shouldn't happen...
   }
@@ -90,23 +92,26 @@ void ProfileManager::EncryptAccountFile(const X_XAMACCOUNTINFO* input,
 
   // Set data hash
   uint8_t data_hash[0x14];
-  util::HmacSha(key, 0x10, output + 0x10, enc_data_size, 0, 0, 0, 0, data_hash,
-                0x14);
+  xboxkrnl::XeCryptHmacSha_entry(key, 0x10, output + 0x10, enc_data_size,
+                                 nullptr, 0, nullptr, 0, data_hash, 0x14);
 
   std::memcpy(output, data_hash, 0x10);
 
   // Generate RC4 key from data hash
   uint8_t rc4_key[0x14];
-  util::HmacSha(key, 0x10, data_hash, 0x10, 0, 0, 0, 0, rc4_key, 0x14);
+  xboxkrnl::XeCryptHmacSha_entry(key, 0x10, data_hash, 0x10, nullptr, 0,
+                                 nullptr, 0, rc4_key, 0x14);
 
   // Encrypt data
-  util::RC4(rc4_key, 0x10, output + 0x10, enc_data_size, output + 0x10,
-            enc_data_size);
+  xboxkrnl::XeCryptRc4_entry(rc4_key, 0x10, output + 0x10, enc_data_size);
 }
 
 ProfileManager::ProfileManager(KernelState* kernel_state,
+                               ContentManager* content_manager,
                                UserTracker* user_tracker)
-    : kernel_state_(kernel_state), user_tracker_(user_tracker) {
+    : kernel_state_(kernel_state),
+      content_manager_(content_manager),
+      user_tracker_(user_tracker) {
   logged_profiles_.clear();
   accounts_.clear();
 
@@ -264,26 +269,27 @@ bool ProfileManager::LoadAccount(const uint64_t xuid) {
 
 bool ProfileManager::MountProfile(const uint64_t xuid, std::string mount_path) {
   std::filesystem::path profile_path = GetProfilePath(xuid);
-  if (mount_path.empty()) {
-    mount_path = fmt::format(kDefaultMountFormat, xuid);
-  }
-  mount_path += ':';
+  mount_path =
+      !mount_path.empty() ? mount_path : fmt::format(kDefaultMountFormat, xuid);
 
-  auto device =
-      std::make_unique<vfs::HostPathDevice>(mount_path, profile_path, false);
-  if (!device->Initialize()) {
+  if (!content_manager_->OpenAndMountPackage(profile_path, mount_path)) {
     XELOGE(
         "MountProfile: Unable to mount {} profile; file not found or "
         "corrupted.",
         profile_path);
     return false;
   }
-  return kernel_state_->file_system()->RegisterDevice(std::move(device));
+
+  return true;
 }
 
 bool ProfileManager::DismountProfile(const uint64_t xuid) {
-  return kernel_state_->file_system()->UnregisterDevice(
-      fmt::format(kDefaultMountFormat, xuid) + ':');
+  return content_manager_->CloseContent(
+             fmt::format(kDefaultMountFormat, xuid)) == X_ERROR_SUCCESS;
+}
+
+bool ProfileManager::DismountProfile(const std::string_view mount_path) {
+  return content_manager_->CloseContent(mount_path) == X_ERROR_SUCCESS;
 }
 
 void ProfileManager::Login(const uint64_t xuid, const uint8_t user_index,
@@ -596,12 +602,19 @@ bool ProfileManager::CreateProfile(const std::string gamertag, bool autologin,
                                    bool default_xuid, uint32_t reserved_flags,
                                    uint64_t* out_xuid) {
   const auto xuid = !default_xuid ? GenerateXuid() : 0xB13EBABEBABEBABE;
-
-  if (!std::filesystem::create_directories(GetProfilePath(xuid))) {
+  const auto profile_path = GetProfilePath(xuid);
+  if (!std::filesystem::create_directories(profile_path)) {
     return false;
   }
 
-  if (!MountProfile(xuid)) {
+  XCONTENT_DATA_INTERNAL data{};
+  data.title_id = kDashboardID;
+  data.content_type = XContentType::kProfile;
+  data.xuid = xuid;
+  data.set_file_name(fmt::format("{:016X}", xuid));
+
+  if (!kernel_state_->content_manager()->CreateAndMountPackage(
+          profile_path, fmt::format(kDefaultMountFormat, xuid), data)) {
     return false;
   }
 
@@ -623,11 +636,18 @@ bool ProfileManager::CreateProfile(const X_XAMACCOUNTINFO* account_info,
     xuid = GenerateXuid();
   }
 
-  if (!std::filesystem::create_directories(GetProfilePath(xuid))) {
+  const auto profile_path = GetProfilePath(xuid);
+  if (!std::filesystem::create_directories(profile_path)) {
     return false;
   }
 
-  if (!MountProfile(xuid)) {
+  XCONTENT_DATA_INTERNAL data{};
+  data.title_id = kDashboardID;
+  data.content_type = XContentType::kProfile;
+  data.xuid = xuid;
+
+  if (!kernel_state_->content_manager()->CreateAndMountPackage(
+          profile_path, fmt::format(kDefaultMountFormat, xuid), data)) {
     return false;
   }
 
@@ -649,7 +669,7 @@ bool ProfileManager::CreateAccount(const uint64_t xuid,
   const std::u16string gamertag_u16 = xe::to_utf16(gamertag);
 
   string_util::copy_and_swap_truncating(account.gamertag, gamertag_u16,
-                                        sizeof(account.gamertag));
+                                        xe::countof(account.gamertag));
 
   const bool live_enabled =
       reserved_flags & X_XAMACCOUNTINFO::AccountReservedFlags::kLiveEnabled;

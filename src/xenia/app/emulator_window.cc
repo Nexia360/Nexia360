@@ -25,6 +25,7 @@
 #endif
 
 #include "xenia/app/console_settings_dialog.h"
+#include "xenia/app/content_list_dialog.h"
 #include "xenia/app/messages_dialog.h"
 #include "xenia/app/recent_titles_dialog.h"
 #include "xenia/app/title_update_dialog.h"
@@ -916,8 +917,9 @@ void EmulatorWindow::ContentInstallDialog::OnDraw(ImGuiIO& io) {
       ImGui::ProgressBar(static_cast<float>(entry.currently_installed_size_) /
                          entry.content_size_);
 
-      if (entry.currently_installed_size_ != entry.content_size_ &&
-          entry.installation_result_ == X_ERROR_SUCCESS) {
+      if (entry.installation_state_ == Emulator::InstallState::installing ||
+          entry.installation_state_ == Emulator::InstallState::pending ||
+          entry.installation_state_ == Emulator::InstallState::preparing) {
         is_everything_installed = false;
       }
     } else {
@@ -1031,9 +1033,6 @@ bool EmulatorWindow::Initialize() {
         MenuItem::Type::kString, "Open Recent with &TU...", "",
         std::bind(&EmulatorWindow::ShowRecentTitlesWithTuDialog, this)));
     file_menu->AddChild(MenuItem::Create(MenuItem::Type::kSeparator));
-    file_menu->AddChild(
-        MenuItem::Create(MenuItem::Type::kString, "Install Content...",
-                         std::bind(&EmulatorWindow::InstallContent, this)));
     zar_menu->AddChild(
         MenuItem::Create(MenuItem::Type::kString, "Create",
                          std::bind(&EmulatorWindow::CreateZarchive, this)));
@@ -1101,6 +1100,21 @@ bool EmulatorWindow::Initialize() {
         std::bind(&EmulatorWindow::ToggleXuiSceneDialog, this)));
   }
   main_menu->AddChild(std::move(profile_menu));
+
+  // Content Menu
+  auto content_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Content");
+  {
+    content_menu->AddChild(
+        MenuItem::Create(MenuItem::Type::kString, "Install Content",
+                         std::bind(&EmulatorWindow::InstallContent, this)));
+    content_menu->AddChild(
+        MenuItem::Create(MenuItem::Type::kString, "Extract Content",
+                         std::bind(&EmulatorWindow::ExtractContent, this, "")));
+    content_menu->AddChild(MenuItem::Create(
+        MenuItem::Type::kString, "Show Installed Content",
+        std::bind(&EmulatorWindow::ToggleContentListDialog, this)));
+  }
+  main_menu->AddChild(std::move(content_menu));
 
   // CPU menu.
   auto cpu_menu = MenuItem::Create(MenuItem::Type::kPopup, "&CPU");
@@ -1997,6 +2011,68 @@ EmulatorWindow::InstallContentPackages(
   return content_installation_status;
 }
 
+void EmulatorWindow::ExtractContent(const std::filesystem::path file) {
+  std::vector<std::filesystem::path> package_files;
+  std::filesystem::path extract_dir;
+
+  if (!file.empty()) {
+    package_files.push_back(file);
+  } else {
+    auto file_picker = xe::ui::FilePicker::Create();
+    file_picker->set_mode(ui::FilePicker::Mode::kOpen);
+    file_picker->set_type(ui::FilePicker::Type::kFile);
+    file_picker->set_multi_selection(true);
+    file_picker->set_title("Select Content Package");
+    file_picker->set_extensions({
+        {"All Files (*.*)", "*.*"},
+    });
+
+    if (file_picker->Show(window_.get())) {
+      package_files = file_picker->selected_files();
+    }
+
+    if (package_files.empty()) {
+      return;
+    }
+  }
+  auto save_file_picker = xe::ui::FilePicker::Create();
+  save_file_picker->set_mode(ui::FilePicker::Mode::kOpen);
+  save_file_picker->set_type(ui::FilePicker::Type::kDirectory);
+  save_file_picker->set_title("Select Directory to Extract");
+
+  if (save_file_picker->Show(window_.get())) {
+    extract_dir = save_file_picker->selected_files().front();
+  }
+
+  if (extract_dir.empty()) {
+    return;
+  }
+
+  std::shared_ptr<std::vector<Emulator::ContentInstallEntry>>
+      content_installation_status =
+          std::make_shared<std::vector<Emulator::ContentInstallEntry>>();
+
+  for (const auto& path : package_files) {
+    content_installation_status->push_back({path});
+  }
+
+  for (auto& entry : *content_installation_status) {
+    emulator_->ProcessContentPackageHeader(entry.path_, entry);
+    entry.data_installation_path_ = extract_dir;
+    entry.header_installation_path_ = "";
+  }
+
+  auto installationThread = std::thread([this, content_installation_status] {
+    for (auto& entry : *content_installation_status) {
+      emulator_->ExtractContentPackage(entry.path_, entry);
+    }
+  });
+  installationThread.detach();
+
+  new ContentInstallDialog(imgui_drawer_.get(), *this,
+                           content_installation_status);
+}
+
 void EmulatorWindow::ExtractZarchive() {
   std::vector<std::filesystem::path> zarchive_files;
   std::filesystem::path extract_dir;
@@ -2285,21 +2361,28 @@ void EmulatorWindow::ToggleDisplayConfigDialog() {
 
 void EmulatorWindow::ToggleProfilesConfigDialog() {
   if (!profile_config_dialog_) {
+    if (emulator_->kernel_state()->xam_state()->IsUIActive()) {
+      return;
+    }
+
     disable_hotkeys_ = true;
-    emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 1);
+    emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI,
+                                                     true);
+    emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(true);
+
     profile_config_dialog_ =
         std::make_unique<ProfileConfigDialog>(imgui_drawer_.get(), this);
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_++;
     emulator_->kernel_state()->xam_state()->set_profile_dialog_open(true);
   } else {
     disable_hotkeys_ = false;
-    emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 0);
+    emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI,
+                                                     false);
     if (profile_config_dialog_->IsClosing()) {
       profile_config_dialog_.release();
     } else {
       profile_config_dialog_.reset();
     }
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
+    emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(false);
     emulator_->kernel_state()->xam_state()->set_profile_dialog_open(false);
   }
 }
@@ -2310,7 +2393,7 @@ void EmulatorWindow::ToggleGamerpicBrowserDialog() {
     emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 1);
     gamerpic_browser_dialog_ =
         TitleGamerpicBrowser::Create(imgui_drawer_.get(), this);
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_++;
+    emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(true);
   } else {
     disable_hotkeys_ = false;
     emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 0);
@@ -2319,7 +2402,7 @@ void EmulatorWindow::ToggleGamerpicBrowserDialog() {
     } else {
       gamerpic_browser_dialog_.reset();
     }
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
+    emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(false);
   }
 }
 
@@ -2346,13 +2429,27 @@ void EmulatorWindow::ToggleConsoleSettingsDialog() {
   }
 }
 
+void EmulatorWindow::ToggleContentListDialog() {
+  if (!content_list_dialog_) {
+    content_list_dialog_ = std::unique_ptr<ContentListDialog>(
+        new ContentListDialog(imgui_drawer_.get(), *this,
+                              emulator_->kernel_state()->content_manager()));
+  } else {
+    if (content_list_dialog_->IsClosing()) {
+      content_list_dialog_.release();
+    } else {
+      content_list_dialog_.reset();
+    }
+  }
+}
+
 void EmulatorWindow::ToggleFriendsDialog() {
   if (!friends_manager_dialog_) {
     disable_hotkeys_ = true;
     emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 1);
     friends_manager_dialog_ =
         std::make_unique<ManagerDialog>(imgui_drawer_.get(), this);
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_++;
+    emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(true);
   } else {
     disable_hotkeys_ = false;
     emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 0);
@@ -2361,7 +2458,7 @@ void EmulatorWindow::ToggleFriendsDialog() {
     } else {
       friends_manager_dialog_.reset();
     }
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
+    emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(false);
   }
 }
 
@@ -2374,7 +2471,7 @@ void EmulatorWindow::OnMessagesDialogClosed(MessagesDialog** slot) {
 
   disable_hotkeys_ = false;
   emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 0);
-  emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
+  emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(false);
 }
 
 void EmulatorWindow::ToggleTextMessagesDialog() {
@@ -2385,7 +2482,7 @@ void EmulatorWindow::ToggleTextMessagesDialog() {
 
   disable_hotkeys_ = true;
   emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 1);
-  emulator_->kernel_state()->xam_state()->xam_dialogs_shown_++;
+  emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(true);
 
   text_messages_dialog_ = new MessagesDialog(imgui_drawer_.get(), this,
                                              MessagesDialog::Mode::kText);
@@ -2427,7 +2524,7 @@ void EmulatorWindow::OpenAvatarEditorDialog() {
   }
   disable_hotkeys_ = true;
   emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 1);
-  emulator_->kernel_state()->xam_state()->xam_dialogs_shown_++;
+  emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(true);
 
   avatar_editor_dialog_ = new AvatarEditorDialog(imgui_drawer_.get(), this);
   avatar_editor_dialog_->set_closed_callback([this]() {
@@ -2436,7 +2533,7 @@ void EmulatorWindow::OpenAvatarEditorDialog() {
     avatar_editor_dialog_ = nullptr;
     disable_hotkeys_ = false;
     auto* kernel = emulator_->kernel_state();
-    kernel->xam_state()->xam_dialogs_shown_--;
+    kernel->xam_state()->is_xam_dialog_present_.store(false);
     std::thread([kernel, saved_users]() {
       xe::threading::Sleep(std::chrono::milliseconds(100));
       if (saved_users) {
@@ -2543,7 +2640,7 @@ void EmulatorWindow::ToggleVoiceMessagesDialog() {
 
   disable_hotkeys_ = true;
   emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 1);
-  emulator_->kernel_state()->xam_state()->xam_dialogs_shown_++;
+  emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(true);
 
   voice_messages_dialog_ = new MessagesDialog(imgui_drawer_.get(), this,
                                               MessagesDialog::Mode::kVoice);
@@ -2581,7 +2678,7 @@ void EmulatorWindow::ToggleUpdaterDialog() {
     emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 1);
     updater_dialog_ = std::make_unique<UpdaterDialog>(
         updater_, auto_check_update, imgui_drawer_.get(), this);
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_++;
+    emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(true);
   } else {
     disable_hotkeys_ = false;
     emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 0);
@@ -2590,7 +2687,7 @@ void EmulatorWindow::ToggleUpdaterDialog() {
     } else {
       updater_dialog_.reset();
     }
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
+    emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(false);
   }
 }
 
@@ -2600,7 +2697,7 @@ void EmulatorWindow::ToggleCompletionDialog() {
     emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 1);
     updater_completion_dialog_ = std::make_unique<UpdaterCompletionDialog>(
         imgui_drawer_.get(), this, cvar::updated);
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_++;
+    emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(true);
   } else {
     disable_hotkeys_ = false;
     emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 0);
@@ -2609,7 +2706,7 @@ void EmulatorWindow::ToggleCompletionDialog() {
     } else {
       updater_completion_dialog_.reset();
     }
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
+    emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(false);
   }
 }
 
@@ -2619,7 +2716,7 @@ void EmulatorWindow::ToggleNetplaySettingsDialog() {
     emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 1);
     netplay_settings_dialog_ = std::make_unique<NetplaySettingsDialog>(
         imgui_drawer_.get(), this, emulator_->GetNetworkAdapterManager());
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_++;
+    emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(true);
   } else {
     disable_hotkeys_ = false;
     emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 0);
@@ -2628,7 +2725,7 @@ void EmulatorWindow::ToggleNetplaySettingsDialog() {
     } else {
       netplay_settings_dialog_.reset();
     }
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
+    emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(false);
   }
 }
 
@@ -2638,7 +2735,7 @@ void EmulatorWindow::ToggleNetplayStatusDialog() {
     emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 1);
     netplay_status_dialog_ = std::make_unique<NetplayStatusDialog>(
         imgui_drawer_.get(), this, emulator_->GetNetworkAdapterManager());
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_++;
+    emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(true);
   } else {
     disable_hotkeys_ = false;
     emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 0);
@@ -2647,7 +2744,7 @@ void EmulatorWindow::ToggleNetplayStatusDialog() {
     } else {
       netplay_status_dialog_.reset();
     }
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
+    emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(false);
   }
 }
 
@@ -3323,44 +3420,13 @@ xe::X_STATUS EmulatorWindow::RunTitle(
 
   disable_hotkeys_ = false;
 
-  if (profile_config_dialog_) {
-    profile_config_dialog_.reset();
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
-    emulator_->kernel_state()->xam_state()->set_profile_dialog_open(false);
-  }
-
-  if (gamerpic_browser_dialog_) {
-    gamerpic_browser_dialog_.reset();
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
-  }
-
-  if (display_config_dialog_) {
-    display_config_dialog_.reset();
-  }
-
-  if (friends_manager_dialog_) {
-    friends_manager_dialog_.reset();
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
-  }
-
-  if (updater_dialog_) {
-    updater_dialog_.reset();
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
-  }
-
-  if (updater_completion_dialog_) {
-    updater_completion_dialog_.reset();
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
-  }
-
+  // ClearDialogs closes the rest and marks no XAM dialog present.
   if (netplay_settings_dialog_) {
     netplay_settings_dialog_.reset();
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
   }
 
   if (netplay_status_dialog_) {
     netplay_status_dialog_.reset();
-    emulator_->kernel_state()->xam_state()->xam_dialogs_shown_--;
   }
 
   ClearDialogs();
@@ -4226,8 +4292,16 @@ void EmulatorWindow::ClearDialogs() {
     updater_completion_dialog_.reset();
   }
 
+  if (content_list_dialog_) {
+    content_list_dialog_.reset();
+  }
+
+  if (xmp_config_dialog_) {
+    xmp_config_dialog_.reset();
+  }
+
   imgui_drawer_.get()->ClearDialogs();
-  emulator_->kernel_state()->xam_state()->xam_dialogs_shown_ = 0;
+  emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(false);
 }
 
 }  // namespace app

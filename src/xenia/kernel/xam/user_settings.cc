@@ -62,7 +62,7 @@ std::optional<UserSetting> UserSetting::GetDefaultSetting(uint32_t setting_id) {
     case X_USER_DATA_TYPE::INT32:
     case X_USER_DATA_TYPE::UNSET:
       return std::make_optional<UserSetting>(
-          static_cast<UserSettingId>(setting_id), 0);
+          static_cast<UserSettingId>(setting_id), static_cast<int32_t>(0));
     case X_USER_DATA_TYPE::INT64:
     case X_USER_DATA_TYPE::DATETIME:
       return std::make_optional<UserSetting>(

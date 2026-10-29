@@ -217,7 +217,7 @@ class Emulator {
   // functions.
   X_STATUS Setup(
       ui::Window* display_window, ui::ImGuiDrawer* imgui_drawer,
-      bool require_cpu_backend,
+      bool require_cpu_backend, bool with_presentation,
       std::function<std::unique_ptr<apu::AudioSystem>(cpu::Processor*)>
           audio_system_factory,
       std::function<std::unique_ptr<gpu::GraphicsSystem>()>
@@ -235,6 +235,10 @@ class Emulator {
                      const std::string_view mount_path);
 
   enum class FileSignatureType {
+    XEX0,
+    XEXQ,
+    XEXH,
+    XEX25,
     XEX1,
     XEX2,
     ELF,
@@ -242,6 +246,7 @@ class Emulator {
     LIVE,
     PIRS,
     XISO,
+    XBE,
     ZAR,
     EXE,
     Unknown
@@ -294,6 +299,7 @@ class Emulator {
 
     std::string name_{};
     std::filesystem::path path_;
+    std::filesystem::path filename_;
     std::filesystem::path data_installation_path_;
     std::filesystem::path header_installation_path_;
 
@@ -343,6 +349,9 @@ class Emulator {
   X_STATUS InstallContentPackage(const std::filesystem::path& path,
                                  ContentInstallEntry& installation_info);
 
+  X_STATUS ExtractContentPackage(const std::filesystem::path& path,
+                                 ContentInstallEntry& installation_info);
+
   // Extract content of zar package to desired directory.
   X_STATUS ExtractZarchivePackage(const std::filesystem::path& path,
                                   const std::filesystem::path& extract_dir);
@@ -367,6 +376,8 @@ class Emulator {
 
   // The game can request another title to be loaded.
   const std::filesystem::path GetNewDiscPath(std::string window_message = "");
+  // Builds and runs the picker itself. UI thread only.
+  const std::filesystem::path ShowDiscPicker(std::string window_message);
 
   void WaitUntilExit();
 
