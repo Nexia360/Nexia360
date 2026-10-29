@@ -53,6 +53,11 @@ DEFINE_path(trace_function_data_path, "", "File to write trace data to.",
             "CPU");
 DEFINE_bool(break_on_start, false, "Break into the debugger on startup.",
             "CPU");
+DEFINE_int32(jit_background_threads, 2,
+             "Threads that translate code a title writes at runtime (the XNA "
+             "runtime's JIT output) as soon as it is swept, instead of on the "
+             "first call into it. 0 translates on first call only.",
+             "CPU");
 
 namespace xe {
 namespace kernel {
@@ -152,6 +157,7 @@ Processor::Processor(xe::Memory* memory, ExportResolver* export_resolver)
     : memory_(memory), export_resolver_(export_resolver) {}
 
 Processor::~Processor() {
+  StopBackgroundTranslation();
   {
     auto global_lock = global_critical_region_.Acquire();
     modules_.clear();
@@ -363,6 +369,14 @@ void Processor::FlushCode() {
   // point into the code freed below - a relaunched runtime called straight
   // into the old cache. The next title that enters user mode enables it again
   // when its imports bind.
+  if (dynamic_code_module_) {
+    XELOGI(
+        "Processor::FlushCode: dynamic code translated {} time(s) in the "
+        "background, {} on guest threads, {} again after a sweep mid-way",
+        background_translated_.exchange(0), guest_translated_.exchange(0),
+        stale_retranslated_.exchange(0));
+  }
+  dynamic_calls_user_mode_.store(-1, std::memory_order_relaxed);
   dynamic_code_module_.reset();
   dynamic_code_enabled_.store(false, std::memory_order_relaxed);
   keep_dynamic_context_stores_.store(false, std::memory_order_relaxed);
@@ -381,6 +395,9 @@ void Processor::FlushCode() {
   for (const auto& module : modules_) {
     XELOGI("   surviving module '{}'", module->name());
   }
+  // Paused since teardown began; nothing is queued until the next title
+  // enables dynamic code again.
+  ResumeBackgroundTranslation();
 }
 
 void Processor::InvalidateCodeRange(uint32_t address, uint32_t length) {
@@ -390,6 +407,17 @@ void Processor::InvalidateCodeRange(uint32_t address, uint32_t length) {
   const uint32_t end = address + length - 1;
   auto global_lock = global_critical_region_.Acquire();
   RecordSweptCode(address, length);
+  {
+    // Published after the record, for a translation to find on install.
+    const uint64_t generation = sweep_generation_.load() + 1;
+    SweepRecord& record = sweep_records_[generation % kSweepRecordCount];
+    record.generation = generation;
+    record.start_key = CodeRangeKey(address);
+    record.end_key = CodeRangeKey(end) == record.start_key + (length - 1)
+                         ? record.start_key + length
+                         : 0;
+    sweep_generation_.store(generation);
+  }
   auto forget = [this, address, end](Function* function) {
     if (!function) {
       return;
@@ -398,6 +426,12 @@ void Processor::InvalidateCodeRange(uint32_t address, uint32_t length) {
     // same already defined symbol and never compile the new code.
     if (function->module()) {
       function->module()->ForgetSymbol(function->address());
+    }
+    // Live dynamic code was patched, most often a call site the runtime bound,
+    // and is about to be called again: translate the new code ahead of it.
+    if (function->module() &&
+        function->module() == dynamic_code_module_.get()) {
+      QueueBackgroundTranslation(function->address());
     }
     // The dynamic call cache keys a function by its entry, which the range
     // misses for a patch inside it or code compiled under another name.
@@ -528,18 +562,36 @@ Function* Processor::ResolveFunction(uint32_t address) {
   Entry::Status status = entry_table_.GetOrCreate(address, &entry);
   if (status == Entry::STATUS_NEW) {
     // Needs to be generated. We have the 'lock' on it and must do so now.
+    status = CompileEntry(entry, address, false);
+  }
+  if (status == Entry::STATUS_READY) {
+    // Ready to use.
+    return entry->function;
+  } else {
+    // Failed or bad state.
+    return nullptr;
+  }
+}
+
+Entry::Status Processor::CompileEntry(Entry* entry, uint32_t address,
+                                      bool background) {
+  // Past this many sweeps of the same code mid-translation the guest is
+  // rewriting it as fast as it can be read; install what was read, as before.
+  constexpr int kMaxAttempts = 4;
+  for (int attempt = 1;; ++attempt) {
+    const uint64_t generation = sweep_generation_.load();
 
     // Grab symbol declaration.
     auto function = LookupFunction(address);
 
     if (!function) {
       entry->status = Entry::STATUS_FAILED;
-      return nullptr;
+      return Entry::STATUS_FAILED;
     }
 
     if (!DemandFunction(function)) {
       entry->status = Entry::STATUS_FAILED;
-      return nullptr;
+      return Entry::STATUS_FAILED;
     }
     // only add it to the list of resolved functions if resolving succeeded
     auto module_for = function->module();
@@ -554,19 +606,179 @@ Function* Processor::ResolveFunction(uint32_t address) {
 
     // A sweep must not find dynamic code ready before its pieces are recorded.
     auto global_lock = global_critical_region_.Acquire();
+    const bool dynamic = module_for == dynamic_code_module_.get();
+    // DeleteRange passes over an entry that is still compiling, so a sweep
+    // while this read the code didn't drop it. Only dynamic code is checked:
+    // it has no indirection slot, so nothing could have called this yet.
+    if (dynamic && attempt < kMaxAttempts && SweptSince(generation, function)) {
+      module_for->ForgetSymbol(address);
+      ++stale_retranslated_;
+      continue;
+    }
     entry->function = function;
     entry->end_address = function->end_address();
-    status = entry->status = Entry::STATUS_READY;
-    if (module_for == dynamic_code_module_.get()) {
+    entry->status = Entry::STATUS_READY;
+    if (dynamic) {
       RecordDynamicCode(function);
+      ++(background ? background_translated_ : guest_translated_);
+      if (!background) {
+        dynamic_calls_user_mode_.store(
+            memory_->UserModeKernelAddress(address) != address ? 1 : 0,
+            std::memory_order_relaxed);
+      }
+    }
+    return Entry::STATUS_READY;
+  }
+}
+
+bool Processor::SweptSince(uint64_t generation, const Function* function) {
+  const uint64_t current = sweep_generation_.load();
+  if (current == generation) {
+    return false;
+  }
+  if (current - generation > kSweepRecordCount) {
+    // The records no longer reach back that far.
+    return true;
+  }
+  const uint64_t start = function->address();
+  const uint64_t end = std::max<uint64_t>(function->end_address(), start) + 4;
+  for (uint64_t g = generation + 1; g <= current; ++g) {
+    const SweepRecord& record = sweep_records_[g % kSweepRecordCount];
+    if (record.generation != g || !record.end_key) {
+      return true;
+    }
+    // Compared by key, page by page, as RecordDynamicCode records it.
+    for (uint64_t piece = start; piece < end;) {
+      const uint64_t piece_end =
+          std::min<uint64_t>((piece & ~uint64_t(0xFFF)) + 0x1000, end);
+      const uint64_t key = CodeRangeKey(uint32_t(piece));
+      if (key < record.end_key &&
+          key + (piece_end - piece) > record.start_key) {
+        return true;
+      }
+      piece = piece_end;
     }
   }
-  if (status == Entry::STATUS_READY) {
-    // Ready to use.
-    return entry->function;
-  } else {
-    // Failed or bad state.
-    return nullptr;
+  return false;
+}
+
+void Processor::OnCodeSwept(uint32_t address, uint32_t length) {
+  // A single instruction is a patch inside code that already exists, whose
+  // function InvalidateCodeRange has queued again.
+  if (length <= 4 || !dynamic_code_enabled_.load()) {
+    return;
+  }
+  // Translate the code under the name the guest calls it by. A sweep through
+  // a user mode address can be turned into the kernel one, and the 0xA0000000
+  // window back into its user alias; a user page table mapping can't be
+  // inverted, so then there is nothing to translate ahead.
+  const int user_mode =
+      dynamic_calls_user_mode_.load(std::memory_order_relaxed);
+  const uint32_t kernel_address = memory_->UserModeKernelAddress(address);
+  uint32_t target = address;
+  if (user_mode == 0) {
+    target = kernel_address;
+  } else if (user_mode == 1 && kernel_address == address) {
+    target = xe::Memory::KernelModeUserAddress(address);
+    if (target == address) {
+      return;
+    }
+  }
+  QueueBackgroundTranslation(target);
+}
+
+void Processor::QueueBackgroundTranslation(uint32_t address) {
+  std::lock_guard<std::mutex> lock(background_mutex_);
+  if (background_threads_.empty() || background_paused_ ||
+      background_stopping_ || !background_queued_.insert(address).second) {
+    return;
+  }
+  background_queue_.push_back(address);
+  background_work_.notify_one();
+}
+
+void Processor::StartBackgroundTranslation() {
+  std::lock_guard<std::mutex> lock(background_mutex_);
+  if (!background_threads_.empty() || cvars::jit_background_threads <= 0) {
+    return;
+  }
+  const int count = std::min(cvars::jit_background_threads, 8);
+  for (int i = 0; i < count; ++i) {
+    xe::threading::Thread::CreationParameters params;
+    // Below the guest threads: this only gets ahead of them.
+    params.initial_priority = -1;
+    auto thread = xe::threading::Thread::Create(
+        params, [this]() { BackgroundTranslationMain(); });
+    if (!thread) {
+      break;
+    }
+    thread->set_name(fmt::format("JIT Translator {}", i));
+    background_threads_.push_back(std::move(thread));
+  }
+  XELOGI("Processor: {} background translation thread(s)",
+         background_threads_.size());
+}
+
+void Processor::StopBackgroundTranslation() {
+  {
+    std::lock_guard<std::mutex> lock(background_mutex_);
+    background_stopping_ = true;
+    background_queue_.clear();
+    background_queued_.clear();
+  }
+  background_work_.notify_all();
+  for (auto& thread : background_threads_) {
+    xe::threading::Wait(thread.get(), false);
+  }
+  background_threads_.clear();
+}
+
+void Processor::PauseBackgroundTranslation() {
+  std::unique_lock<std::mutex> lock(background_mutex_);
+  background_paused_ = true;
+  background_queue_.clear();
+  background_queued_.clear();
+  // A translation in flight finishes against code that is still there.
+  background_idle_.wait(lock, [this]() { return !background_busy_; });
+}
+
+void Processor::ResumeBackgroundTranslation() {
+  std::lock_guard<std::mutex> lock(background_mutex_);
+  background_paused_ = false;
+}
+
+void Processor::BackgroundTranslationMain() {
+  while (true) {
+    uint32_t address;
+    {
+      std::unique_lock<std::mutex> lock(background_mutex_);
+      background_work_.wait(lock, [this]() {
+        return background_stopping_ ||
+               (!background_paused_ && !background_queue_.empty());
+      });
+      if (background_stopping_) {
+        return;
+      }
+      address = background_queue_.front();
+      background_queue_.pop_front();
+      background_queued_.erase(address);
+      ++background_busy_;
+    }
+    // Only code no module claims: a loaded module's functions are found
+    // before the dynamic module, and modules can be unloaded under us.
+    Module* module = LookupModule(address);
+    if (module && module == dynamic_code_module_.get()) {
+      Entry* entry;
+      if (entry_table_.GetOrCreate(address, &entry) == Entry::STATUS_NEW) {
+        CompileEntry(entry, address, true);
+      }
+    }
+    {
+      std::lock_guard<std::mutex> lock(background_mutex_);
+      if (!--background_busy_) {
+        background_idle_.notify_all();
+      }
+    }
   }
 }
 Module* Processor::LookupModule(uint32_t address) {
@@ -590,6 +802,8 @@ void Processor::EnableDynamicCode() {
     dynamic_code_module_ = std::make_unique<DynamicCodeModule>(this);
   }
   dynamic_code_enabled_.store(true, std::memory_order_relaxed);
+  // Only a title that writes its own code gets translator threads.
+  StartBackgroundTranslation();
 }
 
 Function* Processor::LookupFunction(uint32_t address) {

@@ -15,9 +15,11 @@
 #include "xenia/base/string.h"
 #include "xenia/emulator.h"
 #include "xenia/kernel/kernel_state.h"
+#include "xenia/kernel/title_id_utils.h"
 #include "xenia/kernel/xam/user_profile.h"
 #include "xenia/kernel/xam/xam_content_device.h"
 #include "xenia/kernel/xfile.h"
+#include "xenia/kernel/xna/xna_launcher.h"
 #include "xenia/kernel/xobject.h"
 #include "xenia/vfs/devices/host_path_device.h"
 #include "xenia/vfs/devices/xcontent_container_device.h"
@@ -235,6 +237,27 @@ std::filesystem::path ContentManager::ResolvePackagePath(
     std::filesystem::path package_path = package_root / xe::to_path(final_name);
     if (disc_number != -1) {
       package_path /= fmt::format("disc{:03}", disc_number);
+    }
+
+    // An XBLIG is content of the XNA Indie Player (584E07D2), but it lives in
+    // the XNA library, not the content tree. The 4.0 launcher is handed the
+    // game's file name in its launch data and opens it by that name - the
+    // same name XamContentLaunchImage resolves through the library.
+    const uint32_t resolved_title = title_id == kCurrentlyRunningTitleId
+                                        ? kernel_state_->title_id()
+                                        : title_id;
+    std::error_code ec;
+    if (resolved_title == kXN_2002 && disc_number == -1 &&
+        !std::filesystem::exists(package_path, ec)) {
+      const auto candidate = kernel_state_->emulator()->storage_root() /
+                             "xna_library" / xe::to_path(final_name);
+      xna::XnaPackageInfo xna_info;
+      if (std::filesystem::exists(candidate, ec) &&
+          xna::IsXnaPackage(candidate, &xna_info)) {
+        XELOGI("ContentManager: '{}' is the XNA library package {}",
+               final_name, xe::path_to_utf8(candidate));
+        return candidate;
+      }
     }
     return package_path;
   };

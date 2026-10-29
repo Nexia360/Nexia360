@@ -512,11 +512,19 @@ X_HRESULT XmpApp::ExecuteDispatchMessage(uint32_t message, uint32_t buffer_ptr,
 
       if (!args->media_resources_ptr) {
         *kernel_state_->memory()->TranslateVirtual<uint32_t*>(
-            args->sources_returned_ptr.get()) = kMaxSourcesForMediaPlayer;
+            args->sources_returned_ptr.get()) =
+            xe::byte_swap<uint32_t>(kMaxSourcesForMediaPlayer);
         return X_E_SUCCESS;
       }
 
+      // Too small still says how many are needed. The XNA runtime starts at 4,
+      // doubles on ERROR_NOT_ENOUGH_MEMORY and copies this count back each
+      // time; left unwritten it is stack garbage, and a garbage count over
+      // 0x7FFFFFFF fails MediaSource.GetAvailableMediaSources with E_FAIL.
       if (args->max_source.get() < kMaxSourcesForMediaPlayer) {
+        *kernel_state_->memory()->TranslateVirtual<uint32_t*>(
+            args->sources_returned_ptr.get()) =
+            xe::byte_swap<uint32_t>(kMaxSourcesForMediaPlayer);
         return 0x80070008;
       }
 

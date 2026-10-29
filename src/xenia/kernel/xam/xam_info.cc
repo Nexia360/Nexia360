@@ -687,11 +687,93 @@ dword_result_t XamGetExecutionId_entry(lpdword_t info_ptr) {
 }
 DECLARE_XAM_EXPORT1(XamGetExecutionId, kNone, kImplemented);
 
-dword_result_t XamLoaderSetLaunchData_entry(lpvoid_t data, dword_t size) {
+dword_result_t XamLoaderSetLaunchData_entry(lpvoid_t data, dword_t size,
+                                            const ppc_context_t& ctx) {
   auto xam = kernel_state()->GetKernelModule<XamModule>("xam.xex");
   auto& loader_data = xam->loader_data();
   loader_data.launch_data.resize(size);
   std::memcpy(loader_data.launch_data.data(), data, size);
+  loader_data.launch_data_set_by_title = true;
+  // What a title hands the next one - the XNA launcher's relaunch records
+  // say how the game it ran ended.
+  const uint8_t* bytes = loader_data.launch_data.data();
+  XELOGI("XamLoaderSetLaunchData: {} byte(s), {:08X} {:08X} {:08X}",
+         uint32_t(size), size >= 4 ? xe::load_and_swap<uint32_t>(bytes) : 0,
+         size >= 8 ? xe::load_and_swap<uint32_t>(bytes + 4) : 0,
+         size >= 12 ? xe::load_and_swap<uint32_t>(bytes + 8) : 0);
+  // Who decided: the guest call chain, from the frames' back chain. A callee
+  // saves its LR at 8 bytes below its caller's stack pointer, so each frame's
+  // back chain names the next LR. The XNA launcher's exit code comes from
+  // whichever runtime code called its exit method.
+  {
+    auto memory = kernel_memory();
+    // A heap covering an address says nothing about its page being there.
+    auto readable = [memory](uint32_t address) {
+      auto heap = memory->LookupHeap(address);
+      return heap && heap->IsPageCommitted(address);
+    };
+    auto load32 = [memory](uint32_t address) {
+      return xe::load_and_swap<uint32_t>(memory->TranslateVirtual(address));
+    };
+    std::string chain = fmt::format("{:08X}", uint32_t(ctx->lr));
+    // frames[i] is a stack pointer; returns[i] is where its function returns.
+    std::vector<uint32_t> frames, returns;
+    uint32_t sp = uint32_t(ctx->r[1]);
+    for (int i = 0; i < 24 && sp && readable(sp); ++i) {
+      const uint32_t next = load32(sp);
+      if (next <= sp || !readable(next - 8)) {
+        break;
+      }
+      frames.push_back(sp);
+      returns.push_back(load32(next - 8));
+      chain += fmt::format(" {:08X}", returns.back());
+      sp = next;
+    }
+    XELOGI("XamLoaderSetLaunchData: called from {}", chain);
+
+    // Code 4 is RuntimeHost's fatal error box. 8A1A6050 marshals (caption,
+    // title, text, details) into r30..r27 and calls 8A158788, which hands them
+    // to the host; HostLoader 84050360 answers every such box with exit 4.
+    // 8A143190 is on the way and __savegprlr_24 stores those registers at
+    // its entry r1 - 0x10 - 8 * (31 - n), so the strings are still there.
+    constexpr uint32_t kBoxBroadcastReturn = 0x8A143204;
+    auto wide = [&](uint32_t text) {
+      std::string utf8;
+      for (uint32_t c = 0; text && !(text & 1) && c < 8192; ++c) {
+        if (!readable(text + c * 2)) {
+          break;
+        }
+        const uint16_t ch =
+            xe::load_and_swap<uint16_t>(memory->TranslateVirtual(text + c * 2));
+        if (!ch) {
+          break;
+        }
+        utf8 += ch < 0x80 ? char(ch) : '?';
+      }
+      return utf8;
+    };
+    for (size_t i = 0; i + 1 < frames.size(); ++i) {
+      if (returns[i] != kBoxBroadcastReturn) {
+        continue;
+      }
+      // frames[i + 1] is 8A143190's own stack pointer; its back chain is the
+      // r1 it was entered with.
+      if (!readable(frames[i + 1])) {
+        break;
+      }
+      const uint32_t entry = load32(frames[i + 1]);
+      static const char* const kNames[] = {"Caption", "Title", "Text",
+                                           "Details"};
+      for (int n = 0; n < 4; ++n) {
+        // r30 - n, low word of the doubleword.
+        const uint32_t slot = entry - 0x10 - 8 * (1 + n) + 4;
+        const uint32_t text = readable(slot) ? load32(slot) : 0;
+        XELOGE("XamLoaderSetLaunchData: {} ({:08X}): {}", kNames[n], text,
+               wide(text));
+      }
+      break;
+    }
+  }
   return 0;
 }
 DECLARE_XAM_EXPORT1(XamLoaderSetLaunchData, kNone, kSketchy);

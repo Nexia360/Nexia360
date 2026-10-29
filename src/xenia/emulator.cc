@@ -46,6 +46,7 @@
 #include "xenia/kernel/title_id_utils.h"
 #include "xenia/kernel/user_module.h"
 #include "xenia/kernel/xam/achievement_manager.h"
+#include "xenia/kernel/xam/xam_content_device.h"
 #include "xenia/kernel/xam/xam_module.h"
 #include "xenia/kernel/xam/xdbf/spa_info.h"
 #include "xenia/kernel/xbdm/xbdm_module.h"
@@ -406,6 +407,9 @@ X_STATUS Emulator::TerminateTitle(bool clear_handles) {
     return X_STATUS_UNSUCCESSFUL;
   }
 
+  // Background translation reads the title's code and installs into its
+  // dynamic module, both of which teardown frees. FlushCode resumes it.
+  processor()->PauseBackgroundTranslation();
   XELOGI("TerminateTitle: audio clients");
   if (audio_system()) {
     audio_system()->UnregisterAllClients();
@@ -837,10 +841,11 @@ X_STATUS Emulator::LaunchXnaGuestTitle(const std::filesystem::path& path) {
   // Framework, the console's Microsoft.Xna.Framework, the packet format
   // and the content loaders are the real ones, bugs included.
   //
-  // Wired but unproven - no run has ever booted this launcher, and the
-  // protocol by which it is told which game to load is not yet known.
-  // So it fails loudly instead of falling back to the host CLR: a quiet
-  // fallback would hide exactly how far it got, which is the one thing
+  // The launcher is told which game by launch data, built below exactly as
+  // dash.xex builds it. It needs the 4.0 runtime title update (applied from
+  // the library) to accept v4.0 games. Still young, so it fails loudly
+  // instead of falling back to the host CLR: a quiet fallback would hide
+  // exactly how far it got, which is the one thing
   // worth learning from a run. --xna_direct=false chooses the old path
   // deliberately.
   const auto launcher = xe::filesystem::GetExecutableFolder() / "Dashboard" /
@@ -904,6 +909,66 @@ X_STATUS Emulator::LaunchXnaGuestTitle(const std::filesystem::path& path) {
     XELOGE("XNA direct: could not mount the launcher folder {}",
            xe::path_to_utf8(launcher.parent_path()));
     return mounted;
+  }
+
+  // Tell the launcher which game, the way the dashboard does. dash.xex, for
+  // a community game (content type 0x000E0000), fills 0x34 bytes and calls
+  // XamLoaderSetLaunchData before launching the launcher:
+  //   +0x00  be32  0xCAFEBABE
+  //   +0x04  char  XCONTENT_DATA.file_name (42 chars, NUL at +0x2E)
+  //   +0x30  be32  XCONTENT_DATA.device_id
+  // The 4.0 launcher accepts exactly that size and opens the content by that
+  // name. With no launch data it has no game and exits to XLNI_DASH_ARCADE.
+  // The name resolves back to this package through the XNA library.
+  {
+    const std::string file_name = xe::path_to_utf8(path.filename());
+    const uint32_t device_id =
+        static_cast<uint32_t>(kernel::xam::DummyDeviceId::HDD);
+    std::vector<uint8_t> launch_data(0x34, 0);
+    xe::store_and_swap<uint32_t>(launch_data.data(), 0xCAFEBABE);
+    std::memcpy(launch_data.data() + 4, file_name.data(),
+                std::min<size_t>(file_name.size(), 42));
+    xe::store_and_swap<uint32_t>(launch_data.data() + 0x30, device_id);
+    auto xam =
+        kernel_state_->GetKernelModule<kernel::xam::XamModule>("xam.xex");
+    if (xam) {
+      // The launcher relaunches itself with a record of its own - how the
+      // game ended (0xDEADBEEF/0xDEADCAFE), or the content to run again
+      // (0xCAFEBABE, larger forms, naming this package). Replacing that
+      // with the dashboard's record started the game over instead.
+      auto& loader_data = xam->loader_data();
+      const auto& existing = loader_data.launch_data;
+      // Only a record the launcher set in this process, just before asking
+      // to be launched again. launch_data.bin survives a restart with the
+      // last relaunch's record, and keeping that showed the old game's error
+      // instead of starting the new launch.
+      bool keep = false;
+      if (loader_data.launch_data_set_by_title &&
+          loader_data.prior_title_id == kernel::kXN_2002 &&
+          existing.size() >= 8) {
+        const uint32_t magic = xe::load_and_swap<uint32_t>(existing.data());
+        if (magic == 0xDEADBEEF || magic == 0xDEADCAFE) {
+          keep = true;
+        } else if ((magic == 0xCAFEBABE || magic == 0xCAFED00D) &&
+                   existing.size() >= 0x34) {
+          const char* name = reinterpret_cast<const char*>(existing.data() + 4);
+          keep = std::string(name, strnlen(name, 42)) == file_name;
+        }
+      }
+      loader_data.launch_data_set_by_title = false;
+      if (keep) {
+        XELOGI(
+            "XNA direct: the launcher relaunched itself; keeping its {} byte "
+            "launch data ({:08X})",
+            existing.size(), xe::load_and_swap<uint32_t>(existing.data()));
+      } else {
+        loader_data.launch_data = std::move(launch_data);
+        XELOGI("XNA direct: launch data names content '{}' on device {}",
+               file_name, device_id);
+      }
+    } else {
+      XELOGE("XNA direct: no xam module to carry the launch data");
+    }
   }
 
   // LaunchXexFile then loads it, and because this is a system title it
@@ -1672,6 +1737,54 @@ const std::filesystem::path Emulator::GetNewDiscPath(
   return path;
 }
 
+#if XE_PLATFORM_WIN32 == 1
+// The exe is relocated by ASLR, so a bare host address names nothing. As
+// module+RVA it goes straight into dbh beside the PDB.
+static std::string DescribeHostAddress(uint64_t address) {
+  HMODULE module = nullptr;
+  if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                             GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                         reinterpret_cast<LPCWSTR>(address), &module)) {
+    wchar_t path[MAX_PATH];
+    const DWORD length = GetModuleFileNameW(module, path, MAX_PATH);
+    std::string name = xe::path_to_utf8(std::filesystem::path(
+        std::wstring(path, length)).filename());
+    return fmt::format("{}+0x{:X}", name,
+                       address - reinterpret_cast<uint64_t>(module));
+  }
+  return fmt::format("0x{:016X}", address);
+}
+
+// Unwinds the faulting host stack from the exception's own context, which is
+// the only stack that says which host function did it.
+static std::string DescribeHostStack(const HostThreadContext& host) {
+  CONTEXT context = {};
+  context.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
+  context.Rip = host.rip;
+  std::memcpy(&context.Rax, host.int_registers, sizeof(host.int_registers));
+  std::string stack;
+  for (int i = 0; i < 24 && context.Rip; ++i) {
+    stack += fmt::format("  {}\n", DescribeHostAddress(context.Rip));
+    DWORD64 image_base = 0;
+    auto entry = RtlLookupFunctionEntry(context.Rip, &image_base, nullptr);
+    if (!entry) {
+      // A leaf has no unwind data; only the faulting frame can be one.
+      if (i) {
+        break;
+      }
+      context.Rip = *reinterpret_cast<const DWORD64*>(context.Rsp);
+      context.Rsp += 8;
+      continue;
+    }
+    void* handler_data = nullptr;
+    DWORD64 establisher = 0;
+    RtlVirtualUnwind(UNW_FLAG_NHANDLER, image_base, context.Rip, entry,
+                     &context, &handler_data, &establisher, nullptr);
+  }
+  return stack;
+}
+#endif  // XE_PLATFORM_WIN32
+
 bool Emulator::ExceptionCallbackThunk(Exception* ex, void* data) {
   return reinterpret_cast<Emulator*>(data)->ExceptionCallback(ex);
 }
@@ -1742,6 +1855,11 @@ bool Emulator::ExceptionCallback(Exception* ex) {
         "PC: outside the code cache, host 0x{:016X} - the guest called "
         "through a bad function pointer\n",
         ex->pc()));
+#if XE_PLATFORM_WIN32 == 1
+    // Or host code faulted on a guest thread - then the host stack names it.
+    crash_msg.append("Host stack:\n");
+    crash_msg.append(DescribeHostStack(*ex->thread_context()));
+#endif  // XE_PLATFORM_WIN32
   }
   if (ex->code() == Exception::Code::kAccessViolation) {
     const char* op_str = "unknown";

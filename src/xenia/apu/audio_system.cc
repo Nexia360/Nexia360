@@ -183,11 +183,20 @@ void AudioSystem::Shutdown() {
 
   // Unregister all active clients to shut down their audio drivers before
   // the semaphores are destroyed with this AudioSystem.
+  // Drivers are destroyed with the global lock released, as in
+  // UnregisterClient.
   {
     auto global_lock = global_critical_region_.Acquire();
     for (size_t i = 0; i < kMaximumClientCount; ++i) {
       if (clients_[i].in_use) {
-        DestroyDriver(clients_[i].driver);
+        AudioDriver* driver = clients_[i].driver;
+        clients_[i].driver = nullptr;
+        clients_[i].callback = 0;
+        global_lock.unlock();
+        if (driver) {
+          DestroyDriver(driver);
+        }
+        global_lock.lock();
         if (clients_[i].wrapped_callback_arg) {
           memory()->SystemHeapFree(clients_[i].wrapped_callback_arg);
         }
@@ -278,7 +287,19 @@ void AudioSystem::UnregisterClient(size_t index) {
            index);
     return;
   }
-  DestroyDriver(clients_[index].driver);
+  // The driver is destroyed with the global lock released. XAudio2's shutdown
+  // joins its MTA thread, which waits in DestroyVoice on threads that need the
+  // global lock (the audio worker, the timer queue, the frame limiter): holding
+  // it across DestroyDriver deadlocked the title switch. The slot stays in use
+  // without a driver or callback meanwhile, so it is neither pumped nor handed
+  // to RegisterClient.
+  AudioDriver* driver = clients_[index].driver;
+  clients_[index].driver = nullptr;
+  clients_[index].callback = 0;
+  global_lock.unlock();
+  DestroyDriver(driver);
+  global_lock.lock();
+
   memory()->SystemHeapFree(clients_[index].wrapped_callback_arg);
   clients_[index] = {0};
 

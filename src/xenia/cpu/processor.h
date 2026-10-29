@@ -10,16 +10,22 @@
 #ifndef XENIA_CPU_PROCESSOR_H_
 #define XENIA_CPU_PROCESSOR_H_
 
+#include <array>
 #include <atomic>
+#include <condition_variable>
 #include <cstdio>
+#include <deque>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "xenia/base/cvar.h"
 #include "xenia/base/mapped_memory.h"
 #include "xenia/base/mutex.h"
+#include "xenia/base/threading.h"
 #include "xenia/cpu/backend/backend.h"
 #include "xenia/cpu/debug_listener.h"
 #include "xenia/cpu/entry_table.h"
@@ -151,6 +157,14 @@ class Processor {
 
   // The exclusive end of the swept range an address falls in, or 0 for none.
   uint32_t SweptCodeEnd(uint32_t address);
+
+  // The guest swept [address, address + length) to run what it just wrote
+  // there. Queues the code for translation off the guest thread, so the first
+  // call into a method the title's runtime JIT'd finds it ready.
+  void OnCodeSwept(uint32_t address, uint32_t length);
+  // Stops background translation and waits for what is in flight. Teardown
+  // calls this before it frees the title's memory and code; FlushCode resumes.
+  void PauseBackgroundTranslation();
 
   Function* LookupFunction(uint32_t address);
   Module* LookupModule(uint32_t address);
@@ -286,6 +300,9 @@ class Processor {
                                          uint32_t current_pc);
 
   bool DemandFunction(Function* function);
+  // Compiles the function at address into an entry GetOrCreate just handed
+  // this thread, and returns the entry's final status.
+  Entry::Status CompileEntry(Entry* entry, uint32_t address, bool background);
 
   Memory* memory_ = nullptr;
   std::unique_ptr<StackWalker> stack_walker_;
@@ -335,6 +352,44 @@ class Processor {
   void RecordDynamicCode(const Function* function);
   // Dynamic code pieces by start key. Guarded with the global lock.
   std::multimap<uint64_t, DynamicCodePiece> dynamic_code_pieces_;
+
+  // Every sweep, by generation, so a translation can tell whether the memory
+  // it read changed while it was being translated. A sweep that misses a
+  // compiling entry would otherwise leave the old code installed for good.
+  // Guarded with the global lock.
+  struct SweepRecord {
+    uint64_t generation;
+    uint64_t start_key;
+    uint64_t end_key;  // Exclusive. 0 when the range isn't one physical span.
+  };
+  static constexpr size_t kSweepRecordCount = 256;
+  std::array<SweepRecord, kSweepRecordCount> sweep_records_ = {};
+  std::atomic<uint64_t> sweep_generation_{0};
+  bool SweptSince(uint64_t generation, const Function* function);
+
+  // Background translation of dynamic code. The queue, its set and the
+  // counters are guarded by background_mutex_, a leaf lock that may be taken
+  // under the global lock but never the other way round.
+  void StartBackgroundTranslation();
+  void StopBackgroundTranslation();
+  void ResumeBackgroundTranslation();
+  void QueueBackgroundTranslation(uint32_t address);
+  void BackgroundTranslationMain();
+  std::vector<std::unique_ptr<xe::threading::Thread>> background_threads_;
+  std::mutex background_mutex_;
+  std::condition_variable background_work_;
+  std::condition_variable background_idle_;
+  std::deque<uint32_t> background_queue_;
+  std::unordered_set<uint32_t> background_queued_;
+  uint32_t background_busy_ = 0;
+  bool background_paused_ = false;
+  bool background_stopping_ = false;
+  // Which name the guest calls dynamic code by: -1 unknown, 1 a user mode
+  // address, 0 the kernel one. A sweep can name the other.
+  std::atomic<int> dynamic_calls_user_mode_{-1};
+  std::atomic<uint64_t> background_translated_{0};
+  std::atomic<uint64_t> guest_translated_{0};
+  std::atomic<uint64_t> stale_retranslated_{0};
 
   // Maps thread ID to state. Updated on thread create, and threads are never
   // removed. Must be guarded with the global lock.

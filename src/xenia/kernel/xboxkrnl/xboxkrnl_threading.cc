@@ -1140,11 +1140,11 @@ dword_result_t KeWaitForMultipleObjects_entry(
           fmt::format("{}{:08X}:t{}", n ? " " : "", uint32_t(objects_ptr[n]),
                       static_cast<uint32_t>(objects[n]->type()));
     }
-    XELOGW(
+    /*XELOGW(
         "KeWaitForMultipleObjects: INFINITE wait-{} on {} object(s) [{}] from "
         "caller {:08X}",
         wait_type == 1 ? "any" : "all", uint32_t(count), list,
-        state ? static_cast<uint32_t>(state->context()->lr) : 0);
+        state ? static_cast<uint32_t>(state->context()->lr) : 0);*/
   }
   uint64_t timeout = timeout_ptr ? static_cast<uint64_t>(*timeout_ptr) : 0u;
   X_STATUS result = XObject::WaitMultiple(

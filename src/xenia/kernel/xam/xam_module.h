@@ -40,6 +40,9 @@ class XamModule : public KernelModule {
 
     uint32_t launch_flags = 0;
     std::vector<uint8_t> launch_data;
+    // Set by XamLoaderSetLaunchData in this process, cleared once a launch
+    // consumes it. Launch data loaded from disk is never counted as set.
+    bool launch_data_set_by_title = false;
     std::string dashboard_path;
     bool last_active_user_set = false;
     uint64_t last_active_user = 0;

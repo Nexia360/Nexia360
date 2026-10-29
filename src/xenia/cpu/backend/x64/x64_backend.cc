@@ -1531,13 +1531,23 @@ void* X64HelperEmitter::EmitTryAcquireReservationHelper() {
   _code_offsets code_offsets = {};
   code_offsets.prolog = getSize();
 
-  Xbyak::Label already_has_a_reservation;
   Xbyak::Label acquire_new_reservation;
 
   btr(GetBackendFlagsPtr(), kX64BackendHasReserveBit);
   mov(r8, GetBackendCtxPtr(offsetof(X64BackendContext, reserve_helper_)));
-  jc(already_has_a_reservation);
+  jnc(acquire_new_reservation);
 
+  // lwarx replaces whatever reservation the thread held. A compare-exchange
+  // that fails its compare skips the stwcx., so its next lwarx arrives still
+  // holding one - NETCF's user-mode interlocked routines do exactly that.
+  // Release the old block, then take the new one.
+  mov(rdx,
+      GetBackendCtxPtr(offsetof(X64BackendContext, cached_reserve_offset)));
+  mov(r9d, GetBackendCtxPtr(offsetof(X64BackendContext, cached_reserve_bit)));
+  lock();
+  btr(qword[rdx], r9);
+
+  L(acquire_new_reservation);
   shr(ecx, RESERVE_BLOCK_SHIFT);
   xor_(r9d, r9d);
   mov(edx, ecx);
@@ -1558,8 +1568,6 @@ void* X64HelperEmitter::EmitTryAcquireReservationHelper() {
 
   or_(GetBackendCtxPtr(offsetof(X64BackendContext, flags)), r9d);
   ret();
-  L(already_has_a_reservation);
-  DebugBreak();
 
   code_offsets.prolog_stack_alloc = getSize();
   code_offsets.body = getSize();
@@ -1630,10 +1638,17 @@ void* X64HelperEmitter::EmitReservedStoreHelper(bool bit64) {
   cmp(ax, 0x0101);
   ret();
 
-  // could be the same label, but otherwise we don't know where we came from
-  // when one gets triggered
+  // A stwcx. to an address other than the reserved one fails, and the
+  // reservation is gone either way: release the block it was really for.
   L(reservation_isnt_for_our_addr);
-  DebugBreak();
+  mov(rdx,
+      GetBackendCtxPtr(offsetof(X64BackendContext, cached_reserve_offset)));
+  mov(ecx, GetBackendCtxPtr(offsetof(X64BackendContext, cached_reserve_bit)));
+  lock();
+  btr(qword[rdx], rcx);
+  xor_(eax, eax);
+  cmp(eax, 1);  // ZF clear: failed
+  ret();
 
   L(somehow_double_cleared);  // somehow, something else cleared our reserve??
   DebugBreak();

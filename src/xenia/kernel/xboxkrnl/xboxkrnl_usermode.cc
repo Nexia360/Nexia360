@@ -55,8 +55,9 @@
 // second entry must CONTINUE the trapped code where it stopped. So user code
 // and the handler each run on a host fiber of their own, and the kernel's
 // thread is a fiber too. Exactly one runs at a time. A fiber left with frames
-// on it is deleted and made again before it runs anything else. Each fiber
-// keeps its own stackpoint records, swapped into the context while it runs.
+// on it starts over at its procedure before it runs anything else (see
+// FiberStart). Each fiber keeps its own stackpoint records, swapped into the
+// context while it runs.
 
 namespace xe {
 namespace kernel {
@@ -114,10 +115,24 @@ constexpr uint64_t kHandlerStackGap = 0x100;
 constexpr SIZE_T kFiberCommitBytes = 256 * 1024;
 constexpr SIZE_T kFiberReserveBytes = 16 * 1024 * 1024;
 
+// Where a fiber's procedure began, captured as it first ran. Restoring it
+// starts the fiber over on the stack it already has: the frames above are
+// dropped without unwinding, as DeleteFiber drops them, but no stack is freed
+// or made. Every sc the runtime services leaves the handler's fiber with
+// frames, and remaking it - a 16 MB stack freed and reserved again - was most
+// of what each one cost.
+struct FiberStart {
+  CONTEXT context;
+  bool captured = false;
+  // Restore |context| the next time the fiber is switched to.
+  bool restart = false;
+};
+
 struct UserFiber {
   void* fiber = nullptr;
-  // Left with frames on it, so it is made again before it runs anything.
+  // Left with frames on it, so it starts over before it runs anything.
   bool abandoned = false;
+  FiberStart start;
   // Where a fresh entry starts.
   uint32_t entry_address = 0;
   // Where the parked trap resumes, and the guest stack pointer it had.
@@ -140,6 +155,7 @@ struct UserModeState {
 
   void* handler_fiber = nullptr;
   bool handler_abandoned = false;
+  FiberStart handler_start;
   void* handler_stackpoint_state = nullptr;
   uint32_t handler = 0;
   cpu::Function* handler_function = nullptr;
@@ -304,9 +320,32 @@ void* NewFiber(LPFIBER_START_ROUTINE proc, void* param) {
   return fiber;
 }
 
+// Back on a fiber that switched away: one renewed since starts over. Every
+// switch goes through SwitchTo, so this is where an abandoned fiber resumes.
+void RestartIfRenewed(UserModeState* state) {
+  void* fiber = GetCurrentFiber();
+  FiberStart* start = nullptr;
+  if (fiber == state->handler_fiber) {
+    start = &state->handler_start;
+  } else {
+    for (auto& user_fiber : state->fibers) {
+      if (user_fiber->fiber == fiber) {
+        start = &user_fiber->start;
+        break;
+      }
+    }
+  }
+  if (start && start->restart) {
+    start->restart = false;
+    // No exception record: a plain jump, nothing unwound.
+    RtlRestoreContext(&start->context, nullptr);
+  }
+}
+
 void SwitchTo(UserModeState* state, void* fiber) {
   state->current_fiber = fiber;
   SwitchToFiber(fiber);
+  RestartIfRenewed(state);
 }
 
 // Marks the fiber running now as holding frames that must never run again.
@@ -355,6 +394,10 @@ void LeaveUserMode(UserModeState* state, uint32_t value, bool abandon) {
 
 VOID WINAPI UserFiberProc(void* param) {
   auto user_fiber = static_cast<UserFiber*>(param);
+  // A restart resumes here. Captured in this frame and not a helper's: a
+  // helper's return address lies below, where later frames overwrite it.
+  RtlCaptureContext(&user_fiber->start.context);
+  user_fiber->start.captured = true;
   for (;;) {
     UserModeState* state = tl_user_mode.get();
     RunGuest(state, user_fiber->entry_address);
@@ -366,6 +409,9 @@ VOID WINAPI UserFiberProc(void* param) {
 
 VOID WINAPI HandlerFiberProc(void* param) {
   auto state = static_cast<UserModeState*>(param);
+  // A restart resumes here, as in UserFiberProc.
+  RtlCaptureContext(&state->handler_start.context);
+  state->handler_start.captured = true;
   for (;;) {
     RunGuest(state, state->handler_function, state->handler);
     // The handler returned rather than leaving user mode: back to the trap.
@@ -380,11 +426,17 @@ bool RenewUserFiber(UserFiber* user_fiber) {
   if (user_fiber->fiber && !user_fiber->abandoned) {
     return true;
   }
+  user_fiber->abandoned = false;
+  if (user_fiber->fiber && user_fiber->start.captured) {
+    user_fiber->start.restart = true;
+    return true;
+  }
   if (user_fiber->fiber) {
     DeleteFiber(user_fiber->fiber);
   }
+  user_fiber->start.captured = false;
+  user_fiber->start.restart = false;
   user_fiber->fiber = NewFiber(&UserFiberProc, user_fiber);
-  user_fiber->abandoned = false;
   return user_fiber->fiber != nullptr;
 }
 
@@ -392,11 +444,17 @@ bool RenewHandlerFiber(UserModeState* state) {
   if (state->handler_fiber && !state->handler_abandoned) {
     return true;
   }
+  state->handler_abandoned = false;
+  if (state->handler_fiber && state->handler_start.captured) {
+    state->handler_start.restart = true;
+    return true;
+  }
   if (state->handler_fiber) {
     DeleteFiber(state->handler_fiber);
   }
+  state->handler_start.captured = false;
+  state->handler_start.restart = false;
   state->handler_fiber = NewFiber(&HandlerFiberProc, state);
-  state->handler_abandoned = false;
   return state->handler_fiber != nullptr;
 }
 

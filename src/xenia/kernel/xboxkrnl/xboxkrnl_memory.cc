@@ -875,6 +875,8 @@ void KeSweepIcacheRange_entry(lpvoid_t address, dword_t length,
   if (user_start != start) {
     processor->InvalidateCodeRange(user_start, length);
   }
+  // The guest is about to run it, so start translating it now.
+  processor->OnCodeSwept(start, length);
 }
 DECLARE_XBOXKRNL_EXPORT2(KeSweepIcacheRange, kMemory, kImplemented,
                          kHighFrequency);
