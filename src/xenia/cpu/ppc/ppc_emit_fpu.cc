@@ -51,10 +51,10 @@ int InstrEmit_faddsx(PPCHIRBuilder& f, const InstrData& i) {
   Value* a = f.LoadFPR(i.A.FRA);
   Value* b = f.LoadFPR(i.A.FRB);
   Value* v = f.ToSingle(f.Add(a, b));
-  Value* denormal = f.SingleDenormalOperand({a, b});
-  v = f.ApplySingleDenormalOperand(denormal, v);
+  Value* out_of_range = f.SingleOutOfRangeOperand({a, b});
+  v = f.ApplySingleOutOfRangeOperand(out_of_range, v);
   f.StoreFPR(i.A.FRT, v);
-  f.UpdateFPSCR(v, {a, b}, i.A.Rc, denormal, FPOperation::kSum);
+  f.UpdateFPSCR(v, {a, b}, i.A.Rc, out_of_range, FPOperation::kSum);
   return 0;
 }
 
@@ -92,9 +92,9 @@ int InstrEmit_fdivsx(PPCHIRBuilder& f, const InstrData& i) {
   Value* a = f.LoadFPR(fra);
   Value* b = f.LoadFPR(frb);
   Value* v = f.Div(a, b);
-  // A denormalized operand keeps the double quotient, unrounded.
-  Value* denormal = f.SingleDenormalOperand({a, b});
-  v = f.Select(denormal, v, f.ToSingle(v));
+  // An operand outside the single range keeps the double quotient, unrounded.
+  Value* out_of_range = f.SingleOutOfRangeOperand({a, b});
+  v = f.Select(out_of_range, v, f.ToSingle(v));
   f.StoreFPR(frt, v);
   f.UpdateFPSCR(v, {a, b}, rc, nullptr, FPOperation::kQuotient);
   return 0;
@@ -115,10 +115,10 @@ int InstrEmit_fmulsx(PPCHIRBuilder& f, const InstrData& i) {
   Value* a = f.LoadFPR(i.A.FRA);
   Value* c = f.LoadFPR(i.A.FRC);
   Value* v = f.ToSingle(f.Mul(a, c));
-  Value* denormal = f.SingleDenormalOperand({a, c});
-  v = f.ApplySingleDenormalOperand(denormal, v);
+  Value* out_of_range = f.SingleOutOfRangeOperand({a, c});
+  v = f.ApplySingleOutOfRangeOperand(out_of_range, v);
   f.StoreFPR(i.A.FRT, v);
-  f.UpdateFPSCR(v, {a, c}, i.A.Rc, denormal, FPOperation::kProduct);
+  f.UpdateFPSCR(v, {a, c}, i.A.Rc, out_of_range, FPOperation::kProduct);
   return 0;
 }
 
@@ -156,10 +156,10 @@ int InstrEmit_fsubsx(PPCHIRBuilder& f, const InstrData& i) {
   Value* a = f.LoadFPR(i.A.FRA);
   Value* b = f.LoadFPR(i.A.FRB);
   Value* v = f.ToSingle(f.Sub(a, b));
-  Value* denormal = f.SingleDenormalOperand({a, b});
-  v = f.ApplySingleDenormalOperand(denormal, v);
+  Value* out_of_range = f.SingleOutOfRangeOperand({a, b});
+  v = f.ApplySingleOutOfRangeOperand(out_of_range, v);
   f.StoreFPR(i.A.FRT, v);
-  f.UpdateFPSCR(v, {a, b}, i.A.Rc, denormal, FPOperation::kDifference);
+  f.UpdateFPSCR(v, {a, b}, i.A.Rc, out_of_range, FPOperation::kDifference);
   return 0;
 }
 
@@ -182,9 +182,9 @@ static int InstrEmit_fsqrt(PPCHIRBuilder& f, const InstrData& i, bool single) {
     f.UpdateFPSCR(v, {b}, i.A.Rc, nullptr, FPOperation::kSquareRoot);
     return 0;
   }
-  // A denormalized operand keeps the double root, unrounded.
-  Value* denormal = f.SingleDenormalOperand({b});
-  v = f.Select(denormal, v, f.ToSingle(v));
+  // An operand outside the single range keeps the double root, unrounded.
+  Value* out_of_range = f.SingleOutOfRangeOperand({b});
+  v = f.Select(out_of_range, v, f.ToSingle(v));
   f.StoreFPR(i.A.FRT, v);
   f.UpdateFPSCR(v, {b}, i.A.Rc, nullptr, FPOperation::kSquareRoot);
   return 0;
@@ -205,14 +205,14 @@ static int InstrEmit_fmadd(PPCHIRBuilder& f, const InstrData& i, bool single) {
   Value* c = f.LoadFPR(i.A.FRC);
   Value* b = f.LoadFPR(i.A.FRB);
   Value* v = f.MulAdd(a, c, b);
-  Value* denormal = nullptr;
+  Value* out_of_range = nullptr;
   if (single) {
     v = f.ToSingle(v);
-    denormal = f.SingleDenormalOperand({a, c, b});
-    v = f.ApplySingleDenormalOperand(denormal, v);
+    out_of_range = f.SingleOutOfRangeOperand({a, c, b});
+    v = f.ApplySingleOutOfRangeOperand(out_of_range, v);
   }
   f.StoreFPR(i.A.FRT, v);
-  f.UpdateFPSCRForMultiplyAdd(v, a, c, b, i.A.Rc, denormal);
+  f.UpdateFPSCRForMultiplyAdd(v, a, c, b, i.A.Rc, out_of_range);
   return 0;
 }
 
@@ -230,14 +230,14 @@ static int InstrEmit_fmsub(PPCHIRBuilder& f, const InstrData& i, bool single) {
   Value* c = f.LoadFPR(i.A.FRC);
   Value* b = f.LoadFPR(i.A.FRB);
   Value* v = f.MulSub(a, c, b);
-  Value* denormal = nullptr;
+  Value* out_of_range = nullptr;
   if (single) {
     v = f.ToSingle(v);
-    denormal = f.SingleDenormalOperand({a, c, b});
-    v = f.ApplySingleDenormalOperand(denormal, v);
+    out_of_range = f.SingleOutOfRangeOperand({a, c, b});
+    v = f.ApplySingleOutOfRangeOperand(out_of_range, v);
   }
   f.StoreFPR(i.A.FRT, v);
-  f.UpdateFPSCRForMultiplyAdd(v, a, c, b, i.A.Rc, denormal);
+  f.UpdateFPSCRForMultiplyAdd(v, a, c, b, i.A.Rc, out_of_range);
   return 0;
 }
 int InstrEmit_fmsubx(PPCHIRBuilder& f, const InstrData& i) {
@@ -268,10 +268,10 @@ int InstrEmit_fnmaddsx(PPCHIRBuilder& f, const InstrData& i) {
   Value* b = f.LoadFPR(i.A.FRB);
   Value* v = f.MulAdd(a, c, b, /*negate_result=*/true);
   v = f.ToSingle(v);
-  Value* denormal = f.SingleDenormalOperand({a, c, b});
-  v = f.ApplySingleDenormalOperand(denormal, v);
+  Value* out_of_range = f.SingleOutOfRangeOperand({a, c, b});
+  v = f.ApplySingleOutOfRangeOperand(out_of_range, v);
   f.StoreFPR(i.A.FRT, v);
-  f.UpdateFPSCRForMultiplyAdd(v, a, c, b, i.A.Rc, denormal);
+  f.UpdateFPSCRForMultiplyAdd(v, a, c, b, i.A.Rc, out_of_range);
   return 0;
 }
 
@@ -293,10 +293,10 @@ int InstrEmit_fnmsubsx(PPCHIRBuilder& f, const InstrData& i) {
   Value* b = f.LoadFPR(i.A.FRB);
   Value* v = f.MulSub(a, c, b, /*negate_result=*/true);
   v = f.ToSingle(v);
-  Value* denormal = f.SingleDenormalOperand({a, c, b});
-  v = f.ApplySingleDenormalOperand(denormal, v);
+  Value* out_of_range = f.SingleOutOfRangeOperand({a, c, b});
+  v = f.ApplySingleOutOfRangeOperand(out_of_range, v);
   f.StoreFPR(i.A.FRT, v);
-  f.UpdateFPSCRForMultiplyAdd(v, a, c, b, i.A.Rc, denormal);
+  f.UpdateFPSCRForMultiplyAdd(v, a, c, b, i.A.Rc, out_of_range);
   return 0;
 }
 
