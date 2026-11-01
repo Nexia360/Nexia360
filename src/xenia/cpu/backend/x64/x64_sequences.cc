@@ -717,9 +717,16 @@ struct SELECT_I8
     } else {
       src2 = i.src2;
     }
+    Reg8 src3;
+    if (i.src3.is_constant) {
+      src3 = e.dl;
+      e.mov(src3, i.src3.constant());
+    } else {
+      src3 = i.src3;
+    }
     e.test(i.src1, i.src1);
     e.cmovnz(i.dest.reg().cvt32(), src2.cvt32());
-    e.cmovz(i.dest.reg().cvt32(), i.src3.reg().cvt32());
+    e.cmovz(i.dest.reg().cvt32(), src3.cvt32());
   }
 };
 struct SELECT_I16
@@ -732,9 +739,16 @@ struct SELECT_I16
     } else {
       src2 = i.src2;
     }
+    Reg16 src3;
+    if (i.src3.is_constant) {
+      src3 = e.dx;
+      e.mov(src3, i.src3.constant());
+    } else {
+      src3 = i.src3;
+    }
     e.test(i.src1, i.src1);
     e.cmovnz(i.dest.reg().cvt32(), src2.cvt32());
-    e.cmovz(i.dest.reg().cvt32(), i.src3.reg().cvt32());
+    e.cmovz(i.dest.reg().cvt32(), src3.cvt32());
   }
 };
 struct SELECT_I32
@@ -747,9 +761,16 @@ struct SELECT_I32
     } else {
       src2 = i.src2;
     }
+    Reg32 src3;
+    if (i.src3.is_constant) {
+      src3 = e.edx;
+      e.mov(src3, i.src3.constant());
+    } else {
+      src3 = i.src3;
+    }
     e.test(i.src1, i.src1);
     e.cmovnz(i.dest, src2);
-    e.cmovz(i.dest, i.src3);
+    e.cmovz(i.dest, src3);
   }
 };
 struct SELECT_I64
@@ -762,9 +783,16 @@ struct SELECT_I64
     } else {
       src2 = i.src2;
     }
+    Reg64 src3;
+    if (i.src3.is_constant) {
+      src3 = e.rdx;
+      e.mov(src3, i.src3.constant());
+    } else {
+      src3 = i.src3;
+    }
     e.test(i.src1, i.src1);
     e.cmovnz(i.dest, src2);
-    e.cmovz(i.dest, i.src3);
+    e.cmovz(i.dest, src3);
   }
 };
 struct SELECT_F32
