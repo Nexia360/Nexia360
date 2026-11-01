@@ -2804,6 +2804,20 @@ EMITTER_OPCODE_TABLE(OPCODE_LOG2, LOG2_F32, LOG2_F64, LOG2_V128);
 // ============================================================================
 // OPCODE_DOT_PRODUCT_3
 // ============================================================================
+// A DOT_PRODUCT_3 source in dest with its fourth lane cleared, at compile time
+// for a constant.
+template <typename T>
+static Xmm LoadThreeLanes(X64Emitter& e, const T& src, Xmm dest) {
+  if (src.is_constant) {
+    vec128_t v = src.constant();
+    v.u32[3] = 0;
+    e.LoadConstantXmm(dest, v);
+  } else {
+    e.vandps(dest, src, e.GetXmmConstPtr(XMMThreeFloatMask));
+  }
+  return dest;
+}
+
 // The use_fast_dot_product path: the float64 sum of the products, truncated
 // to single. It matches the console in about 97% of cases; see
 // EmitVectorMultiplySum for the exact one.
@@ -2898,31 +2912,11 @@ static void EmitDotProductRoundTowardZero(X64Emitter& e, const EmitArgType& i) {
 template <typename EmitArgType>
 static void EmitFastDotProduct3(X64Emitter& e, const EmitArgType& i) {
   e.ChangeMxcsrMode(MXCSRMode::Vmx);
-  e.vmovaps(e.xmm2, e.GetXmmConstPtr(XMMThreeFloatMask));
   bool is_lensqr = i.instr->src1.value == i.instr->src2.value;
 
-  auto src1v = e.xmm0;
-  auto src2v = e.xmm1;
-  if (i.src1.is_constant) {
-    src1v = e.xmm0;
-    e.LoadConstantXmm(src1v, i.src1.constant());
-  } else {
-    src1v = i.src1.reg();
-  }
-  if (i.src2.is_constant) {
-    src2v = e.xmm1;
-    e.LoadConstantXmm(src2v, i.src2.constant());
-  } else {
-    src2v = i.src2.reg();
-  }
-  // todo: maybe the top element should be cleared by the InstrEmit_ function
-  // so that in the future this could be optimized away if the top is known to
-  // be zero. Right now im not sure that happens often though and its
-  // currently not worth it also, maybe pre-and if constant
+  LoadThreeLanes(e, i.src1, e.xmm3);
   if (!is_lensqr) {
-    e.vandps(e.xmm3, src1v, e.xmm2);
-
-    e.vandps(e.xmm2, src2v, e.xmm2);
+    LoadThreeLanes(e, i.src2, e.xmm2);
 
     e.vcvtps2pd(e.ymm0, e.xmm3);
     e.vcvtps2pd(e.ymm1, e.xmm2);
@@ -2933,7 +2927,6 @@ static void EmitFastDotProduct3(X64Emitter& e, const EmitArgType& i) {
     */
     e.vmulpd(e.ymm3, e.ymm0, e.ymm1);
   } else {
-    e.vandps(e.xmm3, src1v, e.xmm2);
     e.vcvtps2pd(e.ymm0, e.xmm3);
     e.vmulpd(e.ymm3, e.ymm0, e.ymm0);
   }
@@ -3031,14 +3024,12 @@ static void EmitVectorMultiplySum(X64Emitter& e, const EmitArgType& i,
         e.jmp(done, X64Emitter::T_NEAR);
       });
 
-  Xmm src1 = GetInputRegOrConstant(e, i.src1, e.xmm0);
-  Xmm src2 = GetInputRegOrConstant(e, i.src2, e.xmm1);
   if (lanes == 3) {
-    e.vandps(e.xmm0, src1, e.GetXmmConstPtr(XMMThreeFloatMask));
-    e.vandps(e.xmm1, src2, e.GetXmmConstPtr(XMMThreeFloatMask));
+    LoadThreeLanes(e, i.src1, e.xmm0);
+    LoadThreeLanes(e, i.src2, e.xmm1);
   } else {
-    e.vmovaps(e.xmm0, src1);
-    e.vmovaps(e.xmm1, src2);
+    e.vmovaps(e.xmm0, GetInputRegOrConstant(e, i.src1, e.xmm0));
+    e.vmovaps(e.xmm1, GetInputRegOrConstant(e, i.src2, e.xmm1));
   }
   // Biased exponents
   e.vpslld(e.xmm2, e.xmm0, 1);
