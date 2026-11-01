@@ -83,9 +83,12 @@ class PPCHIRBuilder : public hir::HIRBuilder {
   void UpdateFPSCR(Value* result, std::initializer_list<Value*> operands,
                    bool update_cr1, Value* suppress = nullptr,
                    FPOperation operation = FPOperation::kOther);
-  // As UpdateFPSCR, plus the 0 x inf that a QNaN addend would hide.
+  // As UpdateFPSCR for a x c + b, or a x c - b when `subtract`, with the
+  // result negated when `negate`. Adds the 0 x inf that a QNaN addend would
+  // hide.
   void UpdateFPSCRForMultiplyAdd(Value* result, Value* a, Value* c, Value* b,
-                                 bool update_cr1, Value* suppress = nullptr);
+                                 bool subtract, bool negate, bool update_cr1,
+                                 Value* suppress = nullptr);
   // The single-precision quirk: an operand outside the single range answers
   // with the default QNaN and raises nothing (or, for divide and square root,
   // keeps the double). Feed the condition to UpdateFPSCR.

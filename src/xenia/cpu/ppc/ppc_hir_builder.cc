@@ -10,6 +10,7 @@
 #include "xenia/cpu/ppc/ppc_hir_builder.h"
 
 #include <stddef.h>
+#include <cmath>
 #include <cstring>
 
 #include "third_party/fmt/include/fmt/format.h"
@@ -677,8 +678,70 @@ void PPCHIRBuilder::UpdateFPSCR(Value* result,
   StoreFPSCRSummary(vx, true, ox, raised);
 }
 
+// x + y as the double sum and its rounding error, exactly. Needs round to
+// nearest.
+static void TwoSum(PPCHIRBuilder& f, Value* x, Value* y, Value** sum,
+                   Value** error) {
+  Value* s = f.Add(x, y);
+  Value* y_part = f.Sub(s, x);
+  Value* x_part = f.Sub(s, y_part);
+  *error = f.Add(f.Sub(x, x_part), f.Sub(y, y_part));
+  *sum = s;
+}
+
+// Whether a x c + y, for finite operands, differs from the double `fused`,
+// finite too. The fused multiply-add's error is a sum of two doubles, which
+// ErrFma (Boldo and Muller) finds exactly in round to nearest, as long as
+// a x c neither underflows nor overflows. So a tiny product is scaled up by
+// 2^1100 and a huge one down by 2^-128, with y and the result alongside, which
+// keeps the comparison exact.
+static Value* FusedDiffers(PPCHIRBuilder& f, Value* a, Value* c, Value* y,
+                           Value* fused) {
+  Value* zero = f.LoadZeroFloat64();
+  Value* up = f.LoadConstantFloat64(std::ldexp(1.0, 550));
+  Value* down = f.LoadConstantFloat64(std::ldexp(1.0, -128));
+  Value* product_magnitude = FpMagnitude(f, f.Mul(a, c));
+  // Below 2^-900 and from 2^1020 up
+  Value* tiny = f.CompareULT(product_magnitude,
+                             f.LoadConstantUint64(0x07B0000000000000ull));
+  Value* huge = f.CompareUGE(product_magnitude,
+                             f.LoadConstantUint64(0x7FB0000000000000ull));
+  Value* a_scaled =
+      f.Select(tiny, f.Mul(a, up), f.Select(huge, f.Mul(a, down), a));
+  Value* c_scaled = f.Select(tiny, f.Mul(c, up), c);
+  Value* y_scaled = f.Select(tiny, f.Mul(f.Mul(y, up), up),
+                             f.Select(huge, f.Mul(y, down), y));
+  Value* fused_scaled = f.Select(tiny, f.Mul(f.Mul(fused, up), up),
+                                 f.Select(huge, f.Mul(fused, down), fused));
+  // A nonzero product under 2^-900 can't add exactly to a y from 2^-100 up,
+  // which is also too big to scale. Next to a product from 2^1020 up, a y that
+  // loses bits scaled down is too small to add exactly.
+  Value* product_nonzero = f.And(f.CompareNE(a, zero), f.CompareNE(c, zero));
+  Value* y_big = f.CompareUGE(FpMagnitude(f, y),
+                              f.LoadConstantUint64(0x39B0000000000000ull));
+  Value* y_lost = f.CompareNE(
+      f.Mul(y_scaled, f.LoadConstantFloat64(std::ldexp(1.0, 128))), y);
+  Value* known =
+      f.Or(f.And(tiny, f.And(product_nonzero, y_big)), f.And(huge, y_lost));
+
+  // ErrFma: a x c + y = fused + gamma + alpha_error, exactly
+  Value* product = f.Mul(a_scaled, c_scaled);
+  Value* product_error = f.MulSub(a_scaled, c_scaled, product);
+  Value* alpha;
+  Value* alpha_error;
+  TwoSum(f, y_scaled, product_error, &alpha, &alpha_error);
+  Value* beta;
+  Value* beta_error;
+  TwoSum(f, product, alpha, &beta, &beta_error);
+  Value* gamma = f.Add(f.Sub(beta, fused_scaled), beta_error);
+  // With both, the scaled y overflows; the product is then 0, which is exact
+  Value* scaled = f.IsFalse(f.And(tiny, y_big));
+  return f.Or(known, f.And(scaled, f.CompareNE(gamma, f.Neg(alpha_error))));
+}
+
 void PPCHIRBuilder::UpdateFPSCRForMultiplyAdd(Value* result, Value* a, Value* c,
-                                              Value* b, bool update_cr1,
+                                              Value* b, bool subtract,
+                                              bool negate, bool update_cr1,
                                               Value* suppress) {
   if (!update_cr1) {
     ClearFPSCRExceptions(false);
@@ -694,11 +757,28 @@ void PPCHIRBuilder::UpdateFPSCRForMultiplyAdd(Value* result, Value* a, Value* c,
       Or(And(IsFalse(a_magnitude), CompareEQ(c_magnitude, inf)),
          And(CompareEQ(a_magnitude, inf), IsFalse(c_magnitude)));
   Value* vx = Or(InvalidFromResult(*this, result, {a, c, b}), zero_times_inf);
+
+  // Overflow is an infinite result from finite operands. Otherwise the result
+  // is inexact if the fused double is, or if rounding to single changed it.
+  Value* finite =
+      And(And(CompareULT(a_magnitude, inf), CompareULT(c_magnitude, inf)),
+          CompareULT(FpMagnitude(*this, b), inf));
+  Value* result_magnitude = FpMagnitude(*this, result);
+  Value* ox = And(finite, CompareEQ(result_magnitude, inf));
+  Value* y = subtract ? Neg(b) : b;
+  Value* fused = MulAdd(a, c, y);
+  Value* unnegated = negate ? Neg(result) : result;
+  Value* inexact =
+      And(And(finite, CompareULT(result_magnitude, inf)),
+          Or(FusedDiffers(*this, a, c, y, fused), CompareNE(unnegated, fused)));
   if (suppress) {
-    vx = And(vx, IsFalse(suppress));
+    Value* keep = IsFalse(suppress);
+    vx = And(vx, keep);
+    ox = And(ox, keep);
+    inexact = And(inexact, keep);
   }
 
-  StoreFPSCRSummary(vx, true);
+  StoreFPSCRSummary(vx, true, ox, inexact);
 }
 
 // An operand outside the single range, nonzero and below 2^-149 (denormal
