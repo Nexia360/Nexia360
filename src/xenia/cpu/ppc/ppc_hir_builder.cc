@@ -453,9 +453,10 @@ void PPCHIRBuilder::StoreFPSCR(Value* value) {
   trace_reg.value = value;
 }
 
-// Writes FX, FEX, VX and OX, the four bits CR1 mirrors. Neither FEX nor OX is
-// derived, so both are always zero.
-void PPCHIRBuilder::StoreFPSCRSummary(Value* vx, bool update_cr1) {
+// Writes FX, FEX, VX and OX, the four bits CR1 mirrors. FEX isn't derived, so
+// it's always zero.
+void PPCHIRBuilder::StoreFPSCRSummary(Value* vx, bool update_cr1, Value* ox,
+                                      Value* raised) {
   // TODO(benvanik): detect overflow and the inexact cases; the latter needs a
   // status register read after every operation.
   /*
@@ -465,24 +466,31 @@ void PPCHIRBuilder::StoreFPSCRSummary(Value* vx, bool update_cr1) {
     fpscr?
 
   */
+  if (!ox) {
+    ox = LoadConstantInt8(0);
+  }
+  Value* fx = Or(vx, ox);
+  if (raised) {
+    fx = Or(fx, raised);
+  }
   if (update_cr1) {
     // Store into the CR1 field.
     // We do this instead of just calling CopyFPSCRToCR1 so that we don't
     // have to read back the bits and do shifting work.
-    StoreContext(offsetof(PPCContext, cr1.cr1_fx), vx);
+    StoreContext(offsetof(PPCContext, cr1.cr1_fx), fx);
     StoreContext(offsetof(PPCContext, cr1.cr1_fex), LoadConstantInt8(0));
     StoreContext(offsetof(PPCContext, cr1.cr1_vx), vx);
-    StoreContext(offsetof(PPCContext, cr1.cr1_ox), LoadConstantInt8(0));
+    StoreContext(offsetof(PPCContext, cr1.cr1_ox), ox);
   }
 
-  // FX summarizes VX, so both carry the same value here.
-  Value* vx32 = ZeroExtend(vx, INT32_TYPE);
-  Value* new_bits = Or(Shl(vx32, 31), Shl(vx32, 29));
+  Value* new_bits = Or(Shl(ZeroExtend(fx, INT32_TYPE), 31),
+                       Or(Shl(ZeroExtend(vx, INT32_TYPE), 29),
+                          Shl(ZeroExtend(ox, INT32_TYPE), 28)));
 
-  // Hardware accumulates these until software clears them, but VX is only
+  // Hardware accumulates these until software clears them, but they're only
   // derived for the recording forms, so each instruction keeps its own value.
   Value* bits = LoadFPSCR();
-  bits = Or(And(bits, LoadConstantUint32(0x1FFFFFFF)), new_bits);
+  bits = Or(And(bits, LoadConstantUint32(0x0FFFFFFF)), new_bits);
   StoreFPSCR(bits);
 }
 
@@ -513,20 +521,160 @@ static Value* InvalidFromResult(PPCHIRBuilder& f, Value* result,
   return f.And(f.IsNan(result), f.Or(any_snan, f.IsFalse(any_nan)));
 }
 
+// A finite nonzero double as a mantissa in [1, 2), keeping its sign, and its
+// exponent. A denormal is scaled into the normal range first, which is exact.
+static Value* FpNormalize(PPCHIRBuilder& f, Value* value, Value** exponent) {
+  Value* exponent_mask = f.LoadConstantUint64(0x7FF);
+  Value* denormal =
+      f.IsFalse(f.And(f.Shr(f.Cast(value, INT64_TYPE), 52), exponent_mask));
+  Value* scaled = f.Select(
+      denormal, f.Mul(value, f.LoadConstantFloat64(18446744073709551616.0)),
+      value);
+  Value* bits = f.Cast(scaled, INT64_TYPE);
+  // 64 less for a scaled denormal
+  *exponent = f.Sub(f.And(f.Shr(bits, 52), exponent_mask),
+                    f.Shl(f.ZeroExtend(denormal, INT64_TYPE), 6));
+  return f.Cast(f.Or(f.And(bits, f.LoadConstantUint64(0x800FFFFFFFFFFFFFull)),
+                     f.LoadConstantUint64(0x3FF0000000000000ull)),
+                FLOAT64_TYPE);
+}
+
+// Whether x * y differs from z, exactly, for finite x, y and z. The mantissas
+// are compared with a fused multiply-subtract, which can't lose a nonzero
+// difference between numbers in [1, 4), so tiny and denormal values are
+// judged right too.
+static Value* ProductDiffers(PPCHIRBuilder& f, Value* x, Value* y, Value* z) {
+  Value* zero = f.LoadZeroFloat64();
+  Value* any_zero = f.Or(f.CompareEQ(x, zero), f.CompareEQ(y, zero));
+  Value* z_zero = f.CompareEQ(z, zero);
+  Value* x_exponent;
+  Value* y_exponent;
+  Value* z_exponent;
+  Value* x_mantissa = FpNormalize(f, x, &x_exponent);
+  Value* y_mantissa = FpNormalize(f, y, &y_exponent);
+  Value* z_mantissa = FpNormalize(f, z, &z_exponent);
+  // The mantissas' product is in [1, 4), so z's exponent is theirs or one up.
+  // The exponents are biased, so the sum has one bias too many.
+  Value* shift = f.Sub(f.Add(z_exponent, f.LoadConstantUint64(1023)),
+                       f.Add(x_exponent, y_exponent));
+  Value* one_up = f.CompareEQ(shift, f.LoadConstantUint64(1));
+  Value* aligned = f.Select(
+      one_up, f.Mul(z_mantissa, f.LoadConstantFloat64(2.0)), z_mantissa);
+  Value* differs =
+      f.Or(f.And(f.IsTrue(shift), f.IsFalse(one_up)),
+           f.CompareNE(f.MulSub(x_mantissa, y_mantissa, aligned), zero));
+  // A zero on one side only matches a zero on the other
+  return f.Select(f.Or(any_zero, z_zero), f.CompareNE(any_zero, z_zero),
+                  differs);
+}
+
+// Whether a + b, for finite a and b, differs from the double `sum`. With the
+// larger magnitude first, sum - larger is exact, so it gives back the smaller
+// one only if the sum was exact.
+static Value* SumDiffers(PPCHIRBuilder& f, Value* a, Value* b, Value* sum) {
+  Value* a_larger = f.CompareUGE(FpMagnitude(f, a), FpMagnitude(f, b));
+  Value* larger = f.Select(a_larger, a, b);
+  Value* smaller = f.Select(a_larger, b, a);
+  return f.CompareNE(f.Sub(sum, larger), smaller);
+}
+
+// The exceptions besides invalid operation, as OX and the others together.
+// Overflow is an infinite result from finite operands, zero divide a zero
+// divisor (or fres and frsqrte operand) with a finite nonzero dividend, and
+// inexact, which takes in underflow, compares the result with the operands.
+static void FpOtherExceptions(PPCHIRBuilder& f, Value* result,
+                              std::initializer_list<Value*> operands,
+                              PPCHIRBuilder::FPOperation operation, Value** ox,
+                              Value** raised) {
+  using FPOperation = PPCHIRBuilder::FPOperation;
+  Value* inf = f.LoadConstantUint64(0x7FF0000000000000ull);
+  Value* finite = nullptr;
+  for (Value* operand : operands) {
+    Value* is_finite = f.CompareULT(FpMagnitude(f, operand), inf);
+    finite = finite ? f.And(finite, is_finite) : is_finite;
+  }
+  Value* result_magnitude = FpMagnitude(f, result);
+  Value* a = *operands.begin();
+  Value* b = operands.size() > 1 ? operands.begin()[1] : nullptr;
+  Value* zero = f.LoadZeroFloat64();
+
+  Value* zero_divide = nullptr;
+  Value* inexact = nullptr;
+  switch (operation) {
+    case FPOperation::kSum: {
+      // A single result is rounded again from the double sum
+      Value* sum = f.Add(a, b);
+      inexact = f.Or(SumDiffers(f, a, b, sum), f.CompareNE(result, sum));
+      break;
+    }
+    case FPOperation::kDifference: {
+      Value* difference = f.Sub(a, b);
+      inexact = f.Or(SumDiffers(f, a, f.Neg(b), difference),
+                     f.CompareNE(result, difference));
+      break;
+    }
+    case FPOperation::kProduct:
+      inexact = ProductDiffers(f, a, b, result);
+      break;
+    case FPOperation::kQuotient:
+      zero_divide = f.And(f.CompareEQ(b, zero), f.CompareNE(a, zero));
+      inexact = ProductDiffers(f, result, b, a);
+      break;
+    case FPOperation::kSquareRoot:
+      inexact = ProductDiffers(f, result, result, a);
+      break;
+    case FPOperation::kRoundToSingle:
+      inexact = f.CompareNE(result, a);
+      break;
+    case FPOperation::kEstimate:
+      zero_divide = f.CompareEQ(a, zero);
+      break;
+    default:
+      break;
+  }
+
+  Value* overflow = f.And(finite, f.CompareEQ(result_magnitude, inf));
+  if (zero_divide) {
+    zero_divide = f.And(finite, zero_divide);
+    overflow = f.And(overflow, f.IsFalse(zero_divide));
+  }
+  *ox = overflow;
+  *raised = zero_divide;
+  if (inexact) {
+    // A NaN or infinite result from finite operands is invalid or overflow
+    inexact =
+        f.And(f.And(finite, f.CompareULT(result_magnitude, inf)), inexact);
+    *raised = *raised ? f.Or(*raised, inexact) : inexact;
+  }
+}
+
 void PPCHIRBuilder::UpdateFPSCR(Value* result,
                                 std::initializer_list<Value*> operands,
-                                bool update_cr1, Value* suppress) {
+                                bool update_cr1, Value* suppress,
+                                FPOperation operation) {
   if (!update_cr1) {
     ClearFPSCRExceptions(false);
     return;
   }
 
   Value* vx = InvalidFromResult(*this, result, operands);
+  Value* ox = nullptr;
+  Value* raised = nullptr;
+  if (operation != FPOperation::kOther) {
+    FpOtherExceptions(*this, result, operands, operation, &ox, &raised);
+  }
   if (suppress) {
-    vx = And(vx, IsFalse(suppress));
+    Value* keep = IsFalse(suppress);
+    vx = And(vx, keep);
+    if (ox) {
+      ox = And(ox, keep);
+    }
+    if (raised) {
+      raised = And(raised, keep);
+    }
   }
 
-  StoreFPSCRSummary(vx, true);
+  StoreFPSCRSummary(vx, true, ox, raised);
 }
 
 void PPCHIRBuilder::UpdateFPSCRForMultiplyAdd(Value* result, Value* a, Value* c,
@@ -598,7 +746,10 @@ void PPCHIRBuilder::UpdateFPSCRForConvertToInteger(Value* b,
   double limit = to_int64 ? 9223372036854775808.0 : 2147483648.0;
   Value* out_of_range = Or(CompareSGE(rounded, LoadConstantFloat64(limit)),
                            CompareSLT(rounded, LoadConstantFloat64(-limit)));
-  StoreFPSCRSummary(Or(IsNan(b), out_of_range), true);
+  Value* invalid = Or(IsNan(b), out_of_range);
+  // Otherwise it's inexact if rounding changed it
+  Value* inexact = And(IsFalse(invalid), CompareNE(rounded, b));
+  StoreFPSCRSummary(invalid, true, nullptr, inexact);
 }
 
 void PPCHIRBuilder::CopyFPSCRToCR1() {
