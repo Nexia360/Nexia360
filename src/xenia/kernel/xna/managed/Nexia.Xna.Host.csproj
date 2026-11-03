@@ -9,7 +9,7 @@
          needs, and the deps file, for a library loaded by a native host. -->
     <EnableDynamicLoading>true</EnableDynamicLoading>
     <Version>1.0.0</Version>
-    <NexiaShimRevision>2</NexiaShimRevision>
+    <NexiaShimRevision>3</NexiaShimRevision>
     <FileVersion>$(Version).$(NexiaShimRevision)</FileVersion>
     <InformationalVersion>$(Version)+shim.$(NexiaShimRevision)</InformationalVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>

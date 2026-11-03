@@ -248,7 +248,8 @@ class SystemManagementController {
                                          X_SMC_DATA* smc_response)>>
       smc_commands_;
 
-  X_DVD_TRAY_STATE dvd_tray_state_ = X_DVD_TRAY_STATE::OPEN;
+  // A console boots with its tray shut.
+  X_DVD_TRAY_STATE dvd_tray_state_ = X_DVD_TRAY_STATE::CLOSED;
   REMOTE_CONTROL ir_address_ = REMOTE_CONTROL::MEDIA_REMOTE_360;
   TILT_STATE tilt_state_ = TILT_STATE::VERTICAL;
 

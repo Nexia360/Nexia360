@@ -41,6 +41,8 @@ namespace xam {
 
 static std::string_view kCommonContentDirectory = "0000000000000000";
 
+class ContentPackageDirectory;
+
 class ContentManager {
  public:
   ContentManager(KernelState* kernel_state,
@@ -54,6 +56,8 @@ class ContentManager {
   // Host specific methods
   std::unique_ptr<ContentPackage> OpenPackage(
       const std::filesystem::path host_path);
+  void RepairDirectoryHeader(ContentPackageDirectory* package,
+                             const std::filesystem::path& host_path);
   std::unique_ptr<ContentPackage> OpenPackage(
       const uint64_t xuid, const XCONTENT_DATA_INTERNAL& data);
   std::unique_ptr<ContentPackage> CreatePackage(
@@ -133,6 +137,11 @@ class ContentManager {
                                         const XCONTENT_DATA_INTERNAL& data) {
     return ResolvePackagePath(xuid, data);
   }
+
+  // What a package occupies on the host: a container's file size, or every
+  // file under an extracted directory. A header's content_size is zero for
+  // a directory Nexia wrote, and Storage shows whatever it is handed.
+  static uint64_t PackageSizeOnDisk(const std::filesystem::path& path);
 
  private:
   std::string GeneratePackageDevicePath(const std::filesystem::path& root_path);

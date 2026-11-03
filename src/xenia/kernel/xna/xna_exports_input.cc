@@ -7,13 +7,19 @@
  ******************************************************************************
  */
 
-// Console entry points answered by Nexia's own kernel exports.
+// Console entry points answered by the console's own natives, or by Nexia's
+// kernel exports when those are not loaded.
 //
-// XNA's XINPUT module is a thin renaming of XAM's input calls, so these do not
-// reimplement anything - they forward through XnaBridge into
-// XamInputGetState and friends, which is where the emulator's controller
-// handling already lives. Each XAM call takes (user_index, flags, pointer),
-// where XNA's takes (PlayerIndex, ref struct), so flags is supplied as zero.
+// RuntimeHost's XINPUT natives come first (XnaConsoleNatives): they are what
+// the console ran, and they do more than rename XAM - XInput_GetState merges
+// two queries and reports the guitar subtype as not connected. They take
+// (PlayerIndex, struct*) and return an ErrorCode, with the same console-order
+// structures XAM fills.
+//
+// Without them these forward through XnaBridge into XamInputGetState and
+// friends, which is where the emulator's controller handling lives. Each XAM
+// call takes (user_index, flags, pointer), where XNA's takes (PlayerIndex,
+// ref struct), so flags is supplied as zero.
 //
 // BYTE ORDER IS NOT INCIDENTAL HERE. Nexia's X_INPUT_* are GUEST structures and
 // their fields are big-endian; the console's managed code used to run on a
@@ -30,12 +36,14 @@
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xam/xam_state.h"
 #include "xenia/kernel/xna/xna_bridge.h"
+#include "xenia/kernel/xna/xna_console_natives.h"
 #include "xenia/kernel/xna/xna_exports.h"
 
 namespace {
 
 using xe::kernel::xna::XnaArg;
 using xe::kernel::xna::XnaBridge;
+using xe::kernel::xna::XnaConsoleNatives;
 
 // ErrorCodes, as the managed side reads them.
 constexpr uint32_t kSuccess = 0;
@@ -104,14 +112,33 @@ bool CallXamInput(const char* name, uint32_t user_index, void* guest,
   return XnaBridge::Instance().Invoke("xam.xex", name, args, 3, out_result);
 }
 
+// Calls RuntimeHost's own native of that name. False when it is not loaded.
+bool CallConsole(const char* name, const XnaArg* args, size_t count,
+                 uint64_t* out_result) {
+  auto& natives = XnaConsoleNatives::Instance();
+  const uint32_t function = natives.Find(name);
+  return function && natives.Call(function, args, count, out_result);
+}
+
+// The console native's (PlayerIndex, struct*) shape, falling back to XAM's.
+bool CallInput(const char* console_name, const char* xam_name, uint32_t player,
+               void* guest, uint32_t size, uint64_t* out_result) {
+  const XnaArg args[] = {
+      XnaArg::Scalar(player),
+      XnaArg::Out(guest, size),
+  };
+  return CallConsole(console_name, args, 2, out_result) ||
+         CallXamInput(xam_name, player, guest, size, out_result);
+}
+
 }  // namespace
 
 extern "C" uint32_t xna_XINPUT_XInput_GetState(uint32_t player,
                                                void* out_state) {
   xe::hid::X_INPUT_STATE guest = {};
   uint64_t result = 0;
-  if (!CallXamInput("XamInputGetState", player, &guest, sizeof(guest),
-                    &result)) {
+  if (!CallInput("XInput_GetState", "XamInputGetState", player, &guest,
+                 sizeof(guest), &result)) {
     xe::kernel::xna::XnaExportUnimplemented("XINPUT!XInput_GetState");
     return kDeviceNotConnected;
   }
@@ -131,13 +158,21 @@ extern "C" uint32_t xna_XINPUT_XInput_SetState(uint32_t player,
   guest.left_motor_speed = static_cast<uint16_t>(vibration_packed & 0xFFFF);
   guest.right_motor_speed = static_cast<uint16_t>(vibration_packed >> 16);
 
+  // The console native takes the struct by value too, as one register that it
+  // stores as a big-endian word: the left motor is the high half.
+  const XnaArg console_args[] = {
+      XnaArg::Scalar(player),
+      XnaArg::Scalar((uint32_t(uint16_t(guest.left_motor_speed)) << 16) |
+                     uint16_t(guest.right_motor_speed)),
+  };
   const XnaArg args[] = {
       XnaArg::Scalar(player),
       XnaArg::Scalar(0),
       XnaArg::In(&guest, sizeof(guest)),
   };
   uint64_t result = 0;
-  if (!XnaBridge::Instance().Invoke("xam.xex", "XamInputSetState", args, 3,
+  if (!CallConsole("XInput_SetState", console_args, 2, &result) &&
+      !XnaBridge::Instance().Invoke("xam.xex", "XamInputSetState", args, 3,
                                     &result)) {
     xe::kernel::xna::XnaExportUnimplemented("XINPUT!XInput_SetState");
     return kDeviceNotConnected;
@@ -148,8 +183,8 @@ extern "C" uint32_t xna_XINPUT_XInput_SetState(uint32_t player,
 extern "C" uint32_t xna_XINPUT_XInput_GetCaps(uint32_t player, void* out_caps) {
   xe::hid::X_INPUT_CAPABILITIES guest = {};
   uint64_t result = 0;
-  if (!CallXamInput("XamInputGetCapabilities", player, &guest, sizeof(guest),
-                    &result)) {
+  if (!CallInput("XInput_GetCaps", "XamInputGetCapabilities", player, &guest,
+                 sizeof(guest), &result)) {
     xe::kernel::xna::XnaExportUnimplemented("XINPUT!XInput_GetCaps");
     return kDeviceNotConnected;
   }
@@ -169,8 +204,8 @@ extern "C" uint32_t xna_XINPUT_XInput_GetKeyStroke(uint32_t player,
                                                    void* out_keystroke) {
   xe::hid::X_INPUT_KEYSTROKE guest = {};
   uint64_t result = 0;
-  if (!CallXamInput("XamInputGetKeystroke", player, &guest, sizeof(guest),
-                    &result)) {
+  if (!CallInput("XInput_GetKeyStroke", "XamInputGetKeystroke", player, &guest,
+                 sizeof(guest), &result)) {
     xe::kernel::xna::XnaExportUnimplemented("XINPUT!XInput_GetKeyStroke");
     return kDeviceNotConnected;
   }

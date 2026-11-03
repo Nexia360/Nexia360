@@ -85,19 +85,22 @@
 #define APU_OPTIONS "[any, nop, sdl, xaudio2]"
 #define GPU_OPTIONS "[any, d3d12, vulkan, null]"
 #define HID_OPTIONS "[any, nop, sdl, keyboard, xinput]"
+#define HID_DEFAULT "xinput"
 #elif XE_PLATFORM_LINUX
 #define APU_OPTIONS "[any, alsa, nop, sdl]"
 #define GPU_OPTIONS "[any, vulkan, null]"
 #define HID_OPTIONS "[any, nop, sdl, keyboard]"
+#define HID_DEFAULT "any"
 #else
 #define APU_OPTIONS "[any, nop, sdl]"
 #define GPU_OPTIONS "[any, vulkan, null]"
 #define HID_OPTIONS "[any, nop, sdl]"
+#define HID_DEFAULT "any"
 #endif
 
 DEFINE_string(apu, "any", "Audio system. Use: " APU_OPTIONS, "APU");
 DEFINE_string(gpu, "any", "Graphics system. Use: " GPU_OPTIONS, "GPU");
-DEFINE_string(hid, "any", "Input system. Use: " HID_OPTIONS, "HID");
+DEFINE_string(hid, HID_DEFAULT, "Input system. Use: " HID_OPTIONS, "HID");
 
 DEFINE_path(
     storage_root, "",

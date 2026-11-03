@@ -999,7 +999,14 @@ void LaunchTitle(const std::string& launch_path, const std::string& mount_path,
 
   std::string host;
   std::string inner;
-  if (launch_path.empty() || (flags & 2)) {
+  std::filesystem::path disc_path;
+  if (launch_path.empty() && kernel_state()->title_id() == kDashboardID &&
+      kernel_state()->emulator()->GetInsertedDisc(&disc_path, nullptr)) {
+    // A on the disc tile: dash.xex starts the disc in the tray with no path
+    // at all - XamLoaderLaunchTitleEx(NULL, NULL, NULL, flags | 2) in
+    // sub_92189998 - and the disc's default.xex is what runs.
+    host = xe::path_to_utf8(disc_path);
+  } else if (launch_path.empty() || (flags & 2)) {
     host = loader_data.dashboard_path;
   } else {
     if (!mount_path.empty() && launch_path.front() != '\\') {

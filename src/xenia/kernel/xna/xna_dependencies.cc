@@ -21,6 +21,9 @@
 #include "xenia/base/logging.h"
 #include "xenia/base/platform.h"
 #include "xenia/base/utf8.h"
+#include "xenia/emulator.h"
+#include "xenia/kernel/kernel_state.h"
+#include "xenia/kernel/util/title_update_manager.h"
 #include "xenia/kernel/xna/xna_host_payload.h"
 #include "xenia/kernel/xna/xna_runtime_install.h"
 
@@ -224,10 +227,97 @@ std::filesystem::path ConsoleRuntimePath() {
   return XnaOverlayPath() / "console";
 }
 
+// The XNA Indie Player. Every XBLIG runs under its title id, and its title
+// update (tu32000100, installed from the dashboard) carries the runtime.
+constexpr uint32_t kIndiePlayerTitleId = 0x584E07D2;
+
+bool SameContents(const std::filesystem::path& a,
+                  const std::filesystem::path& b) {
+  std::error_code ec;
+  const auto size = std::filesystem::file_size(a, ec);
+  if (ec || std::filesystem::file_size(b, ec) != size || ec) {
+    return false;
+  }
+  std::ifstream file_a(a, std::ios::binary);
+  std::ifstream file_b(b, std::ios::binary);
+  std::vector<char> data_a(size);
+  std::vector<char> data_b(size);
+  const auto length = static_cast<std::streamsize>(size);
+  if (!file_a.read(data_a.data(), length) ||
+      !file_b.read(data_b.data(), length)) {
+    return false;
+  }
+  return data_a == data_b;
+}
+
 }  // namespace
 
 std::filesystem::path XnaOverlayPath() {
   return xe::filesystem::GetExecutableFolder() / "xna";
+}
+
+std::filesystem::path FindIndiePlayerRuntime() {
+  KernelState* state = KernelState::shared();
+  if (!state || !state->emulator()) {
+    return {};
+  }
+  Emulator* emulator = state->emulator();
+  std::error_code ec;
+  auto runtime_in = [&ec](const std::filesystem::path& update) {
+    const auto runtime = update / "Runtime" / "v4.0";
+    return std::filesystem::is_directory(runtime, ec) ? runtime
+                                                      : std::filesystem::path();
+  };
+  // The update the user picked first, as the launcher's own patch is.
+  if (auto* updates = emulator->title_update_manager()) {
+    const auto active = updates->GetActiveLibraryPath(kIndiePlayerTitleId);
+    if (!active.empty()) {
+      const auto runtime = runtime_in(active);
+      if (!runtime.empty()) {
+        return runtime;
+      }
+    }
+  }
+  const auto library = emulator->storage_root() / "Library" / "584E07D2";
+  for (const auto& entry : std::filesystem::directory_iterator(library, ec)) {
+    const auto runtime = runtime_in(entry.path() / "UPDATE");
+    if (!runtime.empty()) {
+      return runtime;
+    }
+  }
+  return {};
+}
+
+void SyncConsoleRuntimeFromTitleUpdate() {
+  const auto runtime = FindIndiePlayerRuntime();
+  if (runtime.empty()) {
+    return;
+  }
+  std::error_code ec;
+  std::filesystem::create_directories(ConsoleRuntimePath(), ec);
+  for (const char* name : kConsoleRuntime) {
+    const auto source = runtime / name;
+    if (!std::filesystem::is_regular_file(source, ec)) {
+      continue;
+    }
+    // Identical files are left alone: the host keys its prepared copies on
+    // the master, and touching one would make it rewrite them all again.
+    const auto target = ConsoleRuntimePath() / name;
+    if (SameContents(source, target)) {
+      continue;
+    }
+    std::error_code copy_ec;
+    std::filesystem::copy_file(
+        source, target, std::filesystem::copy_options::overwrite_existing,
+        copy_ec);
+    if (copy_ec) {
+      XELOGE("XnaDependencies: could not copy {} from the title update: {}",
+             name, copy_ec.message());
+    } else {
+      XELOGI("XnaDependencies: console runtime {} from {}", name,
+             xe::path_to_utf8(runtime));
+    }
+  }
 }
 
 std::vector<XnaDependency> CheckXnaDependencies() {
@@ -258,8 +348,15 @@ std::vector<XnaDependency> CheckXnaDependencies() {
   }
 
   std::error_code ec;
-  const bool have_console = std::filesystem::exists(
+  // Launching copies it out of the title update, so an installed update is
+  // as good as the files already being in place.
+  const auto title_update_runtime = FindIndiePlayerRuntime();
+  const bool in_title_update =
+      !title_update_runtime.empty() &&
+      std::filesystem::exists(title_update_runtime / "MXF.Graphics.dlx", ec);
+  const bool in_overlay = std::filesystem::exists(
       ConsoleRuntimePath() / xe::to_path("MXF.Graphics.dlx"), ec);
+  const bool have_console = in_title_update || in_overlay;
 
   XnaDependency console;
   console.name = "Console XNA runtime";
@@ -267,10 +364,11 @@ std::vector<XnaDependency> CheckXnaDependencies() {
   console.required = true;
   console.present = have_console;
   console.detail =
-      have_console ? xe::path_to_utf8(ConsoleRuntimePath())
-                   : "not embedded in this build - build Nexia with "
-                     "XE_XNA_CONSOLE_RUNTIME_DIR pointing at the MXF*.dlx and "
-                     "Compact Framework .dlx files";
+      in_title_update ? xe::path_to_utf8(title_update_runtime)
+      : in_overlay    ? xe::path_to_utf8(ConsoleRuntimePath())
+                      : "install the XNA Indie Player title update (584E07D2) "
+                        "from the dashboard - its Runtime\\v4.0 is the console "
+                        "runtime";
   results.push_back(std::move(console));
 
   // MonoGame is the fallback for when the console runtime is absent: it can

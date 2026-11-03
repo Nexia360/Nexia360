@@ -103,6 +103,10 @@ bool HostPathEntry::DeleteEntryInternal(Entry* entry) {
   if (entry->attributes() & kFileAttributeDirectory) {
     // Delete entire directory and contents.
     auto removed = std::filesystem::remove_all(full_path, ec);
+    XELOGE("[vfs-delete] directory {} - {} entries removed{}",
+           xe::path_to_utf8(full_path),
+           removed == static_cast<std::uintmax_t>(-1) ? 0 : removed,
+           ec ? " (" + ec.message() + ")" : std::string());
     return removed >= 1 && removed != static_cast<std::uintmax_t>(-1);
   } else {
     // Skip directories, they we're handled above.
@@ -136,6 +140,7 @@ void HostPathEntry::RenameEntryInternal(
            xe::path_to_utf8(host_path_), new_host_path_, ec.message());
     return;
   }
+  XELOGE("[vfs-rename] {} -> {}", xe::path_to_utf8(host_path_), new_host_path_);
   host_path_ = new_host_path_;
 }
 

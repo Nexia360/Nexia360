@@ -44,6 +44,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -57,6 +58,7 @@
 #include "xenia/base/logging.h"
 #include "xenia/base/memory.h"
 #include "xenia/base/string_buffer.h"
+#include "xenia/base/xxhash.h"
 #include "xenia/gpu/shader.h"
 #include "xenia/gpu/ucode.h"
 #include "xenia/kernel/xna/xna_exports.h"
@@ -564,9 +566,17 @@ bool ParseD3dxEffect(const uint8_t* data, uint32_t size, EffectImage* image) {
 
 namespace {
 
-// D3DXPARAMETER_TYPE, the two values that matter here.
+// D3DXPARAMETER_TYPE and _CLASS, the values that matter here.
+constexpr uint32_t kD3dxTypeSampler = 10;
+constexpr uint32_t kD3dxTypeSamplerCube = 14;
 constexpr uint32_t kD3dxTypePixelShader = 15;
 constexpr uint32_t kD3dxTypeVertexShader = 16;
+constexpr uint32_t kD3dxClassObject = 4;
+
+// Operations in D3DX's state table (RuntimeHost 0x8A04C52C).
+constexpr uint32_t kStateFirstNonRender = 0x5A;
+constexpr uint32_t kStateAddressU = 0x6F;
+constexpr uint32_t kStateLastSampler = 0x82;
 
 // Bounds beyond which a count cannot have come from a real effect. These are
 // generous - the point is to catch a misread offset, which yields values in the
@@ -725,6 +735,13 @@ bool WalkEffectTables(const uint8_t* body, uint32_t size, EffectImage* image) {
     parameter.name =
         ReadName(body, size, ReadWord(body, typedef_at + 8),
                  image->was_byte_swapped || image->was_already_swapped);
+    // Offset zero, or a zero length, is a parameter declared without one.
+    const uint32_t semantic_offset = ReadWord(body, typedef_at + 12);
+    if (semantic_offset) {
+      parameter.semantic =
+          ReadName(body, size, semantic_offset,
+                   image->was_byte_swapped || image->was_already_swapped);
+    }
     parameter.elements = ReadWord(body, typedef_at + 16);
     parameter.columns = ReadWord(body, typedef_at + 20);
     parameter.rows = ReadWord(body, typedef_at + 24);
@@ -733,6 +750,38 @@ bool WalkEffectTables(const uint8_t* body, uint32_t size, EffectImage* image) {
     // effect has one - so a nameless parameter means the table is not here.
     if (parameter.name.empty()) {
       return false;
+    }
+    // A sampler's value is its sampler_state: a count, then that many states
+    // laid out like a pass's (operation, index, typedef offset, value offset).
+    // The TEXTURE state's value is an object reference and is resolved from the
+    // object section; every other state's value word is the Xenos value
+    // CEffect::ApplySamplerAssignments hands SetSamplerState.
+    if (parameter.parameter_class == kD3dxClassObject &&
+        parameter.type >= kD3dxTypeSampler &&
+        parameter.type <= kD3dxTypeSamplerCube) {
+      const uint32_t states_at = kOffsetBase + value_offset;
+      const uint32_t state_count =
+          states_at + 4 <= size ? ReadWord(body, states_at) : 0;
+      if (state_count <= kMaxStates &&
+          states_at + 4 + state_count * 16ull <= size) {
+        auto& assigned = image->sampler_states[parameter.name];
+        assigned.clear();
+        for (uint32_t s = 0; s < state_count; ++s) {
+          const uint32_t record = states_at + 4 + s * 16;
+          const uint32_t operation = ReadWord(body, record);
+          const uint32_t value_at = kOffsetBase + ReadWord(body, record + 12);
+          if (operation < kStateAddressU || operation > kStateLastSampler ||
+              value_at + 4 > size) {
+            continue;
+          }
+          EffectStateAssignment assignment;
+          assignment.operation = operation;
+          assignment.value = ReadWord(body, value_at);
+          assigned.push_back(assignment);
+          XELOGE("[xna]    sampler_state: \"{}\" state {:02X} = {}",
+                 parameter.name, operation, assignment.value);
+        }
+      }
     }
     parameters.push_back(std::move(parameter));
   }
@@ -804,6 +853,14 @@ bool WalkEffectTables(const uint8_t* body, uint32_t size, EffectImage* image) {
           pass.pixel_object_id = object_id;
           pass.has_pixel_shader = true;
           pass.pixel_state_index = s;
+        } else if (operation < kStateFirstNonRender) {
+          // A render state: the value record's first word is the value.
+          EffectStateAssignment assignment;
+          assignment.operation = operation;
+          assignment.value = object_id;
+          pass.render_states.push_back(assignment);
+          XELOGE("[xna]    pass \"{}\" render state {:02X} = {}", pass.name,
+                 operation, assignment.value);
         }
       }
       technique.passes.push_back(std::move(pass));
@@ -998,6 +1055,26 @@ void ParseEffectObjects(const uint8_t* body, uint32_t size,
                state == pass->vertex_state_index ? "vertex" : "pixel",
                selector->array_name);
       }
+    } else if (usage == 1 && technique == UINT32_MAX &&
+               pass_index < image->parameters.size() && bytes >= 4) {
+      // A state that names another parameter. With no technique it belongs to
+      // the PARAMETER at pass_index - a sampler - and the name is the texture
+      // its sampler_state assigns, which is how Sampler1 reaches Sky1Texture.
+      // The name is the record's data itself, sized by the record's own byte
+      // count - there is no second length in front of it, as a selector has.
+      // Read off TextureSky:
+      //   FFFFFFFF 00000009 00000000 00000000 00000001 0000000C "Sky1Texture\0"
+      // so the count word just before the data is the name's length.
+      const std::string referenced =
+          ReadName(body, size, data - 4 - kOffsetBase, swapped);
+      const std::string& sampler = image->parameters[pass_index].name;
+      if (!referenced.empty()) {
+        image->sampler_textures[sampler] = referenced;
+      }
+      XELOGE(
+          "[xna]    sampler_state: \"{}\" state {} -> \"{}\" (parameter type "
+          "{})",
+          sampler, state, referenced, image->parameters[pass_index].type);
     }
     at = data + align4(bytes);
   }
@@ -2690,9 +2767,29 @@ extern "C" void Nexia_XnaLog(uint32_t level, const char* message) {
 }
 
 extern "C" uint32_t Nexia_XnaPrepareEffect(uint8_t* data, uint32_t size) {
+  // PROBE: every effect as the console runtime handed it over, before the swap,
+  // so its tables can be read offline - the packaged .xnb files are LZX and the
+  // offline decompressor cannot read them. Named by its first technique.
+  const std::vector<uint8_t> original(data, data + size);
   auto image = std::make_unique<xe::kernel::xna::EffectImage>();
   if (!xe::kernel::xna::PrepareEffectImage(data, size, image.get())) {
     return 0;
+  }
+  {
+    const auto directory =
+        xe::filesystem::GetExecutableFolder() / "xna_effects";
+    std::error_code ec;
+    std::filesystem::create_directories(directory, ec);
+    const std::string technique = image->techniques.empty()
+                                      ? std::string("effect")
+                                      : image->techniques[0].name;
+    const auto path =
+        directory / fmt::format("{}_{:016X}.fx", technique,
+                                XXH3_64bits(original.data(), original.size()));
+    std::ofstream file(path, std::ios::binary);
+    file.write(reinterpret_cast<const char*>(original.data()),
+               std::streamsize(original.size()));
+    XELOGE("[xna] effect dumped: {} ({} bytes)", xe::path_to_utf8(path), size);
   }
   // Kept so D3D_Effect_CreateHandle can find the shaders again by content
   // rather than re-parsing the blob it is handed. The hash is taken AFTER the

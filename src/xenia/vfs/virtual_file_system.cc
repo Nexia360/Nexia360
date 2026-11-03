@@ -455,6 +455,9 @@ X_STATUS VirtualFileSystem::OpenFile(Entry* root_entry,
         return X_STATUS_ACCESS_DENIED;
       case FileDisposition::kSuperscede:
         // Replace (by delete + recreate).
+        XELOGE("[vfs-delete] supersede {} replaces the existing {}", path,
+               entry->attributes() & kFileAttributeDirectory ? "directory"
+                                                             : "file");
         if (!entry->Delete()) {
           return X_STATUS_ACCESS_DENIED;
         }
@@ -469,6 +472,9 @@ X_STATUS VirtualFileSystem::OpenFile(Entry* root_entry,
       case FileDisposition::kOverwrite:
       case FileDisposition::kOverwriteIf:
         // Overwrite (we do by delete + recreate).
+        XELOGE("[vfs-delete] overwrite {} replaces the existing {}", path,
+               entry->attributes() & kFileAttributeDirectory ? "directory"
+                                                             : "file");
         if (!entry->Delete()) {
           return X_STATUS_ACCESS_DENIED;
         }

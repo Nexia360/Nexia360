@@ -12,6 +12,9 @@
 #include "xenia/kernel/xam/xcontent/xcontent_package_container.h"
 #include "xenia/kernel/xam/xcontent/xcontent_package_directory.h"
 
+#include <algorithm>
+#include <cctype>
+
 #include "third_party/fmt/include/fmt/format.h"
 #include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
@@ -19,8 +22,10 @@
 #include "xenia/emulator.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/title_id_utils.h"
+#include "xenia/kernel/xam/profile_manager.h"
 #include "xenia/kernel/xam/user_profile.h"
 #include "xenia/kernel/xam/xam_content_device.h"
+#include "xenia/kernel/xam/xam_state.h"
 #include "xenia/kernel/xfile.h"
 #include "xenia/kernel/xna/xna_launcher.h"
 #include "xenia/kernel/xobject.h"
@@ -102,13 +107,78 @@ X_STATUS ContentManager::ExtractContentHeader(
   return X_STATUS_SUCCESS;
 }
 
+// A save directory with no usable header - kept by a build that wrote none, or
+// zeroed by one that wrote an empty header back. Minecraft's world-name saves
+// ("New World 3 - Copy") are these, and one of them emptied its whole save
+// list: rebuilding _MinecraftSaveInfo it asks each save for its thumbnail,
+// stops at the first that has none, and leaves the count at zero. On a console
+// every save has one - XAM gives a save the title's icon when it is created -
+// so the header is rebuilt as XAM would have written it.
+//
+// Only for the running title's own content: its icon and execution info are
+// the only ones to hand, and stamping them on another title's save would be
+// wrong. The path says whose it is - content/<xuid>/<title>/<type>/<name>, or
+// Library/<title>/.../Content/<xuid>/<type>/<name> for a title update's tree.
+void ContentManager::RepairDirectoryHeader(
+    ContentPackageDirectory* package, const std::filesystem::path& host_path) {
+  const auto is_hex = [](const std::string& name) {
+    return !name.empty() &&
+           std::all_of(name.begin(), name.end(), [](const char c) {
+             return std::isxdigit(static_cast<unsigned char>(c)) != 0;
+           });
+  };
+  const uint32_t running_title = kernel_state_->title_id();
+  const auto type_name = xe::path_to_utf8(host_path.parent_path().filename());
+  if (!running_title || type_name.size() != 8 || !is_hex(type_name)) {
+    return;
+  }
+  uint64_t xuid = 0;
+  bool owned_by_running_title = false;
+  for (auto at = host_path.parent_path().parent_path();
+       at.has_relative_path() && at != at.parent_path();
+       at = at.parent_path()) {
+    const auto name = xe::path_to_utf8(at.filename());
+    if (!is_hex(name)) {
+      continue;
+    }
+    if (name.size() == 16 && !xuid) {
+      xuid = xe::string_util::from_string<uint64_t>(name, true);
+    } else if (name.size() == 8 && xe::string_util::from_string<uint32_t>(
+                                       name, true) == running_title) {
+      owned_by_running_title = true;
+      break;
+    }
+  }
+  if (!owned_by_running_title) {
+    return;
+  }
+  const auto folder = xe::path_to_utf8(host_path.filename());
+  XCONTENT_DATA_INTERNAL data{};
+  data.device_id = 1;
+  data.content_type =
+      XContentType(xe::string_util::from_string<uint32_t>(type_name, true));
+  data.set_display_name(xe::to_utf16(folder));
+  data.set_file_name(folder);
+  data.title_id = running_title;
+  data.xuid = xuid;
+  const X_RESULT result =
+      package->RebuildHeader(data, kernel_state_->GetExecutionInfo(),
+                             kernel_state_->xam_state()->spa_info());
+  XELOGI("Content: rebuilt the missing header of {} for title {:08X}: {:08X}",
+         xe::path_to_utf8(host_path), running_title, result);
+}
+
 std::unique_ptr<ContentPackage> ContentManager::OpenPackage(
     const std::filesystem::path host_path) {
   const std::string device_path = GeneratePackageDevicePath(host_path);
 
   if (std::filesystem::is_directory(host_path)) {
-    return std::make_unique<ContentPackageDirectory>(
+    auto package = std::make_unique<ContentPackageDirectory>(
         kernel_state_->file_system(), device_path, host_path);
+    if (!package->IsValidPackage()) {
+      RepairDirectoryHeader(package.get(), host_path);
+    }
+    return package;
   } else {
     auto package = std::make_unique<ContentPackageContainer>(
         kernel_state_->file_system(), device_path, host_path);
@@ -116,6 +186,25 @@ std::unique_ptr<ContentPackage> ContentManager::OpenPackage(
     return package->IsValidPackage() ? std::move(package) : nullptr;
   }
 }
+uint64_t ContentManager::PackageSizeOnDisk(const std::filesystem::path& path) {
+  std::error_code ec;
+  if (std::filesystem::is_regular_file(path, ec)) {
+    const uint64_t size = std::filesystem::file_size(path, ec);
+    return ec ? 0 : size;
+  }
+  uint64_t total = 0;
+  if (std::filesystem::is_directory(path, ec)) {
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(
+             path, std::filesystem::directory_options::skip_permission_denied,
+             ec)) {
+      if (entry.is_regular_file(ec)) {
+        total += entry.file_size(ec);
+      }
+    }
+  }
+  return total;
+}
+
 std::unique_ptr<ContentPackage> ContentManager::OpenPackage(
     const uint64_t xuid, const XCONTENT_DATA_INTERNAL& data) {
   auto host_path = ResolvePackagePath(xuid, data);
@@ -298,6 +387,34 @@ std::filesystem::path ContentManager::ChosenPackageRoot(
 
 std::filesystem::path ContentManager::ResolvePackagePath(
     const uint64_t xuid, const XCONTENT_DATA_INTERNAL& data) {
+  // The memory unit and the USB stick are storage devices of their own. They
+  // shared the hard drive's tree, so whatever the dashboard asked of one it
+  // got from the hard drive: it keeps a ContentCache.pkg per device, read the
+  // hard drive's three times over, and listed every game in My Games once per
+  // device. Their content lives under Devices\mu0 and Devices\usb0 - the
+  // volume names XamContentGetDeviceVolumePath gives them - and nothing else
+  // about the content tree applies to them.
+  if (data.device_id == static_cast<uint32_t>(DummyDeviceId::MU) ||
+      data.device_id == static_cast<uint32_t>(DummyDeviceId::USB)) {
+    const uint32_t title_id = data.title_id == kCurrentlyRunningTitleId
+                                  ? kernel_state_->title_id()
+                                  : data.title_id.get();
+    uint64_t used_xuid =
+        (data.xuid != -1 && data.xuid != 0) ? data.xuid.get() : xuid;
+    if (data.content_type == XContentType::kMarketplaceContent ||
+        data.content_type == XContentType::kInstaller) {
+      used_xuid = 0;
+    }
+    const char* volume =
+        data.device_id == static_cast<uint32_t>(DummyDeviceId::MU) ? "mu0"
+                                                                   : "usb0";
+    return kernel_state_->emulator()->storage_root() / "Devices" / volume /
+           fmt::format("{:016X}", used_xuid) / fmt::format("{:08X}", title_id) /
+           fmt::format("{:08X}",
+                       static_cast<uint32_t>(data.content_type.get())) /
+           xe::to_path(xe::string_util::trim(data.file_name()));
+  }
+
   // Content path:
   // content_root/title_id/content_type/data_file_name/
   auto get_package_path = [&, data](const uint32_t title_id) {
@@ -331,9 +448,14 @@ std::filesystem::path ContentManager::ResolvePackagePath(
     const uint32_t resolved_title = title_id == kCurrentlyRunningTitleId
                                         ? kernel_state_->title_id()
                                         : title_id;
+    //
+    // The library package wins even when something exists at package_path: a
+    // folder of the game's name in the update's content tree (on 2026-11-02 an
+    // empty one, holding only an empty 584E07D1 and a header Nexia had written
+    // for it) shadowed the real package, and the launcher gave up on the game
+    // with 0x0C because there was no spa.bin in it.
     std::error_code ec;
-    if (resolved_title == kXN_2002 &&
-        !std::filesystem::exists(package_path, ec)) {
+    if (resolved_title == kXN_2002) {
       const auto candidate = kernel_state_->emulator()->storage_root() /
                              "xna_library" / xe::to_path(final_name);
       xna::XnaPackageInfo xna_info;
@@ -510,10 +632,17 @@ std::vector<XCONTENT_DATA_INTERNAL> ContentManager::ListContent(
 
     for (const auto& file_info : file_infos) {
       // Installed containers and extracted directories with a header alike.
+      // A header Nexia wrote for a directory - every save - says 0 bytes, and
+      // Storage shows the record's size as it is, so the size is measured.
       if (std::unique_ptr<ContentPackage> package =
               OpenPackage(file_info.path / file_info.name);
           package && package->IsValidPackage()) {
-        result.emplace_back(package->GetContentMetadata());
+        XCONTENT_DATA_INTERNAL content_data = package->GetContentMetadata();
+        if (!content_data.content_size) {
+          content_data.content_size =
+              PackageSizeOnDisk(file_info.path / file_info.name);
+        }
+        result.emplace_back(std::move(content_data));
         continue;
       }
 
@@ -532,6 +661,8 @@ std::vector<XCONTENT_DATA_INTERNAL> ContentManager::ListContent(
       content_data.set_file_name(xe::path_to_utf8(file_info.name));
       content_data.title_id = slot_title_id;
       content_data.xuid = slot_xuid;
+      content_data.content_size =
+          PackageSizeOnDisk(file_info.path / file_info.name);
       result.emplace_back(std::move(content_data));
     }
   };
@@ -583,6 +714,74 @@ std::vector<XCONTENT_DATA_INTERNAL> ContentManager::ListContent(
 
         scan_root(root / fmt::format("{:08X}", uint32_t(content_type)),
                   user_xuid, id, content_type);
+      }
+
+      // The XNA library, laid over the signed-in profile's Indie Player
+      // marketplace content - Content\<xuid>\584E07D2\00000002 - which is
+      // where a console keeps an XBLIG and where the dashboard looks for
+      // installed games. Only for a signed-in profile, so an enumeration that
+      // walks the profile and then xuid 0 sees each game once.
+      // ResolvePackagePath sends the records back to the library package.
+      if (id == kXN_2002 && user_xuid &&
+          (content_type == XContentType::kMarketplaceContent ||
+           content_type == XContentType::kAll)) {
+        auto* xam_state = kernel_state_->xam_state();
+        auto* profiles = xam_state ? xam_state->profile_manager() : nullptr;
+        if (profiles && profiles->GetProfile(user_xuid)) {
+          const auto library =
+              kernel_state_->emulator()->storage_root() / "xna_library";
+          std::error_code ec;
+          for (const auto& entry :
+               std::filesystem::directory_iterator(library, ec)) {
+            // A locally built title is a directory; a shipped one a container.
+            if (!entry.is_regular_file(ec) && !entry.is_directory(ec)) {
+              continue;
+            }
+            xna::XnaPackageInfo info;
+            if (!xna::IsXnaPackage(entry.path(), &info)) {
+              continue;
+            }
+            const std::string file_name =
+                xe::path_to_utf8(entry.path().filename());
+            if (std::any_of(result.begin(), result.end(), [&](const auto& c) {
+                  return c.title_id == kXN_2002 &&
+                         c.content_type == XContentType::kMarketplaceContent &&
+                         xe::string_util::trim(c.file_name()) == file_name;
+                })) {
+              continue;
+            }
+            XCONTENT_DATA_INTERNAL content_data{};
+            if (std::unique_ptr<ContentPackage> package =
+                    OpenPackage(entry.path());
+                package && package->IsValidPackage()) {
+              content_data = package->GetContentMetadata();
+            } else {
+              std::string name = info.display_name;
+              const size_t dot = name.find_last_of('.');
+              if (dot != std::string::npos) {
+                name = name.substr(0, dot);
+              }
+              content_data.set_display_name(xe::to_utf16(name));
+              content_data.set_file_name(file_name);
+            }
+            content_data.device_id = device_id;
+            content_data.content_type = XContentType::kMarketplaceContent;
+            content_data.title_id = kXN_2002;
+            content_data.xuid = user_xuid;
+            if (!content_data.content_size) {
+              content_data.content_size = PackageSizeOnDisk(entry.path());
+            }
+            // Temporary: which enumeration the dashboard's installed list
+            // makes, and that the library reaches it.
+            XELOGE(
+                "[xna-overlay] {:016X} '{}' file '{}' {} bytes (asked type "
+                "{:08X})",
+                user_xuid, xe::to_utf8(content_data.display_name()),
+                content_data.file_name(), content_data.content_size.get(),
+                uint32_t(content_type));
+            result.emplace_back(std::move(content_data));
+          }
+        }
       }
     }
   }
@@ -650,6 +849,10 @@ X_RESULT ContentManager::CreateContent(const std::string_view root_name,
   // Ensure that parent path exists
   std::filesystem::create_directories(package_path.parent_path());
 
+  XELOGE("[content-create] {} type {:08X} '{}' for title {:08X} -> {}",
+         root_name, static_cast<uint32_t>(data.content_type.get()),
+         data.file_name(), kernel_state_->title_id(),
+         xe::path_to_utf8(package_path));
   if (!CreateAndMountPackage(package_path, root_name, data)) {
     // Nothing mounted behind the root name. Do not leave an empty slot behind
     // that the next ContentExists would report as the content being there.
@@ -864,6 +1067,9 @@ X_RESULT ContentManager::DeleteContent(const uint64_t xuid,
   }
 
   auto package_path = ResolvePackagePath(xuid, data);
+  XELOGE("[vfs-delete] DeleteContent xuid {:016X} type {:08X} -> {}", xuid,
+         static_cast<uint32_t>(data.content_type.get()),
+         xe::path_to_utf8(package_path));
   if (std::filesystem::remove_all(package_path) > 0) {
     return X_ERROR_SUCCESS;
   } else {

@@ -79,6 +79,13 @@ std::unique_ptr<vfs::Device> ContentPackageDirectory::MountPackage() {
 
 X_RESULT ContentPackageDirectory::Flush() { return WriteContentHeaderFile(); }
 
+X_RESULT ContentPackageDirectory::RebuildHeader(
+    const XCONTENT_DATA_INTERNAL& metadata,
+    const xex2_opt_execution_info* execution_info, const SpaInfo* spa_info) {
+  InitializePackageHeader(metadata, execution_info, spa_info);
+  return WriteContentHeaderFile();
+}
+
 X_RESULT ContentPackageDirectory::SetThumbnail(
     std::span<const uint8_t> thumbnail) {
   const size_t max_thumbnail_size =
@@ -117,7 +124,12 @@ X_RESULT ContentPackageDirectory::GetThumbnail(std::vector<uint8_t>& buffer) {
     memcpy(header_.content_metadata.thumbnail, buffer.data(), thumbnail_size);
     header_.content_metadata.thumbnail_size =
         static_cast<uint32_t>(thumbnail_size);
-    std::filesystem::remove(thumb_path);
+    // The sidecar goes only once the header holding its copy is on disk. A
+    // package opened just to read its thumbnail is never mounted, so nothing
+    // else would write the header, and the picture would be gone.
+    if (XSUCCEEDED(WriteContentHeaderFile())) {
+      std::filesystem::remove(thumb_path);
+    }
     return X_ERROR_SUCCESS;
   }
 
@@ -179,6 +191,11 @@ X_RESULT ContentPackageDirectory::ReadContentHeaderFile() {
 }
 
 X_RESULT ContentPackageDirectory::WriteContentHeaderFile() const {
+  // A header that was never read or built is all zeros. Writing it replaced a
+  // save's header with 40 KB of zeros the first time the title mounted it.
+  if (!header_.content_header.is_magic_valid()) {
+    return X_ERROR_FILE_NOT_FOUND;
+  }
   return ContentManager::ExtractContentHeader(header_path_, header_);
 }
 

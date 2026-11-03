@@ -249,8 +249,8 @@ dword_result_t NtSetInformationFile_entry(
       bool delete_on_close = info->delete_file ? true : false;
       file->entry()->SetForDeletion(static_cast<bool>(info->delete_file));
       out_length = 0;
-      XELOGW("NtSetInformationFile set deleting flag for {} on close to: {}",
-             file->name(), delete_on_close);
+      XELOGE("[vfs-delete] NtSetInformationFile delete-on-close {} for {}",
+             delete_on_close, file->path());
       break;
     }
     case XFilePositionInformation: {

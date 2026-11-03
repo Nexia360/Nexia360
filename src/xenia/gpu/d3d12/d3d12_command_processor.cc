@@ -2655,16 +2655,15 @@ Shader* D3D12CommandProcessor::LoadShader(xenos::ShaderType shader_type,
 // them, for a caller that already holds the microcode and the draw arguments.
 Shader* D3D12CommandProcessor::HostedLoadShader(xenos::ShaderType shader_type,
                                                 const uint32_t* microcode,
-                                                uint32_t dword_count) {
+                                                uint32_t dword_count,
+                                                std::endian source_endian) {
   if (!microcode || !dword_count) {
     return nullptr;
   }
-  // Host order, not console order. The effect container this came from was
-  // byte-swapped whole when it was loaded, so the microcode inside it is
-  // already native - and the guest default of big-endian would swap it back,
-  // handing the translator instructions that are byte-reversed but still parse.
-  Shader* shader = pipeline_cache_->LoadShader(
-      shader_type, microcode, dword_count, std::endian::native);
+  // The caller says which order the microcode is in: the translated path
+  // (xna_direct_d3d12 = 0) hands it over byte-swapped, the direct modes native.
+  Shader* shader = pipeline_cache_->LoadShader(shader_type, microcode,
+                                               dword_count, source_endian);
   // IssueDraw analyses it, but that is after the hosted caller has read the
   // constant and vertex-fetch maps to set the draw up - and an unanalysed
   // shader reports empty maps, so no fetch slot is ever written.
@@ -3032,6 +3031,131 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
       used_texture_mask, normalized_depth_control, normalized_color_mask,
       apply_host_depth_polygon_offset ? &host_depth_polygon_offset : nullptr,
       window_offset_tiles);
+
+  // PROBE: CastleMiner's sky pixel shader as the console's own D3D sets it up
+  // (xna_direct = true), to diff against the hosted path's "[sky] hosted" line.
+  // The microcode was compared and is identical; what is left is the vertex
+  // stream (vf95), the NDC transform and the cube textures.
+  // Both hashes: the console's own copy, and the hosted one, which reaches
+  // this same IssueDraw when xna_direct_d3d12 = 0.
+  if (pixel_shader && (pixel_shader->ucode_data_hash() == 0x5E1EBC30B28D3878 ||
+                       pixel_shader->ucode_data_hash() == 0xA787D78B725A5011)) {
+    const uint32_t vf0 =
+        regs.values[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + 31 * 6 + 4];
+    const uint32_t vf1 =
+        regs.values[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + 31 * 6 + 5];
+    std::string vertices;
+    const uint32_t* vertex_words =
+        (vf0 & ~uint32_t(3))
+            ? reinterpret_cast<const uint32_t*>(
+                  memory_->TranslatePhysical(vf0 & ~uint32_t(3)))
+            : nullptr;
+    for (uint32_t i = 0; i < 24 && vertex_words; ++i) {
+      vertices += fmt::format(" {:08X}", vertex_words[i]);
+    }
+    XELOGE(
+        "[sky] guest stream: vf95 {:08X} {:08X} ndc scale {} {} {} offset {} "
+        "{} "
+        "{} su_sc_mode {:08X} poly offset {:08X} {:08X} scissor {:08X} {:08X} "
+        "blend rgba {:08X} {:08X} {:08X} {:08X} sample mask {:08X} first 3 "
+        "vertices as stored:{}",
+        vf0, vf1, system_constants_.ndc_scale[0],
+        system_constants_.ndc_scale[1], system_constants_.ndc_scale[2],
+        system_constants_.ndc_offset[0], system_constants_.ndc_offset[1],
+        system_constants_.ndc_offset[2],
+        regs.values[XE_GPU_REG_PA_SU_SC_MODE_CNTL],
+        regs.values[XE_GPU_REG_PA_SU_POLY_OFFSET_FRONT_SCALE],
+        regs.values[XE_GPU_REG_PA_SU_POLY_OFFSET_FRONT_OFFSET],
+        regs.values[XE_GPU_REG_PA_SC_WINDOW_SCISSOR_TL],
+        regs.values[XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR],
+        regs.values[XE_GPU_REG_RB_BLEND_RED],
+        regs.values[XE_GPU_REG_RB_BLEND_GREEN],
+        regs.values[XE_GPU_REG_RB_BLEND_BLUE],
+        regs.values[XE_GPU_REG_RB_BLEND_ALPHA],
+        regs.values[XE_GPU_REG_PA_SC_AA_MASK], vertices);
+    // What the GPU reads: every dword of the system constant buffer, and both
+    // float buffers packed by the shaders' own constant maps.
+    const auto dwords = [](const void* data, size_t count) {
+      std::string text;
+      for (size_t i = 0; i < count; ++i) {
+        uint32_t word;
+        std::memcpy(&word, static_cast<const uint8_t*>(data) + i * 4, 4);
+        text += fmt::format(" {:08X}", word);
+      }
+      return text;
+    };
+    const auto packed = [&](const Shader* shader, uint32_t first) {
+      std::string text;
+      const auto& map = shader->constant_register_map();
+      for (uint32_t word = 0; word < 4; ++word) {
+        uint64_t bits = map.float_bitmap[word];
+        uint32_t index;
+        while (xe::bit_scan_forward(bits, &index)) {
+          bits = xe::clear_lowest_bit(bits);
+          const uint32_t c = word * 64 + index;
+          text += fmt::format(" c{}=", c) +
+                  dwords(&regs.values[XE_GPU_REG_SHADER_CONSTANT_000_X +
+                                      (first + c) * 4],
+                         4);
+        }
+      }
+      return text;
+    };
+    // Where the console's draw lands in EDRAM, decoded: base tiles, pitch,
+    // MSAA and format for colour 0 and depth.
+    const auto surface_info = regs.Get<reg::RB_SURFACE_INFO>();
+    const auto color_info = regs.Get<reg::RB_COLOR_INFO>();
+    const auto depth_info = regs.Get<reg::RB_DEPTH_INFO>();
+    XELOGE(
+        "[sky] guest edram: surface {:08X} (pitch {} msaa {}) color0 {:08X} "
+        "(base {} format {}) depth {:08X} (base {} format {})",
+        surface_info.value, surface_info.surface_pitch,
+        uint32_t(surface_info.msaa_samples), color_info.value,
+        color_info.color_base, uint32_t(color_info.color_format),
+        depth_info.value, depth_info.depth_base,
+        uint32_t(depth_info.depth_format));
+    XELOGE("[sky] guest system cb:{}",
+           dwords(&system_constants_, sizeof(system_constants_) / 4));
+    XELOGE("[sky] guest vs floats:{}", packed(vertex_shader, 0));
+    XELOGE("[sky] guest ps floats:{}", packed(pixel_shader, 256));
+    std::string fetch;
+    uint32_t fetch_bits = used_texture_mask;
+    uint32_t slot;
+    while (xe::bit_scan_forward(fetch_bits, &slot)) {
+      fetch_bits = xe::clear_lowest_bit(fetch_bits);
+      fetch += fmt::format(" t{}=", slot);
+      for (uint32_t i = 0; i < 6; ++i) {
+        fetch += fmt::format(
+            "{:08X}{}",
+            regs.values[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + slot * 6 + i],
+            i < 5 ? "." : "");
+      }
+    }
+    std::string floats;
+    for (uint32_t c : {256u, 257u, 258u, 259u, 511u}) {
+      const uint32_t* v =
+          &regs.values[XE_GPU_REG_SHADER_CONSTANT_000_X + c * 4];
+      floats += fmt::format(" c{}=({:08X} {:08X} {:08X} {:08X})", c, v[0], v[1],
+                            v[2], v[3]);
+    }
+    XELOGE(
+        "[sky] guest: vs {:016X}/{:016X} ps {:016X}/{:016X} flags {:08X} "
+        "signs {:08X} intscale {:08X} {:08X} a2m {:08X} expbias {} "
+        "rb_color_info "
+        "{:08X} blend {:08X} mask {:08X} depth {:08X} mode {:08X} "
+        "fetch{}{}",
+        vertex_shader->ucode_data_hash(), vertex_shader_modification.value,
+        pixel_shader->ucode_data_hash(), pixel_shader_modification.value,
+        system_constants_.flags, system_constants_.texture_swizzled_signs[0],
+        system_constants_.texture_integer_scale_bits[0],
+        system_constants_.texture_integer_scale_bits[1],
+        system_constants_.alpha_to_mask, system_constants_.color_exp_bias[0],
+        regs.values[XE_GPU_REG_RB_COLOR_INFO],
+        regs.values[XE_GPU_REG_RB_BLENDCONTROL0],
+        regs.values[XE_GPU_REG_RB_COLOR_MASK],
+        regs.values[XE_GPU_REG_RB_DEPTHCONTROL],
+        regs.values[XE_GPU_REG_RB_MODECONTROL], fetch, floats);
+  }
 
   // Update constant buffers, descriptors and root parameters.
   if (!UpdateBindings(vertex_shader, pixel_shader, root_signature,

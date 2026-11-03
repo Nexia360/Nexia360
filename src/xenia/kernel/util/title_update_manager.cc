@@ -625,7 +625,11 @@ std::filesystem::path TitleUpdateManager::GetActiveLibraryPath(
   }
   auto path = update_dir(title_id, active);
   std::error_code ec;
-  if (!std::filesystem::exists(path, ec)) {
+  // A directory, not merely present: a payload left as a file named UPDATE
+  // by an interrupted migration passes an exists() check, gets mounted as a
+  // folder, and then finds nothing to patch - the update reads as installed
+  // and does nothing.
+  if (!std::filesystem::is_directory(path, ec)) {
     return {};
   }
   return path;
@@ -853,9 +857,21 @@ void TitleUpdateManager::MigrateLegacyLibraryLayout(uint32_t title_id) {
     const auto id_dir = library_root(title_id) / e.id;
     const auto payload = update_dir(title_id, e.id);
 
-    if (std::filesystem::exists(payload, ec) ||
-        !std::filesystem::exists(id_dir, ec)) {
-      continue;  // already migrated, or nothing there
+    if (std::filesystem::is_directory(payload, ec)) {
+      continue;  // already migrated
+    }
+    if (std::filesystem::exists(payload, ec)) {
+      // Something named UPDATE that is not the payload folder. Moving it
+      // would guess at what it is, so leave it and say so - otherwise the
+      // entry stays listed, never applies, and nothing explains why.
+      XELOGW(
+          "TitleUpdateManager: {:08X}/{} has a file where the {} payload "
+          "folder belongs - it cannot be applied until that is cleared",
+          title_id, e.id, kUpdateDirName);
+      continue;
+    }
+    if (!std::filesystem::exists(id_dir, ec)) {
+      continue;  // nothing there
     }
 
     // Everything except the per-update Content folder is payload.

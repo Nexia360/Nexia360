@@ -2802,45 +2802,6 @@ static void DecanonicalizeSample(SpirvBuilder& builder, spv::Id type_uint,
   }
 }
 
-// Decodes raw EDRAM gamma bytes to the midpoint of its linear quantization
-// range. The midpoint survives the UNORM16 round trip and re-encodes to the
-// original bytes.
-static spv::Id GammaByteToLinearMidpoint(SpirvBuilder& builder,
-                                         spv::Id byte_uint) {
-  spv::Id type_float = builder.makeFloatType(32);
-  spv::Id type_bool = builder.makeBoolType();
-  // F = float(byte) * recip + offset, with the piece selected by the byte.
-  spv::Id recip = builder.makeFloatConstant(1.0f / 1023.0f);
-  spv::Id offset = builder.makeFloatConstant(0.5f / 1023.0f);
-  struct Piece {
-    uint32_t threshold;
-    float recip;
-    float offset;
-  };
-  static const Piece kPieces[] = {
-      {64, 1.0f / 511.5f, -31.5f / 511.5f},
-      {96, 1.0f / 255.75f, -63.5f / 255.75f},
-      {192, 1.0f / 127.875f, -127.5f / 127.875f},
-  };
-  for (const Piece& piece : kPieces) {
-    spv::Id in_piece =
-        builder.createBinOp(spv::OpUGreaterThanEqual, type_bool, byte_uint,
-                            builder.makeUintConstant(piece.threshold));
-    recip = builder.createTriOp(spv::OpSelect, type_float, in_piece,
-                                builder.makeFloatConstant(piece.recip), recip);
-    offset =
-        builder.createTriOp(spv::OpSelect, type_float, in_piece,
-                            builder.makeFloatConstant(piece.offset), offset);
-  }
-  return builder.createBinOp(
-      spv::OpFAdd, type_float,
-      builder.createBinOp(
-          spv::OpFMul, type_float,
-          builder.createUnaryOp(spv::OpConvertUToF, type_float, byte_uint),
-          recip),
-      offset);
-}
-
 VkShaderModule VulkanRenderTargetCache::GetTransferShader(
     TransferShaderKey key) {
   auto shader_it = transfer_shaders_.find(key);

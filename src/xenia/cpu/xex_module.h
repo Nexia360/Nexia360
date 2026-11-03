@@ -212,6 +212,13 @@ class XexModule : public xe::cpu::Module {
             const void* xex_addr, size_t xex_length);
   bool LoadContinue();
   bool Unload();
+  // Decrypts and decompresses a XEX2's image into |image|, a host buffer laid
+  // out as it would sit at its base, for a caller that only reads it - a disc
+  // in the tray's title image. Guest memory is never touched: 0x8xxxxxxx and
+  // 0x9xxxxxxx share one host mapping, so a game image decoded at 0x82000000
+  // lands on top of the dashboard running at 0x92000000.
+  bool LoadImageToHost(const void* xex_addr, size_t xex_length,
+                       std::vector<uint8_t>* image);
 
   bool ContainsAddress(uint32_t address) override;
 
@@ -225,7 +232,9 @@ class XexModule : public xe::cpu::Module {
     if (!base_address_) {
       return false;
     }
-    uint8_t* buffer = memory()->TranslateVirtual(base_address_);
+    const uint8_t* buffer = host_image_
+                                ? host_image_->data()
+                                : memory()->TranslateVirtual(base_address_);
     return *(uint32_t*)buffer == 0x905A4D;
   }
 
@@ -261,6 +270,10 @@ class XexModule : public xe::cpu::Module {
   int ReadImageUncompressed(const void* xex_addr, size_t xex_length);
   int ReadImageBasicCompressed(const void* xex_addr, size_t xex_length);
   int ReadImageCompressed(const void* xex_addr, size_t xex_length);
+  // Where a ReadImage* decodes to: |size| zeroed bytes, in guest memory at
+  // base_address_ or in host_image_ when LoadImageToHost set one. Null when the
+  // guest range could not be allocated.
+  uint8_t* ImageBuffer(uint32_t size);
 
   int ReadPEHeaders();
 
@@ -288,6 +301,8 @@ class XexModule : public xe::cpu::Module {
   bool finished_load_ = false;  // PE/imports/symbols/etc all loaded?
 
   uint32_t base_address_ = 0;
+  // Set only for the duration of LoadImageToHost.
+  std::vector<uint8_t>* host_image_ = nullptr;
   // Base before a relocating patch; kept reserved because it can alias the
   // patched image's host memory (0x8xxxxxxx and 0x9xxxxxxx share a mapping).
   // Released at Unload.

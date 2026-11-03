@@ -13,6 +13,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <mutex>
+#include <utility>
 #include <vector>
 
 #include "xenia/base/byte_stream.h"
@@ -519,7 +521,8 @@ object_ref<UserModule> KernelState::GetExecutableModule() {
   return executable_module_;
 }
 
-void KernelState::SetExecutableModule(object_ref<UserModule> module) {
+void KernelState::SetExecutableModule(object_ref<UserModule> module,
+                                      bool start_dispatch_thread) {
   if (module.get() == executable_module_.get()) {
     return;
   }
@@ -607,7 +610,7 @@ void KernelState::SetExecutableModule(object_ref<UserModule> module) {
   // Spin up deferred dispatch worker.
   // TODO(benvanik): move someplace more appropriate (out of ctor, but around
   // here).
-  if (!dispatch_thread_running_) {
+  if (start_dispatch_thread && !dispatch_thread_running_) {
     dispatch_thread_running_ = true;
     dispatch_thread_ = object_ref<XHostThread>(new XHostThread(
         this, 128 * 1024, 0,
@@ -755,6 +758,22 @@ X_RESULT KernelState::FinishLoadingUserModule(
   return result;
 }
 
+namespace {
+// The path of a module relative to the mount it was loaded from. The
+// offset cannot be guessed: a content package mounts with a trailing
+// separator (\Device\Content\3\) and a host folder without one
+// (\Device\Harddisk0\Partition1), so the same '+ 1' that is right for
+// one eats a character of the filename for the other - which reads as a
+// missing title update rather than a bad path. Take everything past the
+// prefix and drop whichever separator happens to be there.
+std::string RelativeToMount(const std::string& path,
+                            const std::string& mount_path) {
+  std::string relative = path.substr(mount_path.size());
+  const size_t start = relative.find_first_not_of("/\\");
+  return start == std::string::npos ? std::string() : relative.substr(start);
+}
+}  // namespace
+
 X_RESULT KernelState::ApplyTitleUpdate(
     const object_ref<UserModule> title_module) {
   object_ref<UserModule> patch_module = {};
@@ -771,7 +790,7 @@ X_RESULT KernelState::ApplyTitleUpdate(
         file_system()->FindSymbolicLink("game:", mount_path) &&
         title_module->path().starts_with(mount_path)) {
       const std::string relative =
-          title_module->path().substr(mount_path.size() + 1) + 'p';
+          RelativeToMount(title_module->path(), mount_path) + 'p';
 
       // The library owns the update. Mount the selected folder straight into
       // the VFS as UPDATE: - no copy, no link, and nothing routed through the
@@ -820,8 +839,8 @@ X_RESULT KernelState::ApplyTitleUpdate(
         std::string update_target;
         if (file_system()->FindSymbolicLink(kDefaultUpdateSymbolicLink,
                                             update_target)) {
-          xe::vfs::Entry* patch_entry =
-              file_system()->ResolvePath(update_target + relative);
+          xe::vfs::Entry* patch_entry = file_system()->ResolvePath(
+              xe::utf8::join_guest_paths(update_target, relative));
           if (patch_entry) {
             auto candidate = object_ref<UserModule>(new UserModule(this));
             if (candidate->LoadFromFile(patch_entry->absolute_path()) ==
@@ -930,7 +949,7 @@ const object_ref<UserModule> KernelState::LoadTitleUpdate(
   }
 
   const std::string relative_path =
-      module->path().substr(mount_path.size()) + 'p';
+      RelativeToMount(module->path(), mount_path) + 'p';
 
   xe::vfs::Entry* patch_entry = kernel_state()->file_system()->ResolvePath(
       xe::utf8::join_guest_paths(resolved_path, relative_path));
@@ -1370,46 +1389,67 @@ void KernelState::UnregisterThread(XThread* thread) {
   }
 }
 
-void KernelState::OnThreadExecute(XThread* thread) {
-  auto global_lock = global_critical_region_.Acquire();
+namespace {
+// The loader lock: DLL entry points run one at a time, as on the console.
+// Not the global lock - an entry point is guest code, and guest code that
+// resolves a function another thread is compiling waits for it giving back
+// only one level of the global lock. Held across the call as well, the
+// compiling thread could never take it to place the code.
+std::recursive_mutex loader_lock;
+}  // namespace
 
+void KernelState::OnThreadExecute(XThread* thread) {
   // Must be called on executing thread.
   assert_true(XThread::GetCurrentThread() == thread);
 
   // Call DllMain(DLL_THREAD_ATTACH) for each user module:
   // https://msdn.microsoft.com/en-us/library/windows/desktop/ms682583%28v=vs.85%29.aspx
-  auto thread_state = thread->thread_state();
-  for (auto user_module : user_modules_) {
-    if (user_module->is_dll_module() && user_module->entry_point()) {
-      uint64_t args[] = {
-          user_module->handle(),
-          user_module->is_attached()
-              ? static_cast<uint64_t>(2)   // DLL_THREAD_ATTACH - Used to call
-                                           // DLL for each thread created.
-              : static_cast<uint64_t>(1),  // DLL_PROCESS_ATTACH - Used only
-                                           // once for initialization.
-          0,                               // 0 because always dynamic
-      };
-
-      user_module->is_attached_ = true;
-
-      processor()->Execute(thread_state, user_module->entry_point(), args,
-                           xe::countof(args));
+  std::lock_guard<std::recursive_mutex> loader(loader_lock);
+  std::vector<std::pair<object_ref<UserModule>, uint64_t>> attach;
+  {
+    auto global_lock = global_critical_region_.Acquire();
+    for (auto user_module : user_modules_) {
+      if (user_module->is_dll_module() && user_module->entry_point()) {
+        attach.emplace_back(
+            user_module,
+            user_module->is_attached()
+                ? static_cast<uint64_t>(2)    // DLL_THREAD_ATTACH - Used to
+                                              // call DLL for each thread.
+                : static_cast<uint64_t>(1));  // DLL_PROCESS_ATTACH - Used
+                                              // only once for initialization.
+        user_module->is_attached_ = true;
+      }
     }
+  }
+  auto thread_state = thread->thread_state();
+  for (auto& [user_module, reason] : attach) {
+    // The last argument is 0 because loading is always dynamic.
+    uint64_t args[] = {user_module->handle(), reason, 0};
+    processor()->Execute(thread_state, user_module->entry_point(), args,
+                         xe::countof(args));
   }
 }
 
 void KernelState::OnThreadExit(XThread* thread) {
-  auto global_lock = global_critical_region_.Acquire();
-
   // Must be called on executing thread.
   assert_true(XThread::GetCurrentThread() == thread);
 
   // Call DllMain(DLL_THREAD_DETACH) for each user module:
   // https://msdn.microsoft.com/en-us/library/windows/desktop/ms682583%28v=vs.85%29.aspx
-  auto thread_state = thread->thread_state();
-  for (auto user_module : user_modules_) {
-    if (user_module->is_dll_module() && user_module->entry_point()) {
+  // Under the loader lock, not the global one, as in OnThreadExecute.
+  {
+    std::lock_guard<std::recursive_mutex> loader(loader_lock);
+    std::vector<object_ref<UserModule>> detach;
+    {
+      auto global_lock = global_critical_region_.Acquire();
+      for (auto user_module : user_modules_) {
+        if (user_module->is_dll_module() && user_module->entry_point()) {
+          detach.push_back(user_module);
+        }
+      }
+    }
+    auto thread_state = thread->thread_state();
+    for (auto& user_module : detach) {
       uint64_t args[] = {
           user_module->handle(),
           3,  // DLL_THREAD_DETACH
@@ -1420,6 +1460,7 @@ void KernelState::OnThreadExit(XThread* thread) {
     }
   }
 
+  auto global_lock = global_critical_region_.Acquire();
   emulator()->processor()->OnThreadExit(thread->thread_id());
 }
 
@@ -1463,12 +1504,18 @@ void KernelState::RegisterNotifyListener(XNotifyListener* listener) {
 
     listener->EnqueueNotification(kXNotificationSystemSignInChanged,
                                   signed_in_players);
-    // 415607FA: Doesn't like receiving this notification on boot. Causes game
-    // to crash.
-    if (title_id() == kDashboardID) {
-      listener->EnqueueNotification(kXNotificationSystemStorageDevicesChanged,
-                                    0);
-    }
+  }
+
+  // The storage devices are there before anything listens, so the dashboard
+  // is told about them on EVERY system listener it creates, not only the
+  // first. It keeps several: the Storage view polls its own (sub_92334770 in
+  // the 17559 dash.xex) and rebuilds its device list only on 0x8000000D (tray
+  // changed), 0xB (this) or a change of signed-in user - so with the first
+  // listener alone getting 0xB, Storage stayed empty until a disc went in.
+  // 415607FA: Doesn't like receiving this notification on boot. Causes game
+  // to crash. So the dashboard only.
+  if (title_id() == kDashboardID && (listener->mask() & kXNotifySystem)) {
+    listener->EnqueueNotification(kXNotificationSystemStorageDevicesChanged, 0);
   }
 
   if (!has_notified_live_startup_ && listener->mask() & kXNotifyLive) {
@@ -1946,6 +1993,12 @@ void KernelState::InitializeProcess(X_KPROCESS* process, uint32_t type,
   uint32_t unk_list_guest_ptr = guest_kprocess + offsetof(X_KPROCESS, unk_54);
   // TODO(benvanik): figure out what this list is.
   util::XeInitializeListHead(&process->unk_54, unk_list_guest_ptr);
+}
+
+void KernelState::SetTitleProcessTlsSlots(uint32_t slot_count) {
+  auto title_process =
+      memory_->TranslateVirtual<X_KPROCESS*>(GetTitleProcess());
+  SetProcessTLSVars(title_process, int(slot_count), 0, 0);
 }
 
 void KernelState::SetProcessTLSVars(X_KPROCESS* process, int num_slots,

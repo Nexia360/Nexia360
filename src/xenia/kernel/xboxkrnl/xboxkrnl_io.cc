@@ -171,6 +171,15 @@ dword_result_t NtReadFile_entry(dword_t file_handle, dword_t event_handle,
         }
       }
 
+      // LOAD-BEARING: an async handle gets PENDING even though the read has
+      // completed. Guest code branches on it - issue, see PENDING, wait on the
+      // event or APC - and SUCCESS sends it down the other path. The canary
+      // merge narrowed this to queued devices and unbuffered files, and Gears
+      // of War's disc loader then parsed a buffer it had not waited for.
+      if (!file->is_synchronous() && result != X_STATUS_END_OF_FILE) {
+        result = X_STATUS_PENDING;
+      }
+
       // Mark that we should signal the event now. We do this after
       // we have written the info out.
       signal_event = true;
@@ -260,6 +269,11 @@ dword_result_t NtReadFileScatter_entry(
         }
       }
 
+      // LOAD-BEARING, as in NtReadFile: an async handle gets PENDING.
+      if (!file->is_synchronous()) {
+        result = X_STATUS_PENDING;
+      }
+
       // Mark that we should signal the event now. We do this after
       // we have written the info out.
       signal_event = true;
@@ -347,6 +361,12 @@ dword_result_t NtWriteFile_entry(dword_t file_handle, dword_t event_handle,
           thread->EnqueueApc(static_cast<uint32_t>(apc_routine) & ~1u,
                              apc_context, io_status_block, 0);
         }
+      }
+
+      // LOAD-BEARING, as in NtReadFile: an async handle gets PENDING. This is
+      // the one whose loss broke saving ("Your save device is unavailable").
+      if (!file->is_synchronous()) {
+        result = X_STATUS_PENDING;
       }
 
       // Mark that we should signal the event now. We do this after

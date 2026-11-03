@@ -494,6 +494,18 @@ void ConsoleSettingsDialog::OnDraw(ImGuiIO& io) {
         }
       });
 
+      GroupBox("Discs", [&]() {
+        // The console's Auto-Play: with it on, dash.xex starts a game the
+        // moment its disc goes in (0x921825B0 reads this setting and launches
+        // when it is 0). Off, an inserted disc is only mounted and waits on
+        // its tile for A.
+        bool auto_play = xconfig_data_.console.media_disable_auto_launch == 0;
+        if (ImGui::Checkbox("Auto-Play Inserted Discs", &auto_play)) {
+          xconfig_data_.console.media_disable_auto_launch =
+              static_cast<int16_t>(auto_play ? 0 : 1);
+        }
+      });
+
       GroupBox("Network", [&]() {
         if (ImGui::BeginTable("##NetworkTable", 2)) {
           ImGui::TableNextRow();

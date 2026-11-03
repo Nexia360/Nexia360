@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -357,7 +358,8 @@ class D3D12CommandProcessor final : public CommandProcessor {
 
  public:
   Shader* HostedLoadShader(xenos::ShaderType shader_type,
-                           const uint32_t* microcode, uint32_t dword_count);
+                           const uint32_t* microcode, uint32_t dword_count,
+                           std::endian source_endian);
   bool HostedIssueDraw(xenos::PrimitiveType primitive_type,
                        uint32_t index_count, bool indexed,
                        uint32_t index_guest_base, bool index_32bit,
@@ -365,6 +367,15 @@ class D3D12CommandProcessor final : public CommandProcessor {
   bool HostedIssueCopy() { return IssueCopy(); }
   void HostedWriteRegister(uint32_t index, uint32_t value) {
     WriteRegister(index, value);
+  }
+  // For the hosted XNA direct path's hybrid mode, which draws with its own
+  // resources but asks the texture cache how a fetch constant samples.
+  const D3D12TextureCache* hosted_texture_cache() const {
+    return texture_cache_.get();
+  }
+  // And which host format the emulation gives a guest render target format.
+  const D3D12RenderTargetCache* hosted_render_target_cache() const {
+    return render_target_cache_.get();
   }
   void HostedTextureFetchWritten(uint32_t slot) {
     cbuffer_binding_fetch_.up_to_date = false;

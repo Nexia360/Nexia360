@@ -301,7 +301,8 @@ avatar::Catalog* XnaAvatarCatalog() {
   if (!emulator) {
     return nullptr;
   }
-  avatar::Catalog* catalog = avatar::SharedCatalog(emulator->content_root());
+  avatar::Catalog* catalog =
+      avatar::SharedCatalog(emulator->content_root(), ReadPackageFile);
   if (catalog) {
     static std::once_flag assets_loaded;
     std::call_once(assets_loaded, [&]() {
@@ -666,21 +667,38 @@ void XnaAvatarDraw(uint32_t handle, const float* world, const float* view,
   }
 }
 
-void XnaAvatarBindPose(float* out) {
-  const avatar::Skeleton& skeleton = avatar::MainSkeleton();
+// AvatarRenderer.BindPose, computed the way RuntimeHost.xex computes it from
+// the joint records XamAvatarGetAssets hands it (its command 81 handler,
+// 8A1E2FA8): per joint, rotation x scale with the joint's offset from its
+// parent as the translation row, and for the ROOT, CreateRotationY(pi) x
+// rotation x scale with NO translation. The joint rotation is identity in
+// those records, and XNA initialises avatars with coordinate system 1, so
+// nothing is mirrored.
+//
+// This used to give the root its bind offset as a translation. The root sits
+// at the pelvis, 0.78 m up, so every bone a title derived from this pose sat
+// 0.78 m higher than on the console - CastleMiner's first-person hand, and the
+// item in it, came up to eye level and filled the screen.
+void XnaAvatarBindPose(uint32_t renderer_handle, float* out) {
+  avatar::Skeleton skeleton = avatar::MainSkeleton();
+  if (auto renderer = FindRenderer(renderer_handle)) {
+    std::lock_guard<std::mutex> lock(renderer->mutex);
+    skeleton = avatar::ScaledSkeleton(renderer->description);
+  }
   for (uint32_t j = 0; j < avatar::kBoneCount; ++j) {
     const uint32_t parent = skeleton.parents[j];
     const bool root = parent >= j;
     avatar::Matrix bind = avatar::Identity();
-    for (int k = 0; k < 3; ++k) {
-      bind[12 + k] =
-          skeleton.bind[j][k] - (root ? 0.0f : skeleton.bind[parent][k]);
-    }
+    bind[0] = skeleton.scale[j][0];
+    bind[5] = skeleton.scale[j][1];
+    bind[10] = skeleton.scale[j][2];
     if (root) {
-      bind[0] = -1.0f;
-      bind[10] = -1.0f;
-      bind[12] = -bind[12];
-      bind[14] = -bind[14];
+      bind[0] = -bind[0];
+      bind[10] = -bind[10];
+    } else {
+      for (int k = 0; k < 3; ++k) {
+        bind[12 + k] = skeleton.bind[j][k] - skeleton.bind[parent][k];
+      }
     }
     std::memcpy(out + j * 16, bind.data(), 16 * sizeof(float));
   }

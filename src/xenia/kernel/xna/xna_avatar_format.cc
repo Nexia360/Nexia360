@@ -19,6 +19,7 @@
 
 #include "third_party/mspack/lzx.h"
 #include "third_party/mspack/mspack.h"
+#include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
 
 namespace xe {
@@ -1883,6 +1884,13 @@ bool Catalog::Load(const std::filesystem::path& path) {
   if (!file.read(reinterpret_cast<char*>(data.data()), length)) {
     return false;
   }
+  return Load(std::move(data));
+}
+
+bool Catalog::Load(std::vector<uint8_t> data) {
+  if (data.size() < 0x30 || data.size() > (size_t(256) << 20)) {
+    return false;
+  }
   const uint32_t version = Be32(data.data() + 0x18);
   const uint32_t count = Be32(data.data() + 0x1C);
   const uint32_t locales = version >= 2 ? Be32(data.data() + 0x28) : 13;
@@ -2422,7 +2430,8 @@ std::filesystem::path CatalogPath(const std::filesystem::path& content_root) {
          "FFFE07DF00000002" / "AvatarAssetPack.toc";
 }
 
-Catalog* SharedCatalog(const std::filesystem::path& content_root) {
+Catalog* SharedCatalog(const std::filesystem::path& content_root,
+                       const PackageReader& read_package) {
   static std::mutex mutex;
   static std::unique_ptr<Catalog> catalog;
   static std::chrono::steady_clock::time_point last_attempt;
@@ -2438,7 +2447,20 @@ Catalog* SharedCatalog(const std::filesystem::path& content_root) {
   attempted = true;
   last_attempt = now;
   auto loaded = std::make_unique<Catalog>();
-  if (!loaded->Load(CatalogPath(content_root))) {
+  const auto toc = CatalogPath(content_root);
+  bool ok = loaded->Load(toc);
+  // Installed as a package rather than unpacked, the pack is a FILE with the
+  // folder's name and the .toc is inside it. That is what the content
+  // installer leaves on a fresh install, so reading only the unpacked form
+  // left every new install with avatars disabled.
+  const auto package = toc.parent_path();
+  std::error_code ec;
+  if (!ok && read_package && std::filesystem::is_regular_file(package, ec)) {
+    std::vector<uint8_t> data;
+    ok = read_package(package, xe::path_to_utf8(toc.filename()), &data) &&
+         loaded->Load(std::move(data));
+  }
+  if (!ok) {
     return nullptr;
   }
   catalog = std::move(loaded);

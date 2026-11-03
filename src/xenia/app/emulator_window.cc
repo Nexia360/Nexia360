@@ -49,6 +49,7 @@
 #include "xenia/hid/input_system.h"
 #include "xenia/hid/mousehook_config.h"
 #include "xenia/kernel/XLiveAPI.h"
+#include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/title_id_utils.h"
 #include "xenia/kernel/util/title_update_downloader.h"
 #include "xenia/kernel/util/title_update_manager.h"
@@ -58,12 +59,14 @@
 #include "xenia/kernel/xam/xam_private.h"
 #include "xenia/kernel/xam/xam_state.h"
 #include "xenia/kernel/xam/xam_ui.h"
+#include "xenia/kernel/xam/xcontent/xcontent_package_container.h"
 #include "xenia/kernel/xam/xui_assets.h"
 #include "xenia/kernel/xam/xui_keyboard_backend.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_ani.h"
 #include "xenia/kernel/xconfig.h"
 #include "xenia/kernel/xna/xna_avatar_format.h"
 #include "xenia/kernel/xna/xna_dependencies.h"
+#include "xenia/kernel/xna/xna_direct.h"
 #include "xenia/kernel/xna/xna_launcher.h"
 #include "xenia/kernel/xna/xna_runtime_install.h"
 #include "xenia/ui/file_picker.h"
@@ -76,6 +79,7 @@
 #include "xenia/ui/ui_event.h"
 #include "xenia/ui/virtual_key.h"
 #include "xenia/vfs/devices/xcontent_container_device.h"
+#include "xenia/vfs/virtual_file_system.h"
 
 #include "version.h"
 
@@ -1446,7 +1450,12 @@ void EmulatorWindow::OnKeyDown(ui::KeyEvent& e) {
       ToggleFullscreen();
     } break;
     case ui::VirtualKey::kF12: {
-      TakeScreenshot();
+      if (e.is_shift_pressed()) {
+        // Shift+F12: the next hosted XNA frame, recorded draw by draw.
+        kernel::xna::XnaDirectCaptureNextFrame();
+      } else {
+        TakeScreenshot();
+      }
     } break;
 
     case ui::VirtualKey::kEscape: {
@@ -1855,14 +1864,31 @@ EmulatorWindow::InstallContentPackages(
         // into the Dashboard folder as well - whichever order the two installs
         // happen in, the flash faces are the ones left standing.
         archive_report += ReplaceDashboardFontsFromFlash(dashboard);
-        // The boot animation is a whole module, and NAND is the only place it
-        // exists - a system update does not carry it. Without this the
-        // dashboard comes up with no animation before it.
-        if (kernel::xam::xui::ExtractFlashModule(path, "bootanim.dll",
-                                                 dashboard / "bootanim.xex")) {
-          archive_report += "Dashboard: bootanim.xex taken from the flash\n";
-        } else {
-          archive_report += "Dashboard: no bootanim.xex in this flash image\n";
+        // Everything on the chip, by the names its own directory gives - the
+        // Dashboard folder IS \Device\Flash. The typefaces are left to the
+        // line above, which names them for XamGetLanguageTypeface.
+        const auto flash_files =
+            kernel::xam::xui::ExtractFlashFiles(path, dashboard, {".xtt"});
+        archive_report += flash_files.text;
+        if (!flash_files.ok) {
+          // The boot animation is a whole module, and NAND is the only place
+          // it exists - a system update does not carry it. Without this the
+          // dashboard comes up with no animation before it.
+          if (kernel::xam::xui::ExtractFlashModule(
+                  path, "bootanim.dll", dashboard / "bootanim.xex")) {
+            archive_report += "Dashboard: bootanim.xex taken from the flash\n";
+          } else {
+            archive_report +=
+                "Dashboard: no bootanim.xex in this flash image\n";
+          }
+          // xam is on the chip as xamc.dll, split in two runs, and it is the
+          // xam.xex the loader looks for in media: before $flash_xam.xex.
+          if (kernel::xam::xui::ExtractFlashModule(path, "xamc.dll",
+                                                   dashboard / "xam.xex")) {
+            archive_report += "Dashboard: xam.xex taken from the flash\n";
+          } else {
+            archive_report += "Dashboard: no xam.xex in this flash image\n";
+          }
         }
         ReloadDashboardUIAssets();
       }
@@ -3591,10 +3617,20 @@ struct XnaSetupState {
 // What has to be on disk for the dashboard to count as installed. The whole
 // update is copied, not just these - a system title loads its own modules and
 // fonts off media:, which is this folder - but these are the ones worth
-// naming: dash.xex, and AvatarEditor.xex so the Avatar Editor menu can run the
-// console's own editor instead of the built-in one.
-constexpr const char* kXnaSetupDashboardFiles[] = {"dash.xex",
-                                                   "AvatarEditor.xex"};
+// naming: dash.xex, AvatarEditor.xex so the Avatar Editor menu can run the
+// console's own editor instead of the built-in one, and $flash_xam.xex, which
+// only exists once su20076000_00000000 has been unpacked - a Dashboard folder
+// without it is from before that, and gets the update again.
+constexpr const char* kXnaSetupDashboardFiles[] = {
+    "dash.xex", "AvatarEditor.xex", "$flash_xam.xex"};
+
+// The XNA Indie Player's title update - the package a console downloads the
+// first time it starts a 4.0 game. Its xna_titlelauncher.xexp patches the
+// dashboard's 3.2.1.0 launcher to 4.0 at load, and its Runtime\v4.0 is the
+// console runtime the hosted path loads. The catalogue files it under this
+// media id; the launcher itself carries 00000000, so it is asked for by name.
+constexpr uint32_t kXnaIndiePlayerTitleId = 0x584E07D2;
+constexpr const char* kXnaIndiePlayerMediaId = "BF467EB8";
 
 std::string LowerAscii(std::string text) {
   for (char& c : text) {
@@ -3696,6 +3732,49 @@ bool IsXContentPackageFile(const std::filesystem::path& path) {
          !std::memcmp(magic, "LIVE", 4);
 }
 
+// The console's flash contents ride in the update as one more package:
+// su20076000_00000000, a PIRS installer for the dashboard's own title id.
+// xam.xex is only in there - as $flash_xam.xex, beside $flash_hud.xex,
+// $flash_signin.xex, the boot animation and the rest - so copying the package
+// as one file left the loader looking for xam.xex and $flash_xam.xex and
+// finding neither.
+bool IsSystemUpdatePackage(const std::filesystem::path& path) {
+  const auto header = vfs::XContentContainerDevice::ReadContainerHeader(path);
+  return header && header->content_header.is_magic_valid() &&
+         header->content_metadata.content_type == XContentType::kInstaller &&
+         header->content_metadata.execution_info.title_id.get() ==
+             kernel::kDashboardID;
+}
+
+// Unpacks it into the Dashboard folder under the names it carries. Returns how
+// many files it held, 0 when it could not be opened.
+size_t ExtractSystemUpdatePackage(const std::filesystem::path& package,
+                                  const std::filesystem::path& dashboard) {
+  // Never registered with the file system; the device reads through the
+  // package's mapped file, so the container outlives it.
+  auto* state = kernel::KernelState::shared();
+  kernel::xam::ContentPackageContainer container(
+      state ? state->file_system() : nullptr, "\\NexiaSystemUpdate", package);
+  if (!container.IsValidPackage()) {
+    return 0;
+  }
+  auto device = container.MountPackage();
+  if (!device || !device->Initialize()) {
+    return 0;
+  }
+  uint64_t progress = 0;
+  vfs::VirtualFileSystem::ExtractDeviceFiles(device.get(), dashboard, progress);
+  size_t files = 0;
+  if (vfs::Entry* root = device->ResolvePath("/")) {
+    for (const auto& child : root->children()) {
+      if (!(child->attributes() & vfs::kFileAttributeDirectory)) {
+        ++files;
+      }
+    }
+  }
+  return files;
+}
+
 std::string CopyDashboardModules(
     const std::filesystem::path& staging,
     std::vector<std::filesystem::path>* out_packages) {
@@ -3705,10 +3784,20 @@ std::string CopyDashboardModules(
   size_t copied = 0;
   size_t failed = 0;
   size_t packages = 0;
+  std::string flash_report;
   for (const auto& file : std::filesystem::recursive_directory_iterator(
            staging, std::filesystem::directory_options::skip_permission_denied,
            ec)) {
     if (!file.is_regular_file(ec)) {
+      continue;
+    }
+    if (IsSystemUpdatePackage(file.path())) {
+      const size_t files = ExtractSystemUpdatePackage(file.path(), dashboard);
+      flash_report +=
+          files ? fmt::format("Dashboard: {} flash file(s) unpacked from {}\n",
+                              files, xe::path_to_utf8(file.path().filename()))
+                : fmt::format("Dashboard: FAILED - could not unpack {}\n",
+                              xe::path_to_utf8(file.path().filename()));
       continue;
     }
     // The avatar asset packs are why this check exists. Copied beside
@@ -3733,7 +3822,8 @@ std::string CopyDashboardModules(
     ++copied;
   }
   std::string report = fmt::format("Dashboard: {} file(s) -> {}\n", copied,
-                                   xe::path_to_utf8(dashboard));
+                                   xe::path_to_utf8(dashboard)) +
+                       flash_report;
   if (packages) {
     report += fmt::format(
         "Avatar data: {} content package(s) sent to the installer\n", packages);
@@ -3801,8 +3891,75 @@ void InstallXnaSetupDashboard(XnaSetupState* state,
   std::filesystem::remove_all(staging, ec);
 }
 
-void RunXnaSetup(std::shared_ptr<XnaSetupState> state,
-                 std::filesystem::path content_root) {
+// Always downloads and installs it, and makes it the active update: whatever
+// was in Library\584E07D2 before, this leaves the real package in charge.
+void InstallXnaIndiePlayerUpdate(XnaSetupState* state, Emulator* emulator) {
+  state->SetStage("Looking up the XNA Indie Player title update...");
+  const auto updates = kernel::util::TitleUpdateDownloader::List(
+      kXnaIndiePlayerTitleId, kXnaIndiePlayerMediaId);
+  if (updates.empty()) {
+    state->AddReport(
+        "XNA Indie Player update: FAILED - the title update catalogue has "
+        "none, or could not be reached");
+    return;
+  }
+  const kernel::util::RemoteTitleUpdate& update = updates.front();
+
+  std::error_code ec;
+  const auto directory =
+      std::filesystem::temp_directory_path(ec) / "Nexia" / "XNA_Setup";
+  std::filesystem::create_directories(directory, ec);
+  const auto package =
+      directory /
+      fmt::format("nexia_tu_{:08X}_{}.bin", kXnaIndiePlayerTitleId, update.id);
+
+  state->SetStage(
+      fmt::format("Downloading the XNA Indie Player title update (TU {})...",
+                  update.version));
+  state->downloading.store(true);
+  const bool downloaded = kernel::util::TitleUpdateDownloader::Download(
+      update, package,
+      [state](uint64_t received, uint64_t total) {
+        state->received.store(received);
+        state->total.store(total);
+      },
+      &state->cancel);
+  state->downloading.store(false);
+  if (!downloaded) {
+    state->AddReport(state->cancel.load()
+                         ? "XNA Indie Player update: cancelled"
+                         : "XNA Indie Player update: FAILED - download, see "
+                           "the log");
+    return;
+  }
+
+  state->SetStage("Installing the XNA Indie Player title update...");
+  Emulator::ContentInstallEntry entry(package);
+  entry.title_update_name_ = fmt::format("TU-{}", update.version);
+  emulator->ProcessContentPackageHeader(package, entry);
+  const X_STATUS result = emulator->InstallContentPackage(package, entry);
+  std::filesystem::remove(package, ec);
+  if (result != X_ERROR_SUCCESS || !entry.library_import_done_) {
+    state->AddReport("XNA Indie Player update: FAILED - install: " +
+                     entry.installation_error_message_);
+    return;
+  }
+  state->AddReport(fmt::format(
+      "XNA Indie Player update: TU {} installed and active", update.version));
+
+  // The console assemblies, out of the update just installed and into
+  // xna\console where the hosted path loads them.
+  kernel::xna::SyncConsoleRuntimeFromTitleUpdate();
+  const auto runtime = kernel::xna::FindIndiePlayerRuntime();
+  state->AddReport(runtime.empty()
+                       ? "Console XNA runtime: FAILED - the update has no "
+                         "Runtime\\v4.0"
+                       : "Console XNA runtime: from " +
+                             xe::path_to_utf8(runtime));
+}
+
+void RunXnaSetup(std::shared_ptr<XnaSetupState> state, Emulator* emulator) {
+  const std::filesystem::path content_root = emulator->content_root();
   state->SetStage("Copying Nexia's XNA host files...");
   std::string message;
   if (kernel::xna::DeployXnaHostPayload(&message)) {
@@ -3834,8 +3991,11 @@ void RunXnaSetup(std::shared_ptr<XnaSetupState> state,
 
   std::error_code ec;
   const auto dashboard = xe::filesystem::GetExecutableFolder() / "Dashboard";
-  const bool avatars_installed = std::filesystem::exists(
-      kernel::xna::avatar::CatalogPath(content_root), ec);
+  // Unpacked, or kept as the package a fresh install leaves.
+  const auto catalog = kernel::xna::avatar::CatalogPath(content_root);
+  const bool avatars_installed =
+      std::filesystem::exists(catalog, ec) ||
+      std::filesystem::is_regular_file(catalog.parent_path(), ec);
   bool dashboard_installed = true;
   for (const char* name : kXnaSetupDashboardFiles) {
     if (!std::filesystem::exists(dashboard / name, ec)) {
@@ -3894,6 +4054,12 @@ void RunXnaSetup(std::shared_ptr<XnaSetupState> state,
         state->package = zip;
       }
     }
+  }
+
+  if (state->cancel.load()) {
+    state->AddReport("XNA Indie Player update: cancelled");
+  } else {
+    InstallXnaIndiePlayerUpdate(state.get(), emulator);
   }
 
   {
@@ -3985,7 +4151,7 @@ void EmulatorWindow::SetupXna() {
   std::string title = "Setup XNA";
   std::string body =
       "Sets up this PC to run Xbox Live Indie Games (XNA titles) in Nexia.\n\n"
-      "Choosing Accept does three things:\n"
+      "Choosing Accept does four things:\n"
       "  1. Copies Nexia's XNA host files out of Nexia360.exe into its xna\n"
       "     folder.\n"
       "  2. If anything is missing, runs Nexia's XNA runtime installer. It\n"
@@ -4002,7 +4168,11 @@ void EmulatorWindow::SetupXna() {
       "     download.microsoft.com. It copies the dashboard (dash.xex and\n"
       "     XenonSCLatin.xtt) into the Dashboard folder next to Nexia360.exe,\n"
       "     and installs the avatar, dashboard and Kinect data packages. The\n"
-      "     system update itself is not installed.\n\n"
+      "     system update itself is not installed.\n"
+      "  4. Downloads the XNA Indie Player title update (584E07D2) from the\n"
+      "     title update catalogue, installs it as that title's active\n"
+      "     update, and copies its XNA 4.0 runtime into the xna folder. It\n"
+      "     is what turns the dashboard's XNA launcher into 4.0.\n\n"
       "Choosing Cancel changes nothing.";
 
   auto* dialog = new kernel::xam::MessageBoxDialog(imgui_drawer(), title, body,
@@ -4021,7 +4191,7 @@ void EmulatorWindow::SetupXna() {
             app_context().CallInUIThread(
                 [this, package]() { InstallContentPackages({package}); });
           });
-      std::thread(RunXnaSetup, state, emulator_->content_root()).detach();
+      std::thread(RunXnaSetup, state, emulator_).detach();
     });
   });
 }

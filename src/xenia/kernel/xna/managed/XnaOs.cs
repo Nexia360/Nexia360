@@ -217,13 +217,39 @@ public static unsafe class XnaOs {
   /// </summary>
   public static void Log(Level level, string message) {
     var t = table;
-    if (t == null || t->Log == null) {
-      return;
-    }
     byte[] bytes = ToUtf8(message);
     fixed (byte* p = bytes) {
-      t->Log((uint)level, p);
+      if (t != null && t->Log != null) {
+        t->Log((uint)level, p);
+        return;
+      }
+      // Statics are per load context. Code reached from IL injected into a
+      // console or title assembly runs against a copy of this class whose table
+      // was never bound, so the export is resolved off the running program
+      // instead - that works from any context.
+      var export = LogExport();
+      if (export != null) {
+        export((uint)level, (IntPtr)p);
+      }
     }
+  }
+
+  private delegate void LogExportFn(uint level, IntPtr message);
+  private static LogExportFn logExport;
+  private static bool logExportResolved;
+
+  private static LogExportFn LogExport() {
+    if (!logExportResolved) {
+      logExportResolved = true;
+      try {
+        if (NativeLibrary.TryGetExport(NativeLibrary.GetMainProgramHandle(),
+                                       "Nexia_XnaLog", out IntPtr address)) {
+          logExport = Marshal.GetDelegateForFunctionPointer<LogExportFn>(address);
+        }
+      } catch (Exception) {
+      }
+    }
+    return logExport;
   }
 
   public static void Log(string message) => Log(Level.Info, message);

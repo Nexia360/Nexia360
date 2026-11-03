@@ -64,6 +64,17 @@
 
 #include <cmath>
 
+// What feeds a draw - texture binds and how each sampler was paired - is debug
+// detail on an ordinary frame and the whole answer on a captured one.
+#define XNA_CAPTURE_LOG(...)                     \
+  do {                                           \
+    if (xe::kernel::xna::XnaDirectCapturing()) { \
+      XELOGE(__VA_ARGS__);                       \
+    } else {                                     \
+      XELOGD(__VA_ARGS__);                       \
+    }                                            \
+  } while (0)
+
 extern "C" void Nexia_XnaDrawUserPrimitives(int32_t primitive_type,
                                             int32_t primitive_count,
                                             const void* vertex_data,
@@ -287,11 +298,9 @@ constexpr uint32_t kNotImplemented = 0x80004001;  // E_NOTIMPL
 // BlendState/Settings, in declaration order (all int32): ColorSourceBlend,
 // ColorDestinationBlend, ColorBlendFunction, AlphaSourceBlend,
 // AlphaDestinationBlend, AlphaBlendFunction, then four ColorWriteChannels, a
-// packed Color BlendFactor and MultiSampleMask. Only the six factor/function
-// fields are kept - the default Opaque state reads One/Zero/Add, which is what
-// the draw path assumed unconditionally before. XNA Blend: 0 One, 1 Zero, 2
-// SourceColor ... ; XNA BlendFunction: 0 Add, 1 Subtract, 2 ReverseSubtract, 3
-// Min, 4 Max.
+// packed Color BlendFactor and MultiSampleMask. The default Opaque state reads
+// One/Zero/Add. XNA Blend: 0 One, 1 Zero, 2 SourceColor ... ; XNA
+// BlendFunction: 0 Add, 1 Subtract, 2 ReverseSubtract, 3 Min, 4 Max.
 struct BlendSettings {
   uint32_t color_src = 0;
   uint32_t color_dst = 1;
@@ -300,6 +309,8 @@ struct BlendSettings {
   uint32_t alpha_dst = 1;
   uint32_t alpha_op = 0;
   uint32_t color_write[4] = {0xF, 0xF, 0xF, 0xF};
+  uint32_t blend_factor = 0xFFFFFFFF;
+  uint32_t multisample_mask = 0xFFFFFFFF;
 };
 
 std::map<uint32_t, BlendSettings> blend_states;
@@ -320,14 +331,17 @@ extern "C" uint32_t xna_D3D_D3D_Device_CreateBlendState(uint32_t device,
     for (uint32_t i = 0; i < 4; ++i) {
       state.color_write[i] = static_cast<uint32_t>(words[6 + i]) & 0xF;
     }
+    state.blend_factor = static_cast<uint32_t>(words[10]);
+    state.multisample_mask = static_cast<uint32_t>(words[11]);
   }
   blend_states[handle] = state;
   XELOGD(
       "[xna] blend state {:08X}: colour src {} dst {} op {}, alpha src {} dst "
-      "{} op {}, write {:X} {:X} {:X} {:X}",
+      "{} op {}, write {:X} {:X} {:X} {:X}, factor {:08X}, sample mask {:08X}",
       handle, state.color_src, state.color_dst, state.color_op, state.alpha_src,
       state.alpha_dst, state.alpha_op, state.color_write[0],
-      state.color_write[1], state.color_write[2], state.color_write[3]);
+      state.color_write[1], state.color_write[2], state.color_write[3],
+      state.blend_factor, state.multisample_mask);
   return handle;
 }
 
@@ -379,10 +393,44 @@ extern "C" uint32_t xna_D3D_D3D_Device_CreateDepthStencilState(
   return handle;
 }
 
+// RasterizerState/Settings, in declaration order (MXF.Graphics): CullMode,
+// FillMode, int ScissorTestEnable, int MultiSampleAntiAlias, float DepthBias,
+// float SlopeScaleDepthBias. XNA CullMode: 0 None, 1 CullClockwiseFace, 2
+// CullCounterClockwiseFace; FillMode: 0 Solid, 1 WireFrame. Dropping these
+// drew every title with culling off, no depth bias and no scissor.
+struct RasterizerSettings {
+  uint32_t cull_mode = 2;
+  uint32_t fill_mode = 0;
+  bool scissor_enable = false;
+  bool multisample_antialias = true;
+  float depth_bias = 0.0f;
+  float slope_scale_depth_bias = 0.0f;
+};
+
+std::map<uint32_t, RasterizerSettings> rasterizer_states;
+
 extern "C" uint32_t xna_D3D_D3D_Device_CreateRasterizerState(
     uint32_t device, const void* settings) {
   std::lock_guard<std::mutex> lock(resource_mutex);
-  return AllocateHandle();
+  const uint32_t handle = AllocateHandle();
+  RasterizerSettings state;
+  if (settings) {
+    const auto* words = static_cast<const int32_t*>(settings);
+    state.cull_mode = static_cast<uint32_t>(words[0]);
+    state.fill_mode = static_cast<uint32_t>(words[1]);
+    state.scissor_enable = words[2] != 0;
+    state.multisample_antialias = words[3] != 0;
+    std::memcpy(&state.depth_bias, &words[4], sizeof(float));
+    std::memcpy(&state.slope_scale_depth_bias, &words[5], sizeof(float));
+  }
+  rasterizer_states[handle] = state;
+  XELOGD(
+      "[xna] rasterizer state {:08X}: cull {} fill {} scissor {} msaa {} depth "
+      "bias {} slope {}",
+      handle, state.cull_mode, state.fill_mode, state.scissor_enable,
+      state.multisample_antialias, state.depth_bias,
+      state.slope_scale_depth_bias);
+  return handle;
 }
 
 // The decoded SamplerState.Settings a handle stands for. The struct on the wire
@@ -400,6 +448,15 @@ struct SamplerParams {
 
 static std::mutex sampler_params_mutex;
 static std::map<uint32_t, SamplerParams> sampler_params;
+
+// Sampler states an effect's sampler_state assigns, by their operation in
+// D3DX's state table (RuntimeHost 0x8A04C52C). See EffectStateAssignment.
+constexpr uint32_t kEffectStateAddressU = 0x6F;
+constexpr uint32_t kEffectStateAddressV = 0x70;
+constexpr uint32_t kEffectStateMagFilter = 0x73;
+constexpr uint32_t kEffectStateMinFilter = 0x74;
+constexpr uint32_t kEffectStateMipFilter = 0x75;
+constexpr uint32_t kEffectStateMaxAnisotropy = 0x78;
 
 // XNA TextureAddressMode -> Xenos ClampMode. Wrap 0 -> kRepeat 0, Clamp 1 ->
 // kClampToEdge 2, Mirror 2 -> kMirroredRepeat 1.
@@ -1419,6 +1476,22 @@ extern "C" uint32_t xna_D3D_D3D_Device_CreateRenderTarget(
   textures[handle] = std::move(texture);
   // A render target IS a resolve destination, so it gets the padded size.
   AllocateTextureStorage(handle, textures[handle], 1, /*resolve_target=*/true);
+  // params[4] is its DepthFormat; None means draws into it test nothing. Keyed
+  // by the guest address, which is what a draw names the target by.
+  if (params) {
+    auto* resource =
+        xe::kernel::xna::XnaGuestResourceLookup(textures[handle].handle);
+    if (resource && resource->data) {
+      xe::kernel::xna::XnaDirectSetTargetHasDepth(resource->data,
+                                                  params[4] != 0);
+    }
+    // PROBE: the format the title asked for, as it asked.
+    XELOGE(
+        "[xna] CreateRenderTarget {:08X} at {:08X}: {}x{} levels {} format {} "
+        "depth format {} multisample {} preserve {} flags {:08X}",
+        handle, resource ? resource->data : 0, params[0], params[1], params[2],
+        params[3], params[4], params[5], params[6], flags);
+  }
   if (out_a) {
     *out_a = handle;
   }
@@ -1966,7 +2039,8 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
              sampler, kMaxTextures);
       return;
     }
-    XELOGD("[xna] SetTexture: slot {} <- texture {:08X}", sampler, texture);
+    XNA_CAPTURE_LOG("[xna] SetTexture: slot {} <- texture {:08X}", sampler,
+                    texture);
     bound_textures_[sampler] = texture;
   }
 
@@ -1990,8 +2064,8 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
       return;
     }
     const auto& info = image->parameters[parameter - 1];
-    XELOGD("[xna] EffectTexture: effect {} \"{}\" <- texture {:08X}", effect,
-           info.name, texture);
+    XNA_CAPTURE_LOG("[xna] EffectTexture: effect {} \"{}\" <- texture {:08X}",
+                    effect, info.name, texture);
     std::lock_guard<std::mutex> lock(resource_mutex);
     texture_by_effect_[effect][info.name] = texture;
     texture_by_name_[info.name] = texture;
@@ -2009,9 +2083,17 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
                 uint32_t slot) override {
     std::lock_guard<std::mutex> lock(resource_mutex);
     switch (type) {
-      case xe::kernel::xna::HlcbPacketType::kSetBlendState:
+      case xe::kernel::xna::HlcbPacketType::kSetBlendState: {
+        // Binding a BlendState also sets the device's BlendFactor and
+        // MultiSampleMask from its Settings (GraphicsDevice.set_BlendState).
         blend_state_ = handle;
+        auto found = blend_states.find(handle);
+        const BlendSettings state =
+            found != blend_states.end() ? found->second : BlendSettings();
+        blend_factor_ = state.blend_factor;
+        multisample_mask_ = state.multisample_mask;
         break;
+      }
       case xe::kernel::xna::HlcbPacketType::kSetDepthStencilState: {
         depth_state_ = handle;
         auto found = depth_states.find(handle);
@@ -2025,14 +2107,27 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
       default:
         if (slot < kMaxSamplers) {
           sampler_states_[slot] = handle;
+          sampler_set_sequence_[slot] = ++state_sequence_;
         }
         break;
     }
   }
 
+  void EffectApplied(uint32_t effect, uint32_t pass) override {
+    std::lock_guard<std::mutex> lock(resource_mutex);
+    effect_apply_sequence_ = ++state_sequence_;
+    effect_applied_in_stream_ = effect;
+  }
+
   void SetHighFrequencyState(uint32_t state, uint32_t value) override {
     std::lock_guard<std::mutex> lock(resource_mutex);
-    if (state == kHighFrequencyReferenceStencil) {
+    // HighFrequencyRenderState: 0 BlendFactor (packed Color), 1
+    // MultiSampleMask, 2 ReferenceStencil - the GraphicsDevice setters.
+    if (state == kHighFrequencyBlendFactor) {
+      blend_factor_ = value;
+    } else if (state == kHighFrequencyMultiSampleMask) {
+      multisample_mask_ = value;
+    } else if (state == kHighFrequencyReferenceStencil) {
       reference_stencil_ = static_cast<int32_t>(value);
     }
   }
@@ -2695,13 +2790,13 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
     if (++collect_calls_ % 256 == 0) {
       ReportTextureCensusLocked();
     }
-    XELOGD(
+    XNA_CAPTURE_LOG(
         "[xna] collect textures: effect {}, {} slot(s), {} sampler(s), {} "
         "named binding(s)",
         effect, count, samplers.size(), bindings->size());
     const auto describe = [&](uint32_t texture, uint32_t slot) {
       if (slot >= count || slot >= kMaxTextures) {
-        XELOGD(
+        XNA_CAPTURE_LOG(
             "[xna]    slot {} is past the {} the draw has (limit {}) - "
             "texture {:08X} dropped",
             slot, count, kMaxTextures, texture);
@@ -2713,17 +2808,18 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
       auto found = textures.find(texture);
       if (found == textures.end() || !found->second.width ||
           !found->second.handle) {
-        XELOGD("[xna] effect {} slot {}: texture {:08X} not placed - {}",
-               effect, slot, texture,
-               found == textures.end()
-                   ? "no texture record"
-                   : (!found->second.width ? "zero width" : "no guest handle"));
+        XNA_CAPTURE_LOG(
+            "[xna] effect {} slot {}: texture {:08X} not placed - {}", effect,
+            slot, texture,
+            found == textures.end()
+                ? "no texture record"
+                : (!found->second.width ? "zero width" : "no guest handle"));
         return;
       }
       auto* resource =
           xe::kernel::xna::XnaGuestResourceLookup(found->second.handle);
       if (!resource || !resource->data) {
-        XELOGD(
+        XNA_CAPTURE_LOG(
             "[xna] effect {} slot {}: texture {:08X} not placed - guest "
             "resource {:08X} has no memory",
             effect, slot, texture, found->second.handle);
@@ -2737,9 +2833,10 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
       out[slot].tiled = found->second.resolves != 0;
       out[slot].handle = texture;
       out[slot].type = found->second.type;
-      XELOGD("[xna]    bound texture {:08X} ({}x{} format {}) to slot {}",
-             texture, found->second.width, found->second.height,
-             found->second.format, slot);
+      XNA_CAPTURE_LOG(
+          "[xna]    bound texture {:08X} ({}x{} format {}) to slot {}", texture,
+          found->second.width, found->second.height, found->second.format,
+          slot);
       // The sampler state the title bound to this same slot decides wrap vs
       // clamp and point vs linear. Without it every world texture was clamped,
       // so a wrapped facade showed one stretched edge instead of tiling.
@@ -2774,9 +2871,22 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
     // this title uses. Every outcome is logged - which rule matched, and what
     // the effect had on offer when none did - because this loop failing shows
     // up as nothing but a screen holding its clear colour.
+    const auto* image = xe::kernel::xna::FindEffect(effect);
     for (const auto& entry : samplers) {
       const char* how = "by name";
       auto bound = bindings->find(entry.first);
+      // The effect's own sampler_state says which texture a sampler reads.
+      // Every rule below is a guess at that from the names.
+      if (image) {
+        auto declared = image->sampler_textures.find(entry.first);
+        if (declared != image->sampler_textures.end()) {
+          auto named = bindings->find(declared->second);
+          if (named != bindings->end()) {
+            bound = named;
+            how = "by sampler_state";
+          }
+        }
+      }
       if (bound == bindings->end()) {
         how = "by stem";
         const std::string want = TextureNameStem(entry.first);
@@ -2808,6 +2918,25 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
           }
         }
       }
+      // A sampler can also carry words on BOTH sides of the texture's name:
+      // Quasar's post-process effects declare SamplerTex0Clamp, SamplerTex0
+      // and SamplerTex1 over textures named Tex0 and Tex1, which neither rule
+      // above joins - the menu composited from those passes came out black.
+      // A texture whose stem appears anywhere inside the sampler's is taken,
+      // longest first, so Tex10 would win over Tex1.
+      if (bound == bindings->end()) {
+        how = "by stem within";
+        const std::string want = TextureNameStem(entry.first);
+        size_t best = 0;
+        for (auto it = bindings->begin(); it != bindings->end(); ++it) {
+          const std::string stem = TextureNameStem(it->first);
+          if (!stem.empty() && stem.size() > best &&
+              want.find(stem) != std::string::npos) {
+            bound = it;
+            best = stem.size();
+          }
+        }
+      }
       if (bound == bindings->end()) {
         std::string offered;
         for (const auto& candidate : *bindings) {
@@ -2819,7 +2948,7 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
         if (offered.empty()) {
           offered = "nothing";
         }
-        XELOGD(
+        XNA_CAPTURE_LOG(
             "[xna]    sampler \"{}\" (s{}) has no texture - stem \"{}\", "
             "effect {} offers: {}",
             entry.first, entry.second, TextureNameStem(entry.first), effect,
@@ -2827,15 +2956,93 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
         continue;
       }
       if (!bound->second) {
-        XELOGD(
+        XNA_CAPTURE_LOG(
             "[xna]    sampler \"{}\" (s{}) matched \"{}\" {}, but it holds "
             "no texture",
             entry.first, entry.second, bound->first, how);
         continue;
       }
-      XELOGD("[xna]    sampler \"{}\" (s{}) <- \"{}\" {} = texture {:08X}",
-             entry.first, entry.second, bound->first, how, bound->second);
+      XNA_CAPTURE_LOG(
+          "[xna]    sampler \"{}\" (s{}) <- \"{}\" {} = texture {:08X}",
+          entry.first, entry.second, bound->first, how, bound->second);
       describe(bound->second, entry.second);
+    }
+
+    // THE EFFECT'S OWN sampler_state, as CEffect::ApplySamplerAssignments
+    // writes it at Apply: each state through SetSamplerState, over whatever
+    // SamplerState the title had bound to that slot - unless the title set the
+    // slot again after the Apply. Dropping these is why the sky sampled with
+    // the device's wrap and 8:1 anisotropy where the console had the effect's
+    // mirror and no anisotropy.
+    if (!image || effect != effect_applied_in_stream_) {
+      return;
+    }
+    for (const auto& entry : samplers) {
+      const uint32_t slot = entry.second;
+      if (slot >= count || slot >= kMaxSamplers ||
+          effect_apply_sequence_ < sampler_set_sequence_[slot]) {
+        continue;
+      }
+      auto assigned = image->sampler_states.find(entry.first);
+      if (assigned == image->sampler_states.end()) {
+        continue;
+      }
+      xe::kernel::xna::XnaGpuTextureBinding& binding = out[slot];
+      // MAXANISOTROPY can come before or after the filter that turns the
+      // anisotropy filter on, so it is read first.
+      uint32_t max_anisotropy = 0;
+      for (const auto& state : assigned->second) {
+        if (state.operation == kEffectStateMaxAnisotropy) {
+          max_anisotropy = state.value;
+        }
+      }
+      for (const auto& state : assigned->second) {
+        switch (state.operation) {
+          case kEffectStateAddressU:
+            binding.address_u = state.value;
+            break;
+          case kEffectStateAddressV:
+            binding.address_v = state.value;
+            break;
+          case kEffectStateMagFilter:
+          case kEffectStateMinFilter: {
+            // ANISOTROPIC (4) is linear with the anisotropy filter on; POINT
+            // and LINEAR turn it off.
+            const bool anisotropic = state.value == 4;
+            const uint32_t filter = anisotropic ? 1u : state.value & 1u;
+            if (state.operation == kEffectStateMagFilter) {
+              binding.mag_filter = filter;
+            } else {
+              binding.min_filter = filter;
+            }
+            if (!anisotropic) {
+              binding.aniso = 0;
+            } else {
+              // AnisoFilter kMax_1_1 1 .. kMax_16_1 5; 8:1 when the effect
+              // names no maximum.
+              uint32_t level = max_anisotropy ? 1u : 4u;
+              while (max_anisotropy && level < 5 &&
+                     (1u << level) <= max_anisotropy) {
+                ++level;
+              }
+              binding.aniso = level;
+            }
+            break;
+          }
+          case kEffectStateMipFilter:
+            binding.mip_filter = state.value;
+            break;
+          default:
+            break;
+        }
+      }
+      binding.sampler_set = true;
+      XNA_CAPTURE_LOG(
+          "[xna]    sampler \"{}\" (s{}) takes its sampler_state: address "
+          "{}/{} filter {}/{}/{} aniso {}",
+          entry.first, slot, binding.address_u, binding.address_v,
+          binding.mag_filter, binding.min_filter, binding.mip_filter,
+          binding.aniso);
     }
   }
 
@@ -2970,6 +3177,32 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
     *alpha_src = state.alpha_src;
     *alpha_dst = state.alpha_dst;
     *alpha_op = state.alpha_op;
+  }
+
+  // The bound RasterizerState, the scissor rectangle it may enable, and the
+  // device's current BlendFactor and MultiSampleMask. No bound state means
+  // XNA's default, RasterizerState.CullCounterClockwise.
+  void CurrentRasterizerState(xe::kernel::xna::XnaGpuDraw* out) {
+    {
+      std::lock_guard<std::mutex> lock(resource_mutex);
+      RasterizerSettings state;
+      auto found = rasterizer_states.find(rasterizer_state_);
+      if (found != rasterizer_states.end()) {
+        state = found->second;
+      }
+      out->cull_mode = state.cull_mode;
+      out->fill_mode = state.fill_mode;
+      out->depth_bias = state.depth_bias;
+      out->slope_scale_depth_bias = state.slope_scale_depth_bias;
+      out->scissor_enable = state.scissor_enable;
+      out->blend_factor = blend_factor_;
+      out->multisample_mask = multisample_mask_;
+    }
+    std::lock_guard<std::mutex> lock(scissor_mutex);
+    out->scissor_x = scissor.x;
+    out->scissor_y = scissor.y;
+    out->scissor_width = scissor.width;
+    out->scissor_height = scissor.height;
   }
 
   void CurrentColorWriteMasks(uint32_t* masks_out) {
@@ -3273,7 +3506,11 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
   uint32_t blend_state_ = 0;
   uint32_t depth_state_ = 0;
   int32_t reference_stencil_ = 0;
+  static constexpr uint32_t kHighFrequencyBlendFactor = 0;
+  static constexpr uint32_t kHighFrequencyMultiSampleMask = 1;
   static constexpr uint32_t kHighFrequencyReferenceStencil = 2;
+  uint32_t blend_factor_ = 0xFFFFFFFF;
+  uint32_t multisample_mask_ = 0xFFFFFFFF;
   static constexpr uint32_t kUserRingBytes = 8u * 1024u * 1024u;
   uint32_t user_stream_handle_ = 0;
   uint32_t user_ring_offset_ = 0;
@@ -3282,6 +3519,13 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
   uint32_t rasterizer_state_ = 0;
   static constexpr uint32_t kMaxSamplers = 32;
   uint32_t sampler_states_[kMaxSamplers] = {};
+  // Stream order between SetSamplerState and EffectApply. The effect's
+  // sampler_state wins on a slot only when its Apply came after the slot's
+  // last SetSamplerState, as on the console.
+  uint64_t state_sequence_ = 0;
+  uint64_t sampler_set_sequence_[kMaxSamplers] = {};
+  uint64_t effect_apply_sequence_ = 0;
+  uint32_t effect_applied_in_stream_ = 0;
 
   uint64_t clears_ = 0;
   uint64_t draws_ = 0;
@@ -3312,7 +3556,11 @@ static xe::gpu::Shader* LoadHostedShader(
     xe::gpu::xenos::ShaderType type, const uint32_t* ucode,
     uint32_t dword_count) {
   if (processor) {
-    return processor->HostedLoadShader(type, ucode, dword_count);
+    // Native: the effect image was byte-swapped from console order when it was
+    // loaded, so its microcode is already in the order the translator reads.
+    // Swapping it again (tried 2026-10-30) turned mode 0's shaders to noise.
+    return processor->HostedLoadShader(type, ucode, dword_count,
+                                       std::endian::native);
   }
   return xe::kernel::xna::XnaDirectLoadShader(type, ucode, dword_count);
 }
@@ -4098,7 +4346,7 @@ extern "C" void Nexia_XnaDraw(int32_t primitive_type, int32_t base_vertex,
   xe::kernel::xna::XnaGpuStream streams[4];
   const uint32_t stream_count = device_sink.CollectStreams(streams, 4);
   if (!stream_count) {
-    XELOGD("[xna] draw dropped: no vertex streams bound");
+    XNA_CAPTURE_LOG("[xna] draw dropped: no vertex streams bound");
     return;
   }
 
@@ -4215,6 +4463,7 @@ extern "C" void Nexia_XnaDraw(int32_t primitive_type, int32_t base_vertex,
   device_sink.CurrentBlendState(&gpu.color_src, &gpu.color_dst, &gpu.color_op,
                                 &gpu.alpha_src, &gpu.alpha_dst, &gpu.alpha_op);
   device_sink.CurrentColorWriteMasks(gpu.color_write);
+  device_sink.CurrentRasterizerState(&gpu);
   // Resolved against the PIXEL shader, which is what samples them. Its own
   // constant table says which register each sampler name occupies, and that
   // differs between the shaders of one effect.
@@ -4260,7 +4509,7 @@ extern "C" void Nexia_XnaDraw(int32_t primitive_type, int32_t base_vertex,
     device_sink.IndexBuffer(&gpu.index_guest_address, &gpu.index_size_bytes,
                             &gpu.index_32bit);
     if (!gpu.index_guest_address) {
-      XELOGD("[xna] draw dropped: indexed with no index buffer bound");
+      XNA_CAPTURE_LOG("[xna] draw dropped: indexed with no index buffer bound");
       return;
     }
   }
@@ -4595,6 +4844,12 @@ extern "C" uint32_t xna_D3D_D3D_Effect_GetParameter(uint32_t device,
   }
 
   if (!image || index >= image->parameters.size()) {
+    XELOGE(
+        "[xna] GetParameter effect {:08X} (device {:08X}) index {}: {} - "
+        "answered NO HANDLE",
+        input[0], device, index,
+        image ? fmt::format("only {} parameter(s)", image->parameters.size())
+              : std::string("not a known effect"));
     return kNoHandle;
   }
   const auto& parameter = image->parameters[index];
@@ -4611,7 +4866,9 @@ extern "C" uint32_t xna_D3D_D3D_Effect_GetParameter(uint32_t device,
     out_desc[6] = 0;
   }
   WriteName(out_name, parameter.name);
-  WriteName(out_semantic, std::string());
+  // Quasar's XNAShader binds EVERY input by GetParameterBySemantic, so an empty
+  // semantic left its handle list empty and no matrix or texture was ever set.
+  WriteName(out_semantic, parameter.semantic);
 
   // EVERY CALL. A cap here hides the question it exists to answer - which
   // parameters the title's collection actually asked for. The class and type
@@ -4624,10 +4881,15 @@ extern "C" uint32_t xna_D3D_D3D_Effect_GetParameter(uint32_t device,
     std::lock_guard<std::mutex> lock(counts_mutex);
     const uint32_t seen = ++counts[input[0]];
     XELOGD(
-        "[xna] GetParameter effect {} index {} -> \"{}\" class {} type {} "
+        "[xna] GetParameter effect {} index {} parent {:08X} -> \"{}\" : "
+        "\"{}\" "
+        "class "
+        "{} type {} rows {} columns {} elements {} (d3dx class {} type {}) "
         "(call {} of {})",
-        input[0], index, parameter.name, out_desc ? out_desc[0] : 0,
-        out_desc ? out_desc[1] : 0, seen, image->parameters.size());
+        input[0], index, input[1], parameter.name, parameter.semantic,
+        out_desc ? out_desc[0] : 0, out_desc ? out_desc[1] : 0, parameter.rows,
+        parameter.columns, parameter.elements, parameter.parameter_class,
+        parameter.type, seen, image->parameters.size());
   }
   return index + 1;
 }

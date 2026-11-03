@@ -22,6 +22,7 @@
 #include "xenia/base/logging.h"
 #include "xenia/base/memory.h"
 #include "xenia/base/string.h"
+#include "xenia/base/utf8.h"
 #include "xenia/cpu/lzx.h"
 #include "xenia/kernel/xam/xam_ui_new.h"
 #include "xenia/kernel/xam/xui_font.h"
@@ -490,6 +491,183 @@ bool ReassembleXex(const std::vector<uint8_t>& image, size_t at,
   return true;
 }
 
+// THE NAND'S OWN FILESYSTEM. A root block is 0x20 pages: the even ones hold
+// the next-block map, one big-endian uint16 per 0x4000-byte block (bit 15 is a
+// flag), the odd ones 16 directory entries of 0x20 bytes - name[22], start
+// block, size, timestamp. A name whose first byte is 0x05 is a superseded
+// entry. A file follows the map from its start block, which is why xam
+// (0x250000 bytes from block 0x3BE) breaks off at 0xF70000 and goes on at
+// 0x9C000. The chip keeps several generations of the root, and a logical
+// image has lost the spare area that says which is live, so each is scored by
+// how many of its modules' SHA-1 block chains verify when read through its
+// map: a stale root reads blocks that have since been rewritten. On the
+// reference dump that picks the root every one of whose 33 files matches a
+// known-good extraction.
+constexpr size_t kFlashBlockSize = 0x4000;
+constexpr size_t kFlashMapBlocks = (kFlashBlockSize / kPageSize / 2) * 0x100;
+
+struct FlashFile {
+  std::string name;
+  uint16_t start_block = 0;
+  uint32_t size = 0;
+};
+
+size_t FlashBlockCount(const std::vector<uint8_t>& image) {
+  return std::min(image.size() / kFlashBlockSize, kFlashMapBlocks);
+}
+
+uint16_t FlashNextBlock(const std::vector<uint8_t>& image, size_t root,
+                        size_t block) {
+  const size_t at =
+      root + (block / 0x100) * 2 * kPageSize + (block % 0x100) * 2;
+  return Read16(image.data() + at) & 0x7FFF;
+}
+
+bool ReadFlashDirectory(const std::vector<uint8_t>& image, size_t root,
+                        std::vector<FlashFile>* out) {
+  out->clear();
+  const size_t blocks = FlashBlockCount(image);
+  for (size_t page = 1; page < kFlashBlockSize / kPageSize; page += 2) {
+    const uint8_t* base = image.data() + root + page * kPageSize;
+    for (size_t i = 0; i < kPageSize / 0x20; ++i) {
+      const uint8_t* entry = base + i * 0x20;
+      if (entry[0] == 0x00 || entry[0] == 0xFF || entry[0] == 0x05) {
+        continue;
+      }
+      FlashFile file;
+      for (size_t c = 0; c < 22 && entry[c]; ++c) {
+        const char value = static_cast<char>(entry[c]);
+        if (!std::isalnum(static_cast<unsigned char>(value)) && value != '.' &&
+            value != '_' && value != '-' && value != '$') {
+          return false;
+        }
+        file.name.push_back(value);
+      }
+      file.start_block = Read16(entry + 0x16);
+      file.size = Read32(entry + 0x18);
+      if (file.name.front() == '.' ||
+          file.name.find('.') == std::string::npos ||
+          file.start_block >= blocks || file.size > image.size()) {
+        return false;
+      }
+      out->push_back(std::move(file));
+    }
+  }
+  return !out->empty();
+}
+
+bool ReadFlashFile(const std::vector<uint8_t>& image, size_t root,
+                   const FlashFile& file, std::vector<uint8_t>* out) {
+  out->clear();
+  out->reserve(file.size);
+  const size_t blocks = FlashBlockCount(image);
+  size_t block = file.start_block;
+  size_t steps = 0;
+  while (out->size() < file.size) {
+    if (block >= blocks || ++steps > blocks) {
+      return false;
+    }
+    const size_t take =
+        std::min(kFlashBlockSize, size_t(file.size) - out->size());
+    const auto from = image.begin() + block * kFlashBlockSize;
+    out->insert(out->end(), from, from + take);
+    block = FlashNextBlock(image, root, block);
+  }
+  return true;
+}
+
+// True when a compressed XEX's own SHA-1 block chain holds end to end.
+bool XexChainVerifies(const std::vector<uint8_t>& data) {
+  if (data.size() < 0x18 || std::memcmp(data.data(), "XEX2", 4) != 0) {
+    return false;
+  }
+  const uint32_t count = Read32(data.data() + 0x14);
+  if (!count || count > 256 || size_t(0x18) + size_t(count) * 8 > data.size()) {
+    return false;
+  }
+  uint32_t info = 0;
+  for (uint32_t i = 0; i < count; ++i) {
+    const uint8_t* entry = data.data() + 0x18 + size_t(i) * 8;
+    if (Read32(entry) == kOptFileFormatInfo) {
+      info = Read32(entry + 4);
+    }
+  }
+  if (!info || size_t(info) + 0x24 > data.size() ||
+      Read16(data.data() + info + 6) != 2) {
+    return false;
+  }
+  size_t pos = Read32(data.data() + 0x08);
+  uint32_t size = Read32(data.data() + info + 0xC);
+  uint8_t digest[20];
+  std::memcpy(digest, data.data() + info + 0x10, sizeof(digest));
+  while (size) {
+    if (size < 24 || pos + size > data.size()) {
+      return false;
+    }
+    uint8_t actual[20];
+    Sha1(data.data() + pos, size, actual);
+    if (std::memcmp(actual, digest, sizeof(digest)) != 0) {
+      return false;
+    }
+    std::memcpy(digest, data.data() + pos + 4, sizeof(digest));
+    const uint32_t next = Read32(data.data() + pos);
+    pos += size;
+    size = next;
+  }
+  return true;
+}
+
+// The live root, or SIZE_MAX when no block reads as one with a verifiable
+// module under it.
+size_t FindFlashRoot(const std::vector<uint8_t>& image,
+                     std::vector<FlashFile>* out_files) {
+  size_t best_root = SIZE_MAX;
+  size_t best_score = 0;
+  std::vector<FlashFile> files;
+  std::vector<uint8_t> data;
+  for (size_t block = 0; block < FlashBlockCount(image); ++block) {
+    const size_t root = block * kFlashBlockSize;
+    if (!ReadFlashDirectory(image, root, &files)) {
+      continue;
+    }
+    size_t score = 0;
+    for (const FlashFile& file : files) {
+      if (file.name.size() > 4 &&
+          file.name.compare(file.name.size() - 4, 4, ".xex") == 0 &&
+          ReadFlashFile(image, root, file, &data) && XexChainVerifies(data)) {
+        ++score;
+      }
+    }
+    if (score > best_score ||
+        (score && score == best_score && files.size() > out_files->size())) {
+      best_score = score;
+      best_root = root;
+      *out_files = files;
+    }
+  }
+  return best_root;
+}
+
+// A XEX's execution-info version, 0 when it has none.
+uint32_t XexVersionOf(const std::vector<uint8_t>& data) {
+  if (data.size() < 0x18 || std::memcmp(data.data(), "XEX2", 4) != 0) {
+    return 0;
+  }
+  const uint32_t count = Read32(data.data() + 0x14);
+  if (!count || count > 256 || size_t(0x18) + size_t(count) * 8 > data.size()) {
+    return 0;
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    const uint8_t* entry = data.data() + 0x18 + size_t(i) * 8;
+    if (Read32(entry) != kOptExecutionInfo) {
+      continue;
+    }
+    const uint32_t at = Read32(entry + 4);
+    return size_t(at) + 8 <= data.size() ? Read32(data.data() + at + 4) : 0;
+  }
+  return 0;
+}
+
 struct ResourceSpec {
   std::string resource;
   std::string out_name;
@@ -821,24 +999,26 @@ bool ExtractFlashModule(const std::filesystem::path& image_path,
                                 image.begin() + at + extent);
     // A module can be fragmented across the NAND, in which case the run above
     // is not the whole thing - the same rebuild the asset extractor uses puts
-    // it back together from its SHA-1 block chain.
-    XexHeader header;
+    // it back together from its SHA-1 block chain. The rebuild is taken
+    // whenever it succeeds: every byte of it is hash-verified, while a run
+    // that spills into whatever follows the break can still flatten. xam
+    // (xamc.dll) is one - 0x78000 bytes, then the rest 15 MB earlier.
+    std::vector<uint8_t> rebuilt;
+    XexHeader rebuilt_header;
     std::vector<uint8_t> flat;
-    if (!ParseXexHeader(module.data(), module.size(), &header) ||
-        !FlattenXex(module.data(), module.size(), header, &flat)) {
-      std::vector<uint8_t> rebuilt;
-      XexHeader rebuilt_header;
-      if (ReassembleXex(image, at, &rebuilt) &&
-          ParseXexHeader(rebuilt.data(), rebuilt.size(), &rebuilt_header) &&
-          FlattenXex(rebuilt.data(), rebuilt.size(), rebuilt_header, &flat)) {
+    if (ReassembleXex(image, at, &rebuilt) &&
+        ParseXexHeader(rebuilt.data(), rebuilt.size(), &rebuilt_header) &&
+        FlattenXex(rebuilt.data(), rebuilt.size(), rebuilt_header, &flat)) {
+      if (rebuilt.size() > module.size() ||
+          !std::equal(rebuilt.begin(), rebuilt.end(), module.begin())) {
         XELOGI("xui assets: {} was fragmented in the NAND; rebuilt it",
                pe_name);
-        module = std::move(rebuilt);
       }
-      // A module with no resources cannot be parsed or flattened by those -
-      // bootanim is one - so a failure here is not proof of anything. The
-      // bytes on the chip are written out either way and the loader decides.
+      module = std::move(rebuilt);
     }
+    // A module with no resources cannot be parsed or rebuilt by those -
+    // bootanim is one - so a failure here is not proof of anything. The
+    // bytes on the chip are written out either way and the loader decides.
 
     std::error_code ec;
     std::filesystem::create_directories(out_file.parent_path(), ec);
@@ -851,6 +1031,83 @@ bool ExtractFlashModule(const std::filesystem::path& image_path,
     return true;
   }
   return false;
+}
+
+AssetInstallReport ExtractFlashFiles(
+    const std::filesystem::path& image_path,
+    const std::filesystem::path& out_dir,
+    const std::vector<std::string>& skip_extensions) {
+  AssetInstallReport report;
+  std::vector<uint8_t> image;
+  if (!ReadWholeFile(image_path, &image)) {
+    report.text =
+        "Flash: could not read " + xe::path_to_utf8(image_path) + "\n";
+    return report;
+  }
+  if (ClassifyImage(image.size()) == ImageKind::kRaw) {
+    StripSpare(&image);
+  }
+  std::vector<FlashFile> files;
+  const size_t root = FindFlashRoot(image, &files);
+  if (root == SIZE_MAX) {
+    report.text = "Flash: no filesystem root found in this image\n";
+    return report;
+  }
+  report.ok = true;
+
+  std::error_code ec;
+  std::filesystem::create_directories(out_dir, ec);
+  std::string written;
+  std::vector<uint8_t> data;
+  for (const FlashFile& file : files) {
+    const auto extension = xe::utf8::lower_ascii(
+        xe::path_to_utf8(std::filesystem::path(file.name).extension()));
+    if (std::find(skip_extensions.begin(), skip_extensions.end(), extension) !=
+        skip_extensions.end()) {
+      continue;
+    }
+    if (!ReadFlashFile(image, root, file, &data)) {
+      report.missing.push_back(file.name);
+      continue;
+    }
+    // An older chip must not take a module back past the system update: the
+    // update's copy sits here under the same name or as $flash_<name>, and
+    // the loader takes the plain name first.
+    const uint32_t version = XexVersionOf(data);
+    bool newer_here = false;
+    if (version) {
+      for (const auto& existing :
+           {out_dir / file.name, out_dir / ("$flash_" + file.name)}) {
+        std::vector<uint8_t> current;
+        if (ReadWholeFile(existing, &current) &&
+            XexVersionOf(current) > version) {
+          newer_here = true;
+          report.text += "Flash: kept the newer " +
+                         xe::path_to_utf8(existing.filename()) + " over " +
+                         file.name + " from the flash\n";
+          break;
+        }
+      }
+    }
+    if (newer_here) {
+      continue;
+    }
+    if (!WriteWholeFile(out_dir / file.name, data.data(), data.size())) {
+      report.missing.push_back(file.name);
+      continue;
+    }
+    ++report.package_count;
+    written += (written.empty() ? "" : ", ") + file.name;
+  }
+  XELOGI("xui assets: flash root at {:X}, {} of {} file(s) written: {}", root,
+         report.package_count, files.size(), written);
+  report.text +=
+      fmt::format("Flash: {} file(s) from the chip's directory: {}\n",
+                  report.package_count, written);
+  for (const auto& name : report.missing) {
+    report.text += "Flash: could not write " + name + "\n";
+  }
+  return report;
 }
 
 AssetInstallReport InstallFromFlashImage(

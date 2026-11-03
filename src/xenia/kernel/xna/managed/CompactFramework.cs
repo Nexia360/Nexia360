@@ -1,4 +1,4 @@
-﻿// Rewrites the handful of Compact Framework calls a 360 title makes that
+// Rewrites the handful of Compact Framework calls a 360 title makes that
 // desktop .NET does not have.
 //
 // These titles were built against the .NET CF that shipped on the console. Its
@@ -189,6 +189,8 @@ public static partial class CfShims {
   // be sent first or the draw runs against whatever the previous flush left.
   private static void FlushPending(object device) {
     if (device == null) {
+      XnaOs.Log(XnaOs.Level.Error,
+                "[xna] FlushPending: NO DEVICE - nothing was flushed");
       return;
     }
     if (!flushResolved) {
@@ -198,12 +200,22 @@ public static partial class CfShims {
             "FlushBuffer",
             BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
             null, Type.EmptyTypes, null);
-      } catch (Exception) {
+      } catch (Exception e) {
+        XnaOs.Log(XnaOs.Level.Error,
+                  $"[xna] FlushPending: looking up FlushBuffer threw {e}");
       }
     }
+    if (flushBuffer == null) {
+      XnaOs.Log(XnaOs.Level.Error,
+                $"[xna] FlushPending: {device.GetType().FullName} has no " +
+                "FlushBuffer() - the draw's state was not sent");
+      return;
+    }
     try {
-      flushBuffer?.Invoke(device, null);
-    } catch (Exception) {
+      flushBuffer.Invoke(device, null);
+    } catch (Exception e) {
+      XnaOs.Log(XnaOs.Level.Error,
+                $"[xna] FlushPending: FlushBuffer threw {e.InnerException ?? e}");
     }
   }
 
@@ -220,9 +232,10 @@ public static partial class CfShims {
       }
     } catch (Exception) {
     }
-    XnaOs.Log(draw != null
-                  ? "   draws go straight to the device"
-                  : "   Nexia_XnaDraw is missing - draws stay on the packet path");
+    XnaOs.Log(XnaOs.Level.Error,
+              draw != null
+                  ? "[xna] draws go straight to the device"
+                  : "[xna] Nexia_XnaDraw is missing - draws stay on the packet path");
   }
 
   // The original packet builder, kept so a draw is never simply lost: if the
@@ -252,6 +265,8 @@ public static partial class CfShims {
       }
     }
     if (original == null) {
+      XnaOs.Log(XnaOs.Level.Error,
+                $"[xna] CallOriginal: PacketHelpers.{name} not found");
       return false;
     }
     try {
@@ -261,11 +276,21 @@ public static partial class CfShims {
       for (int i = 1; i < parameters.Length; i++) {
         var type = parameters[i].ParameterType;
         var value = rest[i - 1];
-        arguments[i] = type.IsEnum ? Enum.ToObject(type, value) : value;
+        if (type.IsPointer && value is IntPtr pointer) {
+          // Reflection takes a pointer argument only as a boxed Pointer.
+          unsafe {
+            arguments[i] = Pointer.Box((void*)pointer, type);
+          }
+        } else {
+          arguments[i] = type.IsEnum ? Enum.ToObject(type, value) : value;
+        }
       }
       original.Invoke(null, arguments);
       return true;
-    } catch (Exception) {
+    } catch (Exception e) {
+      XnaOs.Log(XnaOs.Level.Error,
+                $"[xna] CallOriginal: PacketHelpers.{name} threw " +
+                $"{e.InnerException ?? e}");
       return false;
     }
   }

@@ -606,26 +606,67 @@ int XexModule::ReadImage(const void* xex_addr, size_t xex_length,
   return 3;
 }
 
+uint8_t* XexModule::ImageBuffer(uint32_t size) {
+  if (host_image_) {
+    host_image_->assign(size, 0);
+    return host_image_->data();
+  }
+  if (!memory()
+           ->LookupHeap(base_address_)
+           ->AllocFixed(
+               base_address_, size, 4096,
+               xe::kMemoryAllocationReserve | xe::kMemoryAllocationCommit,
+               xe::kMemoryProtectRead | xe::kMemoryProtectWrite)) {
+    XELOGE("Unable to allocate XEX memory at {:08X}-{:08X}.", base_address_,
+           size);
+    return nullptr;
+  }
+  uint8_t* buffer = memory()->TranslateVirtual(base_address_);
+  std::memset(buffer, 0, size);
+  return buffer;
+}
+
+bool XexModule::LoadImageToHost(const void* xex_addr, size_t xex_length,
+                                std::vector<uint8_t>* image) {
+  const auto* src_header = reinterpret_cast<const xex2_header*>(xex_addr);
+  if (xex_length < sizeof(xex2_header) || src_header->magic != kXEX2Signature ||
+      src_header->header_size > xex_length) {
+    return false;
+  }
+  xex_format_ = kFormatXex2;
+  xex_header_mem_.assign(
+      reinterpret_cast<const uint8_t*>(xex_addr),
+      reinterpret_cast<const uint8_t*>(xex_addr) + src_header->header_size);
+  ReadSecurityInfo();
+  base_address_ = xex_security_info()->load_address;
+  xe::be<uint32_t>* base_addr_opt = nullptr;
+  if (GetOptHeader(XEX_HEADER_IMAGE_BASE_ADDRESS, &base_addr_opt)) {
+    base_address_ = *base_addr_opt;
+  }
+
+  host_image_ = image;
+  int result_code = ReadImage(xex_addr, xex_length, xe_xex2_retail_key);
+  if (result_code) {
+    result_code = ReadImage(xex_addr, xex_length, xe_xex2_devkit_key);
+  }
+  host_image_ = nullptr;
+  if (result_code) {
+    image->clear();
+    return false;
+  }
+  return true;
+}
+
 int XexModule::ReadImageUncompressed(const void* xex_addr, size_t xex_length) {
   // Allocate in-place the XEX memory.
   const uint32_t exe_length =
       static_cast<uint32_t>(xex_length - xex_header()->header_size);
 
   uint32_t uncompressed_size = exe_length;
-  bool alloc_result =
-      memory()
-          ->LookupHeap(base_address_)
-          ->AllocFixed(
-              base_address_, uncompressed_size, 4096,
-              xe::kMemoryAllocationReserve | xe::kMemoryAllocationCommit,
-              xe::kMemoryProtectRead | xe::kMemoryProtectWrite);
-  if (!alloc_result) {
-    XELOGE("Unable to allocate XEX memory at {:08X}-{:08X}.", base_address_,
-           uncompressed_size);
+  uint8_t* buffer = ImageBuffer(uncompressed_size);
+  if (!buffer) {
     return 2;
   }
-  uint8_t* buffer = memory()->TranslateVirtual(base_address_);
-  std::memset(buffer, 0, uncompressed_size);
 
   const uint8_t* p = (const uint8_t*)xex_addr + xex_header()->header_size;
 
@@ -658,18 +699,10 @@ int XexModule::ReadImageBasicCompressed(const void* xex_addr,
 
   auto heap = memory()->LookupHeap(base_address_);
 
-  // Calculate uncompressed length.
-  uint32_t uncompressed_size = 0;
-
   auto* file_info = opt_file_format_info();
   auto& comp_info = file_info->compression_info.basic;
 
   uint32_t block_count = (file_info->info_size - 8) / 8;
-  for (uint32_t n = 0; n < block_count; n++) {
-    const uint32_t data_size = comp_info.blocks[n].data_size;
-    const uint32_t zero_size = comp_info.blocks[n].zero_size;
-    uncompressed_size += data_size + zero_size;
-  }
 
   // Calculate the total size of the XEX image from its headers.
   uint32_t total_size = 0;
@@ -682,18 +715,10 @@ int XexModule::ReadImageBasicCompressed(const void* xex_addr,
   }
 
   // Allocate in-place the XEX memory.
-  bool alloc_result = heap->AllocFixed(
-      base_address_, total_size, 4096,
-      xe::kMemoryAllocationReserve | xe::kMemoryAllocationCommit,
-      xe::kMemoryProtectRead | xe::kMemoryProtectWrite);
-  if (!alloc_result) {
-    XELOGE("Unable to allocate XEX memory at {:08X}-{:08X}.", base_address_,
-           uncompressed_size);
+  uint8_t* buffer = ImageBuffer(total_size);
+  if (!buffer) {
     return 1;
   }
-
-  uint8_t* buffer = memory()->TranslateVirtual(base_address_);
-  std::memset(buffer, 0, total_size);  // Quickly zero the contents.
   uint8_t* d = buffer;
 
   uint32_t rk[4 * (MAXNR + 1)];
@@ -837,25 +862,13 @@ int XexModule::ReadImageCompressed(const void* xex_addr, size_t xex_length) {
     uint32_t uncompressed_size = image_size();
 
     // Allocate in-place the XEX memory.
-    bool alloc_result =
-        memory()
-            ->LookupHeap(base_address_)
-            ->AllocFixed(
-                base_address_, uncompressed_size, 4096,
-                xe::kMemoryAllocationReserve | xe::kMemoryAllocationCommit,
-                xe::kMemoryProtectRead | xe::kMemoryProtectWrite);
-
-    if (alloc_result) {
-      uint8_t* buffer = memory()->TranslateVirtual(base_address_);
-      std::memset(buffer, 0, uncompressed_size);
-
+    uint8_t* buffer = ImageBuffer(uncompressed_size);
+    if (buffer) {
       // Decompress into XEX base
       result_code = lzx_decompress(
           compress_buffer, d - compress_buffer, buffer, uncompressed_size,
           compression_info->normal.window_size, nullptr, 0);
     } else {
-      XELOGE("Unable to allocate XEX memory at {:08X}-{:08X}.", base_address_,
-             uncompressed_size);
       result_code = 3;
     }
   }

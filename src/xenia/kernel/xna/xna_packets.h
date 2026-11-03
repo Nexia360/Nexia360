@@ -147,6 +147,10 @@ class HlcbSink {
   virtual void EffectTexture(uint32_t effect, uint32_t parameter,
                              uint32_t texture) {}
   virtual void EffectTechnique(uint32_t effect, uint32_t technique) {}
+  // EffectApply at its place in the stream: the console's handler (RuntimeHost
+  // 0x8A1D9AF0) runs the D3DX pass here, so the pass's sampler_state lands over
+  // every SetSamplerState before it and under every one after.
+  virtual void EffectApplied(uint32_t effect, uint32_t pass) {}
   virtual void Draw(const HlcbDraw& draw) {}
   virtual void DrawSprites(const HlcbSprites& sprites) {}
   virtual void Other(HlcbPacketType type, uint32_t handle) {}

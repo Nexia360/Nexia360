@@ -44,7 +44,7 @@
 #include "xenia/ui/shaders/bytecode/vulkan_spirv/guest_output_bilinear_ps.h"
 #include "xenia/ui/shaders/bytecode/vulkan_spirv/guest_output_triangle_strip_rect_vs.h"
 
-DECLARE_bool(xna_direct_d3d12);
+DECLARE_int32(xna_direct_d3d12);
 
 namespace xe {
 namespace kernel {

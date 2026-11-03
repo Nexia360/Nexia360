@@ -7,6 +7,7 @@
  ******************************************************************************
  */
 
+#include "xenia/emulator.h"
 #include "xenia/kernel/smc.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_private.h"
@@ -56,11 +57,17 @@ void HalSendSMCMessage_entry(pointer_t<X_SMC_DATA> smc_message,
 DECLARE_XBOXKRNL_EXPORT3(HalSendSMCMessage, kNone, kStub, kImportant,
                          kHighFrequency);
 
+// 1 opens, 0 closes. dash.xex opens it for Eject (sub_923323C0, only with a
+// disc in) and for A on an empty tray tile (sub_92332408); opening is where
+// the emulator offers a disc image to put in.
 void HalOpenCloseODDTray_entry(dword_t open_close) {
-  kernel_state()->smc()->SetTrayState(open_close ? X_DVD_TRAY_STATE::OPEN
-                                                 : X_DVD_TRAY_STATE::CLOSED);
+  if (open_close) {
+    kernel_state()->emulator()->OpenDiscTray();
+  } else {
+    kernel_state()->emulator()->CloseDiscTray();
+  }
 }
-DECLARE_XBOXKRNL_EXPORT1(HalOpenCloseODDTray, kNone, kStub);
+DECLARE_XBOXKRNL_EXPORT1(HalOpenCloseODDTray, kNone, kImplemented);
 
 }  // namespace xboxkrnl
 }  // namespace kernel

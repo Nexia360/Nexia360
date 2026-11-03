@@ -878,7 +878,16 @@ void NexiaTransport::KeepaliveMain() {
 
 bool NexiaTransport::Start() {
   if (running_.load()) {
-    return true;
+    if (ready_.load()) {
+      return true;
+    }
+    // Running but not ready is a dead session. The writer and the pump both
+    // return when the relay drops them, and they are the only threads that
+    // move data - the keepalive goes on enqueueing registrations nobody ever
+    // sends. Reporting success here would hand back a transport that could
+    // never carry anything again, so tear it down and come up fresh.
+    XELOGW("NexiaTransport: rebuilding a link that is up but not ready");
+    Stop();
   }
 
   {

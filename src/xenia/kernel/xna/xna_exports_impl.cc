@@ -12,6 +12,7 @@
 // xna_exports_generated.cc.
 
 #include "xenia/kernel/xna/xna_avatar.h"
+#include "xenia/kernel/xna/xna_direct.h"
 #include "xenia/kernel/xna/xna_exports.h"
 #include "xenia/kernel/xna/xna_gpu.h"
 #include "xenia/kernel/xna/xna_host.h"
@@ -275,15 +276,32 @@ extern "C" uint32_t xna_D3D_D3D_QueryFormat(uint32_t adapter,
 // passed through ThrowExceptionFromResult, so anything but 0 becomes an
 // exception inside the title.
 
+// PresentationParameters.Settings: BackBufferWidth, BackBufferHeight,
+// BackBufferFormat, DepthStencilFormat, ... as sequential int32s. A
+// DepthStencilFormat of DepthFormat.None (0) means the back buffer has no depth
+// buffer at all.
+static void NoteBackBufferDepth(const void* settings) {
+  if (!settings) {
+    return;
+  }
+  const auto* fields = static_cast<const int32_t*>(settings);
+  // PROBE: the back buffer the title asked for, every field as given.
+  XELOGE("[xna] device settings: {} {} {} {} {} {} {} {}", fields[0], fields[1],
+         fields[2], fields[3], fields[4], fields[5], fields[6], fields[7]);
+  xe::kernel::xna::XnaDirectSetTargetHasDepth(0, fields[3] != 0);
+}
+
 extern "C" uint32_t xna_D3D_D3D_CreateDeviceHandle(uint32_t adapter,
                                                    void* settings,
                                                    uint32_t profile) {
+  NoteBackBufferDepth(settings);
   return xe::kernel::xna::kDeviceHandle;
 }
 
 extern "C" void xna_D3D_D3D_Device_ReleaseHandle(uint32_t device) {}
 
 extern "C" uint32_t xna_D3D_D3D_Device_Reset(uint32_t device, void* settings) {
+  NoteBackBufferDepth(settings);
   return 0;
 }
 
@@ -973,7 +991,7 @@ extern "C" uint32_t xna_Net_GamerServices_DispatchCommand_Entrypoint(
 
   if (command == kAvatarRendererBindPose) {
     std::vector<float> bones(size_t(kAvatarBoneCount) * 16);
-    xe::kernel::xna::XnaAvatarBindPose(bones.data());
+    xe::kernel::xna::XnaAvatarBindPose(word_at(8), bones.data());
     ReplyWriter avatar_reply{bytes + 4, bytes + 4 + kAvatarReplyCapacity};
     avatar_reply.Bytes(reinterpret_cast<const uint8_t*>(bones.data()),
                        bones.size() * sizeof(float));

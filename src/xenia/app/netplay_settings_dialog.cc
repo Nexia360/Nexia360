@@ -289,6 +289,14 @@ void NetplaySettingsDialog::OnDraw(ImGuiIO& io) {
       if (!nexiahub_transport_) {
         nexiahub_transport_ = true;
         xlive_api->SetNexiaHubTransport(true);
+      } else if (!xlive_api->transport()->is_ready() &&
+                 xlive_api->IsConnectedToServer()) {
+        // The cvar reads true from the moment it is written, whether or not
+        // anything is running to honour it, so asking the cvar was never going
+        // to notice that the transport had stopped. Ask the transport. Gated on
+        // the connection because StartTransport() needs it, and unguarded this
+        // would rewrite the cvar on every frame the hub is down.
+        xlive_api->SetNexiaHubTransport(true);
       }
     } else if (!xboxlive_mode && nexiahub_transport_) {
       // Neither Nexia Hub nor Xbox Live - nothing honours it, so clear it.

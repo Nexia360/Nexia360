@@ -10,6 +10,7 @@
 #ifndef XENIA_EMULATOR_H_
 #define XENIA_EMULATOR_H_
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -379,6 +380,24 @@ class Emulator {
   // Builds and runs the picker itself. UI thread only.
   const std::filesystem::path ShowDiscPicker(std::string window_message);
 
+  // The disc tray, as HalOpenCloseODDTray drives it. dash.xex opens the tray
+  // for Open Tray / Eject and for A on an empty tray tile; opening takes the
+  // disc out and offers a picker, and the chosen image goes in at
+  // \Device\Cdrom0 with the tray closed again, which is when the dashboard
+  // looks for a disc.
+  void OpenDiscTray();
+  void CloseDiscTray();
+  // Mounts an image at \Device\Cdrom0 without touching game: and D:, which
+  // belong to the running title (the dashboard).
+  bool InsertDisc(const std::filesystem::path& path);
+  // The disc put in through the tray, if any. title_id is read from its
+  // default.xex, 0 when that could not be read.
+  bool GetInsertedDisc(std::filesystem::path* path, uint32_t* title_id);
+  // The inserted disc's title image (the PNG its SPA carries as image 0x8000),
+  // when `title_id` is that disc's. The dashboard asks Live for its disc tile
+  // art; this is what answers it (xam_xhttp.cc).
+  bool GetInsertedDiscImage(uint32_t title_id, std::vector<uint8_t>* png);
+
   void WaitUntilExit();
 
  public:
@@ -467,6 +486,16 @@ class Emulator {
   std::unique_ptr<kernel::UPnP> upnp_;
   std::unique_ptr<kernel::util::TitleUpdateManager> title_update_manager_;
   std::unique_ptr<kernel::XLiveAPI> xbox_live_api_;
+
+  // Guest threads read these through XamLoaderGetMediaInfo while the UI
+  // thread's picker writes them.
+  std::mutex inserted_disc_mutex_;
+  std::filesystem::path inserted_disc_path_;
+  uint32_t inserted_disc_title_id_ = 0;
+  std::vector<uint8_t> inserted_disc_image_;
+  std::vector<uint8_t> ReadDiscTitleImage(vfs::Device* device,
+                                          uint32_t title_id);
+  std::atomic<bool> disc_picker_open_{false};
 
   bool paused_;
   bool restoring_;

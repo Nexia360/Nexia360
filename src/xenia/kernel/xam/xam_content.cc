@@ -10,10 +10,12 @@
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
 #include "xenia/base/string_util.h"
+#include "xenia/base/utf8.h"
 #include "xenia/emulator.h"
 #include "xenia/kernel/info/file.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/smc.h"
+#include "xenia/kernel/title_id_utils.h"
 #include "xenia/kernel/user_module.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xam/xam_content_device.h"
@@ -956,26 +958,46 @@ dword_result_t XamSwapDisc_entry(
 }
 DECLARE_XAM_EXPORT1(XamSwapDisc, kContent, kSketchy);
 
+// XAM's tray numbering is not the SMC's. dash.xex toggles an empty tray with
+// it (0x923324DC): 0-1 open the tray, 2-3 close it, 4 does nothing - so 0-1
+// are closed, 2 open, 3 opening, 4 closing. XAM's own tray-change handler
+// (0x816BB4D4) checks for media on 0, 1 and 4, which agrees. Passing the
+// SMC's OPEN (0) through made the dashboard open an open tray.
 dword_result_t XamLoaderGetDvdTrayState_entry() {
-  return static_cast<uint8_t>(kernel_state()->smc()->GetTrayState());
+  switch (kernel_state()->smc()->GetTrayState()) {
+    case X_DVD_TRAY_STATE::OPEN:
+      return 2;
+    case X_DVD_TRAY_STATE::OPENING:
+      return 3;
+    case X_DVD_TRAY_STATE::CLOSING:
+      return 4;
+    default:
+      return 0;
+  }
 }
 DECLARE_XAM_EXPORT1(XamLoaderGetDvdTrayState, kNone, kImplemented);
 
 void XamLoaderGetMediaInfoEx_entry(lpdword_t media_type, lpdword_t title_id,
                                    lpdword_t unk3) {
-  // Only report a disc when the running title actually booted from optical
-  // media. The dashboard's PollDisc (and titles) treat title_id as the disc
-  // identity: a non-zero, stable id means a disc is present, 0 means an empty
-  // tray. Keeping the two consistent avoids the "game disc present but id 0 =
-  // no disc" contradiction the old stub produced.
-  const bool has_disc =
+  // A disc is in when the running title booted from optical media, or when
+  // one was put in through the tray (Emulator::InsertDisc). The dashboard's
+  // PollDisc (and titles) treat title_id as the disc identity: a non-zero,
+  // stable id means a disc is present, 0 means an empty tray.
+  uint32_t disc_title_id = 0;
+  bool has_disc =
       kernel_state()->deployment_type_ == XDeploymentType::kOpticalDisc;
+  if (has_disc) {
+    disc_title_id = kernel_state()->title_id();
+  } else {
+    has_disc =
+        kernel_state()->emulator()->GetInsertedDisc(nullptr, &disc_title_id);
+  }
   if (media_type) {
     *media_type = has_disc ? X_DVD_DISC_STATE::XBOX_360_GAME_DISC
                            : X_DVD_DISC_STATE::NO_DISC;
   }
   if (title_id) {
-    *title_id = has_disc ? kernel_state()->title_id() : 0;
+    *title_id = has_disc ? disc_title_id : 0;
   }
   if (unk3) {
     *unk3 = 0;
@@ -1094,6 +1116,72 @@ dword_result_t xeXamContentLaunchImage(dword_t user_index,
   return X_ERROR_SUCCESS;
 }
 
+// XdfLaunchNewImageFromCache(image, launch_data, launch_data_size, flags):
+// start one of the dashboard's cached images with a launch blob. My Games
+// starts a community game with it - sub_9274AA48 in the 17559 dash.xex builds
+//
+//   +0x00  be32  0xCAFEBABE
+//   +0x04  char  XCONTENT_DATA.file_name (0x2A bytes, NUL at +0x2E)
+//   +0x30  be32  XCONTENT_DATA.device_id
+//
+// and sub_9274AA00 hands it over as ("xna_titlelauncher.xex", blob, 0x34, 0),
+// turning a failure into 0x80004002. That blob is exactly what
+// Emulator::LaunchXnaPackage gives the launcher, so the content it names is
+// launched as a package and takes that path: the package mounted, the
+// launcher booted from the Dashboard folder with the same blob.
+dword_result_t XdfLaunchNewImageFromCache_entry(lpstring_t image_ptr,
+                                                lpvoid_t data_ptr,
+                                                dword_t data_size,
+                                                dword_t flags) {
+  const std::string image = image_ptr ? image_ptr.value() : std::string();
+  // Copied now: the blob is on the caller's stack.
+  std::vector<uint8_t> data;
+  if (data_ptr && data_size) {
+    const uint8_t* bytes = data_ptr.as<const uint8_t*>();
+    data.assign(bytes, bytes + data_size);
+  }
+
+  if (xe::utf8::lower_ascii(image) == "xna_titlelauncher.xex" &&
+      data.size() >= 0x34 &&
+      xe::load_and_swap<uint32_t>(data.data()) == 0xCAFEBABE) {
+    const char* name = reinterpret_cast<const char*>(data.data() + 4);
+    XCONTENT_DATA_INTERNAL content_data{};
+    content_data.device_id = xe::load_and_swap<uint32_t>(data.data() + 0x30);
+    content_data.content_type = XContentType::kMarketplaceContent;
+    content_data.title_id = kXN_2002;
+    content_data.set_file_name(std::string(name, strnlen(name, 0x2A)));
+
+    const auto host_path =
+        kernel_state()->content_manager()->FindPackagePath(0, content_data);
+    std::error_code ec;
+    if (host_path.empty() || !std::filesystem::exists(host_path, ec) ||
+        !xna::IsXnaPackage(host_path, nullptr)) {
+      XELOGE("XdfLaunchNewImageFromCache('{}'): no XNA package for '{}'", image,
+             content_data.file_name());
+      return X_E_FAIL;
+    }
+
+    RecordLaunchOrigin();
+    auto xam = kernel_state()->GetKernelModule<XamModule>("xam.xex");
+    auto& loader_data = xam->loader_data();
+    loader_data.host_path = xe::path_to_utf8(host_path);
+    loader_data.launch_path.clear();
+    loader_data.command_line.clear();
+    xam->SaveLoaderData();
+    XELOGE("XdfLaunchNewImageFromCache('{}'): community game '{}' -> {}", image,
+           content_data.file_name(), loader_data.host_path);
+    ReloadForLaunch();
+    return X_E_SUCCESS;
+  }
+
+  XELOGE(
+      "XdfLaunchNewImageFromCache('{}', {} byte(s) of launch data, flags "
+      "{:08X}): not handled",
+      image, data.size(), flags.value());
+  return X_E_FAIL;
+}
+DECLARE_XAM_EXPORT1(XdfLaunchNewImageFromCache, kContent, kSketchy);
+
 dword_result_t XamContentLaunchImageFromFileInternal_entry(
     lpstring_t image_location, lpstring_t xex_name) {
   return xeXamContentLaunchImage(XUserIndexNone, image_location, nullptr, NULL,
@@ -1198,8 +1286,7 @@ dword_result_t XamContentGetMetaDataInternal_entry(
     metadata->category = data.category;
     metadata->online_creator = data.xuid;
     metadata->set_display_name(XLanguage::kEnglish, data.display_name());
-    metadata->set_title_name(
-        xe::load_and_swap<std::u16string>(data.title_name));
+    metadata->set_title_name(data.title_name());
 
     // The picture, from wherever this build keeps it: a container's own
     // header, a profile's gamerpic, or the sidecar written into content kept
@@ -1246,18 +1333,31 @@ dword_result_t XamContentGetAttributesInternal_entry(
   // not in the content tree (XNA library titles, profiles). Failing here
   // drops the tile, so a record with no package behind it answers with no
   // attributes rather than an error.
-  const auto package =
-      kernel_state()->content_manager()->OpenPackage(0, *content_data_ptr);
-  if (package) {
-    if (const auto file_info =
-            xe::filesystem::GetInfo(package->GetPackageHostPath());
-        file_info) {
+  std::filesystem::path host_path;
+  if (const auto package = kernel_state()->content_manager()->OpenPackage(
+          0, *content_data_ptr)) {
+    host_path = package->GetPackageHostPath();
+  } else {
+    // The cross-title enumerator reports an XNA library title under the
+    // game's own id, which the content tree knows nothing of.
+    const auto candidate =
+        kernel_state()->emulator()->storage_root() / "xna_library" /
+        xe::to_path(xe::string_util::trim(content_data_ptr->file_name()));
+    if (xna::IsXnaPackage(candidate, nullptr)) {
+      host_path = candidate;
+    }
+  }
+  uint64_t size = 0;
+  if (!host_path.empty()) {
+    if (const auto file_info = xe::filesystem::GetInfo(host_path); file_info) {
       info->ftCreationTime = file_info->create_timestamp;
       info->ftLastAccessTime = file_info->access_timestamp;
       info->ftLastWriteTime = file_info->write_timestamp;
-      info->nFileSizeHigh = file_info->total_size >> 32;
-      info->nFileSizeLow = file_info->total_size;
     }
+    // A directory's own entry has no size; the files under it do.
+    size = ContentManager::PackageSizeOnDisk(host_path);
+    info->nFileSizeHigh = uint32_t(size >> 32);
+    info->nFileSizeLow = uint32_t(size);
   }
 
   if (overlapped_ptr) {

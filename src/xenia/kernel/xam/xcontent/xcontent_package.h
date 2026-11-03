@@ -101,7 +101,6 @@ class ContentPackage {
 
   void ComputePackageLicenseMask();
 
- private:
   void InitializePackageHeader(const XCONTENT_DATA_INTERNAL& metadata,
                                const xex2_opt_execution_info* execution_info,
                                const SpaInfo* spa_info);

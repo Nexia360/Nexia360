@@ -112,6 +112,10 @@ DECLARE_XAM_EXPORT1(XamContentGetDeviceName, kContent, kImplemented);
 dword_result_t XamContentGetDeviceState_entry(dword_t device_id,
                                               lpunknown_t overlapped_ptr) {
   auto device_info = GetDummyDeviceInfo(device_id);
+  // Temporary: what Storage asks before a disc is in and after.
+  XELOGE("[storage] GetDeviceState({:08X}, overlapped {:08X}) -> {}",
+         device_id.value(), overlapped_ptr.guest_address(),
+         device_info ? "connected" : "not connected");
   if (device_info == nullptr) {
     if (overlapped_ptr) {
       kernel_state()->CompleteOverlappedImmediateEx(
@@ -147,6 +151,9 @@ static_assert_size(X_CONTENT_DEVICE_DATA, 0x50);
 dword_result_t XamContentGetDeviceData_entry(
     dword_t device_id, pointer_t<X_CONTENT_DEVICE_DATA> device_data) {
   auto device_info = GetDummyDeviceInfo(device_id);
+  // Temporary: what Storage asks before a disc is in and after.
+  XELOGE("[storage] GetDeviceData({:08X}) -> {}", device_id.value(),
+         device_info ? "connected" : "not connected");
   if (device_info == nullptr) {
     return X_ERROR_DEVICE_NOT_CONNECTED;
   }
@@ -258,6 +265,13 @@ dword_result_t XamContentCreateDeviceEnumerator_entry(dword_t content_type,
           xe::countof(device_data->name_chars));
     }
   }
+
+  // Temporary: what Storage asks before a disc is in and after.
+  XELOGE(
+      "[storage] CreateDeviceEnumerator(type {:08X}, flags {:08X}, max {}) -> "
+      "{} device(s)",
+      content_type.value(), content_flags.value(), max_count.value(),
+      e->item_count());
 
   *handle_out = e->handle();
   return X_ERROR_SUCCESS;

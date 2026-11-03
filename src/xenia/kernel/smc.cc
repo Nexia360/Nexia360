@@ -16,7 +16,7 @@ namespace xe {
 namespace kernel {
 
 SystemManagementController::SystemManagementController()
-    : dvd_tray_state_(X_DVD_TRAY_STATE::OPEN) {
+    : dvd_tray_state_(X_DVD_TRAY_STATE::CLOSED) {
   auto registerQuery =
       [&](X_SMC_CMD command,
           void (SystemManagementController::*fn)(X_SMC_DATA*, X_SMC_DATA*)) {

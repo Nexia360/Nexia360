@@ -792,6 +792,8 @@ bool ProfileManager::DeleteProfile(const uint64_t xuid) {
   }
 
   std::error_code ec;
+  XELOGE("[vfs-delete] DeleteProfile {:016X} -> {}", xuid,
+         xe::path_to_utf8(GetProfileContentPath(xuid)));
   std::filesystem::remove_all(GetProfileContentPath(xuid), ec);
   if (ec) {
     XELOGE("Cannot remove profile: {}", ec.message());

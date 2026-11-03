@@ -179,6 +179,24 @@ struct XnaGpuDraw {
   uint32_t alpha_dst = 1;
   uint32_t alpha_op = 0;
   uint32_t color_write[4] = {0xF, 0xF, 0xF, 0xF};
+  // GraphicsDevice.BlendFactor as XNA packs a Color (R in the low byte), and
+  // MultiSampleMask. Binding a BlendState sets both from its Settings; the
+  // device setters change them afterwards through high-frequency packets.
+  uint32_t blend_factor = 0xFFFFFFFF;
+  uint32_t multisample_mask = 0xFFFFFFFF;
+  // The title's RasterizerState. cull_mode is XNA CullMode (0 None, 1
+  // CullClockwiseFace, 2 CullCounterClockwiseFace - the XNA default), fill_mode
+  // XNA FillMode (0 Solid, 1 WireFrame). depth_bias is in depth-buffer units,
+  // as D3D9 adds it.
+  uint32_t cull_mode = 2;
+  uint32_t fill_mode = 0;
+  float depth_bias = 0.0f;
+  float slope_scale_depth_bias = 0.0f;
+  bool scissor_enable = false;
+  int32_t scissor_x = 0;
+  int32_t scissor_y = 0;
+  int32_t scissor_width = 0;
+  int32_t scissor_height = 0;
   uint32_t target_addresses[4] = {};
   int32_t viewport_x = 0;
   int32_t viewport_y = 0;
@@ -189,6 +207,13 @@ struct XnaGpuDraw {
   void* vertex_shader = nullptr;
   void* pixel_shader = nullptr;
 };
+
+// The texture fetch constant a bound texture describes, as the console would
+// hold it: format, size, dimension, mip range, filtering and swizzle. A
+// translated shader reads these at run time, so every path that draws a
+// texture needs the same answer.
+gpu::xenos::xe_gpu_texture_fetch_t XnaGpuTextureFetchFor(
+    const XnaGpuTextureBinding& binding);
 
 // Puts the guest register state a draw needs where the command processor
 // expects it, then issues the draw through the same path a guest title uses.

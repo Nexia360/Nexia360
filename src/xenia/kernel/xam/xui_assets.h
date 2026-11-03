@@ -58,6 +58,17 @@ bool ExtractFlashModule(const std::filesystem::path& image,
                         const std::string& pe_name,
                         const std::filesystem::path& out_file);
 
+// Every file the NAND's own directory names - the modules, their .xexp2
+// patches, crl/dae/secdata and the rest - written into out_dir under its name
+// on the chip, read through the chip's block map so a fragmented file (xam)
+// comes out whole. A module already in out_dir, plain or as $flash_<name>,
+// with a newer version is kept. Extensions in skip_extensions (".xtt") are
+// not written. ok is false when no filesystem root could be found, and
+// package_count is the number of files written.
+AssetInstallReport ExtractFlashFiles(
+    const std::filesystem::path& image, const std::filesystem::path& out_dir,
+    const std::vector<std::string>& skip_extensions);
+
 // The Avatar Editor's UI is not in flash - it ships in the system update the
 // XNA setup already downloads and unpacks. Pulls the XUI packages out of the
 // module XEXs found under `directory` (they are unencrypted, so the same

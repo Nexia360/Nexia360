@@ -118,8 +118,7 @@ static void AppendProfileItems(ContentEnumerator* e) {
     const std::string gamertag = account.GetGamertagString();
     item.set_display_name(xe::to_utf16(gamertag));
     item.set_file_name(fmt::format("{:016X}", xuid));
-    xe::string_util::copy_and_swap_truncating(
-        item.title_name, xe::to_utf16(gamertag), xe::countof(item.title_name));
+    item.set_title_name(xe::to_utf16(gamertag));
 
     // What Storage shows as the profile's size.
     std::error_code ec;
@@ -143,7 +142,17 @@ static void AppendProfileItems(ContentEnumerator* e) {
 // Every package in the XNA library, as a content record the dashboard can
 // show and launch. The file name is the package's own, which is what
 // XamContentLaunchImage resolves back to a path.
-static void AppendXnaLibraryItems(ContentEnumerator* e) {
+//
+// It is reported as what it is on a console: kMarketplaceContent of the Indie
+// Player, 584E07D2. The 17559 dashboard's library sorts records by that pair
+// (sub_922BE5A0): type 2 under 584E07D2 is a community game and goes in the
+// community list, unless its display name is "XNA Creators Club Game
+// Launcher", which is the player itself (sub_922C79C0 sets bit 4 at
+// record+0x25F4). Reported as kArcadeTitle it took the arcade branch, keyed by
+// title id, and My Games said "No games found" with Arcadecraft installed.
+static void AppendXnaLibraryItems(
+    ContentEnumerator* e,
+    std::set<std::tuple<uint64_t, uint32_t, uint32_t, std::string>>* seen) {
   const auto library =
       kernel_state()->emulator()->storage_root() / "xna_library";
   std::error_code ec;
@@ -161,10 +170,18 @@ static void AppendXnaLibraryItems(ContentEnumerator* e) {
       continue;
     }
 
+    // Already reported out of the content tree.
+    const std::string file_name = xe::path_to_utf8(entry.path().filename());
+    if (!seen->emplace(uint64_t(0), kXN_2002,
+                       uint32_t(XContentType::kMarketplaceContent), file_name)
+             .second) {
+      continue;
+    }
+
     XCONTENT_DATA_INTERNAL item{};
     item.device_id = static_cast<uint32_t>(DummyDeviceId::HDD);
-    item.content_type = XContentType::kArcadeTitle;
-    item.title_id = info.title_id;
+    item.content_type = XContentType::kMarketplaceContent;
+    item.title_id = kXN_2002;
     item.xuid = 0;
     item.license_mask = 0xFFFFFFFF;
 
@@ -176,12 +193,13 @@ static void AppendXnaLibraryItems(ContentEnumerator* e) {
       name = name.substr(0, dot);
     }
     item.set_display_name(xe::to_utf16(name));
-    item.set_file_name(xe::path_to_utf8(entry.path().filename()));
-    xe::string_util::copy_and_swap_truncating(
-        item.title_name, xe::to_utf16(name), xe::countof(item.title_name));
+    item.set_file_name(file_name);
+    item.set_title_name(xe::to_utf16(name));
+    item.content_size = ContentManager::PackageSizeOnDisk(entry.path());
 
-    XELOGD("  xna item title {:08X} '{}' file '{}'", item.title_id.get(), name,
-           item.file_name());
+    XELOGE("  xna item title {:08X} '{}' file '{}' {} bytes",
+           item.title_id.get(), name, item.file_name(),
+           item.content_size.get());
     e->AppendItem(item);
   }
 }
@@ -305,41 +323,38 @@ dword_result_t XamContentAggregateCreateEnumerator_entry(qword_t xuid,
             item.content_size = metadata->content_size;
           }
         }
+        // Still nothing - a directory Nexia extracted or wrote has no size in
+        // its header - so Storage is told what it takes on disk.
+        if (!item.content_size) {
+          item.content_size = ContentManager::PackageSizeOnDisk(package_path);
+        }
 
         // An XBLIG ships as kMarketplaceContent owned by the XNA Indie Player
-        // (0x584E07D2) - on a console it is that app, not the dashboard, which
-        // launches it. We have no Indie Player, so the dashboard sees DLC in
-        // My Games, has nothing to launch it with, and drops the tile.
-        // Reporting it as an arcade title is what makes it launchable, and
-        // Nexia hosts it directly.
-        if (item.content_type == XContentType::kMarketplaceContent &&
-            xna::IsXnaPackage(package_path, nullptr)) {
-          item.content_type = XContentType::kArcadeTitle;
-        }
+        // (0x584E07D2) and stays that: it is the pair the dashboard's library
+        // files a community game under - see AppendXnaLibraryItems.
 
         // Temporary: one line per item, so the exact record the dashboard is
         // handed is visible. Retire once My Games is settled.
         XELOGE(
             "  item title {:08X} type {:08X} device {:08X} license {:08X} "
-            "cat {:08X} '{}' file '{}'",
+            "cat {:08X} '{}' file '{}' {} bytes",
             item.title_id.get(), uint32_t(item.content_type.get()),
             item.device_id.get(), item.license_mask.get(), item.category.get(),
-            xe::to_utf8(item.display_name()), item.file_name());
+            xe::to_utf8(item.display_name()), item.file_name(),
+            item.content_size.get());
 
         e->AppendItem(item);
       }
     }
 
-    // XNA titles live in their own library, not the content tree - they are
-    // games, not content belonging to a title - so nothing above finds them.
-    // They are reported as arcade titles because that is what the dashboard
-    // will offer to launch; the package itself says kMarketplaceContent, which
-    // is true of an XBLIG on a console and useless to us without the Indie
-    // Player to launch it.
-    if (!title_id && (content_type_enum == XContentType::kInvalid ||
-                      content_type_enum == XContentType::kArcadeTitle ||
-                      content_type.value() == 0xFFFFFFFF)) {
-      AppendXnaLibraryItems(e.get());
+    // XNA titles live in their own library, not the content tree, so nothing
+    // above finds them. They are the Indie Player's marketplace content, which
+    // is what a query for that type, or for every type, asks for.
+    if ((!title_id || title_id == kXN_2002) &&
+        (content_type_enum == XContentType::kInvalid ||
+         content_type_enum == XContentType::kMarketplaceContent ||
+         content_type.value() == 0xFFFFFFFF)) {
+      AppendXnaLibraryItems(e.get(), &seen);
     }
 
     if (content_type_enum == XContentType::kProfile ||

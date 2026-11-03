@@ -37,6 +37,20 @@ void XnaDirectClearStencil(const XnaGpuTarget& target, uint32_t value);
 
 void XnaDirectPresent();
 
+// Records the next whole frame step by step into xna_capture\<n>: the target
+// after every clear and draw, and the back buffer at present.
+void XnaDirectCaptureNextFrame();
+
+// True while a captured frame is being recorded, so the steps that feed a draw
+// can say everything they did for exactly that frame.
+bool XnaDirectCapturing();
+
+// Whether the title created this surface with a depth buffer: a render target
+// by its guest address, or the back buffer as 0. One created with
+// DepthFormat.None has nothing to test against, so its draws run as if depth
+// were off whatever DepthStencilState is bound.
+void XnaDirectSetTargetHasDepth(uint32_t guest_address, bool has_depth);
+
 bool XnaDirectReadBackBuffer(uint8_t* out, uint32_t bytes);
 
 gpu::Shader* XnaDirectLoadShader(gpu::xenos::ShaderType type,

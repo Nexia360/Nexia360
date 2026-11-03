@@ -118,6 +118,9 @@ void XConfig::SetDefaults() {
       XBLAllowed | XBLMembershipCreationAllowed;
   xconfig_data_.user.parental_control_game = NoGameRestrictions;
   xconfig_data_.user.music_volume = 0.7f;
+  // Auto-Play off: a disc put in through the tray is mounted and waits for A
+  // on its dashboard tile instead of starting by itself.
+  xconfig_data_.console.media_disable_auto_launch = 1;
 
   const auto& tz = kTimezones[0x19];
 

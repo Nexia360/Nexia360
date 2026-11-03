@@ -18,12 +18,15 @@
 
 #include <curl/curl.h>
 
+#include "third_party/stb/stb_image.h"
+#include "third_party/stb/stb_image_write.h"
 #include "xenia/base/assert.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/memory.h"
 #include "xenia/base/string_util.h"
 #include "xenia/base/utf8.h"
 #include "xenia/cpu/processor.h"
+#include "xenia/emulator.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xam/xam_private.h"
@@ -271,6 +274,74 @@ std::string BuildUrl(XHttpHandle* request) {
   return url;
 }
 
+// The disc in the tray's art. The moment a disc goes in, the dashboard asks
+// Live's tile service - GameImageAssetUriRoot, pointed at the hub in
+// xam_info.cc - for <root>/<title id>/<locale>/discintray.jpg. Nothing online
+// has art for a disc image off the user's drive, so the disc's own title image
+// answers it, encoded as the JPEG the name asks for.
+bool AnswerDiscInTray(XHttpHandle* request, const std::string& verb,
+                      const std::string& url) {
+  if (verb != "GET") {
+    return false;
+  }
+  std::string lowered = xe::utf8::lower_ascii(url);
+  lowered = lowered.substr(0, lowered.find('?'));
+  constexpr std::string_view kImages = "/images/";
+  constexpr std::string_view kName = "/discintray.jpg";
+  const size_t images = lowered.find(kImages);
+  if (images == std::string::npos || !lowered.ends_with(kName)) {
+    return false;
+  }
+  const std::string title_hex = lowered.substr(images + kImages.size(), 8);
+  char* end = nullptr;
+  const uint32_t title_id =
+      static_cast<uint32_t>(std::strtoul(title_hex.c_str(), &end, 16));
+  if (title_hex.size() != 8 || end != title_hex.c_str() + 8) {
+    return false;
+  }
+  Emulator* emulator = kernel_state()->emulator();
+  std::vector<uint8_t> png;
+  if (!emulator || !emulator->GetInsertedDiscImage(title_id, &png)) {
+    return false;
+  }
+
+  int width = 0;
+  int height = 0;
+  int channels = 0;
+  uint8_t* pixels = stbi_load_from_memory(
+      png.data(), static_cast<int>(png.size()), &width, &height, &channels, 3);
+  if (!pixels) {
+    return false;
+  }
+  std::vector<uint8_t> jpeg;
+  stbi_write_jpg_to_func(
+      [](void* context, void* data, int size) {
+        auto* out = static_cast<std::vector<uint8_t>*>(context);
+        const auto* bytes = static_cast<const uint8_t*>(data);
+        out->insert(out->end(), bytes, bytes + size);
+      },
+      &jpeg, width, height, 3, pixels, 90);
+  stbi_image_free(pixels);
+  if (jpeg.empty()) {
+    return false;
+  }
+
+  request->raw_headers = fmt::format(
+      "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n",
+      jpeg.size());
+  request->status_text = "OK";
+  request->status_code = 200;
+  request->response_body = std::move(jpeg);
+  request->read_pos = 0;
+  request->auth_schemes = 0;
+  request->received = true;
+  XELOGI(
+      "XHttp: {} {} -> answered from the disc's title image ({}x{}, {} "
+      "bytes)",
+      verb, url, width, height, request->response_body.size());
+  return true;
+}
+
 bool Perform(XHttpHandle* request) {
   auto* manager = XHttpManager::Get();
   auto* session = manager->SessionOf(request);
@@ -279,6 +350,11 @@ bool Perform(XHttpHandle* request) {
   if (url.empty()) {
     XThread::SetLastError(XHTTP_ERROR_INCORRECT_HANDLE_STATE);
     return false;
+  }
+
+  if (AnswerDiscInTray(request, request->verb.empty() ? "GET" : request->verb,
+                       url)) {
+    return true;
   }
 
   CURL* curl = curl_easy_init();

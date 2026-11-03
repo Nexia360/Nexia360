@@ -36,6 +36,16 @@ struct XnaDependency {
 // The directory every hosted title resolves shared assemblies from.
 std::filesystem::path XnaOverlayPath();
 
+// Runtime\v4.0 of the XNA Indie Player's title update (584E07D2), as the
+// dashboard installs it into the library: the active update first, then any
+// other that carries one. Empty when none is installed.
+std::filesystem::path FindIndiePlayerRuntime();
+
+// Copies the console assemblies (MXF*.dlx and the Compact Framework .dlx)
+// out of that update into xna\console, where the host loads them from. This
+// is how a user's install gets them - nothing ships them.
+void SyncConsoleRuntimeFromTitleUpdate();
+
 std::vector<XnaDependency> CheckXnaDependencies();
 
 // True when nothing required is missing.

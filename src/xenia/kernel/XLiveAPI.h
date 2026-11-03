@@ -139,14 +139,19 @@ class XLiveAPI {
 
   void SetNetworkMode(uint32_t mode) const;
 
-  bool SelectNetworkMode(uint32_t mode);
+  // `persist` false leaves the saved config alone, for a mode change the
+  // emulator makes on its own rather than the user making. A heartbeat that
+  // missed once used to write Systemlink into the config file, so the mode
+  // did not survive a network blip and the next launch came up somewhere the
+  // transport checkbox is not even offered.
+  bool SelectNetworkMode(uint32_t mode, bool persist = true);
 
   void SetLogging(bool state) const;
 
   void SetBindInterface(bool state) const;
 
   void SetNexiaHubTransport(bool state);
-  void SetNexiaHubTransportTcpFallback(bool state) const;
+  void SetNexiaHubTransportTcpFallback(bool state);
 
   // Brings up the Nexia Hub Transport relay. No-op unless
   // nexiahub_transport is enabled.
@@ -693,6 +698,9 @@ class XLiveAPI {
   void StopQoSWorker();
 
   std::future<sockaddr_in> whoami_result_;
+  // Set while a whoami is outstanding, so a mode that cannot finish asks for
+  // the public IP once instead of on every attempt.
+  std::atomic<bool> whoami_requested_{false};
 
   // ---- Message notification loop ----------------------------------------
   // One thread, sleeping on a condition variable so a shutdown or a manual

@@ -370,7 +370,7 @@ bool HlcbDecoder::Walk(const uint8_t* data, uint32_t size, HlcbSink* sink) {
           // length * multiplier there, so one rule covers the whole family.
           const uint32_t element = EffectValueElementSize(type);
           if (element == UINT32_MAX) {
-            XELOGW(
+            XELOGE(
                 "[xna] HLCB {} ({}) has no size rule yet - stopping the walk "
                 "at byte {} of {}",
                 TypeName(type), type, offset, size);
@@ -413,35 +413,14 @@ bool HlcbDecoder::Walk(const uint8_t* data, uint32_t size, HlcbSink* sink) {
     offset += packet_size;
   }
 
-  // WHAT THE TITLE IS ACTUALLY ASKING FOR. A screen that stays black while the
-  // loop keeps running is either a title drawing nothing or a title drawing
-  // through a path that is counted and discarded - and those need completely
-  // different work. Reported for the first few buffers that carry a draw of any
-  // kind, because the buffers before the first draw say nothing useful.
+  // WHAT THE TITLE IS ACTUALLY ASKING FOR, every buffer.
   {
-    static std::atomic<uint32_t> reported{0};
-    bool has_draw = false;
+    std::string mix;
     for (const auto& pair : seen) {
-      switch (static_cast<HlcbPacketType>(pair.first)) {
-        case HlcbPacketType::kDrawPrimitives:
-        case HlcbPacketType::kDrawIndexedPrimitives:
-        case HlcbPacketType::kDrawUserPrimitives:
-        case HlcbPacketType::kDrawUserIndexedPrimitives:
-        case HlcbPacketType::kDrawInstancedPrimitives:
-        case HlcbPacketType::kDrawSprites:
-          has_draw = true;
-          break;
-        default:
-          break;
-      }
+      mix += fmt::format(" {}x{}({})", pair.second, TypeName(pair.first),
+                         pair.first);
     }
-    if (has_draw && reported.fetch_add(1) < 4) {
-      std::string mix;
-      for (const auto& pair : seen) {
-        mix += fmt::format(" {}x{}", pair.second, TypeName(pair.first));
-      }
-      XELOGI("[xna] packet mix in {} byte(s):{}", size, mix);
-    }
+    XELOGD("[xna] packet mix in {} byte(s):{}", size, mix);
   }
   return true;
 }
@@ -512,6 +491,11 @@ void HlcbDecoder::Dispatch(HlcbPacketType type, uint32_t handle,
       break;
     case HlcbPacketType::kEffectSetTechnique:
       sink->EffectTechnique(handle, ReadWord(body, 4));
+      break;
+    // The header carries the effect; the next dword is the pass, as the
+    // console's handler reads it (field_4, passed to BeginPass).
+    case HlcbPacketType::kEffectApply:
+      sink->EffectApplied(handle, ReadWord(body, 4));
       break;
     case HlcbPacketType::kSetIndexBuffer:
       sink->SetIndexBuffer(handle);

@@ -27,6 +27,8 @@
 #include "xenia/emulator.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/shim_utils.h"
+#include "xenia/kernel/xam/xcontent/xcontent_package_container.h"
+#include "xenia/kernel/xna/xna_console_natives.h"
 #include "xenia/kernel/xna/xna_dependencies.h"
 #include "xenia/kernel/xna/xna_host.h"
 #include "xenia/kernel/xna/xna_runtime_install.h"
@@ -221,21 +223,55 @@ constexpr uint32_t kXnaIndiePlayerTitleId = 0x584E07D2;
 // binary would otherwise need a packer before it could be run at all. The two
 // are interchangeable from here on - both are a vfs::Device rooted at \XNA,
 // and everything below asks the device rather than the file.
-std::unique_ptr<vfs::Device> OpenPackage(const std::filesystem::path& path) {
+//
+// A container's device reads through the package's mapped file, so the
+// package is kept beside it and outlives it: the device is declared last, is
+// destroyed first, and is dropped first when another package replaces it.
+struct OpenedPackage {
+  std::unique_ptr<xam::ContentPackageContainer> container;
+  std::unique_ptr<vfs::Device> device;
+
+  OpenedPackage() = default;
+  OpenedPackage(OpenedPackage&&) = default;
+  OpenedPackage& operator=(OpenedPackage&& other) noexcept {
+    device.reset();
+    container = std::move(other.container);
+    device = std::move(other.device);
+    return *this;
+  }
+
+  explicit operator bool() const { return device != nullptr; }
+  vfs::Device* get() const { return device.get(); }
+  // The content header, for a container; a directory has none.
+  const xam::XContentContainerHeader* header() const {
+    return container ? container->GetContainerHeader() : nullptr;
+  }
+};
+
+OpenedPackage OpenPackage(const std::filesystem::path& path) {
+  OpenedPackage opened;
   std::error_code ec;
   if (std::filesystem::is_directory(path, ec)) {
     auto device = std::make_unique<vfs::HostPathDevice>("\\XNA", path,
                                                         /*read_only=*/true);
-    if (!device->Initialize()) {
-      return nullptr;
+    if (device->Initialize()) {
+      opened.device = std::move(device);
     }
-    return device;
+    return opened;
   }
 
   {
-    auto device = std::make_unique<vfs::StfsContainerDevice>("\\XNA", path);
-    if (device->Initialize()) {
-      return device;
+    // Never registered with the file system, so it needs none.
+    auto* state = kernel_state();
+    auto container = std::make_unique<xam::ContentPackageContainer>(
+        state ? state->file_system() : nullptr, "\\XNA", path);
+    if (container->IsValidPackage()) {
+      auto device = container->MountPackage();
+      if (device && device->Initialize()) {
+        opened.container = std::move(container);
+        opened.device = std::move(device);
+        return opened;
+      }
     }
   }
 
@@ -255,13 +291,12 @@ std::unique_ptr<vfs::Device> OpenPackage(const std::filesystem::path& path) {
     if (!parent.empty() && std::filesystem::is_directory(parent, ec)) {
       auto device = std::make_unique<vfs::HostPathDevice>("\\XNA", parent,
                                                           /*read_only=*/true);
-      if (!device->Initialize()) {
-        return nullptr;
+      if (device->Initialize()) {
+        opened.device = std::move(device);
       }
-      return device;
     }
   }
-  return nullptr;
+  return opened;
 }
 
 // ResolvePath is public on Device but protected on XContentContainerDevice, so
@@ -278,7 +313,7 @@ vfs::Entry* ResolveInPackage(vfs::Device* device, const std::string_view path) {
 // been serving a three day old tree. The container is the authority, so it is
 // mounted and every file the title opens is answered from it.
 std::mutex mounted_mutex;
-std::unique_ptr<vfs::Device> mounted_package;
+OpenedPackage mounted_package;
 std::string mounted_root;
 std::vector<uint8_t> mounted_icon;
 
@@ -521,10 +556,11 @@ bool IsXnaPackage(const std::filesystem::path& path, XnaPackageInfo* out_info) {
     // The cast is not decoration: title_id is a big endian store, and letting
     // the conditional pick a common type between that and a plain uint32_t is
     // ambiguous.
-    auto* container = dynamic_cast<vfs::StfsContainerDevice*>(device.get());
+    const auto* header = device.header();
     out_info->title_id =
-        container ? static_cast<uint32_t>(container->content_header().title_id)
-                  : kXnaIndiePlayerTitleId;
+        header ? static_cast<uint32_t>(
+                     header->content_metadata.execution_info.title_id)
+               : kXnaIndiePlayerTitleId;
   }
   return true;
 }
@@ -557,9 +593,7 @@ bool LaunchXnaPackage(const std::filesystem::path& path) {
     }
     mounted_root = info.root_directory;
     mounted_icon.clear();
-    auto* container =
-        dynamic_cast<vfs::StfsContainerDevice*>(mounted_package.get());
-    const auto* header = container ? container->GetContainerHeader() : nullptr;
+    const auto* header = mounted_package.header();
     if (header) {
       const auto& metadata = header->content_metadata;
       const uint32_t title_size =
@@ -597,6 +631,8 @@ bool LaunchXnaPackage(const std::filesystem::path& path) {
     return false;
   }
 
+  SyncConsoleRuntimeFromTitleUpdate();
+
   // Say what is actually missing here, where the whole list is known - a
   // hostfxr failure three layers down names one file and explains nothing.
   if (!XnaDependenciesSatisfied()) {
@@ -606,6 +642,10 @@ bool LaunchXnaPackage(const std::filesystem::path& path) {
   }
 
   const auto bootstrap = XnaOverlayPath() / "Nexia.Xna.Host.dll";
+
+  // The console's own natives, before the title's first P/Invoke can reach
+  // for them. Without them the entry points answer from Nexia's own code.
+  XnaConsoleNatives::Instance().Load();
 
   auto& host = XnaHost::Instance();
   if (!host.Start(bootstrap, xe::to_path(game_path))) {

@@ -329,7 +329,7 @@ void XLiveAPI::SetNetworkMode(uint32_t mode) const {
   OVERRIDE_int32(network_mode, mode);
 }
 
-bool XLiveAPI::SelectNetworkMode(uint32_t mode) {
+bool XLiveAPI::SelectNetworkMode(uint32_t mode, bool persist) {
   if (!kernel_state()->is_title_open()) {
     return true;
   }
@@ -337,7 +337,11 @@ bool XLiveAPI::SelectNetworkMode(uint32_t mode) {
   // Take the user's choice now. RefreshNetworkMode reads this, and the online
   // modes finish asynchronously (StartWhoamiAsync), so leaving it unset made
   // the call report failure and the UI revert the selection.
-  OVERRIDE_int32(network_mode, mode);
+  if (persist) {
+    OVERRIDE_int32(network_mode, mode);
+  } else {
+    cvars::network_mode = mode;
+  }
 
   if (mode == NETWORK_MODE::OFFLINE) {
     cvars::network_mode = mode;
@@ -401,8 +405,15 @@ void XLiveAPI::SetNexiaHubTransport(bool state) {
   }
 }
 
-void XLiveAPI::SetNexiaHubTransportTcpFallback(bool state) const {
+void XLiveAPI::SetNexiaHubTransportTcpFallback(bool state) {
   OVERRIDE_bool(nexiahub_transport_tcp_fallback, state);
+  // Which link to use is decided once, inside Start(), so changing this while
+  // a transport was running only edited a cvar nothing would read again. The
+  // dialog offers the checkbox as though it took effect now, so make it so.
+  if (cvars::nexiahub_transport && transport_.is_ready()) {
+    transport_.Stop();
+    StartTransport();
+  }
 }
 
 std::string XLiveAPI::GetApiAddress() {
@@ -580,8 +591,15 @@ NETWORK_MODE XLiveAPI::RefreshNetworkMode(bool lan_limit) {
 
   // Using future so we don't block this function. This prevents blocking the
   // games thread during network initialization.
-  if (whoami_result_.valid()) {
+  //
+  // The flag says a whoami is outstanding. It also keeps this to one get()
+  // per future: valid() stays true after get(), and a second get() on the
+  // same shared state is undefined.
+  if (whoami_requested_.load() && whoami_result_.valid()) {
     online_ip_ = whoami_result_.get();
+    // Cleared even when the answer came back empty, so a hub that was briefly
+    // away is asked again rather than never asked a second time.
+    whoami_requested_.store(false);
   }
 
   // On the transport the real public IP is not used for anything: the relay
@@ -604,6 +622,20 @@ NETWORK_MODE XLiveAPI::RefreshNetworkMode(bool lan_limit) {
     connected = Heartbeat();
   } else {
     connected = online_ip_.sin_addr.s_addr != 0;
+    // Nexia: the public IP comes from an async whoami that only starts when a
+    // profile is already signed in as the window initialises
+    // (emulator_window.cc). Sign in later, or launch before that check ran,
+    // and the future was never created at all - which read as "no server"
+    // and dropped the mode to Systemlink for good, because the retry in
+    // user_tracker re-selects whatever is in cvars::network_mode and this
+    // function had just overwritten it. A question never asked is not a hub
+    // that is down: ask it and leave the mode as the user set it, so the next
+    // attempt - from the dialog, or from maintenance when the backend is seen
+    // as newly reachable - still has something to restore.
+    if (!connected && !whoami_requested_.load()) {
+      StartWhoamiAsync();
+      return static_cast<NETWORK_MODE>(cvars::network_mode);
+    }
   }
 
   if (connected) {
@@ -611,6 +643,13 @@ NETWORK_MODE XLiveAPI::RefreshNetworkMode(bool lan_limit) {
     // Nexia: (re)negotiate hub capabilities whenever a mode reaches Success -
     // SelectNetworkMode can get here without going through Init().
     ProbeServerCapabilities();
+    // Nexia: the relay needs the same treatment. StartTransport() was only
+    // ever reached from Init(), which runs once per process and gives up if
+    // the hub is not answering yet - leaving a transport cvar reading true
+    // with nothing behind it, in a mode whose checkbox is locked. It stays a
+    // no-op until a profile is signed in, since the XUID is the transport's
+    // identity, and a no-op when the link is already up.
+    StartTransport();
   } else {
     initialized_ = InitState::Failed;
   }
@@ -1112,6 +1151,7 @@ std::vector<HTTPResponseObjectJSON> XLiveAPI::GetMulti(
 }
 
 void XLiveAPI::StartWhoamiAsync() {
+  whoami_requested_.store(true);
   whoami_result_ = std::async(std::launch::async, &XLiveAPI::Getwhoami, this);
 }
 
@@ -1132,14 +1172,14 @@ sockaddr_in XLiveAPI::Getwhoami() {
   XELOGI("Requesting Public IP");
 
   if (doc.HasParseError() || !doc.IsObject()) {
-    XELOGD("Getwhoami: malformed response");
+    XELOGW("Getwhoami: malformed response");
     return addr;
   }
 
   const auto address = doc.FindMember("address");
 
   if (address == doc.MemberEnd() || !address->value.IsString()) {
-    XELOGD("Getwhoami: no usable address in response");
+    XELOGW("Getwhoami: no usable address in response");
     return addr;
   }
 

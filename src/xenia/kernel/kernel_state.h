@@ -260,7 +260,14 @@ class KernelState {
 
   object_ref<XThread> LaunchModule(object_ref<UserModule> module);
   object_ref<UserModule> GetExecutableModule();
-  void SetExecutableModule(object_ref<UserModule> module);
+  // `start_dispatch_thread` false leaves the deferred dispatch worker alone,
+  // for a module adopted while its own DllMain has yet to run.
+  void SetExecutableModule(object_ref<UserModule> module,
+                           bool start_dispatch_thread = true);
+  // TLS slots for the title process when its executable declares none
+  // (SetExecutableModule takes them from XEX_HEADER_TLS_INFO, without which
+  // the process has no slots and every KeTlsAlloc fails).
+  void SetTitleProcessTlsSlots(uint32_t slot_count);
   object_ref<UserModule> LoadUserModule(const std::string_view name,
                                         bool call_entry = true);
   object_ref<UserModule> LoadUserModuleFromMemory(const std::string_view name,

@@ -97,6 +97,9 @@ struct EffectShaderInfo {
 // nameless table is a null reference at the first property set.
 struct EffectParameterInfo {
   std::string name;
+  // The HLSL semantic, empty when the parameter has none. Titles that bind by
+  // GetParameterBySemantic find nothing without it.
+  std::string semantic;
   uint32_t type = 0;             // D3DXPARAMETER_TYPE
   uint32_t parameter_class = 0;  // D3DXPARAMETER_CLASS
   uint32_t rows = 0;
@@ -132,8 +135,23 @@ struct EffectNamedShader {
   uint32_t element = 0;
 };
 
+// One state assignment as the 360 D3DX effect stores it. The operation is an
+// index into D3DX's state table (RuntimeHost 0x8A04C52C, 0x87 entries):
+// 0x00-0x59 render states, 0x5C/0x5D the shaders, 0x6E-0x82 sampler states
+// (0x6E TEXTURE, 0x6F ADDRESSU, 0x70 ADDRESSV, 0x71 ADDRESSW, 0x73 MAGFILTER,
+// 0x74 MINFILTER, 0x75 MIPFILTER, 0x78 MAXANISOTROPY, ...). The value is what
+// the console's D3D writes, already in Xenos terms: address WRAP 0 MIRROR 1
+// CLAMP 2, filter POINT 0 LINEAR 1 NONE 2 ANISOTROPIC 4.
+struct EffectStateAssignment {
+  uint32_t operation = 0;
+  uint32_t value = 0;
+};
+
 struct EffectPassInfo {
   std::string name;
+  // The render states the pass assigns (operations below 0x5A). BeginPass sets
+  // these on the device along with the shaders.
+  std::vector<EffectStateAssignment> render_states;
   bool has_vertex_shader = false;
   bool has_pixel_shader = false;
   // The OBJECT IDS the pass binds, read from the record its state points at -
@@ -179,6 +197,14 @@ struct EffectImage {
   // Empty when the tables could not be walked, in which case only the scanned
   // candidates above are known.
   std::vector<EffectParameterInfo> parameters;
+  // Sampler parameter name -> the texture parameter its sampler_state names
+  // (`sampler S = sampler_state { Texture = <T>; }`). This is the only real
+  // link between the two; their names need not share anything.
+  std::map<std::string, std::string> sampler_textures;
+  // Sampler parameter name -> the sampler states its sampler_state assigns
+  // (operations 0x6F-0x82). CEffect::ApplySamplerAssignments writes these into
+  // the sampler at Apply, over whatever the device's SamplerState set.
+  std::map<std::string, std::vector<EffectStateAssignment>> sampler_states;
   std::vector<EffectObjectInfo> objects;
   std::vector<EffectNamedShader> vertex_shader_table;
   std::vector<EffectNamedShader> pixel_shader_table;

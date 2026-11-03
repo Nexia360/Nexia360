@@ -742,46 +742,8 @@ void IssueOnGpuThread(const XnaGpuDraw& draw,
       processor->HostedTextureFetchWritten(slot);
       continue;
     }
-    xenos::xe_gpu_texture_fetch_t texture = {};
-    texture.type = xenos::FetchConstantType::kTexture;
-    texture.format = XnaGpuTextureFormatFor(binding.format);
-    texture.tiled = binding.tiled ? 1 : 0;
-    texture.endianness =
-        XnaGpuTextureEndianFor(XnaGpuTextureFormatFor(binding.format));
-    // PHYSICAL, not the guest virtual address. The texture cache turns this
-    // straight back into a shared memory range - `RequestRange(base_page << 12,
-    // ...)` - and shared memory only covers the 512 MB of physical space. A
-    // virtual address like FEBE8000 shifts to a page far outside it, the
-    // request fails, and LoadTextureDataFromResidentMemory just `continue`s:
-    // no texture, no error, and no "Loaded" line to notice the absence by.
-    texture.base_address =
-        memory->GetPhysicalAddress(binding.guest_address) >> 12;
-    texture.pitch = (binding.width + 31) >> 5;
-    texture.dimension = xenos::DataDimension::k2DOrStacked;
-    texture.size_2d.width = binding.width - 1;
-    texture.size_2d.height = binding.height - 1;
-    texture.size_2d.stack_depth = 0;
-    // The title's own SamplerState, when it bound one to this slot: wrap vs
-    // clamp and point vs linear. A world texture that tiles was being clamped
-    // to one stretched edge before this. Falls back to clamp + point, which is
-    // what a 0..1 sprite wants and what this used unconditionally before.
-    if (binding.sampler_set) {
-      texture.clamp_x = static_cast<xenos::ClampMode>(binding.address_u);
-      texture.clamp_y = static_cast<xenos::ClampMode>(binding.address_v);
-      texture.clamp_z = static_cast<xenos::ClampMode>(binding.address_v);
-      texture.mag_filter =
-          static_cast<xenos::TextureFilter>(binding.mag_filter);
-      texture.min_filter =
-          static_cast<xenos::TextureFilter>(binding.min_filter);
-      texture.mip_filter =
-          static_cast<xenos::TextureFilter>(binding.mip_filter);
-      texture.aniso_filter = static_cast<xenos::AnisoFilter>(binding.aniso);
-    } else {
-      texture.clamp_x = xenos::ClampMode::kClampToEdge;
-      texture.clamp_y = xenos::ClampMode::kClampToEdge;
-      texture.clamp_z = xenos::ClampMode::kClampToEdge;
-    }
-    texture.swizzle = xenos::XE_GPU_TEXTURE_SWIZZLE_RGBA;
+    const xenos::xe_gpu_texture_fetch_t texture =
+        XnaGpuTextureFetchFor(binding);
     for (uint32_t i = 0; i < 6; ++i) {
       Set(regs, XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + slot * 6 + i,
           reinterpret_cast<const uint32_t*>(&texture)[i]);
@@ -1094,6 +1056,59 @@ void IssueOnGpuThread(const XnaGpuDraw& draw,
 // formats this title's content actually arrives in are mapped; anything else
 // falls back to 8_8_8_8 rather than fetching through a format that means
 // something different.
+xenos::xe_gpu_texture_fetch_t XnaGpuTextureFetchFor(
+    const XnaGpuTextureBinding& binding) {
+  xenos::xe_gpu_texture_fetch_t texture = {};
+  texture.type = xenos::FetchConstantType::kTexture;
+  texture.format = XnaGpuTextureFormatFor(binding.format);
+  texture.tiled = binding.tiled ? 1 : 0;
+  texture.endianness =
+      XnaGpuTextureEndianFor(XnaGpuTextureFormatFor(binding.format));
+  // PHYSICAL, not the guest virtual address. The texture cache turns this
+  // straight back into a shared memory range - `RequestRange(base_page << 12,
+  // ...)` - and shared memory only covers the 512 MB of physical space. A
+  // virtual address like FEBE8000 shifts to a page far outside it, the request
+  // fails, and LoadTextureDataFromResidentMemory just `continue`s: no texture,
+  // no error, and no "Loaded" line to notice the absence by.
+  auto* memory = kernel_state() ? kernel_state()->memory() : nullptr;
+  texture.base_address =
+      memory ? memory->GetPhysicalAddress(binding.guest_address) >> 12 : 0;
+  texture.pitch = (binding.width + 31) >> 5;
+  // The DIMENSION the fetch constant states is what a tfetchCube is checked
+  // against; a cube described as 2D samples one face as a flat image.
+  // XNA texture types: 0 Texture2D, 1 Texture3D, 2 TextureCube.
+  texture.dimension = binding.type == 2   ? xenos::DataDimension::kCube
+                      : binding.type == 1 ? xenos::DataDimension::k3D
+                                          : xenos::DataDimension::k2DOrStacked;
+  texture.size_2d.width = binding.width - 1;
+  texture.size_2d.height = binding.height - 1;
+  texture.size_2d.stack_depth = binding.type == 2 ? 5 : 0;
+  // The whole mip chain the title created. Left at zero, a shader that clamps
+  // its level to the fetch constant's range samples the base level only.
+  const uint32_t levels = std::max<uint32_t>(binding.levels, 1);
+  texture.mip_min_level = 0;
+  texture.mip_max_level = std::min<uint32_t>(levels - 1, 15);
+  // The title's own SamplerState, when it bound one to this slot: wrap vs
+  // clamp and point vs linear. A world texture that tiles was being clamped to
+  // one stretched edge before this. Falls back to clamp + point, which is what
+  // a 0..1 sprite wants and what this used unconditionally before.
+  if (binding.sampler_set) {
+    texture.clamp_x = static_cast<xenos::ClampMode>(binding.address_u);
+    texture.clamp_y = static_cast<xenos::ClampMode>(binding.address_v);
+    texture.clamp_z = static_cast<xenos::ClampMode>(binding.address_v);
+    texture.mag_filter = static_cast<xenos::TextureFilter>(binding.mag_filter);
+    texture.min_filter = static_cast<xenos::TextureFilter>(binding.min_filter);
+    texture.mip_filter = static_cast<xenos::TextureFilter>(binding.mip_filter);
+    texture.aniso_filter = static_cast<xenos::AnisoFilter>(binding.aniso);
+  } else {
+    texture.clamp_x = xenos::ClampMode::kClampToEdge;
+    texture.clamp_y = xenos::ClampMode::kClampToEdge;
+    texture.clamp_z = xenos::ClampMode::kClampToEdge;
+  }
+  texture.swizzle = xenos::XE_GPU_TEXTURE_SWIZZLE_RGBA;
+  return texture;
+}
+
 xenos::TextureFormat XnaGpuTextureFormatFor(uint32_t xna_surface_format) {
   switch (xna_surface_format) {
     case 0:

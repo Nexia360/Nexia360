@@ -1078,6 +1078,15 @@ std::optional<UserSetting> UserTracker::GetGpdSetting(
     }
   }
 
+  // A title-specific setting (0x63E83FFF/FFE/FFD) has the same id in every
+  // title, so the dashboard's GPD holding one is the DASHBOARD's own data.
+  // Falling back to it handed Gears of War the dashboard's profile blob, which
+  // it parsed as its own and died on a garbage length. Not stored for this
+  // title means not found, and the default (empty) is the right answer.
+  if (title_id != kDashboardID && UserSetting::is_title_specific(setting_id)) {
+    return std::nullopt;
+  }
+
   auto setting = user->dashboard_gpd_.GetSetting(setting_id);
   if (setting) {
     return std::make_optional<UserSetting>(
@@ -1877,7 +1886,13 @@ void UserTracker::PeriodicMaintenance(uint64_t xuid, size_t iteration_count) {
         const NETWORK_MODE current_mode =
             static_cast<NETWORK_MODE>(cvars::network_mode);
 
-        if (xbox_live_api->SelectNetworkMode(NETWORK_MODE::LAN)) {
+        // Not persisted: this is our downgrade, not the user's choice. Saving
+        // it meant one missed heartbeat replaced their mode in the config
+        // file, and the next launch started in Systemlink - where the
+        // transport checkbox is unavailable, so the only way back looked like
+        // having to change mode by hand.
+        if (xbox_live_api->SelectNetworkMode(NETWORK_MODE::LAN,
+                                             /*persist=*/false)) {
           const std::string service = service_name(current_mode);
 
           if (current_mode >= NETWORK_MODE::XBOXLIVE) {

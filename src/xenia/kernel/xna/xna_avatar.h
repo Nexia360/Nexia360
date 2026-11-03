@@ -97,7 +97,9 @@ void XnaAvatarDraw(uint32_t handle, const float* world, const float* view,
                    const float* projection, const float* light_color,
                    const float* light_direction, const float* ambient,
                    const uint32_t* expression, const float* bones);
-void XnaAvatarBindPose(float* out);
+// The 71 bind-pose matrices for a renderer's avatar, as RuntimeHost computes
+// them for AvatarRenderer.BindPose.
+void XnaAvatarBindPose(uint32_t renderer_handle, float* out);
 XnaAvatarDescriptionBytes XnaAvatarDescriptionForGamer(uint32_t gamer);
 XnaAvatarDescriptionBytes XnaAvatarDescriptionForXuid(uint64_t xuid);
 XnaAvatarDescriptionBytes XnaAvatarRandomDescription(int32_t wire_body);

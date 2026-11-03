@@ -33,16 +33,19 @@
 #include "xenia/base/platform.h"
 #include "xenia/base/string.h"
 #include "xenia/base/system.h"
+#include "xenia/base/utf8.h"
 #include "xenia/cpu/backend/code_cache.h"
 #include "xenia/cpu/backend/null_backend.h"
 #include "xenia/cpu/cpu_flags.h"
 #include "xenia/cpu/thread_state.h"
+#include "xenia/cpu/xex_module.h"
 #include "xenia/gpu/command_processor.h"
 #include "xenia/gpu/graphics_system.h"
 #include "xenia/hid/input_driver.h"
 #include "xenia/hid/input_system.h"
 #include "xenia/kernel/XLiveAPI.h"
 #include "xenia/kernel/kernel_state.h"
+#include "xenia/kernel/smc.h"
 #include "xenia/kernel/title_id_utils.h"
 #include "xenia/kernel/user_module.h"
 #include "xenia/kernel/xam/achievement_manager.h"
@@ -52,6 +55,7 @@
 #include "xenia/kernel/xbdm/xbdm_module.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_module.h"
 #include "xenia/kernel/xna/xna_bridge.h"
+#include "xenia/kernel/xna/xna_console_natives.h"
 #include "xenia/kernel/xna/xna_host.h"
 #include "xenia/kernel/xna/xna_launcher.h"
 #include "xenia/kernel/xthread.h"
@@ -68,6 +72,7 @@
 #include "xenia/vfs/devices/host_path_device.h"
 #include "xenia/vfs/devices/null_device.h"
 #include "xenia/vfs/devices/xcontent_container_device.h"
+#include "xenia/vfs/file.h"
 #include "xenia/vfs/virtual_file_system.h"
 
 #if XE_ARCH_AMD64
@@ -415,6 +420,8 @@ X_STATUS Emulator::TerminateTitle(bool clear_handles) {
   // Background translation reads the title's code and installs into its
   // dynamic module, both of which teardown frees. FlushCode resumes it.
   processor()->PauseBackgroundTranslation();
+  // A hosted title's RuntimeHost goes with the user modules below.
+  kernel::xna::XnaConsoleNatives::Instance().Reset();
   XELOGI("TerminateTitle: audio clients");
   if (audio_system()) {
     audio_system()->UnregisterAllClients();
@@ -1875,6 +1882,209 @@ const std::filesystem::path Emulator::ShowDiscPicker(
     }
   }
   return path;
+}
+
+static constexpr std::string_view kDiscDevicePath = "\\Device\\Cdrom0";
+
+// The title id in the disc's default.xex header, 0 when it has none.
+static uint32_t ReadDiscTitleId(vfs::Device* device) {
+  vfs::Entry* entry = device->ResolvePath("default.xex");
+  if (!entry) {
+    return 0;
+  }
+  vfs::File* file = nullptr;
+  if (entry->Open(vfs::FileAccess::kFileReadData, &file) != X_STATUS_SUCCESS ||
+      !file) {
+    return 0;
+  }
+  uint32_t title_id = 0;
+  std::vector<uint8_t> header(sizeof(xex2_header));
+  size_t read = 0;
+  if (XSUCCEEDED(file->ReadSync(header, 0, &read)) && read == header.size() &&
+      reinterpret_cast<const xex2_header*>(header.data())->magic ==
+          xe::cpu::kXEX2Signature) {
+    const uint32_t header_size =
+        reinterpret_cast<const xex2_header*>(header.data())->header_size;
+    if (header_size >= sizeof(xex2_header) && header_size <= 0x100000) {
+      header.resize(header_size);
+      if (XSUCCEEDED(file->ReadSync(header, 0, &read)) &&
+          read == header.size()) {
+        xex2_opt_execution_info* exec = nullptr;
+        if (cpu::XexModule::GetOptHeader(
+                reinterpret_cast<const xex2_header*>(header.data()),
+                XEX_HEADER_EXECUTION_INFO, &exec) &&
+            exec) {
+          title_id = exec->title_id;
+        }
+      }
+    }
+  }
+  file->Destroy();
+  return title_id;
+}
+
+// The title image a disc's default.xex carries: image 0x8000 of the SPA it
+// keeps as a resource named after its title id. Resources live inside the
+// encrypted, compressed image, so the image is decoded - into a host buffer,
+// never guest memory: a game's 0x82000000 is the same host bytes as the
+// dashboard's 0x92000000, and decoding it there crashed the dashboard.
+std::vector<uint8_t> Emulator::ReadDiscTitleImage(vfs::Device* device,
+                                                  uint32_t title_id) {
+  std::vector<uint8_t> image;
+  if (!title_id) {
+    return image;
+  }
+  vfs::Entry* entry = device->ResolvePath("default.xex");
+  vfs::File* file = nullptr;
+  if (!entry ||
+      entry->Open(vfs::FileAccess::kFileReadData, &file) != X_STATUS_SUCCESS ||
+      !file) {
+    return image;
+  }
+  std::vector<uint8_t> xex(static_cast<size_t>(entry->size()));
+  size_t read = 0;
+  const bool read_ok = XSUCCEEDED(file->ReadSync(xex, 0, &read)) &&
+                       read == xex.size() && read >= sizeof(xex2_header);
+  file->Destroy();
+  if (!read_ok) {
+    return image;
+  }
+  const auto* header = reinterpret_cast<const xex2_header*>(xex.data());
+  if (header->magic != xe::cpu::kXEX2Signature) {
+    return image;
+  }
+
+  cpu::XexModule module(processor_.get(), kernel_state_.get());
+  std::vector<uint8_t> decoded;
+  if (!module.LoadImageToHost(xex.data(), xex.size(), &decoded)) {
+    XELOGE("Disc tray: {:08X}'s default.xex could not be decoded", title_id);
+    return image;
+  }
+  const uint32_t base = module.base_address();
+  xex2_opt_resource_info* resources = nullptr;
+  const std::string name = fmt::format("{:08X}", title_id);
+  if (module.GetOptHeader(XEX_HEADER_RESOURCE_INFO, &resources) && resources) {
+    const uint32_t count = (resources->size - 4) / sizeof(xex2_resource);
+    for (uint32_t i = 0; i < count; ++i) {
+      const auto& resource = resources->resources[i];
+      if (!utf8::equal_z(name, std::string_view(resource.name, 8))) {
+        continue;
+      }
+      // Resource addresses are guest addresses inside the image.
+      const uint32_t offset = resource.address - base;
+      if (resource.address < base || offset > decoded.size() ||
+          resource.size > decoded.size() - offset) {
+        break;
+      }
+      std::vector<uint8_t> spa(decoded.begin() + offset,
+                               decoded.begin() + offset + resource.size);
+      const kernel::xam::SpaInfo info(spa);
+      const auto icon = info.title_icon();
+      image.assign(icon.begin(), icon.end());
+      break;
+    }
+  }
+  XELOGI("Disc tray: {:08X} title image {} byte(s)", title_id, image.size());
+  return image;
+}
+
+bool Emulator::GetInsertedDiscImage(uint32_t title_id,
+                                    std::vector<uint8_t>* png) {
+  std::lock_guard<std::mutex> lock(inserted_disc_mutex_);
+  if (inserted_disc_path_.empty() || inserted_disc_title_id_ != title_id ||
+      inserted_disc_image_.empty()) {
+    return false;
+  }
+  *png = inserted_disc_image_;
+  return true;
+}
+
+void Emulator::OpenDiscTray() {
+  auto* smc = kernel_state_->smc();
+  // A title that booted from a disc runs off \Device\Cdrom0, and taking the
+  // disc out would pull its files from under it. Its tray only changes state.
+  if (kernel_state_->deployment_type_ == XDeploymentType::kOpticalDisc) {
+    smc->SetTrayState(X_DVD_TRAY_STATE::OPEN);
+    return;
+  }
+
+  bool had_disc = false;
+  {
+    std::lock_guard<std::mutex> lock(inserted_disc_mutex_);
+    had_disc = !inserted_disc_path_.empty();
+    inserted_disc_path_.clear();
+    inserted_disc_title_id_ = 0;
+    inserted_disc_image_.clear();
+  }
+  if (had_disc) {
+    file_system_->UnregisterDevice(kDiscDevicePath);
+    XELOGI("Disc tray: disc ejected");
+  }
+  smc->SetTrayState(X_DVD_TRAY_STATE::OPEN);
+
+  ui::Window* window = display_window();
+  if (!window || disc_picker_open_.exchange(true)) {
+    return;
+  }
+  // Not synchronous: the guest thread that opened the tray is the
+  // dashboard's, and it has to keep running while the picker is up.
+  window->app_context().CallInUIThread([this]() {
+    const std::filesystem::path path = ShowDiscPicker("Insert a disc");
+    disc_picker_open_ = false;
+    // Cancelled: the tray stays open and empty, as it would on a console.
+    if (!path.empty()) {
+      InsertDisc(path);
+    }
+  });
+}
+
+void Emulator::CloseDiscTray() {
+  kernel_state_->smc()->SetTrayState(X_DVD_TRAY_STATE::CLOSED);
+}
+
+bool Emulator::InsertDisc(const std::filesystem::path& path) {
+  // Not MountPath: that re-points game: and D: at what it mounts, and the
+  // dashboard runs from game:.
+  auto device = CreateVfsDevice(path, kDiscDevicePath);
+  if (!device || !device->Initialize()) {
+    XELOGE("Disc tray: {} is not a disc image this can mount",
+           xe::path_to_utf8(path));
+    return false;
+  }
+  const uint32_t title_id = ReadDiscTitleId(device.get());
+  std::vector<uint8_t> title_image = ReadDiscTitleImage(device.get(), title_id);
+  file_system_->UnregisterDevice(kDiscDevicePath);
+  if (!file_system_->RegisterDevice(std::move(device))) {
+    XELOGE("Disc tray: could not register {} at {}", xe::path_to_utf8(path),
+           kDiscDevicePath);
+    return false;
+  }
+  {
+    std::lock_guard<std::mutex> lock(inserted_disc_mutex_);
+    inserted_disc_path_ = path;
+    inserted_disc_title_id_ = title_id;
+    inserted_disc_image_ = std::move(title_image);
+  }
+  XELOGI("Disc tray: inserted {} (title {:08X})", xe::path_to_utf8(path),
+         title_id);
+  // Closing is what makes the dashboard look for a disc.
+  kernel_state_->smc()->SetTrayState(X_DVD_TRAY_STATE::CLOSED);
+  return true;
+}
+
+bool Emulator::GetInsertedDisc(std::filesystem::path* path,
+                               uint32_t* title_id) {
+  std::lock_guard<std::mutex> lock(inserted_disc_mutex_);
+  if (inserted_disc_path_.empty()) {
+    return false;
+  }
+  if (path) {
+    *path = inserted_disc_path_;
+  }
+  if (title_id) {
+    *title_id = inserted_disc_title_id_;
+  }
+  return true;
 }
 
 #if XE_PLATFORM_WIN32 == 1

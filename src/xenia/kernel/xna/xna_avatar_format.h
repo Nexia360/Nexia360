@@ -14,11 +14,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <random>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace xe {
@@ -361,6 +363,8 @@ bool WriteAnimationObject(const std::vector<uint8_t>& stream, bool mirror,
 class Catalog {
  public:
   bool Load(const std::filesystem::path& path);
+  // The same, from the file's bytes - the pack read out of its package.
+  bool Load(std::vector<uint8_t> data);
   bool loaded() const { return !entries_.empty(); }
   const std::vector<Entry>& entries() const { return entries_; }
   const Entry* Find(uint32_t index) const;
@@ -403,7 +407,14 @@ int32_t HeadFeatureForUsage(uint32_t usage);
 int32_t FindAnimation(const Catalog& catalog, const uint8_t* asset_id);
 
 std::filesystem::path CatalogPath(const std::filesystem::path& content_root);
-Catalog* SharedCatalog(const std::filesystem::path& content_root);
+// Reads one file out of an XContent package on disk.
+using PackageReader =
+    std::function<bool(const std::filesystem::path& package,
+                       std::string_view name, std::vector<uint8_t>* out)>;
+// `read_package` is how the pack is read when it was installed as a package
+// rather than unpacked - the form a fresh install leaves.
+Catalog* SharedCatalog(const std::filesystem::path& content_root,
+                       const PackageReader& read_package = {});
 
 bool IsHatVariant(const Entry& entry);
 std::vector<uint32_t> ItemsForSlot(const Catalog& catalog, uint32_t slot,

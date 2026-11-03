@@ -59,6 +59,13 @@ class ContentPackageDirectory final : public ContentPackage {
   size_t GetPackageSize() const override;
   X_RESULT Flush() override;
 
+  // For content whose header is missing or unusable - a save from a build that
+  // kept none. Builds the header a console would have written when the title
+  // created it (the title's icon as its thumbnail) and saves it.
+  X_RESULT RebuildHeader(const XCONTENT_DATA_INTERNAL& metadata,
+                         const xex2_opt_execution_info* execution_info,
+                         const SpaInfo* spa_info);
+
  private:
   X_RESULT ReadContentHeaderFile();
   X_RESULT WriteContentHeaderFile() const;

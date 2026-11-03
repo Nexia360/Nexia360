@@ -52,10 +52,6 @@ extern "C" {
 #endif
 }  // extern "C"
 
-// Defined in audio_system.cc and not declared in any header; the queue depth
-// the guest is held to is the one a hosted title should respect too.
-DECLARE_uint32(apu_max_queued_frames);
-
 namespace xe {
 namespace kernel {
 namespace xna {
@@ -594,12 +590,10 @@ bool EnsureDriver() {
   // before the driver had retired a single one. XAudio2's ring is exactly 64
   // frames deep, so the 65th submission overwrites a buffer that is still
   // queued for playback, and its own BuffersQueued assert is the boundary being
-  // crossed. The audio system clamps the guest to apu_max_queued_frames for
-  // this reason; the same clamp applies here.
-  const uint32_t queued_frames =
-      std::clamp(cvars::apu_max_queued_frames,
-                 static_cast<uint32_t>(apu::AudioSystem::kMinimumQueuedFrames),
-                 static_cast<uint32_t>(apu::AudioSystem::kMaximumQueuedFrames));
+  // crossed. The audio system used to clamp guests to apu_max_queued_frames
+  // (default 8) for this reason; it paces its own clients now, and nothing
+  // paces this one, so it keeps that depth itself.
+  constexpr uint32_t queued_frames = 8;
   driver_semaphore =
       xe::threading::Semaphore::Create(queued_frames, queued_frames);
   if (!driver_semaphore) {

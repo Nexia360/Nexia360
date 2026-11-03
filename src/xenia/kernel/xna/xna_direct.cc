@@ -10,22 +10,30 @@
 #include "xenia/kernel/xna/xna_direct.h"
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
+#include <cmath>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
+#include "third_party/stb/stb_image_write.h"
 #include "xenia/base/cvar.h"
+#include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
 #include "xenia/base/memory.h"
 #include "xenia/base/string_buffer.h"
 #include "xenia/base/xxhash.h"
 #include "xenia/emulator.h"
+#include "xenia/gpu/d3d12/d3d12_command_processor.h"
 #include "xenia/gpu/dxbc_shader.h"
 #include "xenia/gpu/dxbc_shader_translator.h"
 #include "xenia/gpu/graphics_system.h"
@@ -35,6 +43,7 @@
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xna/xna_direct_vulkan.h"
 #include "xenia/kernel/xna/xna_exports.h"
+#include "xenia/kernel/xna/xna_gpu.h"
 #include "xenia/kernel/xna/xna_present.h"
 #include "xenia/kernel/xna/xna_runtimehost.h"
 #include "xenia/memory.h"
@@ -48,10 +57,12 @@
 #include "xenia/kernel/xna/shaders/xna_sprite_vs.h"
 #include "xenia/kernel/xna/xna_avatar.h"
 
-DEFINE_bool(xna_direct_d3d12, true,
-            "Draw a hosted XNA title straight to D3D12 instead of through the "
-            "Xenos register, EDRAM and resolve path.",
-            "XNA");
+DEFINE_int32(xna_direct_d3d12, 1,
+             "How a hosted XNA title is drawn. 0: through the Xenos register, "
+             "EDRAM and resolve path. 1: straight to D3D12. 2: straight to "
+             "D3D12, with each draw's texture fetch constants and sampler "
+             "states built by the GPU emulation's own code.",
+             "XNA");
 
 namespace xe {
 namespace kernel {
@@ -126,6 +137,11 @@ struct PipelineKey {
   uint32_t depth_function;
   uint32_t stencil[7];
   uint32_t topology_type;
+  uint32_t cull_mode;
+  uint32_t fill_mode;
+  int32_t depth_bias;
+  float slope_scale_depth_bias;
+  uint32_t sample_mask;
   bool operator<(const PipelineKey& other) const {
     return std::memcmp(this, &other, sizeof(*this)) < 0;
   }
@@ -171,6 +187,11 @@ struct State {
   uint32_t dsv_next = 0;
 
   std::unordered_map<uint32_t, Target> targets;
+  // Target keys the title created with DepthFormat.None. Its own lock, taken
+  // last and never around another: the setter is called with resource_mutex
+  // held, and a draw holds `mutex` while it reads.
+  std::mutex depthless_mutex;
+  std::unordered_set<uint32_t> depthless_targets;
   std::unordered_map<uint32_t, HostTexture> textures;
   std::unordered_map<uint64_t, std::unique_ptr<DxbcShader>> shaders;
   std::map<PipelineKey, ComPtr<ID3D12PipelineState>> pipelines;
@@ -193,6 +214,52 @@ struct State {
 };
 
 State s;
+
+// xna_direct_d3d12 = 2: the direct path, with the per-draw state the GPU
+// emulation already knows how to build taken from it instead of re-derived
+// here.
+bool Hybrid() { return cvars::xna_direct_d3d12 == 2; }
+
+xe::gpu::d3d12::D3D12CommandProcessor* HostedProcessor() {
+  auto* state = kernel_state();
+  auto* emulator = state ? state->emulator() : nullptr;
+  auto* graphics = emulator ? emulator->graphics_system() : nullptr;
+  return graphics ? dynamic_cast<xe::gpu::d3d12::D3D12CommandProcessor*>(
+                        graphics->command_processor())
+                  : nullptr;
+}
+
+// The texture cache whose sampler decisions a hybrid draw uses, or null when
+// the draw is not hybrid.
+const xe::gpu::d3d12::D3D12TextureCache* HybridTextureCache() {
+  if (!Hybrid()) {
+    return nullptr;
+  }
+  auto* processor = HostedProcessor();
+  return processor ? processor->hosted_texture_cache() : nullptr;
+}
+
+// A sampler key with this bit set holds the texture cache's own
+// SamplerParameters::value in its low 32 bits.
+constexpr uint64_t kTextureCacheSamplerKey = uint64_t(1) << 63;
+
+// FRAME CAPTURE ON SHIFT+F12. The frame after the press is recorded step by
+// step: the target each clear and draw wrote is read back and saved as a PNG,
+// and the back buffer at present, into xna_capture\<n> beside the executable.
+// The file names carry the step, which matches the "[xna] capture step" lines
+// in the log, so the first image that shows the fault names its draw. While
+// capturing, each draw also logs its constants and what every sampler the
+// shaders declare resolved to.
+std::atomic<bool> capture_armed{false};
+bool capture_active = false;
+uint32_t capture_index = 0;
+uint32_t capture_step = 0;
+std::filesystem::path capture_directory;
+// Textures a captured draw sampled, written once per capture after the draw
+// that first used them: what the GPU was actually given, read back from the
+// host resource, so a wrong conversion shows as a wrong picture.
+std::vector<uint32_t> capture_pending_textures;
+std::unordered_set<uint32_t> capture_dumped_textures;
 
 D3D12_CPU_DESCRIPTOR_HANDLE ViewCpu(uint32_t index) {
   D3D12_CPU_DESCRIPTOR_HANDLE handle =
@@ -376,6 +443,20 @@ DXGI_FORMAT TextureFormatFor(uint32_t surface_format) {
 }
 
 DXGI_FORMAT TargetFormatFor(uint32_t surface_format) {
+  // HYBRID: the host format the GPU emulation gives this guest surface format,
+  // from its own render target cache - not a table of ours.
+  if (Hybrid()) {
+    auto* processor = HostedProcessor();
+    const auto* cache =
+        processor ? processor->hosted_render_target_cache() : nullptr;
+    if (cache) {
+      const DXGI_FORMAT format = cache->GetColorDrawDXGIFormat(
+          xenos::ColorRenderTargetFormat(XnaGpuColorFormatFor(surface_format)));
+      if (format != DXGI_FORMAT_UNKNOWN) {
+        return format;
+      }
+    }
+  }
   switch (surface_format) {
     case 9:
       return DXGI_FORMAT_R10G10B10A2_UNORM;
@@ -465,6 +546,16 @@ Target* EnsureTarget(uint32_t key, uint32_t width, uint32_t height,
       return nullptr;
     }
   }
+
+  // PROBE: the destination surface - the format the title asked for and the
+  // host format it became.
+  XELOGE(
+      "[xna] direct: target {:08X} {}x{} surface format {} (xenos colour "
+      "format {}) -> DXGI {}{}",
+      key, width, height, surface_format, XnaGpuColorFormatFor(surface_format),
+      uint32_t(format),
+      !key ? " (back buffer, fixed)"
+           : (Hybrid() ? " (render target cache)" : " (direct table)"));
 
   D3D12_RESOURCE_DESC desc = {};
   desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
@@ -669,6 +760,77 @@ uint32_t EnsureTexture(const XnaGpuTextureBinding& binding) {
   return texture.srv;
 }
 
+// PROBE: a 4x4 single-mip cube, every texel (64, 128, 192), standing in for
+// CastleMiner's sky cubes. A flat sky means the speckle comes from our cube
+// texture's path to the shader; a speckled one clears the texture of it.
+ComPtr<ID3D12Resource> probe_cube;
+uint32_t probe_cube_srv = UINT32_MAX;
+
+uint32_t ProbeSolidCube() {
+  if (probe_cube_srv != UINT32_MAX) {
+    return probe_cube_srv;
+  }
+  D3D12_RESOURCE_DESC desc = {};
+  desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+  desc.Width = 4;
+  desc.Height = 4;
+  desc.DepthOrArraySize = 6;
+  desc.MipLevels = 1;
+  desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+  desc.SampleDesc.Count = 1;
+  D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprints[6];
+  UINT rows[6];
+  UINT64 row_bytes[6];
+  UINT64 total = 0;
+  s.device->GetCopyableFootprints(&desc, 0, 6, 0, footprints, rows, row_bytes,
+                                  &total);
+  if (!EnsureRoom(total + D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT, 0, 0)) {
+    return UINT32_MAX;
+  }
+  uint32_t offset = 0;
+  uint8_t* mapped = AllocateUpload(
+      uint32_t(total), D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT, &offset);
+  if (!mapped ||
+      FAILED(s.device->CreateCommittedResource(
+          &ui::d3d12::util::kHeapPropertiesDefault, D3D12_HEAP_FLAG_NONE, &desc,
+          D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+          IID_PPV_ARGS(&probe_cube)))) {
+    return UINT32_MAX;
+  }
+  for (uint32_t face = 0; face < 6; ++face) {
+    for (UINT row = 0; row < rows[face]; ++row) {
+      uint8_t* out = mapped + footprints[face].Offset +
+                     uint64_t(row) * footprints[face].Footprint.RowPitch;
+      for (uint32_t x = 0; x < 4; ++x) {
+        out[x * 4 + 0] = 64;
+        out[x * 4 + 1] = 128;
+        out[x * 4 + 2] = 192;
+        out[x * 4 + 3] = 255;
+      }
+    }
+    D3D12_TEXTURE_COPY_LOCATION destination = {};
+    destination.pResource = probe_cube.Get();
+    destination.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    destination.SubresourceIndex = face;
+    D3D12_TEXTURE_COPY_LOCATION source = {};
+    source.pResource = s.upload.Get();
+    source.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    source.PlacedFootprint = footprints[face];
+    source.PlacedFootprint.Offset += offset;
+    s.list->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
+  }
+  D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COPY_DEST;
+  MoveTo(probe_cube.Get(), state, kReadState);
+  probe_cube_srv = AllocateStaging();
+  if (probe_cube_srv == UINT32_MAX) {
+    return UINT32_MAX;
+  }
+  WriteTextureSrv(probe_cube.Get(), DXGI_FORMAT_R8G8B8A8_UNORM, 1,
+                  probe_cube_srv, 6);
+  XELOGE("[sky] probe: solid cube created, srv {}", probe_cube_srv);
+  return probe_cube_srv;
+}
+
 D3D12_TEXTURE_ADDRESS_MODE AddressModeFor(uint32_t clamp) {
   switch (xenos::ClampMode(clamp & 7)) {
     case xenos::ClampMode::kRepeat:
@@ -711,6 +873,14 @@ uint64_t SamplerKeyFor(const DxbcShader::SamplerBinding& binding,
 }
 
 void WriteSampler(uint64_t key, D3D12_CPU_DESCRIPTOR_HANDLE handle) {
+  if (key & kTextureCacheSamplerKey) {
+    if (const auto* cache = HybridTextureCache()) {
+      xe::gpu::d3d12::D3D12TextureCache::SamplerParameters parameters;
+      parameters.value = uint32_t(key);
+      cache->WriteSampler(parameters, handle);
+      return;
+    }
+  }
   const uint32_t mag = uint32_t(key & 3);
   const uint32_t min = uint32_t((key >> 2) & 3);
   const uint32_t mip = uint32_t((key >> 4) & 3);
@@ -1024,6 +1194,7 @@ DxbcShader* HostShaderFor(Shader* original) {
   if (found != s.shaders.end()) {
     return found->second.get();
   }
+  // Copied from a shader HostedLoadShader already byte-swapped on load.
   auto shader = std::make_unique<DxbcShader>(
       original->type(), hash, original->ucode_dwords(),
       original->ucode_dword_count(), std::endian::native);
@@ -1049,6 +1220,29 @@ Shader::Translation* Translate(DxbcShader* shader, uint64_t modification) {
              translation->errors().empty()
                  ? std::string("no error given")
                  : translation->errors().front().message);
+    } else {
+      // PROBE: the DXBC this path actually runs, once per translation, next to
+      // the Xenos microcode xna_dump_shaders writes - so a fault that only the
+      // translated code can explain is read, not guessed at.
+      const std::vector<uint8_t>& binary = translation->translated_binary();
+      ComPtr<ID3DBlob> listing;
+      if (SUCCEEDED(s.provider->Disassemble(binary.data(), binary.size(), 0,
+                                            nullptr, &listing)) &&
+          listing) {
+        const auto directory =
+            xe::filesystem::GetExecutableFolder() / "xna_dxbc";
+        std::error_code ec;
+        std::filesystem::create_directories(directory, ec);
+        std::ofstream file(
+            directory / fmt::format("{:016X}_{:016X}.{}.txt",
+                                    shader->ucode_data_hash(), modification,
+                                    shader->type() == xenos::ShaderType::kVertex
+                                        ? "vs"
+                                        : "ps"),
+            std::ios::binary);
+        file.write(static_cast<const char*>(listing->GetBufferPointer()),
+                   std::streamsize(listing->GetBufferSize()));
+      }
     }
   }
   return translation->is_valid() ? translation : nullptr;
@@ -1103,8 +1297,17 @@ bool TranslatePair(DxbcShader* vertex, DxbcShader* pixel,
     pixel_modification.pixel.param_gen_interpolator = 0;
   }
   pixel_modification.pixel.param_gen_point = 0;
+  // The rule the GPU emulation's own pipeline cache applies
+  // (PipelineCache::GetCurrentPixelShaderModification): early depth when the
+  // shader leaves depth alone and coverage does not depend on alpha. A hosted
+  // draw never has alpha test (the system flags say Always) or alpha to
+  // coverage, so only the shader decides. The console path translates
+  // CastleMiner's sky this way; hardcoding kNoModifiers gave the hosted copy an
+  // SV_Coverage output and an SV_Position input the console's never had.
   pixel_modification.pixel.depth_stencil_mode =
-      DxbcShaderTranslator::Modification::DepthStencilMode::kNoModifiers;
+      pixel->implicit_early_z_write_allowed()
+          ? DxbcShaderTranslator::Modification::DepthStencilMode::kEarlyHint
+          : DxbcShaderTranslator::Modification::DepthStencilMode::kNoModifiers;
   pixel_modification.pixel.rt0_blend_rgb_factor_for_premult =
       xenos::BlendFactor::kOne;
   pixel_modification.pixel.rt0_blend_a_factor_for_premult =
@@ -1148,10 +1351,17 @@ ID3D12PipelineState* PipelineFor(const PipelineKey& key,
     blend.LogicOp = D3D12_LOGIC_OP_NOOP;
     blend.RenderTargetWriteMask = UINT8(key.write[i] & 0xF);
   }
-  desc.SampleMask = UINT_MAX;
-  desc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-  desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+  desc.SampleMask = key.sample_mask;
+  // The title's RasterizerState. XNA follows D3D9: clockwise is the front face,
+  // so CullCounterClockwiseFace (the default) culls the back.
+  desc.RasterizerState.FillMode =
+      key.fill_mode == 1 ? D3D12_FILL_MODE_WIREFRAME : D3D12_FILL_MODE_SOLID;
+  desc.RasterizerState.CullMode = key.cull_mode == 1   ? D3D12_CULL_MODE_FRONT
+                                  : key.cull_mode == 2 ? D3D12_CULL_MODE_BACK
+                                                       : D3D12_CULL_MODE_NONE;
   desc.RasterizerState.FrontCounterClockwise = FALSE;
+  desc.RasterizerState.DepthBias = key.depth_bias;
+  desc.RasterizerState.SlopeScaledDepthBias = key.slope_scale_depth_bias;
   desc.RasterizerState.DepthClipEnable = TRUE;
   desc.DepthStencilState.DepthEnable = key.depth_enable ? TRUE : FALSE;
   desc.DepthStencilState.DepthWriteMask = (key.depth_enable && key.depth_write)
@@ -1319,6 +1529,14 @@ bool DrawLocked(const XnaGpuDraw& draw, const XnaGpuStream* streams,
     // by a cube resource - CastleMiner Z's sky blends two TextureCubes, and
     // refusing every cube here left it sampling a null descriptor.
     if (binding.dimension == xenos::FetchOpDimension::kCube) {
+      // PROBE: the sky's cubes replaced by a solid one - see ProbeSolidCube.
+      if (original_pixel &&
+          original_pixel->ucode_data_hash() == 0xA787D78B725A5011) {
+        const uint32_t probe = ProbeSolidCube();
+        if (probe != UINT32_MAX) {
+          return probe;
+        }
+      }
       if (texture.type != 2) {
         return null_view;
       }
@@ -1348,30 +1566,95 @@ bool DrawLocked(const XnaGpuDraw& draw, const XnaGpuStream* streams,
     return srv != UINT32_MAX ? srv : null_view;
   };
 
+  const auto capture_binding = [&](const char* stage,
+                                   const DxbcShader::TextureBinding& binding,
+                                   uint32_t view) {
+    if (!capture_active) {
+      return;
+    }
+    const XnaGpuTextureBinding& texture = texture_for(binding.fetch_constant);
+    const bool null =
+        view == kNullSrv2DArray || view == kNullSrvCube || view == kNullSrv3D;
+    XELOGE(
+        "[xna] capture step {} {} sampler: fetch {} dimension {} <- texture "
+        "{:08X} type {} {}x{} f{} -> {}",
+        capture_step, stage, binding.fetch_constant,
+        uint32_t(binding.dimension), texture.handle, texture.type,
+        texture.width, texture.height, texture.format,
+        null ? "NULL VIEW" : fmt::format("view {}", view));
+    if (!null && texture.handle &&
+        capture_dumped_textures.insert(texture.handle).second) {
+      capture_pending_textures.push_back(texture.handle);
+    }
+  };
   std::vector<uint32_t> views;
   uint32_t textures_pixel = 0;
   if (pixel) {
     for (const auto& binding : pixel->GetTextureBindingsAfterTranslation()) {
       views.push_back(resolve_texture(binding));
+      capture_binding("pixel", binding, views.back());
     }
     textures_pixel = uint32_t(views.size());
   }
   for (const auto& binding : vertex->GetTextureBindingsAfterTranslation()) {
     views.push_back(resolve_texture(binding));
+    capture_binding("vertex", binding, views.back());
   }
   const uint32_t textures_vertex = uint32_t(views.size()) - textures_pixel;
 
+  // HYBRID: the texture fetch constants the shaders read at run time - size,
+  // mip range, LOD bias, exponent adjust, dimension - built by the same code
+  // path 0 gives the command processor, instead of left zero. They go into the
+  // register file too, which is where the texture cache reads them from when
+  // it decides how each sampler filters and addresses.
+  const auto* texture_cache = HybridTextureCache();
+  auto* processor = texture_cache ? HostedProcessor() : nullptr;
+  uint32_t texture_fetch[XnaGpuDraw::kMaxTextureSlots][6] = {};
+  uint32_t texture_fetch_mask = 0;
+  if (processor) {
+    const auto fill = [&](const std::vector<DxbcShader::TextureBinding>& list) {
+      for (const auto& binding : list) {
+        const uint32_t slot = binding.fetch_constant;
+        if (slot >= XnaGpuDraw::kMaxTextureSlots ||
+            (texture_fetch_mask & (uint32_t(1) << slot))) {
+          continue;
+        }
+        const XnaGpuTextureBinding& texture = texture_for(slot);
+        if (!texture.guest_address) {
+          continue;
+        }
+        const xenos::xe_gpu_texture_fetch_t constant =
+            XnaGpuTextureFetchFor(texture);
+        std::memcpy(texture_fetch[slot], &constant, sizeof(constant));
+        texture_fetch_mask |= uint32_t(1) << slot;
+        for (uint32_t i = 0; i < 6; ++i) {
+          processor->HostedWriteRegister(
+              gpu::XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + slot * 6 + i,
+              texture_fetch[slot][i]);
+        }
+      }
+    };
+    if (pixel) {
+      fill(pixel->GetTextureBindingsAfterTranslation());
+    }
+    fill(vertex->GetTextureBindingsAfterTranslation());
+  }
+  const auto sampler_key = [&](const DxbcShader::SamplerBinding& binding) {
+    if (texture_cache) {
+      return kTextureCacheSamplerKey |
+             texture_cache->GetSamplerParameters(binding).value;
+    }
+    return SamplerKeyFor(binding, texture_for(binding.fetch_constant));
+  };
   std::vector<uint64_t> samplers_pixel;
   if (pixel) {
     for (const auto& binding : pixel->GetSamplerBindingsAfterTranslation()) {
-      samplers_pixel.push_back(
-          SamplerKeyFor(binding, texture_for(binding.fetch_constant)));
+      samplers_pixel.push_back(sampler_key(binding));
     }
   }
   std::vector<uint64_t> samplers_vertex;
   for (const auto& binding : vertex->GetSamplerBindingsAfterTranslation()) {
-    samplers_vertex.push_back(
-        SamplerKeyFor(binding, texture_for(binding.fetch_constant)));
+    samplers_vertex.push_back(sampler_key(binding));
   }
 
   uint32_t min_index = 0;
@@ -1468,7 +1751,25 @@ bool DrawLocked(const XnaGpuDraw& draw, const XnaGpuStream* streams,
       return false;
     }
     uint64_t bytes = vertex_span * stride;
+    if (capture_active) {
+      XELOGE(
+          "[xna] capture step {} stream slot {}: {:08X} {} bytes stride {} | "
+          "base vertex {} start index {} indices {}..{} ({} vertices) -> "
+          "bytes {}..{}",
+          capture_step, fetch_slots[slot_index], stream.guest_address,
+          stream.size_bytes, stride, draw.base_vertex, draw.start_index,
+          min_index, max_index, vertex_span, begin, begin + bytes);
+    }
     if (begin + bytes > stream.size_bytes) {
+      // The draw still addresses every vertex in the span, so the ones cut off
+      // here come from whatever the upload ring last held.
+      XELOGE(
+          "[xna] direct: vertices {}..{} at stride {} run {} byte(s) past the "
+          "{} byte stream at {:08X} - the rest are not this mesh's",
+          uint64_t(first_vertex) + min_index,
+          uint64_t(first_vertex) + max_index, stride,
+          begin + bytes - stream.size_bytes, stream.size_bytes,
+          stream.guest_address);
       bytes = stream.size_bytes - begin;
     }
     const uint8_t* source = memory->TranslateVirtual<const uint8_t*>(
@@ -1506,6 +1807,16 @@ bool DrawLocked(const XnaGpuDraw& draw, const XnaGpuStream* streams,
   }
 
   uint32_t fetch[kFetchConstantDwords] = {};
+  // Texture constants first: the vertex constants share the same file from
+  // the top down, and where the two meet the vertex streams win, exactly as
+  // they do in the register file the command processor reads.
+  for (uint32_t slot = 0; slot < XnaGpuDraw::kMaxTextureSlots; ++slot) {
+    if ((texture_fetch_mask & (uint32_t(1) << slot)) &&
+        slot * 6 + 6 <= kFetchConstantDwords) {
+      std::memcpy(fetch + slot * 6, texture_fetch[slot],
+                  sizeof(texture_fetch[slot]));
+    }
+  }
   for (const StreamCopy& copy : copies) {
     uint32_t offset = 0;
     uint8_t* out = AllocateUpload(copy.bytes, 256, &offset);
@@ -1600,6 +1911,91 @@ bool DrawLocked(const XnaGpuDraw& draw, const XnaGpuStream* streams,
   }
   std::memcpy(system_out, &system, sizeof(system));
 
+  // PROBE: the same sky draw as the hosted path builds it, field for field
+  // against the "[sky] guest" line Xenia's own IssueDraw writes when the
+  // console's D3D drives it (xna_direct = true).
+  if (original_pixel &&
+      original_pixel->ucode_data_hash() == 0xA787D78B725A5011) {
+    std::string vertices;
+    for (const StreamCopy& copy : copies) {
+      vertices += fmt::format(" | slot {} {} bytes:", copy.slot, copy.bytes);
+      for (uint32_t i = 0; i < 24 && i * 4 + 4 <= copy.bytes; ++i) {
+        uint32_t word;
+        std::memcpy(&word, copy.source + i * 4, 4);
+        vertices += fmt::format(" {:08X}", word);
+      }
+    }
+    XELOGE(
+        "[sky] hosted stream: vf95 {:08X} {:08X} ndc scale {} {} {} offset {} "
+        "{} "
+        "{} cull {} fill {} depth bias {} slope {} scissor {} ({} {} {} {}) "
+        "blend factor {:08X} sample mask {:08X} first 3 vertices as stored{}",
+        fetch[190], fetch[191], system.ndc_scale[0], system.ndc_scale[1],
+        system.ndc_scale[2], system.ndc_offset[0], system.ndc_offset[1],
+        system.ndc_offset[2], draw.cull_mode, draw.fill_mode, draw.depth_bias,
+        draw.slope_scale_depth_bias, draw.scissor_enable, draw.scissor_x,
+        draw.scissor_y, draw.scissor_width, draw.scissor_height,
+        draw.blend_factor, draw.multisample_mask, vertices);
+    // What the GPU reads, not what the registers hold: every dword of the
+    // system constant buffer, and both float buffers exactly as packed.
+    const auto dwords = [](const void* data, size_t count) {
+      std::string text;
+      for (size_t i = 0; i < count; ++i) {
+        uint32_t word;
+        std::memcpy(&word, static_cast<const uint8_t*>(data) + i * 4, 4);
+        text += fmt::format(" {:08X}", word);
+      }
+      return text;
+    };
+    const auto packed = [&](const DxbcShader* shader, const float* base) {
+      std::string text;
+      const auto& map = shader->constant_register_map();
+      for (uint32_t word = 0; word < 4; ++word) {
+        uint64_t bits = map.float_bitmap[word];
+        uint32_t index;
+        while (xe::bit_scan_forward(bits, &index)) {
+          bits = xe::clear_lowest_bit(bits);
+          text += fmt::format(" c{}=", word * 64 + index) +
+                  dwords(base + size_t(word * 64 + index) * 4, 4);
+        }
+      }
+      return text;
+    };
+    XELOGE("[sky] hosted system cb:{}", dwords(&system, sizeof(system) / 4));
+    XELOGE("[sky] hosted vs floats:{}", packed(vertex, &registers[0][0]));
+    XELOGE("[sky] hosted ps floats:{}", packed(pixel, &registers[256][0]));
+    std::string fetch;
+    for (uint32_t slot = 0; slot < XnaGpuDraw::kMaxTextureSlots; ++slot) {
+      if (!(texture_fetch_mask & (uint32_t(1) << slot))) {
+        continue;
+      }
+      fetch += fmt::format(" t{}=", slot);
+      for (uint32_t i = 0; i < 6; ++i) {
+        fetch +=
+            fmt::format("{:08X}{}", texture_fetch[slot][i], i < 5 ? "." : "");
+      }
+    }
+    std::string floats;
+    for (uint32_t c : {256u, 257u, 258u, 259u, 511u}) {
+      uint32_t v[4];
+      std::memcpy(v, registers[c], sizeof(v));
+      floats += fmt::format(" c{}=({:08X} {:08X} {:08X} {:08X})", c, v[0], v[1],
+                            v[2], v[3]);
+    }
+    XELOGE(
+        "[sky] hosted: vs {:016X}/{:016X} ps {:016X}/{:016X} flags {:08X} "
+        "signs {:08X} intscale {:08X} {:08X} a2m {:08X} expbias {} target "
+        "format {} blend {}/{}/{} write {:X} depth {}/{}/{} fetch{}{}",
+        original_vertex->ucode_data_hash(), vertex_translation->modification(),
+        original_pixel->ucode_data_hash(), pixel_translation->modification(),
+        system.flags, system.texture_swizzled_signs[0],
+        system.texture_integer_scale_bits[0],
+        system.texture_integer_scale_bits[1], system.alpha_to_mask,
+        system.color_exp_bias[0], draw.target_formats[0], draw.color_src,
+        draw.color_dst, draw.color_op, draw.color_write[0], draw.depth_enable,
+        draw.depth_write_enable, draw.depth_function, fetch, floats);
+  }
+
   const uint32_t view_base = s.view_used;
   s.view_used += uint32_t(views.size());
   for (size_t i = 0; i < views.size(); ++i) {
@@ -1636,11 +2032,31 @@ bool DrawLocked(const XnaGpuDraw& draw, const XnaGpuStream* streams,
   key.blend[3] = draw.alpha_src;
   key.blend[4] = draw.alpha_dst;
   key.blend[5] = draw.alpha_op;
-  key.depth_enable = draw.depth_enable ? 1 : 0;
-  key.depth_write = draw.depth_write_enable ? 1 : 0;
+  // A surface created without a depth buffer cannot reject anything. Avatar
+  // Farm's back buffer is DepthFormat.None and its only DepthStencilState is
+  // Default, so testing its menu against our always-present depth buffer hid
+  // the whole menu behind the composite quad drawn just before it.
+  const uint32_t depth_key = target_count ? draw.target_addresses[0] : 0;
+  bool has_depth;
+  {
+    std::lock_guard<std::mutex> depth_lock(s.depthless_mutex);
+    has_depth = !s.depthless_targets.count(depth_key);
+  }
+  key.depth_enable = has_depth && draw.depth_enable ? 1 : 0;
+  key.depth_write = has_depth && draw.depth_write_enable ? 1 : 0;
   key.depth_function = draw.depth_function;
   StencilKey(draw, key.stencil);
+  if (!has_depth) {
+    std::memset(key.stencil, 0, sizeof(key.stencil));
+  }
   key.topology_type = uint32_t(topology_type);
+  key.cull_mode = draw.cull_mode;
+  key.fill_mode = draw.fill_mode;
+  // D3D9 adds DepthBias to depth as is; D3D12 multiplies an integer by the
+  // smallest step of the depth format, 1/2^24 for D24.
+  key.depth_bias = int32_t(std::lround(double(draw.depth_bias) * 16777216.0));
+  key.slope_scale_depth_bias = draw.slope_scale_depth_bias;
+  key.sample_mask = draw.multisample_mask;
   ID3D12PipelineState* pipeline =
       PipelineFor(key, vertex_translation, pixel_translation, root_signature);
   if (!pipeline) {
@@ -1702,10 +2118,25 @@ bool DrawLocked(const XnaGpuDraw& draw, const XnaGpuStream* streams,
   viewport.MinDepth = std::clamp(draw.viewport_min_depth, 0.0f, 1.0f);
   viewport.MaxDepth = std::clamp(draw.viewport_max_depth, 0.0f, 1.0f);
   s.list->RSSetViewports(1, &viewport);
-  const D3D12_RECT scissor = {0, 0, LONG(targets[0]->width),
-                              LONG(targets[0]->height)};
+  D3D12_RECT scissor = {0, 0, LONG(targets[0]->width),
+                        LONG(targets[0]->height)};
+  if (draw.scissor_enable) {
+    scissor.left = std::max<LONG>(scissor.left, draw.scissor_x);
+    scissor.top = std::max<LONG>(scissor.top, draw.scissor_y);
+    scissor.right = std::min<LONG>(
+        scissor.right, LONG(draw.scissor_x) + LONG(draw.scissor_width));
+    scissor.bottom = std::min<LONG>(
+        scissor.bottom, LONG(draw.scissor_y) + LONG(draw.scissor_height));
+    scissor.right = std::max(scissor.right, scissor.left);
+    scissor.bottom = std::max(scissor.bottom, scissor.top);
+  }
   s.list->RSSetScissorRects(1, &scissor);
-  const float blend_factor[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+  // GraphicsDevice.BlendFactor, an XNA packed Color: R in the low byte.
+  const float blend_factor[4] = {
+      float(draw.blend_factor & 0xFF) / 255.0f,
+      float((draw.blend_factor >> 8) & 0xFF) / 255.0f,
+      float((draw.blend_factor >> 16) & 0xFF) / 255.0f,
+      float((draw.blend_factor >> 24) & 0xFF) / 255.0f};
   s.list->OMSetBlendFactor(blend_factor);
   s.list->IASetPrimitiveTopology(topology);
   s.list->SetPipelineState(pipeline);
@@ -1902,6 +2333,475 @@ bool ReadBackLocked(uint8_t* out, uint32_t bytes) {
   D3D12_RANGE written = {0, 0};
   s.readback->Unmap(0, &written);
   return true;
+}
+
+float HalfToFloat(uint16_t half) {
+  const uint32_t sign = uint32_t(half & 0x8000) << 16;
+  uint32_t exponent = (half >> 10) & 0x1F;
+  uint32_t mantissa = half & 0x3FF;
+  uint32_t bits;
+  if (!exponent) {
+    if (!mantissa) {
+      bits = sign;
+    } else {
+      exponent = 127 - 15 + 1;
+      while (!(mantissa & 0x400)) {
+        mantissa <<= 1;
+        --exponent;
+      }
+      bits = sign | (exponent << 23) | ((mantissa & 0x3FF) << 13);
+    }
+  } else if (exponent == 31) {
+    bits = sign | 0x7F800000 | (mantissa << 13);
+  } else {
+    bits = sign | ((exponent - 15 + 127) << 23) | (mantissa << 13);
+  }
+  return std::bit_cast<float>(bits);
+}
+
+uint8_t ToByte(float value) {
+  if (!(value > 0.0f)) {
+    return 0;
+  }
+  return value >= 1.0f ? 255 : uint8_t(value * 255.0f + 0.5f);
+}
+
+// One target's colour as RGBA8: one-channel formats as grey, and alpha 255
+// where the format has none.
+bool CaptureTargetLocked(Target* target, std::vector<uint8_t>* rgba) {
+  if (!target || !target->color || !BeginRecording()) {
+    return false;
+  }
+  const D3D12_RESOURCE_DESC desc = target->color->GetDesc();
+  D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = {};
+  UINT rows = 0;
+  UINT64 row_bytes = 0;
+  UINT64 total = 0;
+  s.device->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, &rows, &row_bytes,
+                                  &total);
+  if (!s.readback || s.readback_bytes < total) {
+    s.readback.Reset();
+    D3D12_RESOURCE_DESC buffer_desc;
+    ui::d3d12::util::FillBufferResourceDesc(buffer_desc, total,
+                                            D3D12_RESOURCE_FLAG_NONE);
+    if (FAILED(s.device->CreateCommittedResource(
+            &ui::d3d12::util::kHeapPropertiesReadback, D3D12_HEAP_FLAG_NONE,
+            &buffer_desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+            IID_PPV_ARGS(&s.readback)))) {
+      return false;
+    }
+    s.readback_bytes = total;
+  }
+  MoveTo(target->color.Get(), target->color_state,
+         D3D12_RESOURCE_STATE_COPY_SOURCE);
+  D3D12_TEXTURE_COPY_LOCATION destination = {};
+  destination.pResource = s.readback.Get();
+  destination.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+  destination.PlacedFootprint = footprint;
+  D3D12_TEXTURE_COPY_LOCATION source = {};
+  source.pResource = target->color.Get();
+  source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+  s.list->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
+  Submit();
+
+  D3D12_RANGE read_range = {0, SIZE_T(total)};
+  uint8_t* mapped = nullptr;
+  if (FAILED(
+          s.readback->Map(0, &read_range, reinterpret_cast<void**>(&mapped)))) {
+    return false;
+  }
+  const uint32_t width = uint32_t(desc.Width);
+  const uint32_t height = desc.Height;
+  rgba->assign(size_t(width) * height * 4, 0);
+  for (uint32_t y = 0; y < height; ++y) {
+    const uint8_t* row =
+        mapped + footprint.Offset + uint64_t(y) * footprint.Footprint.RowPitch;
+    for (uint32_t x = 0; x < width; ++x) {
+      uint8_t* out = rgba->data() + (size_t(y) * width + x) * 4;
+      float c[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+      uint32_t channels = 4;
+      switch (desc.Format) {
+        case DXGI_FORMAT_B8G8R8A8_UNORM:
+          out[0] = row[x * 4 + 2];
+          out[1] = row[x * 4 + 1];
+          out[2] = row[x * 4 + 0];
+          out[3] = row[x * 4 + 3];
+          continue;
+        case DXGI_FORMAT_R10G10B10A2_UNORM: {
+          uint32_t v;
+          std::memcpy(&v, row + x * 4, 4);
+          c[0] = float(v & 1023) / 1023.0f;
+          c[1] = float((v >> 10) & 1023) / 1023.0f;
+          c[2] = float((v >> 20) & 1023) / 1023.0f;
+          c[3] = float(v >> 30) / 3.0f;
+        } break;
+        case DXGI_FORMAT_R16G16_UNORM:
+        case DXGI_FORMAT_R16G16B16A16_UNORM: {
+          channels = desc.Format == DXGI_FORMAT_R16G16_UNORM ? 2 : 4;
+          for (uint32_t i = 0; i < channels; ++i) {
+            uint16_t v;
+            std::memcpy(&v, row + (x * channels + i) * 2, 2);
+            c[i] = float(v) / 65535.0f;
+          }
+        } break;
+        case DXGI_FORMAT_R16_FLOAT:
+        case DXGI_FORMAT_R16G16_FLOAT:
+        case DXGI_FORMAT_R16G16B16A16_FLOAT: {
+          channels = desc.Format == DXGI_FORMAT_R16_FLOAT      ? 1
+                     : desc.Format == DXGI_FORMAT_R16G16_FLOAT ? 2
+                                                               : 4;
+          for (uint32_t i = 0; i < channels; ++i) {
+            uint16_t v;
+            std::memcpy(&v, row + (x * channels + i) * 2, 2);
+            c[i] = HalfToFloat(v);
+          }
+        } break;
+        case DXGI_FORMAT_R32_FLOAT:
+        case DXGI_FORMAT_R32G32_FLOAT:
+        case DXGI_FORMAT_R32G32B32A32_FLOAT: {
+          channels = desc.Format == DXGI_FORMAT_R32_FLOAT      ? 1
+                     : desc.Format == DXGI_FORMAT_R32G32_FLOAT ? 2
+                                                               : 4;
+          std::memcpy(c, row + x * channels * 4, channels * 4);
+        } break;
+        default:
+          std::memcpy(out, row + x * 4, 4);
+          continue;
+      }
+      if (channels == 1) {
+        c[1] = c[2] = c[0];
+      }
+      for (uint32_t i = 0; i < 4; ++i) {
+        out[i] = ToByte(c[i]);
+      }
+    }
+  }
+  D3D12_RANGE written = {0, 0};
+  s.readback->Unmap(0, &written);
+  return true;
+}
+
+// The depth/stencil buffer behind a target, after the step that used it: R
+// and G are the top sixteen bits of the 24-bit depth (so 1.0 reads FFFF), B
+// the stencil. A draw that writes only some pixels with an opaque blend is
+// being rejected by one of these, and this shows which.
+void CaptureDepthLocked(Target* target, uint32_t key, const char* label) {
+  if (!target || !target->depth || !BeginRecording()) {
+    return;
+  }
+  const D3D12_RESOURCE_DESC desc = target->depth->GetDesc();
+  D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprints[2] = {};
+  UINT rows[2] = {};
+  UINT64 row_bytes[2] = {};
+  UINT64 total = 0;
+  s.device->GetCopyableFootprints(&desc, 0, 2, 0, footprints, rows, row_bytes,
+                                  &total);
+  if (!s.readback || s.readback_bytes < total) {
+    s.readback.Reset();
+    D3D12_RESOURCE_DESC buffer_desc;
+    ui::d3d12::util::FillBufferResourceDesc(buffer_desc, total,
+                                            D3D12_RESOURCE_FLAG_NONE);
+    if (FAILED(s.device->CreateCommittedResource(
+            &ui::d3d12::util::kHeapPropertiesReadback, D3D12_HEAP_FLAG_NONE,
+            &buffer_desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+            IID_PPV_ARGS(&s.readback)))) {
+      return;
+    }
+    s.readback_bytes = total;
+  }
+  MoveTo(target->depth.Get(), target->depth_state,
+         D3D12_RESOURCE_STATE_COPY_SOURCE);
+  for (UINT plane = 0; plane < 2; ++plane) {
+    D3D12_TEXTURE_COPY_LOCATION destination = {};
+    destination.pResource = s.readback.Get();
+    destination.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    destination.PlacedFootprint = footprints[plane];
+    D3D12_TEXTURE_COPY_LOCATION source = {};
+    source.pResource = target->depth.Get();
+    source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    source.SubresourceIndex = plane;
+    s.list->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
+  }
+  Submit();
+  D3D12_RANGE read_range = {0, SIZE_T(total)};
+  uint8_t* mapped = nullptr;
+  if (FAILED(
+          s.readback->Map(0, &read_range, reinterpret_cast<void**>(&mapped)))) {
+    return;
+  }
+  const uint32_t width = uint32_t(desc.Width);
+  const uint32_t height = desc.Height;
+  const uint32_t depth_bytes =
+      std::max<uint32_t>(uint32_t(row_bytes[0] / std::max(width, 1u)), 1);
+  const uint32_t stencil_bytes =
+      std::max<uint32_t>(uint32_t(row_bytes[1] / std::max(width, 1u)), 1);
+  std::vector<uint8_t> rgba(size_t(width) * height * 4, 255);
+  for (uint32_t y = 0; y < height; ++y) {
+    const uint8_t* depth_row = mapped + footprints[0].Offset +
+                               size_t(y) * footprints[0].Footprint.RowPitch;
+    const uint8_t* stencil_row = mapped + footprints[1].Offset +
+                                 size_t(y) * footprints[1].Footprint.RowPitch;
+    for (uint32_t x = 0; x < width; ++x) {
+      uint32_t depth = 0;
+      std::memcpy(&depth, depth_row + size_t(x) * depth_bytes,
+                  std::min<uint32_t>(depth_bytes, 4));
+      depth &= 0xFFFFFF;
+      uint8_t* out = rgba.data() + (size_t(y) * width + x) * 4;
+      out[0] = uint8_t(depth >> 16);
+      out[1] = uint8_t(depth >> 8);
+      out[2] = stencil_row[size_t(x) * stencil_bytes];
+    }
+  }
+  D3D12_RANGE written = {0, 0};
+  s.readback->Unmap(0, &written);
+  std::vector<uint8_t> png;
+  auto sink = [](void* context, void* data, int size) {
+    auto* bytes = static_cast<std::vector<uint8_t>*>(context);
+    bytes->insert(bytes->end(), static_cast<uint8_t*>(data),
+                  static_cast<uint8_t*>(data) + size);
+  };
+  if (stbi_write_png_to_func(sink, &png, int(width), int(height), 4,
+                             rgba.data(), int(width * 4))) {
+    std::ofstream file(
+        capture_directory /
+            fmt::format("{:04}_{}_{:08X}_depth.png", capture_step, label, key),
+        std::ios::binary);
+    file.write(reinterpret_cast<const char*>(png.data()),
+               std::streamsize(png.size()));
+  }
+}
+
+void CaptureSaveLocked(uint32_t key, const char* label) {
+  if (!capture_active) {
+    return;
+  }
+  auto it = s.targets.find(key);
+  std::vector<uint8_t> rgba;
+  if (it == s.targets.end() || !CaptureTargetLocked(&it->second, &rgba)) {
+    XELOGE("[xna] capture step {}: target {:08X} could not be read back",
+           capture_step, key);
+    return;
+  }
+  const Target& target = it->second;
+  std::vector<uint8_t> png;
+  auto sink = [](void* context, void* data, int size) {
+    auto* bytes = static_cast<std::vector<uint8_t>*>(context);
+    bytes->insert(bytes->end(), static_cast<uint8_t*>(data),
+                  static_cast<uint8_t*>(data) + size);
+  };
+  if (!stbi_write_png_to_func(sink, &png, int(target.width), int(target.height),
+                              4, rgba.data(), int(target.width * 4))) {
+    return;
+  }
+  std::ofstream file(capture_directory / fmt::format("{:04}_{}_{:08X}.png",
+                                                     capture_step, label, key),
+                     std::ios::binary);
+  file.write(reinterpret_cast<const char*>(png.data()),
+             std::streamsize(png.size()));
+  CaptureDepthLocked(&it->second, key, label);
+}
+
+void Color565(uint16_t c, uint8_t out[4]) {
+  out[0] = uint8_t(((c >> 11) & 31) * 255 / 31);
+  out[1] = uint8_t(((c >> 5) & 63) * 255 / 63);
+  out[2] = uint8_t((c & 31) * 255 / 31);
+  out[3] = 255;
+}
+
+// One 4x4 BC1/BC2/BC3 block as 16 RGBA texels.
+void DecodeBlock(const uint8_t* block, DXGI_FORMAT format,
+                 uint8_t texels[16][4]) {
+  const uint8_t* colour = format == DXGI_FORMAT_BC1_UNORM ? block : block + 8;
+  uint16_t c0, c1;
+  uint32_t bits;
+  std::memcpy(&c0, colour, 2);
+  std::memcpy(&c1, colour + 2, 2);
+  std::memcpy(&bits, colour + 4, 4);
+  uint8_t palette[4][4];
+  Color565(c0, palette[0]);
+  Color565(c1, palette[1]);
+  const bool four = c0 > c1 || format != DXGI_FORMAT_BC1_UNORM;
+  for (int k = 0; k < 4; ++k) {
+    palette[2][k] = four ? uint8_t((2 * palette[0][k] + palette[1][k]) / 3)
+                         : uint8_t((palette[0][k] + palette[1][k]) / 2);
+    palette[3][k] =
+        four ? uint8_t((palette[0][k] + 2 * palette[1][k]) / 3) : uint8_t(0);
+  }
+  if (!four) {
+    palette[3][3] = 0;
+  }
+  for (int i = 0; i < 16; ++i) {
+    std::memcpy(texels[i], palette[(bits >> (2 * i)) & 3], 4);
+  }
+  if (format == DXGI_FORMAT_BC2_UNORM) {
+    uint64_t alpha;
+    std::memcpy(&alpha, block, 8);
+    for (int i = 0; i < 16; ++i) {
+      texels[i][3] = uint8_t(((alpha >> (4 * i)) & 15) * 17);
+    }
+  } else if (format == DXGI_FORMAT_BC3_UNORM) {
+    uint8_t a[8] = {block[0], block[1]};
+    for (int k = 2; k < 8; ++k) {
+      a[k] = a[0] > a[1] ? uint8_t(((8 - k) * a[0] + (k - 1) * a[1]) / 7)
+             : k < 6     ? uint8_t(((6 - k) * a[0] + (k - 1) * a[1]) / 5)
+             : k == 6    ? uint8_t(0)
+                         : uint8_t(255);
+    }
+    uint64_t indices = 0;
+    std::memcpy(&indices, block + 2, 6);
+    for (int i = 0; i < 16; ++i) {
+      texels[i][3] = a[(indices >> (3 * i)) & 7];
+    }
+  }
+}
+
+void CaptureTextureLocked(uint32_t handle) {
+  auto found = s.textures.find(handle);
+  if (found == s.textures.end() || !found->second.resource) {
+    return;
+  }
+  HostTexture& texture = found->second;
+  const D3D12_RESOURCE_DESC desc = texture.resource->GetDesc();
+  const bool compressed = IsBlockCompressed(desc.Format);
+  // Every level of every face: a sampler that picks a smaller level reads
+  // that level's data, and a wrong mip chain shows up only there.
+  const uint32_t levels = std::max<uint32_t>(texture.levels, 1);
+  for (uint32_t sub_index = 0; sub_index < texture.faces * levels;
+       ++sub_index) {
+    const uint32_t face = sub_index / levels;
+    const uint32_t level = sub_index % levels;
+    const UINT sub = UINT(sub_index);
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint = {};
+    UINT rows = 0;
+    UINT64 row_bytes = 0;
+    UINT64 total = 0;
+    s.device->GetCopyableFootprints(&desc, sub, 1, 0, &footprint, &rows,
+                                    &row_bytes, &total);
+    if (!BeginRecording()) {
+      return;
+    }
+    if (!s.readback || s.readback_bytes < total) {
+      s.readback.Reset();
+      D3D12_RESOURCE_DESC buffer_desc;
+      ui::d3d12::util::FillBufferResourceDesc(buffer_desc, total,
+                                              D3D12_RESOURCE_FLAG_NONE);
+      if (FAILED(s.device->CreateCommittedResource(
+              &ui::d3d12::util::kHeapPropertiesReadback, D3D12_HEAP_FLAG_NONE,
+              &buffer_desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+              IID_PPV_ARGS(&s.readback)))) {
+        return;
+      }
+      s.readback_bytes = total;
+    }
+    D3D12_RESOURCE_STATES state = kReadState;
+    MoveTo(texture.resource.Get(), state, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    D3D12_TEXTURE_COPY_LOCATION destination = {};
+    destination.pResource = s.readback.Get();
+    destination.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    destination.PlacedFootprint = footprint;
+    D3D12_TEXTURE_COPY_LOCATION source = {};
+    source.pResource = texture.resource.Get();
+    source.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    source.SubresourceIndex = sub;
+    s.list->CopyTextureRegion(&destination, 0, 0, 0, &source, nullptr);
+    MoveTo(texture.resource.Get(), state, kReadState);
+    Submit();
+
+    D3D12_RANGE read_range = {0, SIZE_T(total)};
+    uint8_t* mapped = nullptr;
+    if (FAILED(s.readback->Map(0, &read_range,
+                               reinterpret_cast<void**>(&mapped)))) {
+      return;
+    }
+    const uint32_t width = std::max<uint32_t>(uint32_t(desc.Width) >> level, 1);
+    const uint32_t height = std::max<uint32_t>(desc.Height >> level, 1);
+    std::vector<uint8_t> rgba(size_t(width) * height * 4, 255);
+    const uint8_t* base = mapped + footprint.Offset;
+    const uint32_t pitch = footprint.Footprint.RowPitch;
+    if (compressed) {
+      const uint32_t block_bytes =
+          desc.Format == DXGI_FORMAT_BC1_UNORM ? 8 : 16;
+      for (uint32_t by = 0; by < (height + 3) / 4; ++by) {
+        for (uint32_t bx = 0; bx < (width + 3) / 4; ++bx) {
+          uint8_t texels[16][4];
+          DecodeBlock(base + size_t(by) * pitch + size_t(bx) * block_bytes,
+                      desc.Format, texels);
+          for (uint32_t i = 0; i < 16; ++i) {
+            const uint32_t x = bx * 4 + (i & 3);
+            const uint32_t y = by * 4 + (i >> 2);
+            if (x < width && y < height) {
+              std::memcpy(rgba.data() + (size_t(y) * width + x) * 4, texels[i],
+                          4);
+            }
+          }
+        }
+      }
+    } else {
+      for (uint32_t y = 0; y < height; ++y) {
+        const uint8_t* row = base + size_t(y) * pitch;
+        for (uint32_t x = 0; x < width; ++x) {
+          uint8_t* out = rgba.data() + (size_t(y) * width + x) * 4;
+          switch (desc.Format) {
+            case DXGI_FORMAT_B5G6R5_UNORM: {
+              uint16_t v;
+              std::memcpy(&v, row + x * 2, 2);
+              Color565(v, out);
+            } break;
+            case DXGI_FORMAT_B8G8R8A8_UNORM:
+              out[0] = row[x * 4 + 2];
+              out[1] = row[x * 4 + 1];
+              out[2] = row[x * 4];
+              out[3] = row[x * 4 + 3];
+              break;
+            default:
+              std::memcpy(out, row + x * 4, 4);
+              break;
+          }
+        }
+      }
+    }
+    D3D12_RANGE written = {0, 0};
+    s.readback->Unmap(0, &written);
+    std::vector<uint8_t> png;
+    auto sink = [](void* context, void* data, int size) {
+      auto* bytes = static_cast<std::vector<uint8_t>*>(context);
+      bytes->insert(bytes->end(), static_cast<uint8_t*>(data),
+                    static_cast<uint8_t*>(data) + size);
+    };
+    if (stbi_write_png_to_func(sink, &png, int(width), int(height), 4,
+                               rgba.data(), int(width * 4))) {
+      std::ofstream file(
+          capture_directory /
+              fmt::format("texture_{:08X}_face{}_mip{}_{}x{}_dxgi{}.png",
+                          handle, face, level, width, height,
+                          uint32_t(desc.Format)),
+          std::ios::binary);
+      file.write(reinterpret_cast<const char*>(png.data()),
+                 std::streamsize(png.size()));
+    }
+  }
+}
+
+// At every present: an armed capture starts with the next frame, and an
+// active one ends with this present.
+void CaptureFrameBoundaryLocked() {
+  if (capture_active) {
+    CaptureSaveLocked(0, "present");
+    XELOGE("[xna] capture {}: {} step(s) written to {}", capture_index,
+           capture_step, xe::path_to_utf8(capture_directory));
+    capture_active = false;
+  }
+  if (capture_armed.exchange(false)) {
+    capture_directory = xe::filesystem::GetExecutableFolder() / "xna_capture" /
+                        std::to_string(++capture_index);
+    std::error_code ec;
+    std::filesystem::create_directories(capture_directory, ec);
+    capture_active = true;
+    capture_step = 0;
+    capture_pending_textures.clear();
+    capture_dumped_textures.clear();
+    XELOGE("[xna] capture {}: recording the next frame", capture_index);
+  }
 }
 
 bool CreateBlit() {
@@ -2412,7 +3312,10 @@ bool Initialize() {
     XELOGE("[xna] direct: could not create the present pipeline");
     return false;
   }
-  XELOGI("[xna] hosted title draws straight to D3D12");
+  XELOGE("[xna] hosted title draws straight to D3D12{}",
+         Hybrid() ? ", hybrid: fetch constants and samplers from the GPU "
+                    "emulation"
+                  : "");
   return true;
 }
 
@@ -2456,10 +3359,97 @@ bool XnaDirectDraw(const XnaGpuDraw& draw, const XnaGpuStream* streams,
   {
     std::lock_guard<std::mutex> lock(s.mutex);
     if (Ready()) {
-      return DrawLocked(draw, streams, stream_count);
+      const bool drawn = DrawLocked(draw, streams, stream_count);
+      if (!capture_active) {
+        return drawn;
+      }
+      // Where each draw of a captured frame lands, what it is tested against
+      // and what it samples.
+      std::string first_vertex;
+      if (stream_count && streams[0].guest_address && kernel_state()) {
+        const auto* words =
+            kernel_state()->memory()->TranslateVirtual<const uint32_t*>(
+                streams[0].guest_address);
+        for (uint32_t i = 0; i < 4 && (i + 1) * 4 <= streams[0].size_bytes;
+             ++i) {
+          first_vertex += fmt::format(" {:08X}", words[i]);
+        }
+      }
+      std::string textures;
+      for (uint32_t i = 0; i < XnaGpuDraw::kMaxTextureSlots; ++i) {
+        const auto& t = draw.textures[i];
+        if (t.guest_address) {
+          textures += fmt::format(" t{}={:08X}:{}x{}:f{}:type{}:levels{}{}", i,
+                                  t.handle, t.width, t.height, t.format, t.type,
+                                  t.levels, t.tiled ? ":tiled" : "");
+        }
+      }
+      XELOGE(
+          "[xna] {}draw{}: target {:08X} x{} format {} {}x{} viewport {},{} "
+          "{}x{} zrange "
+          "{}..{} depth {}/{}/{} stencil {} f{} pass {} fail {} zfail {} ref "
+          "{} mask {:X}/{:X} blend {}/{}/{} write {:X} prim {} x{} vs "
+          "{:016X} ps {:016X} v0{}{}",
+          capture_active ? fmt::format("capture step {} ", capture_step)
+                         : std::string(),
+          drawn ? "" : " DROPPED",
+          draw.target_count ? draw.target_addresses[0] : 0, draw.target_count,
+          draw.target_formats[0], draw.target_width, draw.target_height,
+          draw.viewport_x, draw.viewport_y, draw.viewport_width,
+          draw.viewport_height, draw.viewport_min_depth,
+          draw.viewport_max_depth, draw.depth_enable, draw.depth_write_enable,
+          draw.depth_function, draw.stencil_enable, draw.stencil_function,
+          draw.stencil_pass, draw.stencil_fail, draw.stencil_depth_fail,
+          draw.stencil_reference, draw.stencil_read_mask,
+          draw.stencil_write_mask, draw.color_src, draw.color_dst,
+          draw.color_op, draw.color_write[0], draw.primitive_type,
+          draw.primitive_count,
+          draw.vertex_shader
+              ? static_cast<Shader*>(draw.vertex_shader)->ucode_data_hash()
+              : 0,
+          draw.pixel_shader
+              ? static_cast<Shader*>(draw.pixel_shader)->ucode_data_hash()
+              : 0,
+          first_vertex, textures);
+      if (capture_active) {
+        std::string constants;
+        for (const XnaGpuConstant& constant : draw.constants) {
+          constants += fmt::format(" c{}=({:.5g} {:.5g} {:.5g} {:.5g})",
+                                   constant.register_index, constant.value[0],
+                                   constant.value[1], constant.value[2],
+                                   constant.value[3]);
+        }
+        XELOGE("[xna] capture step {} constants:{}", capture_step, constants);
+        CaptureSaveLocked(draw.target_count ? draw.target_addresses[0] : 0,
+                          "draw");
+        for (const uint32_t handle : capture_pending_textures) {
+          CaptureTextureLocked(handle);
+        }
+        capture_pending_textures.clear();
+        ++capture_step;
+      }
+      return drawn;
     }
   }
   return XnaVulkanDirectDraw(draw, streams, stream_count);
+}
+
+bool XnaDirectCapturing() { return capture_active; }
+
+void XnaDirectCaptureNextFrame() {
+  capture_armed = true;
+  XELOGE("[xna] capture: armed, the next frame will be recorded");
+}
+
+void XnaDirectSetTargetHasDepth(uint32_t guest_address, bool has_depth) {
+  std::lock_guard<std::mutex> lock(s.depthless_mutex);
+  if (has_depth) {
+    s.depthless_targets.erase(guest_address);
+  } else {
+    s.depthless_targets.insert(guest_address);
+  }
+  XELOGE("[xna] direct: target {:08X} {} a depth buffer", guest_address,
+         has_depth ? "has" : "has NO");
 }
 
 void XnaDirectClear(const XnaGpuTarget& target, const float* color,
@@ -2468,6 +3458,18 @@ void XnaDirectClear(const XnaGpuTarget& target, const float* color,
     std::lock_guard<std::mutex> lock(s.mutex);
     if (Ready()) {
       ClearLocked(target, color, clear_color, clear_depth, depth);
+      if (capture_active) {
+        XELOGE(
+            "[xna] capture step {} clear: target {:08X} {}x{} colour {} "
+            "({:.3f} "
+            "{:.3f} {:.3f} {:.3f}) depth {} ({:.3f})",
+            capture_step, target.guest_address, target.width, target.height,
+            clear_color, color ? color[0] : 0.0f, color ? color[1] : 0.0f,
+            color ? color[2] : 0.0f, color ? color[3] : 0.0f, clear_depth,
+            depth);
+        CaptureSaveLocked(target.guest_address, "clear");
+        ++capture_step;
+      }
       return;
     }
   }
@@ -2478,6 +3480,7 @@ void XnaDirectPresent() {
   {
     std::lock_guard<std::mutex> lock(s.mutex);
     if (Ready()) {
+      CaptureFrameBoundaryLocked();
       PresentLocked();
       return;
     }
