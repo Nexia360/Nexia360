@@ -16,21 +16,21 @@
 #include "xenia/app/emulator_window.h"
 #include "xenia/base/filesystem.h"
 #include "xenia/base/png_utils.h"
+#include "xenia/base/system.h"
 #include "xenia/base/utf8.h"
 #include "xenia/emulator.h"
-#include "xenia/kernel/title_id_utils.h"
-#include "xenia/base/system.h"
 #include "xenia/hid/input_system.h"
 #include "xenia/kernel/XLiveAPI.h"
 #include "xenia/kernel/kernel_state.h"
+#include "xenia/kernel/title_id_utils.h"
 #include "xenia/kernel/user_module.h"
 #include "xenia/kernel/util/friends_util.h"
 #include "xenia/kernel/util/played_db.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/util/title_update_manager.h"
-#include "xenia/kernel/xam/xui_game_library.h"
 #include "xenia/kernel/xam/xam_content_device.h"
 #include "xenia/kernel/xam/xam_private.h"
+#include "xenia/kernel/xam/xui_game_library.h"
 #include "xenia/ui/file_picker.h"
 #include "xenia/ui/imgui_dialog.h"
 #include "xenia/ui/imgui_drawer.h"
@@ -2910,7 +2910,8 @@ HubJoinTarget FindHubJoinTarget(uint32_t title_id, const std::string& update,
       }
     }
   }
-  target.reason = "You don't have " + (update.empty() ? "their update" : update) +
+  target.reason = "You don't have " +
+                  (update.empty() ? "their update" : update) +
                   " for this game.";
   return target;
 }
@@ -2988,7 +2989,8 @@ std::vector<std::pair<uint64_t, std::string>> HubFriends(uint32_t user_index) {
     // Not guaranteed to be NUL-terminated when the name fills the field.
     result.emplace_back(
         static_cast<uint64_t>(peer.xuid),
-        std::string(peer.Gamertag, strnlen(peer.Gamertag, sizeof(peer.Gamertag))));
+        std::string(peer.Gamertag,
+                    strnlen(peer.Gamertag, sizeof(peer.Gamertag))));
   }
   return result;
 }

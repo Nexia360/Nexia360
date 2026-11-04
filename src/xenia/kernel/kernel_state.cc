@@ -1742,8 +1742,7 @@ void KernelState::RegisterNotifyListener(XNotifyListener* listener) {
         invite.from_game_invite = true;
         profile->SetSelfInvite(invite);
         const uint32_t user_index =
-            xam_state()->GetUserIndexAssignedToProfileFromXUID(
-                profile->xuid());
+            xam_state()->GetUserIndexAssignedToProfileFromXUID(profile->xuid());
         listener->EnqueueNotification(kXNotificationLiveInviteAccepted,
                                       user_index);
         XELOGI("HubJoin: invite from {:016X} accepted into {:08X}", inviter,

@@ -1519,7 +1519,8 @@ std::string DashboardTitleImageRedirect(const std::string& guest_path) {
   constexpr std::string_view kDevice = "\\Device\\NexiaBoxArt";
   auto* file_system = kernel_state()->file_system();
   vfs::HostPathDevice* device = nullptr;
-  if (vfs::Entry* root = file_system->ResolvePath(std::string(kDevice) + "\\")) {
+  if (vfs::Entry* root =
+          file_system->ResolvePath(std::string(kDevice) + "\\")) {
     device = static_cast<vfs::HostPathDevice*>(root->device());
   } else {
     auto created = std::make_unique<vfs::HostPathDevice>(

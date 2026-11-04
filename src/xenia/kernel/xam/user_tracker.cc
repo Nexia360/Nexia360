@@ -1873,8 +1873,8 @@ void UserTracker::PeriodicMaintenance(uint64_t xuid, size_t iteration_count) {
         // came up offline. If the user picked a mode themselves in between,
         // cvars::network_mode is no longer our Systemlink and theirs stands.
         const uint32_t downgraded_from = downgraded_from_.exchange(0);
-        const bool restore = downgraded_from &&
-                             cvars::network_mode == NETWORK_MODE::LAN;
+        const bool restore =
+            downgraded_from && cvars::network_mode == NETWORK_MODE::LAN;
         if (xbox_live_api->SelectNetworkMode(
                 restore ? downgraded_from : cvars::network_mode,
                 /*persist=*/!restore)) {

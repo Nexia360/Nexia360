@@ -107,8 +107,7 @@ std::string Fit(float size, const std::string& text, float width) {
     return text;
   }
   std::string out = text;
-  while (!out.empty() &&
-         TextSize(size, (out + "...").c_str()).x > width) {
+  while (!out.empty() && TextSize(size, (out + "...").c_str()).x > width) {
     out.pop_back();
   }
   return out + "...";
@@ -119,8 +118,7 @@ void Gradient(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 top, ImU32 bottom) {
 }
 
 // The envelope: a filled card with the flap folded in.
-void DrawEnvelope(ImDrawList* dl, ImVec2 pos, float h, ImU32 col,
-                  ImU32 flap) {
+void DrawEnvelope(ImDrawList* dl, ImVec2 pos, float h, ImU32 col, ImU32 flap) {
   const float w = h * 1.4f;
   dl->AddRectFilled(pos, ImVec2(pos.x + w, pos.y + h), col, 1.5f);
   dl->AddLine(ImVec2(pos.x + 1.0f, pos.y + 1.0f),
@@ -134,8 +132,7 @@ void DrawSpeaker(ImDrawList* dl, ImVec2 pos, float h, ImU32 col) {
   const float box = h * 0.32f;
   const float top = pos.y + h * 0.34f;
   dl->AddRectFilled(ImVec2(pos.x, top), ImVec2(pos.x + box, top + box), col);
-  dl->AddQuadFilled(ImVec2(pos.x + box, top),
-                    ImVec2(pos.x + box * 2.2f, pos.y),
+  dl->AddQuadFilled(ImVec2(pos.x + box, top), ImVec2(pos.x + box * 2.2f, pos.y),
                     ImVec2(pos.x + box * 2.2f, pos.y + h),
                     ImVec2(pos.x + box, top + box), col);
   const ImVec2 centre(pos.x + box * 2.2f, pos.y + h * 0.5f);
@@ -151,15 +148,15 @@ void DrawStar(ImDrawList* dl, ImVec2 centre, float radius, float fill) {
   for (int i = 0; i < 10; ++i) {
     const float r = (i % 2) ? radius * 0.45f : radius;
     const float angle = -1.5707963f + i * 0.6283185f;
-    points[i] = ImVec2(centre.x + std::cos(angle) * r,
-                       centre.y + std::sin(angle) * r);
+    points[i] =
+        ImVec2(centre.x + std::cos(angle) * r, centre.y + std::sin(angle) * r);
   }
   dl->AddConcavePolyFilled(points, 10, kStarOff);
   if (fill > 0.0f) {
-    dl->PushClipRect(ImVec2(centre.x - radius, centre.y - radius),
-                     ImVec2(centre.x - radius + radius * 2.0f * fill,
-                            centre.y + radius),
-                     true);
+    dl->PushClipRect(
+        ImVec2(centre.x - radius, centre.y - radius),
+        ImVec2(centre.x - radius + radius * 2.0f * fill, centre.y + radius),
+        true);
     dl->AddConcavePolyFilled(points, 10, kStarOn);
     dl->PopClipRect();
   }
@@ -172,20 +169,19 @@ void DrawLegendButton(ImDrawList* dl, ImVec2 pos, float size, ImU32 col,
   dl->AddCircleFilled(centre, r, col, 20);
   dl->AddCircle(centre, r, IM_COL32(255, 255, 255, 90), 20, 1.0f);
   const ImVec2 letter_size = TextSize(size * 0.8f, letter);
-  dl->AddText(ImGui::GetFont(), size * 0.8f,
-              ImVec2(centre.x - letter_size.x * 0.5f,
-                     centre.y - letter_size.y * 0.5f),
-              IM_COL32(40, 40, 40, 230), letter);
-  BoldText(dl, size, ImVec2(pos.x + r * 2.0f + 8.0f, pos.y), kFrameText,
-           label);
+  dl->AddText(
+      ImGui::GetFont(), size * 0.8f,
+      ImVec2(centre.x - letter_size.x * 0.5f, centre.y - letter_size.y * 0.5f),
+      IM_COL32(40, 40, 40, 230), letter);
+  BoldText(dl, size, ImVec2(pos.x + r * 2.0f + 8.0f, pos.y), kFrameText, label);
 }
 
 // The hub's "2026-11-04T01:06:12.000Z" in this machine's time, as the
 // console's message view shows it: "11/04/2026" and "01:06 AM".
 bool LocalTime(const std::string& iso, std::tm* out) {
   int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
-  if (std::sscanf(iso.c_str(), "%d-%d-%dT%d:%d:%d", &year, &month, &day,
-                  &hour, &minute, &second) < 5) {
+  if (std::sscanf(iso.c_str(), "%d-%d-%dT%d:%d:%d", &year, &month, &day, &hour,
+                  &minute, &second) < 5) {
     return false;
   }
   std::tm utc = {};
@@ -780,9 +776,8 @@ void MessagesDialog::PollQueries() {
     }
   }
 
-  if (own_pic_query_.valid() &&
-      own_pic_query_.wait_for(std::chrono::seconds(0)) ==
-          std::future_status::ready) {
+  if (own_pic_query_.valid() && own_pic_query_.wait_for(std::chrono::seconds(
+                                    0)) == std::future_status::ready) {
     const std::vector<uint8_t> pic = own_pic_query_.get();
     if (!pic.empty()) {
       own_pic_ = imgui_drawer()->LoadImGuiIcon(std::span<const uint8_t>(pic));
@@ -867,8 +862,7 @@ void MessagesDialog::DrawHeader(const ImVec2& origin, float width) {
            kFrameText, clock.c_str());
 }
 
-void MessagesDialog::DrawTabs(const ImVec2& origin, float width,
-                              float height) {
+void MessagesDialog::DrawTabs(const ImVec2& origin, float width, float height) {
   ImDrawList* dl = ImGui::GetWindowDrawList();
   const float font = ImGui::GetFontSize() * 1.15f;
   const float half = width * 0.5f;
@@ -972,8 +966,7 @@ void MessagesDialog::DrawList(const ImVec2& origin, const ImVec2& size) {
   if (messages_.empty()) {
     const char* text = loading_ ? "Loading..." : "No messages.";
     dl->AddText(ImGui::GetFont(), font,
-                ImVec2(origin.x + 30.0f, origin.y + 20.0f), skin::kText,
-                text);
+                ImVec2(origin.x + 30.0f, origin.y + 20.0f), skin::kText, text);
     return;
   }
 
@@ -1075,18 +1068,17 @@ void MessagesDialog::DrawCard(const ImVec2& origin, const ImVec2& size,
   const float font = ImGui::GetFontSize() * 1.1f;
   const float pad = 20.0f;
 
-  Gradient(dl, origin, ImVec2(origin.x + size.x, origin.y + size.y),
-           kSlateTop, kSlateBottom);
+  Gradient(dl, origin, ImVec2(origin.x + size.x, origin.y + size.y), kSlateTop,
+           kSlateBottom);
 
   // The orange gamertag bar.
   const float bar_h = font + 22.0f;
-  Gradient(dl, origin, ImVec2(origin.x + size.x, origin.y + bar_h),
-           kOrangeTop, kOrangeBottom);
+  Gradient(dl, origin, ImVec2(origin.x + size.x, origin.y + bar_h), kOrangeTop,
+           kOrangeBottom);
   BoldText(dl, font * 1.1f,
            ImVec2(origin.x + pad, origin.y + (bar_h - font * 1.1f) * 0.5f),
            kCardValue,
-           (message.from_name.empty() ? "Unknown" : message.from_name)
-               .c_str());
+           (message.from_name.empty() ? "Unknown" : message.from_name).c_str());
 
   // The band: picture, then Rep / Gamerscore / Zone.
   const float band_y = origin.y + bar_h;
@@ -1113,8 +1105,8 @@ void MessagesDialog::DrawCard(const ImVec2& origin, const ImVec2& size,
   const float row0 = pic_min.y + (line - font) * 0.5f;
   const char* labels[] = {"Rep", "Gamerscore", "Zone"};
   for (int i = 0; i < 3; ++i) {
-    dl->AddText(ImGui::GetFont(), font,
-                ImVec2(label_x, row0 + line * i), kBandLabel, labels[i]);
+    dl->AddText(ImGui::GetFont(), font, ImVec2(label_x, row0 + line * i),
+                kBandLabel, labels[i]);
   }
 
   if (card_) {
@@ -1138,8 +1130,7 @@ void MessagesDialog::DrawCard(const ImVec2& origin, const ImVec2& size,
              kCardValue, "G");
     const std::string score = std::to_string(card_->gamerscore);
     const float score_w = TextSize(font, score.c_str()).x;
-    BoldText(dl, font,
-             ImVec2(right - g * 2.0f - 6.0f - score_w, row0 + line),
+    BoldText(dl, font, ImVec2(right - g * 2.0f - 6.0f - score_w, row0 + line),
              kBandValue, score.c_str());
 
     const std::string zone = card_->zone.empty() ? "-" : card_->zone;
@@ -1168,16 +1159,15 @@ void MessagesDialog::DrawCard(const ImVec2& origin, const ImVec2& size,
   dl->AddRectFilled(bar_min, bar_max, IM_COL32(126, 126, 144, 255));
   dl->AddRect(bar_min, bar_max, kBarFrame);
   if (play_ms_) {
-    const float elapsed = float(std::chrono::duration_cast<
-                                    std::chrono::milliseconds>(
-                                    std::chrono::steady_clock::now() -
-                                    play_started_)
-                                    .count());
+    const float elapsed =
+        float(std::chrono::duration_cast<std::chrono::milliseconds>(
+                  std::chrono::steady_clock::now() - play_started_)
+                  .count());
     const float done = std::clamp(elapsed / float(play_ms_), 0.0f, 1.0f);
-    dl->AddRectFilled(ImVec2(bar_min.x + 2.0f, bar_min.y + 2.0f),
-                      ImVec2(bar_min.x + 2.0f + (bar_w - 4.0f) * done,
-                             bar_max.y - 2.0f),
-                      kBarFill);
+    dl->AddRectFilled(
+        ImVec2(bar_min.x + 2.0f, bar_min.y + 2.0f),
+        ImVec2(bar_min.x + 2.0f + (bar_w - 4.0f) * done, bar_max.y - 2.0f),
+        kBarFill);
     if (done >= 1.0f) {
       play_ms_ = 0;
     }
@@ -1281,16 +1271,15 @@ void MessagesDialog::DrawMessage(const ImVec2& origin, const ImVec2& size) {
     y += font + 10.0f;
   }
   y += 12.0f;
-  dl->AddLine(ImVec2(origin.x, y), ImVec2(origin.x + half, y),
-              skin::kRowLine);
+  dl->AddLine(ImVec2(origin.x, y), ImVec2(origin.x + half, y), skin::kRowLine);
 
   const float action_h = font + 34.0f;
   for (int i = 0; i < kActionCount; ++i) {
     const ImVec2 min(origin.x, y);
     const ImVec2 max(origin.x + half, y + action_h);
     ImGui::SetCursorScreenPos(min);
-    bool pressed = ImGui::InvisibleButton(
-        fmt::format("##action{}", i).c_str(), ImVec2(half, action_h));
+    bool pressed = ImGui::InvisibleButton(fmt::format("##action{}", i).c_str(),
+                                          ImVec2(half, action_h));
     if (ImGui::IsItemHovered() && (ImGui::GetIO().MouseDelta.x != 0.0f ||
                                    ImGui::GetIO().MouseDelta.y != 0.0f)) {
       action_ = i;
@@ -1308,8 +1297,7 @@ void MessagesDialog::DrawMessage(const ImVec2& origin, const ImVec2& size) {
     }
     dl->AddLine(ImVec2(min.x, max.y - 1.0f), ImVec2(max.x, max.y - 1.0f),
                 skin::kRowLine);
-    BoldText(dl, font,
-             ImVec2(min.x + 30.0f, min.y + (action_h - font) * 0.5f),
+    BoldText(dl, font, ImVec2(min.x + 30.0f, min.y + (action_h - font) * 0.5f),
              focused ? skin::kSelectedText : skin::kText, kActions[i]);
     y = max.y;
 
@@ -1333,8 +1321,7 @@ void MessagesDialog::DrawMessage(const ImVec2& origin, const ImVec2& size) {
         live->RefreshMessageCounts();
       }
       messages_.erase(messages_.begin() + open_);
-      selected_ = std::min(selected_,
-                           static_cast<int>(messages_.size()) - 1);
+      selected_ = std::min(selected_, static_cast<int>(messages_.size()) - 1);
       BackToList();
     }
     return;
@@ -1348,7 +1335,7 @@ void MessagesDialog::DrawMessage(const ImVec2& origin, const ImVec2& size) {
 void MessagesDialog::DrawCompose() {
   if (compose_to_xuid_) {
     ImGui::Text("To: %s", compose_to_name_.empty() ? "Unknown"
-                                                  : compose_to_name_.c_str());
+                                                   : compose_to_name_.c_str());
   } else if (recipients_loading_) {
     ImGui::TextUnformatted("Loading players...");
   } else if (recipients_.empty()) {
@@ -1524,8 +1511,7 @@ void MessagesDialog::OnDraw(ImGuiIO& io) {
     }
 
     if (view_ == View::kMessage) {
-      DrawMessage(body_min,
-                  ImVec2(body_w, height - header_h - legend_h));
+      DrawMessage(body_min, ImVec2(body_w, height - header_h - legend_h));
       if (back && view_ == View::kMessage) {
         BackToList();
       }
@@ -1557,8 +1543,7 @@ void MessagesDialog::OnDraw(ImGuiIO& io) {
       }
     }
 
-    DrawLegend(ImVec2(origin.x, origin.y + height - legend_h), width,
-               legend_h);
+    DrawLegend(ImVec2(origin.x, origin.y + height - legend_h), width, legend_h);
 
     ImGui::PopStyleColor();
     ImGui::PopFont();

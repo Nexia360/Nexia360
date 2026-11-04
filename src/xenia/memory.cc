@@ -2294,9 +2294,10 @@ void Memory::SystemHeapFreeOwned(uint32_t address, uint64_t serial) {
       // block went to the next title's main thread as its PCR, the dash
       // thread's own free then released it, and the next thread object to be
       // created zeroed it - every APC on that main thread went to address 0.
-      XELOGW("SystemHeapFreeOwned: {:08X} is no longer allocation {}; left "
-             "alone",
-             address, serial);
+      XELOGW(
+          "SystemHeapFreeOwned: {:08X} is no longer allocation {}; left "
+          "alone",
+          address, serial);
       return;
     }
     system_allocs_.erase(it);

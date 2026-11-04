@@ -1529,7 +1529,8 @@ X_STATUS xeProcessUserApcs(PPCContext* ctx) {
       const uint32_t kthread_ptr = kpcr->prcb_data.current_thread.m_ptr;
       XELOGE(
           "xeProcessUserApcs: r13 {:08X} -> current_thread {:08X} (type {} "
-          "thread_id {:X} apc0 {:08X}/{:08X} apc1 {:08X}/{:08X}); XThread {:08X} "
+          "thread_id {:X} apc0 {:08X}/{:08X} apc1 {:08X}/{:08X}); XThread "
+          "{:08X} "
           "id {:X} guest_object {:08X} pcr {:08X}",
           static_cast<uint32_t>(ctx->r[13]), kthread_ptr,
           static_cast<uint32_t>(current_thread->header.type),

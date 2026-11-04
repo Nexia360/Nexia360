@@ -1587,8 +1587,7 @@ static bool FetchDashModule(const std::string& module_name,
   // a file, see DashChannelPackageRedirect), a XUIZ package or nothing.
   // Whatever the far end served, if it is not what the dash would accept then
   // keeping it only produces a confusing failure the next time it asks.
-  const bool is_package =
-      xe::utf8::lower_ascii(module_name).ends_with(".xzp");
+  const bool is_package = xe::utf8::lower_ascii(module_name).ends_with(".xzp");
   const char* expected = is_package ? "XUIZ" : "XEX2";
   char magic[4] = {};
   FILE* check = xe::filesystem::OpenFile(partial, "rb");
@@ -1665,7 +1664,8 @@ static std::string ResolveHubModule(vfs::VirtualFileSystem* file_system,
                                     const std::string& file_name) {
   constexpr std::string_view kDevice = "\\Device\\NexiaDashModules";
   vfs::HostPathDevice* device = nullptr;
-  if (vfs::Entry* root = file_system->ResolvePath(std::string(kDevice) + "\\")) {
+  if (vfs::Entry* root =
+          file_system->ResolvePath(std::string(kDevice) + "\\")) {
     device = static_cast<vfs::HostPathDevice*>(root->device());
   } else {
     auto created = std::make_unique<vfs::HostPathDevice>(
@@ -1843,10 +1843,9 @@ dword_result_t XdfGetItem_entry(lpstring_t name, lpvoid_t buffer,
     bytes.assign(std::istreambuf_iterator<char>(stream),
                  std::istreambuf_iterator<char>());
   }
-  const X_RESULT result =
-      bytes.empty() || bytes.size() > buffer_size
-          ? X_ERROR_FILE_NOT_FOUND
-          : X_ERROR_SUCCESS;
+  const X_RESULT result = bytes.empty() || bytes.size() > buffer_size
+                              ? X_ERROR_FILE_NOT_FOUND
+                              : X_ERROR_SUCCESS;
   if (result == X_ERROR_SUCCESS) {
     std::memcpy(buffer.as<uint8_t*>(), bytes.data(), bytes.size());
   }
@@ -1857,8 +1856,7 @@ dword_result_t XdfGetItem_entry(lpstring_t name, lpvoid_t buffer,
   if (overlapped) {
     kernel_state()->CompleteOverlappedImmediate(overlapped, result);
   }
-  return result == X_ERROR_SUCCESS ? X_E_SUCCESS
-                                   : X_HRESULT_FROM_WIN32(result);
+  return result == X_ERROR_SUCCESS ? X_E_SUCCESS : X_HRESULT_FROM_WIN32(result);
 }
 DECLARE_XAM_EXPORT1(XdfGetItem, kNone, kSketchy);
 

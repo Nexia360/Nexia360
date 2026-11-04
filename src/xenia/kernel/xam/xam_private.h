@@ -77,7 +77,7 @@ bool RemoveHubFriend(uint32_t user_index, uint64_t target_xuid);
 // machine can launch the same way.
 struct HubJoinTarget {
   bool ok = false;
-  std::string path;       // the played.db copy to launch
+  std::string path;  // the played.db copy to launch
   std::string title_name;
   std::string update_id;  // library id to make active (NO_TU for none)
   std::string reason;     // why not, for the app to show

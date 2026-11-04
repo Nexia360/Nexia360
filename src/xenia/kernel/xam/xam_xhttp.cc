@@ -484,8 +484,9 @@ bool AnswerFriendPrivacy(XHttpHandle* request, const std::string& verb,
     }
     const uint64_t xuid = std::strtoull(match[1].str().c_str(), nullptr, 16);
     const auto privacy = xlive_api->GetFriendPrivacy(xuid);
-    AnswerWith(request, 200, "OK",
-               fmt::format("{{\"privacy\":{}}}", static_cast<uint32_t>(privacy)));
+    AnswerWith(
+        request, 200, "OK",
+        fmt::format("{{\"privacy\":{}}}", static_cast<uint32_t>(privacy)));
     XELOGI("XHttp: GET {} -> friend privacy {} for {:016X}", url,
            static_cast<uint32_t>(privacy), xuid);
     return true;
@@ -508,8 +509,8 @@ bool AnswerFriendPrivacy(XHttpHandle* request, const std::string& verb,
     return false;
   }
   const uint64_t xuid = std::strtoull(xuid_match[1].str().c_str(), nullptr, 16);
-  const auto privacy = static_cast<XLiveAPI::FriendPrivacy>(
-      std::stoul(privacy_match[1].str()));
+  const auto privacy =
+      static_cast<XLiveAPI::FriendPrivacy>(std::stoul(privacy_match[1].str()));
   const bool on_hub = xlive_api->SetFriendPrivacy(xuid, privacy);
   const std::string answer =
       fmt::format("{{\"privacy\":{}}}", static_cast<uint32_t>(privacy));
@@ -763,8 +764,8 @@ class HubVoice {
       }
       size_t i = 0;
       if (have_pending_) {
-        pcm_.push_back(static_cast<int16_t>(
-            (int32_t(pending_) + int32_t(buffer[0])) / 2));
+        pcm_.push_back(
+            static_cast<int16_t>((int32_t(pending_) + int32_t(buffer[0])) / 2));
         have_pending_ = false;
         i = 1;
       }
@@ -779,7 +780,8 @@ class HubVoice {
       if (pcm_.size() >= kMaxSamples) {
         pcm_.resize(kMaxSamples);
         recording_ = false;
-        release_at_ = std::chrono::steady_clock::now() + std::chrono::minutes(2);
+        release_at_ =
+            std::chrono::steady_clock::now() + std::chrono::minutes(2);
       }
     }
   }
@@ -863,7 +865,8 @@ bool AnswerNexiaHub(XHttpHandle* request, const std::string& verb,
     size_t limit = 240;
     const std::string max = params.Get("max");
     if (!max.empty()) {
-      limit = std::clamp<size_t>(std::strtoul(max.c_str(), nullptr, 10), 1, 240);
+      limit =
+          std::clamp<size_t>(std::strtoul(max.c_str(), nullptr, 10), 1, 240);
     }
     text = TruncateUtf8(text, limit);
     AnswerWith(request, 200, "OK",
@@ -943,8 +946,8 @@ bool AnswerNexiaHub(XHttpHandle* request, const std::string& verb,
     }
     if (found.first) {
       AnswerWith(request, 200, "OK",
-                 fmt::format("{{\"path\":\"memory://{:X},{:X}\"}}",
-                             found.first, found.second));
+                 fmt::format("{{\"path\":\"memory://{:X},{:X}\"}}", found.first,
+                             found.second));
     } else {
       AnswerWith(request, 200, "OK", "{\"path\":\"\"}");
     }
@@ -985,10 +988,10 @@ bool AnswerNexiaHub(XHttpHandle* request, const std::string& verb,
     const std::string hash = params.Get("hash");
     const HubJoinTarget target = FindHubJoinTarget(title_id, update, hash);
     if (route == "joinable") {
-      AnswerWith(request, 200, "OK",
-                 fmt::format("{{\"ok\":{},\"reason\":{}}}",
-                             target.ok ? "true" : "false",
-                             JsonString(target.reason)));
+      AnswerWith(
+          request, 200, "OK",
+          fmt::format("{{\"ok\":{},\"reason\":{}}}",
+                      target.ok ? "true" : "false", JsonString(target.reason)));
       return true;
     }
     const uint64_t inviter = params.Xuid("target");
@@ -997,8 +1000,8 @@ bool AnswerNexiaHub(XHttpHandle* request, const std::string& verb,
                fmt::format("{{\"started\":{},\"reason\":{}}}",
                            can ? "true" : "false", JsonString(target.reason)));
     if (can && !StartHubJoin(inviter, title_id, update, hash)) {
-      XELOGE("XHttp: Join Game into {:08X} for {:016X} did not start",
-             title_id, inviter);
+      XELOGE("XHttp: Join Game into {:08X} for {:016X} did not start", title_id,
+             inviter);
     }
     return true;
   }
@@ -1175,13 +1178,12 @@ bool Perform(XHttpHandle* request) {
   // online Social channel needs. Hub requests only.
   const bool hub_url = IsHubUrl(url);
   if (hub_url) {
-    headers = curl_slist_append(headers,
-                                "X-Nexia-Features: channel-packages");
+    headers = curl_slist_append(headers, "X-Nexia-Features: channel-packages");
     if (auto* xlive_api = kernel_state()->GetXboxLiveAPI()) {
       const std::string token = xlive_api->hub_session_token();
       if (!token.empty()) {
-        headers = curl_slist_append(
-            headers, ("X-Nexia-Session: " + token).c_str());
+        headers =
+            curl_slist_append(headers, ("X-Nexia-Session: " + token).c_str());
       }
     }
   }
@@ -2189,8 +2191,8 @@ dword_result_t NetDll_XHttpCrackUrl_entry(
   // XHttpCrackUrlW), and reading to a terminator could run off the page.
   std::string url_to_process;
   if (url_length) {
-    const char* host_ptr = kernel_memory()->TranslateVirtual<const char*>(
-        url_ptr.value());
+    const char* host_ptr =
+        kernel_memory()->TranslateVirtual<const char*>(url_ptr.value());
     url_to_process.assign(host_ptr, strnlen(host_ptr, url_length));
   } else {
     // Unbounded only when the caller said it is terminated (no length).
@@ -2261,8 +2263,8 @@ dword_result_t NetDll_XHttpCrackUrl_entry(
       std::ssub_match sub_match = matches[i];
 
       if (sub_match.matched) {
-        const uint32_t result_ptr = url_ptr.value() +
-                                    static_cast<uint32_t>(matches.position(i));
+        const uint32_t result_ptr =
+            url_ptr.value() + static_cast<uint32_t>(matches.position(i));
 
         const uint32_t length = static_cast<uint32_t>(sub_match.length());
 
@@ -2452,8 +2454,8 @@ dword_result_t NetDll_XHttpCrackUrlW_entry(
   // a given length is read exactly, never past.
   std::string url;
   if (url_length) {
-    const auto* host_ptr = kernel_memory()->TranslateVirtual<const char16_t*>(
-        url_ptr.value());
+    const auto* host_ptr =
+        kernel_memory()->TranslateVirtual<const char16_t*>(url_ptr.value());
     // Grown as read, never sized from the length up front: a caller can pass
     // a length far beyond the URL (or ~0 for "to the terminator").
     constexpr uint32_t kMaxUrlChars = 8192;
