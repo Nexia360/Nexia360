@@ -55,12 +55,15 @@ XObject::~XObject() {
     uint32_t ptr = guest_object_ptr_ - sizeof(X_OBJECT_HEADER);
     auto header = memory()->TranslateVirtual<X_OBJECT_HEADER*>(ptr);
 
-    // Free the object creation info
-    if (header->object_type_ptr) {
-      memory()->SystemHeapFree(header->object_type_ptr);
+    // Only while the block is still ours: if the sweep took it, the header
+    // read here is the new owner's data, not our type record.
+    if (memory()->SystemHeapSerial(ptr) == native_block_serial_) {
+      if (header->object_type_ptr) {
+        memory()->SystemHeapFreeOwned(header->object_type_ptr,
+                                      native_type_serial_);
+      }
+      memory()->SystemHeapFreeOwned(ptr, native_block_serial_);
     }
-
-    memory()->SystemHeapFree(ptr);
   }
 }
 
@@ -119,6 +122,12 @@ bool XObject::RestoreObject(ByteStream* stream) {
   allocated_guest_object_ = stream->Read<uint32_t>() > 0;
   guest_object_ptr_ = stream->Read<uint32_t>();
   guest_object_type_ptr_.store(stream->Read<uint32_t>());
+  if (allocated_guest_object_ && guest_object_ptr_) {
+    const uint32_t block = guest_object_ptr_ - sizeof(X_OBJECT_HEADER);
+    native_block_serial_ = memory()->SystemHeapSerial(block);
+    auto header = memory()->TranslateVirtual<X_OBJECT_HEADER*>(block);
+    native_type_serial_ = memory()->SystemHeapSerial(header->object_type_ptr);
+  }
 
   handles_.resize(stream->Read<uint32_t>());
   stream->Read(&handles_[0], handles_.size() * sizeof(X_HANDLE));
@@ -411,6 +420,7 @@ uint8_t* XObject::CreateNative(uint32_t size) {
   }
 
   allocated_guest_object_ = true;
+  native_block_serial_ = memory()->SystemHeapSerial(mem);
   memory()->Zero(mem, total_size);
   SetNativePointer(mem + sizeof(X_OBJECT_HEADER), true);
 
@@ -418,6 +428,7 @@ uint8_t* XObject::CreateNative(uint32_t size) {
 
   auto object_type = memory()->SystemHeapAlloc(sizeof(X_OBJECT_TYPE));
   if (object_type) {
+    native_type_serial_ = memory()->SystemHeapSerial(object_type);
     // Set it up in the header.
     // Some kernel method is accessing this struct and dereferencing a member
     // @ offset 0x14

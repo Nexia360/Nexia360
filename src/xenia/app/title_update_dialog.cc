@@ -239,7 +239,7 @@ void TitleUpdateDialog::OnDraw(ImGuiIO& io) {
 
         ImGui::TableSetColumnIndex(2);
         if (entry.id == active_id_) {
-          ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.4f, 1.0f), "v%s [active]",
+          ImGui::TextColored(ImVec4(0.12f, 0.50f, 0.05f, 1.0f), "v%s [active]",
                              entry.version.c_str());
         } else {
           ImGui::Text("v%s  (%.1f MB)", entry.version.c_str(),

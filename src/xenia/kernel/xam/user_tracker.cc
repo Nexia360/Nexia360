@@ -1866,7 +1866,18 @@ void UserTracker::PeriodicMaintenance(uint64_t xuid, size_t iteration_count) {
     if (xbox_live_api->Heartbeat()) {
       // Refresh connection.
       if (!xbox_live_api->IsConnectedToServer() && !backend_avalability_) {
-        if (xbox_live_api->SelectNetworkMode(cvars::network_mode)) {
+        // Restore what the user had, not what we downgraded them to. This
+        // used to re-select cvars::network_mode - by now our unpersisted
+        // Systemlink - and persist it, so a hub restart rewrote the config to
+        // Systemlink, which never upgrades, and the next launch's dashboard
+        // came up offline. If the user picked a mode themselves in between,
+        // cvars::network_mode is no longer our Systemlink and theirs stands.
+        const uint32_t downgraded_from = downgraded_from_.exchange(0);
+        const bool restore = downgraded_from &&
+                             cvars::network_mode == NETWORK_MODE::LAN;
+        if (xbox_live_api->SelectNetworkMode(
+                restore ? downgraded_from : cvars::network_mode,
+                /*persist=*/!restore)) {
           const std::string service =
               service_name(static_cast<NETWORK_MODE>(cvars::network_mode));
 
@@ -1877,6 +1888,9 @@ void UserTracker::PeriodicMaintenance(uint64_t xuid, size_t iteration_count) {
             show_notification(fmt::format("{} is now available", service),
                               service, 0);
           }
+        } else if (restore) {
+          // Not back yet: keep what to restore for the next attempt.
+          downgraded_from_ = downgraded_from;
         }
 
         backend_avalability_ = true;
@@ -1893,6 +1907,9 @@ void UserTracker::PeriodicMaintenance(uint64_t xuid, size_t iteration_count) {
         // having to change mode by hand.
         if (xbox_live_api->SelectNetworkMode(NETWORK_MODE::LAN,
                                              /*persist=*/false)) {
+          if (current_mode >= NETWORK_MODE::XBOXLIVE) {
+            downgraded_from_ = current_mode;
+          }
           const std::string service = service_name(current_mode);
 
           if (current_mode >= NETWORK_MODE::XBOXLIVE) {

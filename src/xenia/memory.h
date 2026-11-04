@@ -654,6 +654,16 @@ class Memory {
   // Frees memory allocated with SystemHeapAlloc.
   void SystemHeapFree(uint32_t address, uint32_t* out_region_size = nullptr);
 
+  // Which allocation currently sits at `address` (0 when none). Every
+  // SystemHeapAlloc gets a new serial, so an address that was freed and handed
+  // to someone else reads a different one.
+  uint64_t SystemHeapSerial(uint32_t address);
+  // SystemHeapFree, but only while `address` is still the allocation `serial`
+  // names. For owners that can outlive a title switch: the sweep frees their
+  // blocks, the address is reused, and their own later free must not release
+  // the new owner's block.
+  void SystemHeapFreeOwned(uint32_t address, uint64_t serial);
+
   // Records the page table KeCreateUserMode was given, before the views exist.
   void SetUserPageTable(uint32_t descriptor_address);
 

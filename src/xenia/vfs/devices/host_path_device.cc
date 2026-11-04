@@ -61,6 +61,25 @@ Entry* HostPathDevice::ResolvePath(const std::string_view path) {
   return root_entry_->ResolvePath(path);
 }
 
+Entry* HostPathDevice::AddRootFile(const std::string_view name) {
+  auto global_lock = global_critical_region_.Acquire();
+  auto* root = static_cast<HostPathEntry*>(root_entry_.get());
+  if (!root) {
+    return nullptr;
+  }
+  if (Entry* existing = root->GetChild(name)) {
+    return existing;
+  }
+  const std::filesystem::path host_file = host_path_ / xe::to_path(name);
+  const auto info = xe::filesystem::GetInfo(host_file);
+  if (!info || info->type != xe::filesystem::FileInfo::Type::kFile) {
+    return nullptr;
+  }
+  auto* child = HostPathEntry::Create(this, root, host_file, info.value());
+  root->children_.push_back(std::unique_ptr<Entry>(child));
+  return child;
+}
+
 void HostPathDevice::PopulateEntry(HostPathEntry* parent_entry) {
   std::vector<std::filesystem::path> ancestors;
   PopulateEntry(parent_entry, ancestors);

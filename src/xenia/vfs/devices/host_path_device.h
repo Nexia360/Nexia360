@@ -32,6 +32,14 @@ class HostPathDevice : public Device {
   void Dump(StringBuffer* string_buffer) override;
   Entry* ResolvePath(const std::string_view path) override;
 
+  // The tree is listed once, at Initialize, and ResolvePath only walks the
+  // tree - so a file that appears in the host folder later (a dashboard
+  // module the hub just served, a box-art tile just downloaded) is invisible
+  // until the next launch. This adds one such file at the root without
+  // touching the entries already handed out. Returns the entry, the existing
+  // one if it was already listed, or nullptr if there is no such host file.
+  Entry* AddRootFile(const std::string_view name);
+
   bool is_read_only() const override { return read_only_; }
   bool is_io_queued() const override { return is_package_; }
 

@@ -26,6 +26,7 @@
 
 #include "xenia/app/console_settings_dialog.h"
 #include "xenia/app/content_list_dialog.h"
+#include "xenia/app/guide_dialog.h"
 #include "xenia/app/messages_dialog.h"
 #include "xenia/app/recent_titles_dialog.h"
 #include "xenia/app/title_update_dialog.h"
@@ -34,6 +35,7 @@
 #include "xenia/base/cvar.h"
 #include "xenia/base/debugging.h"
 #include "xenia/base/filesystem.h"
+#include "xenia/base/host_keyboard_capture.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/platform.h"
 #include "xenia/base/profiling.h"
@@ -248,7 +250,7 @@ EmulatorWindow::EmulatorWindow(Emulator* emulator,
                 XE_BUILD_BRANCH "@" XE_BUILD_COMMIT_SHORT " on " XE_BUILD_DATE
                 ")";
 
-  updater_ = std::make_shared<Updater>("AdrianCassar", "xenia-canary");
+  updater_ = std::make_shared<Updater>("Nexia360", "Nexia360");
 
   LoadRecentlyLaunchedTitles();
 }
@@ -1090,6 +1092,10 @@ bool EmulatorWindow::Initialize() {
   // Profile Menu
   auto profile_menu = MenuItem::Create(MenuItem::Type::kPopup, "&Profile");
   {
+    // The Guide button's menu, for whoever has no controller.
+    profile_menu->AddChild(
+        MenuItem::Create(MenuItem::Type::kString, "Show G&uide", "",
+                         std::bind(&EmulatorWindow::ToggleGuideDialog, this)));
     profile_menu->AddChild(MenuItem::Create(
         MenuItem::Type::kString, "&Show Profile Menu", "",
         std::bind(&EmulatorWindow::ToggleProfilesConfigDialog, this)));
@@ -1400,6 +1406,12 @@ void EmulatorWindow::ApplyDisplayConfigForCvars() {
 
 void EmulatorWindow::OnKeyDown(ui::KeyEvent& e) {
   if (!emulator_initialized_) {
+    return;
+  }
+
+  // Typing into an on-screen keyboard is not a hotkey. Left unhandled so the
+  // press goes on down to the keyboard itself.
+  if (IsHostKeyboardCaptured()) {
     return;
   }
 
@@ -1760,6 +1772,38 @@ void EmulatorWindow::ExitTitle() {
   // The recent list gained this title's play time when the session ended.
   LoadRecentlyLaunchedTitles();
   UpdateTitle();
+}
+
+// The dashboard counts as having been up before this game when the game was
+// launched from it, or when a launch from it was recorded earlier - the path
+// RecordLaunchOrigin keeps is the one a guest's "back to the dash" uses too.
+// Going there is RunTitle's switch-in-place, the same as any launch made while
+// a title runs.
+void EmulatorWindow::LeaveGame() {
+  if (!emulator_->is_title_open()) {
+    return;
+  }
+  auto* kernel_state = emulator_->kernel_state();
+  auto xam = kernel_state->GetKernelModule<kernel::xam::XamModule>("xam.xex");
+  if (xam && kernel_state->title_id() != kernel::kDashboardID) {
+    const auto& loader_data = xam->loader_data();
+    if (loader_data.prior_title_id == kernel::kDashboardID ||
+        !loader_data.dashboard_path.empty()) {
+      std::filesystem::path dashboard =
+          loader_data.dashboard_path.empty()
+              ? DashboardFile("dash.xex")
+              : xe::to_path(loader_data.dashboard_path);
+      std::error_code ec;
+      if (std::filesystem::exists(dashboard, ec)) {
+        XELOGI("Leave Game: back to the dashboard at {}",
+               xe::path_to_utf8(dashboard));
+        ClearDialogs();
+        RunTitle(dashboard);
+        return;
+      }
+    }
+  }
+  ExitTitle();
 }
 
 // A title switch - a game changing mode, or launching another title - is done
@@ -2411,6 +2455,105 @@ void EmulatorWindow::ToggleProfilesConfigDialog() {
     emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(false);
     emulator_->kernel_state()->xam_state()->set_profile_dialog_open(false);
   }
+}
+
+void EmulatorWindow::ToggleGuideDialog() {
+  if (guide_dialog_) {
+    guide_dialog_->Dismiss();
+    return;
+  }
+  auto* kernel_state = emulator_->kernel_state();
+  // Same rule as the profile menu it replaces on the button: not over a XAM
+  // dialog, whose input it would take.
+  if (kernel_state->xam_state()->IsUIActive()) {
+    return;
+  }
+
+  std::string gamertag = "Profile";
+  if (auto* profile = kernel_state->xam_state()->profile_manager()->GetProfile(
+          static_cast<uint8_t>(0))) {
+    gamertag = profile->name();
+  }
+  auto message_count = [this](bool voice) -> std::string {
+    auto* live = emulator_->GetXboxLiveAPI();
+    if (!live) {
+      return {};
+    }
+    const kernel::MessageCounts counts = live->message_counts();
+    return std::to_string(voice ? counts.voice : counts.text);
+  };
+
+  // Each item is what the native menu already does, so the guide and the menu
+  // bar can never disagree.
+  std::vector<GuideBlade> blades;
+  blades.push_back(
+      {"Games & Apps",
+       {
+           {"Open Recent", [this]() { ShowRecentTitlesDialog(); }, {}},
+           {"Open Recent with Title Update",
+            [this]() { ShowRecentTitlesWithTuDialog(); },
+            {}},
+           {"Open...", [this]() { FileOpen(); }, {}},
+           {"Installed Content", [this]() { ToggleContentListDialog(); }, {}},
+           {"Install Content", [this]() { InstallContent(); }, {}},
+           {"Avatar Editor", [this]() { ToggleAvatarEditorDialog(); }, {}},
+       }});
+  blades.push_back(
+      {gamertag,
+       {
+           {"Friends", [this]() { ToggleFriendsDialog(); }, {}},
+           {"Messages", [this]() { ToggleTextMessagesDialog(); },
+            [message_count]() { return message_count(false); }},
+           {"Voice Messages", [this]() { ToggleVoiceMessagesDialog(); },
+            [message_count]() { return message_count(true); }},
+           {"Netplay Status", [this]() { ToggleNetplayStatusDialog(); }, {}},
+           {"Switch Profile", [this]() { ToggleProfilesConfigDialog(); }, {}},
+           {"Gamer Picture", [this]() { ToggleGamerpicBrowserDialog(); }, {}},
+       }});
+  blades.push_back(
+      {"Media",
+       {
+           {"Music Player", [this]() { ToggleXMPConfigDialog(); }, {}},
+           {"Take Screenshot", [this]() { TakeScreenshot(); }, {}},
+       }});
+  blades.push_back(
+      {"Settings",
+       {
+           {"Console Settings",
+            [this]() { ToggleConsoleSettingsDialog(); },
+            {}},
+           {"Display", [this]() { ToggleDisplayConfigDialog(); }, {}},
+           {"Netplay Settings",
+            [this]() { ToggleNetplaySettingsDialog(); },
+            {}},
+           {"Controller Hotkeys", [this]() { DisplayHotKeysConfig(); }, {}},
+           {"Updates", [this]() { ToggleUpdaterDialog(); }, {}},
+           {"Turn Off Console", [this]() { FileExit(); }, {}},
+       }});
+
+  // Leave Game heads the profile blade, as on the console, and Y does it too.
+  // The dashboard is not a game to leave.
+  std::function<void()> leave_game;
+  if (emulator_->is_title_open() &&
+      kernel_state->title_id() != kernel::kDashboardID) {
+    leave_game = [this]() { LeaveGame(); };
+    blades[1].items.insert(blades[1].items.begin(),
+                           GuideItem{"Leave Game", leave_game, {}});
+  }
+
+  disable_hotkeys_ = true;
+  kernel_state->BroadcastNotification(kXNotificationSystemUI, 1);
+  kernel_state->xam_state()->is_xam_dialog_present_.store(true);
+
+  // Opens on the profile blade, where the console's guide opens.
+  guide_dialog_ = new GuideDialog(imgui_drawer_.get(), this, std::move(blades),
+                                  1, std::move(leave_game));
+  guide_dialog_->set_closed_callback([this]() {
+    guide_dialog_ = nullptr;
+    disable_hotkeys_ = false;
+    emulator_->kernel_state()->BroadcastNotification(kXNotificationSystemUI, 0);
+    emulator_->kernel_state()->xam_state()->is_xam_dialog_present_.store(false);
+  });
 }
 
 void EmulatorWindow::ToggleGamerpicBrowserDialog() {
@@ -3229,8 +3372,8 @@ void EmulatorWindow::GamepadHotKeys() {
           // which the running game uses, so standing it in for Guide would
           // fire emulator menus on a button the title is reading.
           //
-          // Guide button: short press opens the profile selector, long press
-          // opens console settings. Marshalled to the UI thread.
+          // Guide button: short press opens the guide, long press opens
+          // console settings. Marshalled to the UI thread.
           bool guide_pressed = (buttons & X_INPUT_GAMEPAD_GUIDE) != 0;
           bool solo_guide =
               guide_pressed && (buttons & ~X_INPUT_GAMEPAD_GUIDE) == 0;
@@ -3245,9 +3388,8 @@ void EmulatorWindow::GamepadHotKeys() {
               app_context_.CallInUIThread(
                   [this]() { ToggleConsoleSettingsDialog(); });
             } else if (duration > 50) {
-              // Short press - profile selector (debounce very short presses).
-              app_context_.CallInUIThread(
-                  [this]() { ToggleProfilesConfigDialog(); });
+              // Short press - the guide (debounce very short presses).
+              app_context_.CallInUIThread([this]() { ToggleGuideDialog(); });
             }
           } else if (guide_pressed && !solo_guide) {
             // Guide with other buttons - cancel solo tracking, let the hotkey

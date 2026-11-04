@@ -37,6 +37,10 @@ class DiscImageDevice : public Device {
   uint32_t attributes() const override { return 0; }
   uint32_t component_name_max_length() const override { return 255; }
 
+  // The image this device reads, so a launch through it names the disc that is
+  // in now - after a disc swap that is not the one the title booted from.
+  const std::filesystem::path& host_path() const { return host_path_; }
+
   uint32_t total_allocation_units() const override {
     return uint32_t(mmap_->size() / sectors_per_allocation_unit() /
                     bytes_per_sector());

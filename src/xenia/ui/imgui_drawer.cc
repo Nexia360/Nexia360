@@ -17,6 +17,7 @@
 #include "third_party/imgui/imgui_internal.h"
 #include "xenia/base/assert.h"
 #include "xenia/base/clock.h"
+#include "xenia/base/host_keyboard_capture.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
 #include "xenia/ui/imgui_dialog.h"
@@ -1060,6 +1061,14 @@ void ImGuiDrawer::OnKey(KeyEvent& e, bool is_down) {
       break;
     default:
       break;
+  }
+
+  // An on-screen keyboard is typing: the press is the UI's, and stops here so
+  // the guest's keyboard driver below never queues it as a keystroke. Releases
+  // still go down - one that began before the keyboard opened has to clear the
+  // binding it was holding.
+  if (is_down && IsHostKeyboardCaptured()) {
+    e.set_handled(true);
   }
 }
 

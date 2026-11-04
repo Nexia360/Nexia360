@@ -97,6 +97,17 @@ jobs:
           path: release_assets
           merge-multiple: true
 
+      # The in-app updater downloads a release asset named Nexia360_windows.zip
+      # and extracts it over the install (updater_dialog.h, updater.cc).
+      - name: Package the updater zip
+        run: |-
+          cd release_assets
+          if [ -f Nexia360.exe ]; then
+            files="Nexia360.exe"
+            [ -f LICENSE ] && files="$files LICENSE"
+            zip -j Nexia360_windows.zip $files
+          fi
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

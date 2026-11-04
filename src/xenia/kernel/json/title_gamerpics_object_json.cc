@@ -103,6 +103,25 @@ Gamerpic TitleGamerpicsObjectJSON::DeserializeGamerpic(
     gamepic.cdn_small = gamerpicObj["cdn_small"].GetString();
   }
 
+  // xboxgamer.pics now lists a gamerpic as just {id, likes, url}, the url a
+  // full https://assets.xboxgamer.pics/titles/<title>/<big tile>.png - no name,
+  // cdn or small tile. Everything else comes out of that url: the big tile id
+  // is its file name, the cdn part is its path, and the small tile is the big
+  // one less 0x10000 (2000d -> 1000d, 28000 -> 18000, both served).
+  constexpr std::string_view kAssetsHost = "https://assets.xboxgamer.pics";
+  if (!gamepic.url.empty()) {
+    if (!gamepic.big_tile_id) {
+      gamepic.big_tile_id = string_util::from_string<uint32_t>(
+          std::filesystem::path(gamepic.url).stem().string(), true);
+    }
+    if (gamepic.cdn.empty() && gamepic.url.starts_with(kAssetsHost)) {
+      gamepic.cdn = gamepic.url.substr(kAssetsHost.size());
+    }
+  }
+  if (!gamepic.small_tile_id && gamepic.big_tile_id >= 0x10000) {
+    gamepic.small_tile_id = gamepic.big_tile_id - 0x10000;
+  }
+
   assert_not_zero(gamepic.small_tile_id);
   assert_not_zero(gamepic.big_tile_id);
 

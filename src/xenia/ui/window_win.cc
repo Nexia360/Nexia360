@@ -915,10 +915,14 @@ bool Win32Window::HandleMouse(UINT message, WPARAM wParam, LPARAM lParam,
 bool Win32Window::HandleKeyboard(
     UINT message, WPARAM wParam, LPARAM lParam,
     WindowDestructionReceiver& destruction_receiver) {
-  KeyEvent e(this, VirtualKey(wParam), lParam & 0xFFFF,
-             !!(lParam & (LPARAM(1) << 30)), !!(GetKeyState(VK_SHIFT) & 0x1),
-             !!(GetKeyState(VK_CONTROL) & 0x1), !!(GetKeyState(VK_MENU) & 0x1),
-             !!(GetKeyState(VK_CAPITAL) & 0x1));
+  // The high bit of GetKeyState is "held". The low bit is the key's TOGGLE
+  // state, which flips on every press: reading it for Shift/Ctrl/Alt made
+  // every second Ctrl+M look like a plain M. Caps Lock is the one that wants
+  // the toggle.
+  KeyEvent e(
+      this, VirtualKey(wParam), lParam & 0xFFFF, !!(lParam & (LPARAM(1) << 30)),
+      !!(GetKeyState(VK_SHIFT) & 0x8000), !!(GetKeyState(VK_CONTROL) & 0x8000),
+      !!(GetKeyState(VK_MENU) & 0x8000), !!(GetKeyState(VK_CAPITAL) & 0x1));
   switch (message) {
     case WM_KEYDOWN:
       OnKeyDown(e, destruction_receiver);

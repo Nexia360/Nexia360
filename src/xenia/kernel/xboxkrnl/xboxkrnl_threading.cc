@@ -1525,6 +1525,22 @@ X_STATUS xeProcessUserApcs(PPCContext* ctx) {
           "xeProcessUserApcs: APC queue head {:08X} is not usable guest "
           "memory; abandoning the queue",
           apc_ptr);
+      auto* xthread = XThread::GetCurrentThread();
+      const uint32_t kthread_ptr = kpcr->prcb_data.current_thread.m_ptr;
+      XELOGE(
+          "xeProcessUserApcs: r13 {:08X} -> current_thread {:08X} (type {} "
+          "thread_id {:X} apc0 {:08X}/{:08X} apc1 {:08X}/{:08X}); XThread {:08X} "
+          "id {:X} guest_object {:08X} pcr {:08X}",
+          static_cast<uint32_t>(ctx->r[13]), kthread_ptr,
+          static_cast<uint32_t>(current_thread->header.type),
+          static_cast<uint32_t>(current_thread->thread_id),
+          current_thread->apc_lists[0].flink_ptr.get(),
+          current_thread->apc_lists[0].blink_ptr.get(),
+          current_thread->apc_lists[1].flink_ptr.get(),
+          current_thread->apc_lists[1].blink_ptr.get(),
+          xthread ? xthread->handle() : 0, xthread ? xthread->thread_id() : 0,
+          xthread ? xthread->guest_object() : 0,
+          xthread ? xthread->pcr_ptr() : 0);
       break;
     }
 

@@ -16,6 +16,7 @@
 #include <future>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <thread>
 #include <unordered_set>
@@ -93,6 +94,16 @@ struct HubMessage {
   std::string text;
   uint32_t duration_ms = 0;
   std::string created_at;
+};
+
+// A message sender's gamercard, as the console's message view shows it: Rep
+// in stars (0..5, quarter steps), Gamerscore, Zone, and the picture.
+struct HubPlayerCard {
+  std::string gamertag;
+  float rep = 0.0f;
+  uint32_t gamerscore = 0;
+  std::string zone;
+  std::vector<uint8_t> gamerpic;
 };
 
 // What the notification loop watches: how many of each are waiting unread.
@@ -261,9 +272,25 @@ class XLiveAPI {
 
   // Publishes our setting and, so the hub can judge a friend-of-friends
   // request, our friend XUIDs. The hub keeps no friend graph of its own.
-  void PublishFriendPrivacy(uint64_t xuid, FriendPrivacy privacy,
+  // Stored locally first, so it holds even when the hub cannot be reached.
+  // True when the hub took it.
+  // Publishes this profile's friends (with its privacy setting) to the hub.
+  bool PublishFriendList(uint64_t profile_xuid);
+
+  std::string hub_session_token() const {
+    std::lock_guard<std::mutex> lock(hub_session_mutex_);
+    return hub_session_token_;
+  }
+  bool PublishFriendPrivacy(uint64_t xuid, FriendPrivacy privacy,
                             const std::vector<uint64_t>& friends);
 
+  // The setting alone - the hub's friend list for this player is left as it
+  // is. What the dashboard's Privacy app saves (Dash.PrivacyUI.lex, answered
+  // in xam_xhttp.cc). Local first, then the hub; true when the hub took it.
+  bool SetFriendPrivacy(uint64_t xuid, FriendPrivacy privacy);
+
+  // The hub's value when it answers - which then refreshes the local copy -
+  // else the local copy, else Anyone (the hub's own default).
   FriendPrivacy GetFriendPrivacy(uint64_t xuid);
 
   FriendRequestOutcome SendFriendRequest(uint64_t from_xuid, uint64_t to_xuid);
@@ -330,6 +357,14 @@ class XLiveAPI {
   MessageCounts GetMessageCounts(uint64_t xuid);
 
   void MarkMessageRead(uint64_t xuid, const std::string& id);
+
+  // Back to unread (hub GET /players/message/<xuid>/<id>/unread).
+  void MarkMessageUnread(uint64_t xuid, const std::string& id);
+
+  // A sender's gamercard for the message view (hub /players/<xuid>/card) and
+  // their picture. Empty when the hub does not know them.
+  std::optional<HubPlayerCard> GetPlayerCard(uint64_t xuid);
+  std::future<std::optional<HubPlayerCard>> GetPlayerCardAsync(uint64_t xuid);
 
   void DeleteMessage(uint64_t xuid, const std::string& id);
 
@@ -646,6 +681,9 @@ class XLiveAPI {
   }
 
  private:
+  mutable std::mutex hub_session_mutex_;
+  std::string hub_session_token_;
+
   // Friend requests the player answered with "Later". Held in memory only and
   // never written anywhere, so they are shown again on the next launch. The
   // hub still has them - "Later" answers nothing.

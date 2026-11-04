@@ -549,6 +549,17 @@ int XexModule::ApplyPatch(XexModule* module) {
   return result_code;
 }
 
+bool XexModule::has_code() const {
+  for (uint32_t i = 0; i < xex_security_info()->page_descriptor_count; i++) {
+    xex2_page_descriptor desc;
+    desc.value = xe::byte_swap(xex_security_info()->page_descriptors[i].value);
+    if (desc.info == XEX_SECTION_CODE) {
+      return true;
+    }
+  }
+  return false;
+}
+
 int XexModule::ReadImage(const void* xex_addr, size_t xex_length,
                          const uint8_t* key) {
   if (!opt_file_format_info()) {
@@ -598,7 +609,8 @@ int XexModule::ReadImage(const void* xex_addr, size_t xex_length,
     return result_code;
   }
 
-  if (is_patch() || is_valid_executable()) {
+  // Without code there's no PE header to tell the key by.
+  if (is_patch() || is_valid_executable() || !has_code()) {
     return 0;
   }
 
@@ -1102,7 +1114,7 @@ bool XexModule::LoadContinue() {
 
   finished_load_ = true;
 
-  if (ReadPEHeaders()) {
+  if (has_code() && ReadPEHeaders()) {
     XELOGE("Failed to load XEX PE headers!");
     return false;
   }
@@ -1143,7 +1155,11 @@ bool XexModule::LoadContinue() {
   }
 
   // Notify backend that we have an executable range.
-  processor_->backend()->CommitExecutableRange(low_address_, high_address_);
+  if (has_code()) {
+    processor_->backend()->CommitExecutableRange(low_address_, high_address_);
+  } else {
+    low_address_ = 0;
+  }
 
   // Add all imports (variables/functions).
   xex2_opt_import_libraries* opt_import_libraries = nullptr;
@@ -1238,6 +1254,9 @@ bool XexModule::LoadContinue() {
 }
 
 void XexModule::Precompile() {
+  if (!has_code()) {
+    return;
+  }
   sha1::SHA1 final_image_sha_;
 
   final_image_sha_.reset();

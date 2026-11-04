@@ -665,7 +665,7 @@ void NetplayStatusDialog::OnDraw(ImGuiIO& io) {
     if (xlive_api->IsXUIDMismatched()) {
       ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(240, 50, 50, 255));
       ImGui::Text("XUID mismatch expect unstable netplay!");
-      ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(50, 240, 50, 255));
+      ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(30, 130, 20, 255));
       ImGui::Text(
           "Go to Netplay->Manager->Delete Netplay Profiles to fix this issue.");
       ImGui::PopStyleColor(2);

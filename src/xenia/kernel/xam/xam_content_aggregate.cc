@@ -194,7 +194,10 @@ static void AppendXnaLibraryItems(
     }
     item.set_display_name(xe::to_utf16(name));
     item.set_file_name(file_name);
-    item.set_title_name(xe::to_utf16(name));
+    // The TITLE is the Indie Player's, not the game's: Storage groups records
+    // by title and heads the group with this name, so the game's name here
+    // labelled the whole group after whichever package came first.
+    item.set_title_name(u"Indie Games");
     item.content_size = ContentManager::PackageSizeOnDisk(entry.path());
 
     XELOGE("  xna item title {:08X} '{}' file '{}' {} bytes",

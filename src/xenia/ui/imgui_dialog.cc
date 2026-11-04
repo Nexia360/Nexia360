@@ -12,6 +12,7 @@
 #include "third_party/imgui/imgui.h"
 #include "xenia/base/assert.h"
 #include "xenia/ui/imgui_drawer.h"
+#include "xenia/ui/imgui_guide_skin.h"
 
 namespace xe {
 namespace ui {
@@ -47,9 +48,12 @@ bool ImGuiDialog::IsTopmostDialog() const {
 }
 
 void ImGuiDialog::Draw() {
-  // Draw UI.
+  // Draw UI. Every dialog wears the guide's skin, so whatever the guide opens
+  // looks like a piece of it.
   if (!has_close_pending_) {
+    PushGuideSkin();
     OnDraw(GetIO());
+    PopGuideSkin();
   }
 
   // Check to see if the UI closed itself and needs to be deleted.

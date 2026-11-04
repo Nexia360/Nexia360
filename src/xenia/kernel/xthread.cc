@@ -97,11 +97,12 @@ XThread::~XThread() {
   if (thread_state_) {
     delete thread_state_;
   }
-  kernel_state()->memory()->SystemHeapFree(tls_static_address_);
+  kernel_state()->memory()->SystemHeapFreeOwned(tls_static_address_,
+                                                tls_serial_);
   if (pcr_address_) {
-    XELOGD("XThread{:08X} ({:X}) destroyed, freeing PCR {:08X}", handle(),
+    XELOGI("XThread{:08X} ({:X}) destroyed, freeing PCR {:08X}", handle(),
            thread_id_, pcr_address_);
-    kernel_state()->memory()->SystemHeapFree(pcr_address_);
+    kernel_state()->memory()->SystemHeapFreeOwned(pcr_address_, pcr_serial_);
   }
   FreeStack();
 
@@ -371,6 +372,7 @@ X_STATUS XThread::Create() {
   uint32_t tls_slot_size = tls_slots * 4;
   tls_total_size_ = tls_slot_size + tls_extended_size;
   tls_static_address_ = memory()->SystemHeapAlloc(tls_total_size_);
+  tls_serial_ = memory()->SystemHeapSerial(tls_static_address_);
   tls_dynamic_address_ = tls_static_address_ + tls_extended_size;
   if (!tls_static_address_) {
     XELOGW("Unable to allocate thread local storage block");
@@ -402,6 +404,7 @@ X_STATUS XThread::Create() {
   // So, at offset 0x100 we have a 4b pointer to offset 200, then have the
   // structure.
   pcr_address_ = memory()->SystemHeapAlloc(0x2D8);
+  pcr_serial_ = memory()->SystemHeapSerial(pcr_address_);
   if (!pcr_address_) {
     XELOGW("Unable to allocate thread state block");
     return X_STATUS_NO_MEMORY;
@@ -441,7 +444,7 @@ X_STATUS XThread::Create() {
 
   pcr->prcb_data.dpc_active = 0;  // DPC active bool?
 
-  XELOGD("XThread{:08X} ({:X}) PCR {:08X}, KTHREAD {:08X}", handle(),
+  XELOGI("XThread{:08X} ({:X}) PCR {:08X}, KTHREAD {:08X}", handle(),
          thread_id_, pcr_address_, guest_object());
 
   // Always retain when starting - the thread owns itself until exited.
@@ -616,7 +619,7 @@ void XThread::PinGuestBlocks() {
     auto* header = memory->TranslateVirtual<X_OBJECT_HEADER*>(object_block);
     memory->PinSystemHeapBlock(header->object_type_ptr);
   }
-  XELOGD("XThread{:08X} ({:X}) pinned PCR {:08X}, KTHREAD {:08X}", handle(),
+  XELOGI("XThread{:08X} ({:X}) pinned PCR {:08X}, KTHREAD {:08X}", handle(),
          thread_id_, pcr_address_, guest_object());
 }
 
@@ -631,13 +634,13 @@ void XThread::Abandon() {
   // destructor may never run.
   auto* memory = kernel_state()->memory();
   if (tls_static_address_) {
-    memory->SystemHeapFree(tls_static_address_);
+    memory->SystemHeapFreeOwned(tls_static_address_, tls_serial_);
     tls_static_address_ = 0;
   }
   if (pcr_address_) {
-    XELOGD("XThread{:08X} ({:X}) abandoned, freeing PCR {:08X}", handle(),
+    XELOGI("XThread{:08X} ({:X}) abandoned, freeing PCR {:08X}", handle(),
            thread_id_, pcr_address_);
-    memory->SystemHeapFree(pcr_address_);
+    memory->SystemHeapFreeOwned(pcr_address_, pcr_serial_);
     pcr_address_ = 0;
   }
   FreeStack();
@@ -1328,6 +1331,10 @@ object_ref<XThread> XThread::Restore(KernelState* kernel_state,
   thread->tls_dynamic_address_ = state.tls_dynamic_address;
   thread->tls_total_size_ = state.tls_total_size;
   thread->pcr_address_ = state.pcr_address;
+  thread->tls_serial_ =
+      kernel_state->memory()->SystemHeapSerial(thread->tls_static_address_);
+  thread->pcr_serial_ =
+      kernel_state->memory()->SystemHeapSerial(thread->pcr_address_);
   thread->stack_base_ = state.stack_base;
   thread->stack_limit_ = state.stack_limit;
   thread->stack_alloc_base_ = state.stack_alloc_base;

@@ -11,16 +11,20 @@
 #define XENIA_APP_MESSAGES_DIALOG_H_
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <future>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "xenia/kernel/XLiveAPI.h"
 #include "xenia/ui/imgui_dialog.h"
 #include "xenia/ui/imgui_drawer.h"
+#include "xenia/ui/immediate_drawer.h"
+#include "xenia/ui/ui_focus_manager.h"
 
 namespace xe {
 namespace app {
@@ -61,15 +65,35 @@ class MessagesDialog final : public ui::ImGuiDialog {
   void OnDraw(ImGuiIO& io) override;
 
  private:
-  // What the body of the popup is showing right now.
+  // What the body of the popup is showing right now: the console's Messages
+  // list, one message opened (Message Received on the left, the sender's card
+  // and the message on the right), or writing / recording one.
   enum class View {
     kList,
+    kMessage,
     kCompose,
   };
 
   void Reload();
-  void DrawList();
+  void DrawHeader(const ImVec2& origin, float width);
+  void DrawTabs(const ImVec2& origin, float width, float height);
+  void DrawLegend(const ImVec2& origin, float width, float height);
+  void DrawList(const ImVec2& origin, const ImVec2& size);
+  void DrawMessage(const ImVec2& origin, const ImVec2& size);
+  void DrawCard(const ImVec2& origin, const ImVec2& size,
+                const kernel::HubMessage& message);
   void DrawCompose();
+
+  void OpenMessage(int index);
+  void BackToList();
+  void LeaveCompose();
+  void OpenKeyboard();
+  // The pad, as the guide takes it: through the focus manager, one view at a
+  // time. ImGui's own navigation is off for this dialog.
+  void HandlePad();
+  void StartCompose(bool voice, uint64_t to_xuid, const std::string& to_name);
+  void PollQueries();
+  int UnreadCount() const;
 
   // Everyone this profile is allowed to write to: friends, plus anyone from a
   // session in the last 48 hours. The hub enforces the same rule on send, so
@@ -95,11 +119,43 @@ class MessagesDialog final : public ui::ImGuiDialog {
 
   // Index into messages_, or -1 for none.
   int selected_ = -1;
+  // The message opened (View::kMessage), and the action focused in it.
+  int open_ = -1;
+  int action_ = 0;
+  // Scroll the list to the selected row on the next frame.
+  bool scroll_to_selected_ = false;
+  // In an open voice message: the player button the pad is on (0 Stop,
+  // 1 Play, 2 Done), or -1 while it is on the actions.
+  int player_focus_ = -1;
+  // This frame's pad input, and A pressed on what the pad is on.
+  ui::UIInput input_ = {};
+  bool activate_ = false;
+  // Where B from the compose view goes back to.
+  View compose_return_ = View::kList;
+
+  // The opened message's sender card and picture.
+  std::future<std::optional<kernel::HubPlayerCard>> card_query_;
+  std::optional<kernel::HubPlayerCard> card_;
+  uint64_t card_xuid_ = 0;
+  std::unique_ptr<ui::ImmediateTexture> card_pic_;
+
+  // The signed-in profile's own picture, in the header as on the console.
+  std::future<std::vector<uint8_t>> own_pic_query_;
+  std::unique_ptr<ui::ImmediateTexture> own_pic_;
+
+  // The voice message playing in the message view, for its progress bar.
+  std::chrono::steady_clock::time_point play_started_;
+  uint32_t play_ms_ = 0;
 
   std::future<std::vector<kernel::HubPlayer>> recipients_query_;
   std::vector<kernel::HubPlayer> recipients_;
   bool recipients_loading_ = false;
   int compose_target_ = -1;
+  // Who the message being written goes to, and whether it is a voice one -
+  // set by picking a recipient, or by Reply / Voice Reply on an open message.
+  uint64_t compose_to_xuid_ = 0;
+  std::string compose_to_name_;
+  bool compose_voice_ = false;
 
   // 250 characters plus the terminator. The buffer size is what actually caps
   // typing - ImGui will not write past it - and the hub refuses anything

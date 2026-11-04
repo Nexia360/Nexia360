@@ -18,6 +18,7 @@
 #include "third_party/rapidjson/include/rapidjson/prettywriter.h"
 #include "third_party/rapidjson/include/rapidjson/stringbuffer.h"
 #include "xenia/base/filesystem.h"
+#include "xenia/base/host_keyboard_capture.h"
 #include "xenia/base/platform.h"
 #include "xenia/base/string_util.h"
 #include "xenia/base/utf8.h"
@@ -261,7 +262,10 @@ void MousehookConfig::ApplyToGamepad(X_INPUT_GAMEPAD* gamepad,
   // Keyboard bindings. Applied here rather than in the WinKey driver so they
   // reach the guest even when another driver owns the slot - same reasoning as
   // the mouse motion below.
-  if (!parsed_binds_.empty()) {
+  // These are polled straight off the host keyboard, so an event handler
+  // swallowing the press does not stop them - while an on-screen keyboard is
+  // typing they are skipped outright.
+  if (!parsed_binds_.empty() && !IsHostKeyboardCaptured()) {
     const bool capital = IsHostCapital();
     for (const auto& bind : parsed_binds_) {
       if (!((bind.lowercase == bind.uppercase) ||

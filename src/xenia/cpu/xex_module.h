@@ -238,6 +238,9 @@ class XexModule : public xe::cpu::Module {
     return *(uint32_t*)buffer == 0x905A4D;
   }
 
+  // A module of resources alone has no code, nor a PE image.
+  bool has_code() const;
+
   bool is_patch() const {
     assert_not_null(xex_header());
     if (!xex_header()) {

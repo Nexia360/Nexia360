@@ -2197,7 +2197,10 @@ struct SystemAllocInfo {
   uint32_t size;
   uint64_t order;
   void* caller;
+  // Unique per allocation and never changed (pinning clears `order`).
+  uint64_t serial;
 };
+static uint64_t system_alloc_serial_ = 0;
 static std::mutex system_alloc_mutex_;
 static std::map<uint32_t, SystemAllocInfo> system_allocs_;
 static uint64_t system_alloc_order_ = 0;
@@ -2233,7 +2236,7 @@ uint32_t Memory::ReleaseSystemHeapSinceWatermark() {
       if (info.order > system_alloc_watermark_) {
         doomed.emplace_back(info.order, address);
         bytes += info.size;
-        XELOGD("  leaked system block {:08X} {} bytes, caller {}", address,
+        XELOGI("  leaked system block {:08X} {} bytes, caller {}", address,
                info.size, info.caller);
       }
     }
@@ -2267,9 +2270,38 @@ uint32_t Memory::SystemHeapAlloc(uint32_t size, uint32_t alignment,
   {
     std::lock_guard<std::mutex> lock(system_alloc_mutex_);
     system_allocs_[address] =
-        SystemAllocInfo{size, ++system_alloc_order_, XE_RETURN_ADDRESS()};
+        SystemAllocInfo{size, ++system_alloc_order_, XE_RETURN_ADDRESS(),
+                        ++system_alloc_serial_};
   }
   return address;
+}
+
+uint64_t Memory::SystemHeapSerial(uint32_t address) {
+  std::lock_guard<std::mutex> lock(system_alloc_mutex_);
+  auto it = system_allocs_.find(address);
+  return it == system_allocs_.end() ? 0 : it->second.serial;
+}
+
+void Memory::SystemHeapFreeOwned(uint32_t address, uint64_t serial) {
+  if (!address) {
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(system_alloc_mutex_);
+    auto it = system_allocs_.find(address);
+    if (it == system_allocs_.end() || it->second.serial != serial) {
+      // Swept already, and maybe someone else's now: a dash thread's KTHREAD
+      // block went to the next title's main thread as its PCR, the dash
+      // thread's own free then released it, and the next thread object to be
+      // created zeroed it - every APC on that main thread went to address 0.
+      XELOGW("SystemHeapFreeOwned: {:08X} is no longer allocation {}; left "
+             "alone",
+             address, serial);
+      return;
+    }
+    system_allocs_.erase(it);
+  }
+  LookupHeap(address)->Release(address, nullptr);
 }
 
 void Memory::SystemHeapFree(uint32_t address, uint32_t* out_region_size) {

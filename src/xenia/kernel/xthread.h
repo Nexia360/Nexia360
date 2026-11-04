@@ -556,6 +556,11 @@ class XThread : public XObject, public cpu::Thread {
   uint32_t tls_dynamic_address_ = 0;
   uint32_t tls_total_size_ = 0;
   uint32_t pcr_address_ = 0;
+  // The system-heap allocations behind tls_static_address_ and pcr_address_
+  // (Memory::SystemHeapSerial). Freed only while still these allocations: the
+  // title-switch sweep can free and reuse them first.
+  uint64_t tls_serial_ = 0;
+  uint64_t pcr_serial_ = 0;
   uint32_t stack_alloc_base_ = 0;  // Stack alloc base
   uint32_t stack_alloc_size_ = 0;  // Stack alloc size
   uint32_t stack_generation_ = 0;  // Title generation the stack belongs to

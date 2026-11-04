@@ -191,6 +191,10 @@ class UserTracker {
 
   const std::chrono::seconds periodic_maintenance_interval_ = 5s;
   std::atomic<bool> backend_avalability_ = false;
+  // The mode we dropped to Systemlink FROM when a heartbeat failed, restored
+  // when the backend answers again. OFFLINE (0) means we have not downgraded:
+  // maintenance never runs in offline mode, so it can never be the source.
+  std::atomic<uint32_t> downgraded_from_ = 0;
 
   struct CaseInsensitive {
     bool operator()(const std::u16string lhs, const std::u16string rhs) const {

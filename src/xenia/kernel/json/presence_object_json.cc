@@ -36,6 +36,26 @@ bool PresenceObjectJSON::Serialize(
     writer->String("richPresence");
     writer->String(xe::to_utf8(presence.RichPresence()));
 
+    // The game it is, by ID and by name: the hub keeps the name for the
+    // Friends app's "Playing <game>" (PresenceUpdateRequest titleID /
+    // titleName).
+    if (!presence.TitleID().empty()) {
+      writer->String("titleID");
+      writer->String(presence.TitleID());
+    }
+    if (!presence.TitleName().empty()) {
+      writer->String("titleName");
+      writer->String(presence.TitleName());
+    }
+    if (!presence.TitleUpdate().empty()) {
+      writer->String("titleUpdate");
+      writer->String(presence.TitleUpdate());
+    }
+    if (!presence.TitleUpdateHash().empty()) {
+      writer->String("titleUpdateHash");
+      writer->String(presence.TitleUpdateHash());
+    }
+
     // writer->String("state");
     // writer->Uint(state_);
 

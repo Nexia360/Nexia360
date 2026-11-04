@@ -32,8 +32,18 @@
 #include "xenia/vfs/devices/stfs_xbox.h"
 #include "xenia/vfs/devices/xcontent_container_device.h"
 
+#include <algorithm>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <mutex>
+#include <span>
+
+#include "third_party/stb/stb_image.h"
+#include "third_party/stb/stb_image_write.h"
+#include "xenia/vfs/entry.h"
+#include "xenia/vfs/file.h"
 #include "xenia/xbox.h"
 
 DEFINE_int32(
@@ -1257,6 +1267,280 @@ DECLARE_XAM_EXPORT1(XamContentGetDeviceVolumePath, kContent, kStub);
 // icon. A package's own metadata is copied as it is; a record with no
 // package behind it (an XNA library title, a profile made before profiles
 // carried a header) gets one built from the record itself.
+// The title's box art as a metadata thumbnail: a PNG small enough for the
+// header's thumbnail field. Only for a game's own record - a save or DLC keeps
+// its picture - and never for 584E07D2, the Indie Player every XNA game shares.
+// Empty when there is no box art, and the caller keeps what it had.
+static std::vector<uint8_t> BoxArtThumbnail(const XCONTENT_DATA_INTERNAL& data,
+                                            size_t max_size) {
+  switch (data.content_type.get()) {
+    case XContentType::kArcadeTitle:
+    case XContentType::kXbox360Title:
+    case XContentType::kInstalledGame:
+    case XContentType::kXboxTitle:
+    case XContentType::kGameDemo:
+      break;
+    default:
+      return {};
+  }
+  const uint32_t title_id = data.title_id;
+  if (!title_id || title_id == kXN_2002 || title_id == kDashboardID) {
+    return {};
+  }
+
+  static std::mutex cache_mutex;
+  static std::map<uint32_t, std::vector<uint8_t>> cache;
+  {
+    std::lock_guard<std::mutex> lock(cache_mutex);
+    if (const auto found = cache.find(title_id); found != cache.end()) {
+      return found->second;
+    }
+  }
+
+  std::vector<uint8_t> png;
+  const std::vector<uint8_t> art = FetchTitleBoxArt(title_id);
+  int width = 0;
+  int height = 0;
+  int channels = 0;
+  uint8_t* pixels = art.empty() ? nullptr
+                                : stbi_load_from_memory(
+                                      art.data(), static_cast<int>(art.size()),
+                                      &width, &height, &channels, 3);
+  if (pixels) {
+    // Box art is 219x300; a photo does not compress far as a PNG, so the
+    // picture shrinks until it fits the field.
+    for (int target_height = 128; target_height >= 48 && png.empty();
+         target_height -= 8) {
+      const int target_width =
+          std::max(1, width * target_height / std::max(1, height));
+      std::vector<uint8_t> scaled(size_t(target_width) * target_height * 3);
+      for (int y = 0; y < target_height; ++y) {
+        const int y0 = y * height / target_height;
+        const int y1 = std::max(y0 + 1, (y + 1) * height / target_height);
+        for (int x = 0; x < target_width; ++x) {
+          const int x0 = x * width / target_width;
+          const int x1 = std::max(x0 + 1, (x + 1) * width / target_width);
+          uint32_t sum[3] = {};
+          for (int sy = y0; sy < y1; ++sy) {
+            for (int sx = x0; sx < x1; ++sx) {
+              const uint8_t* p = pixels + (size_t(sy) * width + sx) * 3;
+              sum[0] += p[0];
+              sum[1] += p[1];
+              sum[2] += p[2];
+            }
+          }
+          const uint32_t count = uint32_t((y1 - y0) * (x1 - x0));
+          uint8_t* q = scaled.data() + (size_t(y) * target_width + x) * 3;
+          q[0] = uint8_t(sum[0] / count);
+          q[1] = uint8_t(sum[1] / count);
+          q[2] = uint8_t(sum[2] / count);
+        }
+      }
+      std::vector<uint8_t> encoded;
+      stbi_write_png_to_func(
+          [](void* context, void* bytes, int size) {
+            auto* out = static_cast<std::vector<uint8_t>*>(context);
+            const auto* begin = static_cast<const uint8_t*>(bytes);
+            out->insert(out->end(), begin, begin + size);
+          },
+          &encoded, target_width, target_height, 3, scaled.data(),
+          target_width * 3);
+      if (!encoded.empty() && encoded.size() <= max_size) {
+        png = std::move(encoded);
+      }
+    }
+    stbi_image_free(pixels);
+  }
+
+  std::lock_guard<std::mutex> lock(cache_mutex);
+  cache[title_id] = png;
+  return png;
+}
+
+// The title's cover as a PNG on the host, written once into the art cache. My
+// Games draws the title image the dashboard loads (see
+// PatchDashboardLibraryArt), so this is what a tile shows. The front of
+// XboxUnity's official retail cover comes first - 427x600, twice the detail of
+// the marketplace art - then the Xbox image server's boxartlg.jpg (219x300).
+// Empty when neither has the title.
+static std::filesystem::path BoxArtTilePath(uint32_t title_id) {
+  static std::mutex tile_mutex;
+  std::lock_guard<std::mutex> lock(tile_mutex);
+  const std::filesystem::path path = kernel_state()->emulator()->cache_root() /
+                                     "disc_art" /
+                                     fmt::format("{:08X}_front.png", title_id);
+  std::error_code ec;
+  if (std::filesystem::is_regular_file(path, ec)) {
+    return path;
+  }
+
+  int width = 0;
+  int height = 0;
+  int channels = 0;
+  uint8_t* pixels = nullptr;
+  // A 360 case insert is 273mm across: back, a 14mm spine, and a 129.5mm
+  // front on the right - the front is the right 129.5/273 of the jacket.
+  int left = 0;
+  int crop_width = 0;
+  const std::vector<uint8_t> jacket = FetchTitleCoverJacket(title_id);
+  if (!jacket.empty()) {
+    pixels =
+        stbi_load_from_memory(jacket.data(), static_cast<int>(jacket.size()),
+                              &width, &height, &channels, 3);
+    if (pixels && width > height) {
+      crop_width = width * 1295 / 2730;
+      left = width - crop_width;
+    } else if (pixels) {
+      // Not a jacket after all; take it whole.
+      crop_width = width;
+    }
+  }
+  if (!pixels) {
+    const std::vector<uint8_t> art = FetchTitleBoxArt(title_id);
+    if (art.empty()) {
+      return {};
+    }
+    pixels = stbi_load_from_memory(art.data(), static_cast<int>(art.size()),
+                                   &width, &height, &channels, 3);
+    if (!pixels) {
+      return {};
+    }
+    crop_width = width;
+  }
+  std::vector<uint8_t> png;
+  stbi_write_png_to_func(
+      [](void* context, void* bytes, int size) {
+        auto* out = static_cast<std::vector<uint8_t>*>(context);
+        const auto* begin = static_cast<const uint8_t*>(bytes);
+        out->insert(out->end(), begin, begin + size);
+      },
+      &png, crop_width, height, 3, pixels + size_t(left) * 3, width * 3);
+  stbi_image_free(pixels);
+  if (png.empty()) {
+    return {};
+  }
+  std::filesystem::create_directories(path.parent_path(), ec);
+  std::ofstream file(path, std::ios::binary);
+  file.write(reinterpret_cast<const char*>(png.data()),
+             static_cast<std::streamsize>(png.size()));
+  return file ? path : std::filesystem::path();
+}
+
+// One attribute of the first <tag ...> in an ArcadeInfo.xml already reduced to
+// ASCII. Empty when the tag or attribute is not there.
+static std::string ArcadeInfoAttribute(const std::string& xml,
+                                       std::string_view tag,
+                                       std::string_view attribute) {
+  const size_t open = xml.find(tag);
+  if (open == std::string::npos) {
+    return {};
+  }
+  const size_t close = xml.find('>', open);
+  const std::string element = xml.substr(open, close - open);
+  const std::string key = std::string(" ") + std::string(attribute) + "=\"";
+  const size_t at = element.find(key);
+  if (at == std::string::npos) {
+    return {};
+  }
+  const size_t value = at + key.size();
+  const size_t end = element.find('"', value);
+  return end == std::string::npos ? std::string()
+                                  : element.substr(value, end - value);
+}
+
+std::string DashboardTitleImageRedirect(const std::string& guest_path) {
+  if (kernel_state()->title_id() != kDashboardID) {
+    return {};
+  }
+  // "Content4:\game.png" - a file at the root of a mounted package.
+  const size_t colon = guest_path.find(":\\");
+  if (colon == std::string::npos) {
+    return {};
+  }
+  const std::string name = guest_path.substr(colon + 2);
+  if (name.empty() || name.find('\\') != std::string::npos ||
+      !xe::utf8::lower_ascii(name).ends_with(".png")) {
+    return {};
+  }
+
+  vfs::Entry* info_entry = kernel_state()->file_system()->ResolvePath(
+      guest_path.substr(0, colon + 1) + "\\ArcadeInfo.xml");
+  if (!info_entry) {
+    return {};
+  }
+  vfs::File* file = nullptr;
+  if (info_entry->Open(vfs::FileAccess::kGenericRead, &file) !=
+          X_STATUS_SUCCESS ||
+      !file) {
+    return {};
+  }
+  std::vector<uint8_t> bytes(static_cast<size_t>(info_entry->size()));
+  size_t read = 0;
+  const bool ok = bytes.empty() ||
+                  file->ReadSync(std::span<uint8_t>(bytes.data(), bytes.size()),
+                                 0, &read) == X_STATUS_SUCCESS;
+  file->Destroy();
+  if (!ok) {
+    return {};
+  }
+  bytes.resize(read);
+
+  // ArcadeInfo.xml is UTF-16 with a byte-order mark; the attributes wanted
+  // are ASCII, so keep the low byte of each character.
+  std::string xml;
+  if (bytes.size() >= 2 && (bytes[0] == 0xFF || bytes[0] == 0xFE) &&
+      (bytes[1] == 0xFE || bytes[1] == 0xFF)) {
+    const size_t low = bytes[0] == 0xFF ? 0 : 1;
+    for (size_t i = 2; i + 1 < bytes.size(); i += 2) {
+      xml.push_back(char(bytes[i + low]));
+    }
+  } else {
+    xml.assign(bytes.begin(), bytes.end());
+  }
+
+  const std::string image = ArcadeInfoAttribute(xml, "<TitleInfo", "ImagePath");
+  const std::string id = ArcadeInfoAttribute(xml, "<TitleInfo", "ID");
+  if (image.empty() || id.empty() ||
+      xe::utf8::lower_ascii(image) != xe::utf8::lower_ascii(name)) {
+    return {};
+  }
+  const uint32_t title_id =
+      static_cast<uint32_t>(std::strtoul(id.c_str(), nullptr, 10));
+  if (!title_id || title_id == kXN_2002) {
+    return {};
+  }
+  const std::filesystem::path tile = BoxArtTilePath(title_id);
+  if (tile.empty()) {
+    return {};
+  }
+
+  // The box art folder, mounted read-only the first time it is needed and
+  // again if a title switch took the device down.
+  constexpr std::string_view kDevice = "\\Device\\NexiaBoxArt";
+  auto* file_system = kernel_state()->file_system();
+  vfs::HostPathDevice* device = nullptr;
+  if (vfs::Entry* root = file_system->ResolvePath(std::string(kDevice) + "\\")) {
+    device = static_cast<vfs::HostPathDevice*>(root->device());
+  } else {
+    auto created = std::make_unique<vfs::HostPathDevice>(
+        kDevice, tile.parent_path(), true);
+    if (!created->Initialize()) {
+      return {};
+    }
+    device = created.get();
+    if (!file_system->RegisterDevice(std::move(created))) {
+      return {};
+    }
+  }
+  // A tile made after the device listed its folder is not in its tree; this
+  // title's may be one of them.
+  if (!device->AddRootFile(xe::path_to_utf8(tile.filename()))) {
+    return {};
+  }
+  XELOGI("Dashboard: {} -> box art for {:08X}", guest_path, title_id);
+  return fmt::format("{}\\{}", kDevice, xe::path_to_utf8(tile.filename()));
+}
+
 dword_result_t XamContentGetMetaDataInternal_entry(
     pointer_t<XCONTENT_DATA_INTERNAL> content_data_ptr,
     lpdword_t content_metadata_ptr, pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
@@ -1299,6 +1583,18 @@ dword_result_t XamContentGetMetaDataInternal_entry(
       metadata->thumbnail_size = uint32_t(thumbnail.size());
     }
     memcpy(out, metadata.get(), sizeof(XContentMetadata));
+  }
+
+  // A game record's thumbnail is its box art when the Xbox image server has
+  // it; otherwise the thumbnail above stands. (My Games' big tiles are drawn
+  // from the title image instead - see DashboardTitleImageRedirect.)
+  auto* out_metadata = reinterpret_cast<XContentMetadata*>(out);
+  const std::vector<uint8_t> box_art =
+      BoxArtThumbnail(data, sizeof(out_metadata->thumbnail));
+  if (!box_art.empty()) {
+    std::memset(out_metadata->thumbnail, 0, sizeof(out_metadata->thumbnail));
+    std::memcpy(out_metadata->thumbnail, box_art.data(), box_art.size());
+    out_metadata->thumbnail_size = uint32_t(box_art.size());
   }
 
   XELOGW("XamContentGetMetaDataInternal: '{}' type {:08X}{}", data.file_name(),

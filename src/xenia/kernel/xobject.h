@@ -297,6 +297,11 @@ class XObject {
   // if we allocated it!
   uint32_t guest_object_ptr_ = 0;
   bool allocated_guest_object_ = false;
+  // Which system-heap allocations CreateNative got for the object block and
+  // its type record. The title-switch sweep can free them and hand the same
+  // addresses to someone else; the destructor frees only these allocations.
+  uint64_t native_block_serial_ = 0;
+  uint64_t native_type_serial_ = 0;
   // Guest type recorded by ObOpenObjectByPointer.
   std::atomic<uint32_t> guest_object_type_ptr_{0};
 };

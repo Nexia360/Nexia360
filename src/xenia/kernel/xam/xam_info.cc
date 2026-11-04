@@ -8,9 +8,12 @@
  */
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <map>
 #include <mutex>
 #include <sstream>
@@ -45,6 +48,8 @@
 #include "xenia/kernel/xam/xam.h"
 #include "xenia/kernel/xam/xam_module.h"
 #include "xenia/kernel/xam/xam_private.h"
+#include "xenia/kernel/xam/xam_ui_new.h"
+#include "xenia/kernel/xam/xui_assets.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_error.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_memory.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_modules.h"
@@ -56,6 +61,8 @@
 #include "xenia/ui/imgui_drawer.h"
 #include "xenia/ui/window.h"
 #include "xenia/ui/windowed_app_context.h"
+#include "xenia/vfs/devices/disc_image_device.h"
+#include "xenia/vfs/devices/host_path_device.h"
 #include "xenia/vfs/devices/host_path_entry.h"
 #include "xenia/xbox.h"
 
@@ -539,6 +546,16 @@ dword_result_t XamGetCachedTitleName_entry(dword_t title_id,
     return X_ERROR_INVALID_PARAMETER;
   }
 
+  // The XNA launcher hosts every indie game, so its title is the channel, not
+  // whichever game it ran last.
+  if (title_id == kXN_2002) {
+    const std::u16string indie = u"Indie Games";
+    xe::string_util::copy_and_swap_truncating(title_name_ptr, indie,
+                                              indie.size() + 1);
+    *title_name_length_ptr = uint32_t(indie.size() + 1);
+    return X_ERROR_SUCCESS;
+  }
+
   if (title_id != kernel_state()->title_id()) {
     if (const auto profile = kernel_state()->xam_state()->GetUserProfile(0u);
         profile) {
@@ -946,6 +963,11 @@ std::string LaunchHostPath(const std::string& guest_path, std::string* inner) {
     } else {
       *inner = entry->path() + "\\" + rest;
     }
+    // A disc image names its own file. The loader's host path is the image
+    // the title BOOTED from, and after XamSwapDisc that is the wrong disc.
+    if (auto* disc = dynamic_cast<vfs::DiscImageDevice*>(entry->device())) {
+      return xe::path_to_utf8(disc->host_path());
+    }
     auto xam = kernel_state()->GetKernelModule<XamModule>("xam.xex");
     return xam->loader_data().host_path;
   }
@@ -1048,8 +1070,18 @@ void LaunchTitle(const std::string& launch_path, const std::string& mount_path,
 }  // namespace
 
 void XamLoaderLaunchTitle_entry(lpstring_t raw_name_ptr, dword_t flags) {
-  const std::string launch_path =
+  std::string launch_path =
       raw_name_ptr ? std::string(raw_name_ptr.value()) : std::string();
+  // NULL is the dashboard. An EMPTY name is the disc's default.xex: a title
+  // that asked for its other disc (GTA V, Play disc -> Install disc) swaps it
+  // through XamSwapDisc and then launches "" to boot whatever is in the drive
+  // now. Sending that to the dashboard is what left the install undone. The
+  // dashboard's own empty launch of the disc tile keeps its handling in
+  // LaunchTitle.
+  if (raw_name_ptr && launch_path.empty() &&
+      kernel_state()->title_id() != kDashboardID) {
+    launch_path = "game:\\default.xex";
+  }
   LaunchTitle(launch_path, std::string(), std::string(), flags);
 }
 DECLARE_XAM_EXPORT1(XamLoaderLaunchTitle, kNone, kImplemented);
@@ -1361,6 +1393,18 @@ static std::string DashModuleHost() {
   return host;
 }
 
+static curl_slist* NexiaSessionHeaders() {
+  auto* xlive_api = kernel_state()->GetXboxLiveAPI();
+  if (!xlive_api) {
+    return nullptr;
+  }
+  const std::string token = xlive_api->hub_session_token();
+  if (token.empty()) {
+    return nullptr;
+  }
+  return curl_slist_append(nullptr, ("X-Nexia-Session: " + token).c_str());
+}
+
 // Fetch a small text body. Used for the module manifest, which is ours and is
 // a few hundred bytes; anything larger is refused rather than grown into.
 static bool FetchSmallText(const std::string& url, std::string* out) {
@@ -1371,6 +1415,10 @@ static bool FetchSmallText(const std::string& url, std::string* out) {
   out->clear();
   curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
   curl_easy_setopt(curl, CURLOPT_USERAGENT, "nexia360");
+  curl_slist* session_headers = NexiaSessionHeaders();
+  if (session_headers) {
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, session_headers);
+  }
   curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
   curl_easy_setopt(curl, CURLOPT_TIMEOUT, kModuleFetchTimeoutSeconds);
   curl_easy_setopt(
@@ -1389,6 +1437,7 @@ static bool FetchSmallText(const std::string& url, std::string* out) {
   long status = 0;
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
   curl_easy_cleanup(curl);
+  curl_slist_free_all(session_headers);
   return result == CURLE_OK && status < 400;
 }
 
@@ -1401,10 +1450,18 @@ struct DashModuleEntry {
 static std::map<std::string, DashModuleEntry>& DashModuleManifest() {
   static std::map<std::string, DashModuleEntry> manifest;
   static bool fetched = false;
+  static std::chrono::steady_clock::time_point next_try;
   if (fetched) {
     return manifest;
   }
-  fetched = true;
+  // Kept only once it has been read: a fetch that fails (the hub not up yet,
+  // or asked too early) is tried again a few seconds later rather than
+  // leaving the session with no module list at all.
+  const auto now = std::chrono::steady_clock::now();
+  if (now < next_try) {
+    return manifest;
+  }
+  next_try = now + std::chrono::seconds(5);
 
   const std::string host = DashModuleHost();
   if (host.empty()) {
@@ -1415,6 +1472,7 @@ static std::map<std::string, DashModuleEntry>& DashModuleManifest() {
     XELOGI("XdfLoadXex: no module manifest from the hub");
     return manifest;
   }
+  fetched = true;
   std::istringstream lines(body);
   std::string line;
   while (std::getline(lines, line)) {
@@ -1498,6 +1556,10 @@ static bool FetchDashModule(const std::string& module_name,
   }
   curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
   curl_easy_setopt(curl, CURLOPT_USERAGENT, "nexia360");
+  curl_slist* session_headers = NexiaSessionHeaders();
+  if (session_headers) {
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, session_headers);
+  }
   curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
   curl_easy_setopt(curl, CURLOPT_TIMEOUT, kModuleFetchTimeoutSeconds);
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, AppendModuleBytes);
@@ -1509,6 +1571,7 @@ static bool FetchDashModule(const std::string& module_name,
   long status = 0;
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
   curl_easy_cleanup(curl);
+  curl_slist_free_all(session_headers);
   fclose(file);
 
   if (result != CURLE_OK || status >= 400) {
@@ -1520,19 +1583,24 @@ static bool FetchDashModule(const std::string& module_name,
     return false;
   }
 
-  // A XEX or nothing. Whatever the far end served, if it is not an image the
-  // loader would accept then keeping it only produces a confusing failure the
-  // next time the dashboard asks.
+  // A XEX or nothing - or, for a channel package (.xzp, opened by the dash as
+  // a file, see DashChannelPackageRedirect), a XUIZ package or nothing.
+  // Whatever the far end served, if it is not what the dash would accept then
+  // keeping it only produces a confusing failure the next time it asks.
+  const bool is_package =
+      xe::utf8::lower_ascii(module_name).ends_with(".xzp");
+  const char* expected = is_package ? "XUIZ" : "XEX2";
   char magic[4] = {};
   FILE* check = xe::filesystem::OpenFile(partial, "rb");
   const bool is_xex = check &&
                       fread(magic, 1, sizeof(magic), check) == sizeof(magic) &&
-                      std::memcmp(magic, "XEX2", sizeof(magic)) == 0;
+                      std::memcmp(magic, expected, sizeof(magic)) == 0;
   if (check) {
     fclose(check);
   }
   if (!is_xex) {
-    XELOGW("XdfLoadXex: '{}' from the hub is not a XEX2 image", module_name);
+    XELOGW("XdfLoadXex: '{}' from the hub is not a {} {}", module_name,
+           expected, is_package ? "package" : "image");
     std::filesystem::remove(partial, ec);
     return false;
   }
@@ -1562,14 +1630,16 @@ static bool FetchDashModule(const std::string& module_name,
   return true;
 }
 
-static void EnsureDashModule(const std::string& module_name) {
+// Returns the hub's spelling of the module's file name when the hub publishes
+// it (fetched now or already current), empty when the module is not ours.
+static std::string EnsureDashModule(const std::string& module_name) {
   if (!cvars::dash_module_fetch || !IsSafeModuleName(module_name)) {
-    return;
+    return {};
   }
   auto& manifest = DashModuleManifest();
   const auto entry = manifest.find(xe::utf8::lower_ascii(module_name));
   if (entry == manifest.end()) {
-    return;
+    return {};
   }
   const std::string& canonical = entry->second.name;
   const std::string& version = entry->second.version;
@@ -1577,11 +1647,72 @@ static void EnsureDashModule(const std::string& module_name) {
       xe::filesystem::GetExecutableFolder() / "Dashboard" / canonical;
   const std::string cached = CachedModuleVersion(destination);
   if (cached == version) {
-    return;
+    return canonical;
   }
   XELOGI("XdfLoadXex: '{}' is {} - hub has {}", canonical,
          cached.empty() ? "not cached" : "version " + cached, version);
   FetchDashModule(canonical, version);
+  return canonical;
+}
+
+// A module the hub serves is downloaded into the Dashboard folder while the
+// dashboard is already running - after every device over that folder listed
+// its files at mount, so none of them can see it until the next launch
+// (2026-11-03: Dash.PrivacyUI.xex was fetched, then "no such module" on the
+// very next line). Such modules resolve through a device of our own over the
+// same folder, which is told about each file as it is asked for.
+static std::string ResolveHubModule(vfs::VirtualFileSystem* file_system,
+                                    const std::string& file_name) {
+  constexpr std::string_view kDevice = "\\Device\\NexiaDashModules";
+  vfs::HostPathDevice* device = nullptr;
+  if (vfs::Entry* root = file_system->ResolvePath(std::string(kDevice) + "\\")) {
+    device = static_cast<vfs::HostPathDevice*>(root->device());
+  } else {
+    auto created = std::make_unique<vfs::HostPathDevice>(
+        kDevice, xe::filesystem::GetExecutableFolder() / "Dashboard", true);
+    if (!created->Initialize()) {
+      return {};
+    }
+    device = created.get();
+    if (!file_system->RegisterDevice(std::move(created))) {
+      return {};
+    }
+  }
+  if (!device->AddRootFile(file_name)) {
+    return {};
+  }
+  const std::string path = fmt::format("{}\\{}", kDevice, file_name);
+  return file_system->ResolvePath(path) ? path : std::string();
+}
+
+// A channel package the hub publishes (Nexia.Social.xzp). The online manifest
+// names it as <definitionpath>channel://Nexia.Social.xzp; a channel:// name
+// that is not one of the dash's three built-ins (table at dash.xex 0x9295B850)
+// is opened as a FILE package, "file://%S" (0x927CDEF8). Whatever path that
+// open uses, a .xzp file name the hub's module manifest lists is fetched when
+// stale and opened from \Device\NexiaDashModules - so the channel ships like
+// the dash's .lex modules do, from the hub, with no emulator release.
+std::string DashChannelPackageRedirect(const std::string& guest_path) {
+  const size_t cut = guest_path.find_last_of("\\/:");
+  const std::string file_name =
+      cut == std::string::npos ? guest_path : guest_path.substr(cut + 1);
+  const std::string lowered = xe::utf8::lower_ascii(guest_path);
+  if (!xe::utf8::lower_ascii(file_name).ends_with(".xzp") ||
+      lowered.starts_with("\\device\\nexiadashmodules\\")) {
+    return {};
+  }
+  const std::string hub_package = EnsureDashModule(file_name);
+  if (hub_package.empty()) {
+    return {};
+  }
+  auto* file_system = kernel_state()->file_system();
+  const std::string resolved =
+      file_system ? ResolveHubModule(file_system, hub_package) : std::string();
+  // Error level: which channel package the dash opened, and from where, is
+  // the whole story when a channel fails to appear.
+  XELOGE("Dash channel package '{}' -> {}", guest_path,
+         resolved.empty() ? std::string("not available") : resolved);
+  return resolved;
 }
 
 dword_result_t XdfLoadXex_entry(lpstring_t name, lpdword_t unk2, dword_t unk3,
@@ -1601,7 +1732,7 @@ dword_result_t XdfLoadXex_entry(lpstring_t name, lpdword_t unk2, dword_t unk3,
   // Before the resolve, not after a miss: a module we publish has to be the
   // CURRENT one, and a cached older build would otherwise be found and used
   // forever. Costs one map lookup for any module that is not ours.
-  EnsureDashModule(module_name);
+  const std::string hub_module = EnsureDashModule(module_name);
 
   // A bare name has no device on it. These modules live beside dash.xex,
   // which is the running title's own device; \Device\Flash is the same
@@ -1613,6 +1744,9 @@ dword_result_t XdfLoadXex_entry(lpstring_t name, lpdword_t unk2, dword_t unk3,
       resolved = candidate;
       break;
     }
+  }
+  if (resolved.empty() && !hub_module.empty()) {
+    resolved = ResolveHubModule(file_system, hub_module);
   }
   if (resolved.empty()) {
     // At error level on purpose: which module the dashboard wanted is the
@@ -1651,6 +1785,100 @@ dword_result_t XdfLoadXex_entry(lpstring_t name, lpdword_t unk2, dword_t unk3,
   return X_E_SUCCESS;
 }
 DECLARE_XAM_EXPORT1(XdfLoadXex, kNone, kSketchy);
+
+// ---- Xdf items: the dash's download cache, served by the hub ------------
+// A channel package the dash does not have built in is DOWNLOADED: its
+// package object (dash.xex vtable 0x92102D28, 0x927C5F70) asks
+// XdfGetExpectedDownloadSize(name, &size), allocates that, then
+// XdfGetItem(name, buffer, size, &overlapped, 0) - or XdfCacheItem(name,
+// &overlapped, 1) to only cache it. On a console these came from Live; here
+// they are the hub's module store, the same one XdfLoadXex uses
+// (src/dash/modules + manifest.txt, fetched into Dashboard\ when stale).
+// 0x8000000A from a call makes the dash wait on the overlapped (0x927C5ED0).
+
+static std::filesystem::path XdfItemPath(const std::string& item_name) {
+  const std::string canonical = EnsureDashModule(item_name);
+  const std::filesystem::path file =
+      xe::filesystem::GetExecutableFolder() / "Dashboard" /
+      (canonical.empty() ? item_name : canonical);
+  std::error_code ec;
+  if (!IsSafeModuleName(item_name) ||
+      !std::filesystem::is_regular_file(file, ec)) {
+    return {};
+  }
+  return file;
+}
+
+dword_result_t XdfGetExpectedDownloadSize_entry(lpstring_t name,
+                                                lpdword_t size_ptr) {
+  if (!name || !size_ptr) {
+    return X_E_INVALIDARG;
+  }
+  const std::string item_name = name.value();
+  const std::filesystem::path file = XdfItemPath(item_name);
+  std::error_code ec;
+  const uint64_t size = file.empty() ? 0 : std::filesystem::file_size(file, ec);
+  if (file.empty() || ec || size > 0xFFFFFFFFull) {
+    XELOGE("XdfGetExpectedDownloadSize('{}'): not on the hub", item_name);
+    return X_HRESULT_FROM_WIN32(X_ERROR_FILE_NOT_FOUND);
+  }
+  *size_ptr = static_cast<uint32_t>(size);
+  XELOGE("XdfGetExpectedDownloadSize('{}') -> {} bytes", item_name, size);
+  return X_E_SUCCESS;
+}
+DECLARE_XAM_EXPORT1(XdfGetExpectedDownloadSize, kNone, kSketchy);
+
+dword_result_t XdfGetItem_entry(lpstring_t name, lpvoid_t buffer,
+                                dword_t buffer_size,
+                                pointer_t<XAM_OVERLAPPED> overlapped,
+                                dword_t flags) {
+  if (!name || !buffer) {
+    return X_E_INVALIDARG;
+  }
+  const std::string item_name = name.value();
+  const std::filesystem::path file = XdfItemPath(item_name);
+  std::vector<uint8_t> bytes;
+  if (!file.empty()) {
+    std::ifstream stream(file, std::ios::binary);
+    bytes.assign(std::istreambuf_iterator<char>(stream),
+                 std::istreambuf_iterator<char>());
+  }
+  const X_RESULT result =
+      bytes.empty() || bytes.size() > buffer_size
+          ? X_ERROR_FILE_NOT_FOUND
+          : X_ERROR_SUCCESS;
+  if (result == X_ERROR_SUCCESS) {
+    std::memcpy(buffer.as<uint8_t*>(), bytes.data(), bytes.size());
+  }
+  XELOGE("XdfGetItem('{}', {} byte buffer) -> {}", item_name,
+         buffer_size.value(),
+         result == X_ERROR_SUCCESS ? fmt::format("{} bytes", bytes.size())
+                                   : std::string("not available"));
+  if (overlapped) {
+    kernel_state()->CompleteOverlappedImmediate(overlapped, result);
+  }
+  return result == X_ERROR_SUCCESS ? X_E_SUCCESS
+                                   : X_HRESULT_FROM_WIN32(result);
+}
+DECLARE_XAM_EXPORT1(XdfGetItem, kNone, kSketchy);
+
+dword_result_t XdfCacheItem_entry(lpstring_t name,
+                                  pointer_t<XAM_OVERLAPPED> overlapped,
+                                  dword_t flags) {
+  if (!name) {
+    return X_E_INVALIDARG;
+  }
+  const std::string item_name = name.value();
+  const bool cached = !XdfItemPath(item_name).empty();
+  XELOGE("XdfCacheItem('{}') -> {}", item_name,
+         cached ? "cached" : "not available");
+  const X_RESULT result = cached ? X_ERROR_SUCCESS : X_ERROR_FILE_NOT_FOUND;
+  if (overlapped) {
+    kernel_state()->CompleteOverlappedImmediate(overlapped, result);
+  }
+  return cached ? X_E_SUCCESS : X_HRESULT_FROM_WIN32(result);
+}
+DECLARE_XAM_EXPORT1(XdfCacheItem, kNone, kSketchy);
 
 // Tears the dash's app stack down. Called on the failure path out of a hub
 // app launch, so leaving it undefined turned one failure into two.
@@ -2291,10 +2519,82 @@ dword_result_t XamSetDvrStorage_entry(
 }
 DECLARE_XAM_EXPORT1(XamSetDvrStorage, kNone, kStub);
 
-dword_result_t XamLookupCommonStringByIndex_entry(dword_t string_index) {
-  return 0;
+namespace {
+// xam's common strings: XamStrings.xus in the console's xamstrings package, a
+// kind-2 .xus (bare UTF-8 strings, the ordinal is the key). Read once.
+// Verified against the dash's Turn Off (EcShutdownConsole): 0x110 is "Turn Off
+// Console", 0xB "Cancel", 0x113 "Turning off the console will also turn off
+// all controllers." - the two buttons and the text of its confirmation.
+const std::vector<std::string>& CommonStrings() {
+  static const std::vector<std::string> strings = []() {
+    std::vector<std::string> out;
+    const auto path = xui::DefaultAssetDirectory() / "xamstrings.xzp";
+    std::ifstream file(path, std::ios::binary);
+    std::vector<uint8_t> package((std::istreambuf_iterator<char>(file)),
+                                 std::istreambuf_iterator<char>());
+    if (!file.good() && !file.eof()) {
+      package.clear();
+    }
+    if (package.empty()) {
+      XELOGE("XamLookupCommonStringByIndex: cannot read {}",
+             xe::path_to_utf8(path));
+      return out;
+    }
+    std::vector<xui::PackageEntry> entries;
+    const xui::PackageEntry* table = nullptr;
+    if (xui::OpenPackage(package.data(), package.size(), &entries)) {
+      table = xui::FindPackageEntry(entries, "XamStrings.xus");
+    }
+    if (!table || table->size < 12 ||
+        std::memcmp(table->data, "XUIS", 4) != 0 || table->data[5] != 2) {
+      XELOGE("XamLookupCommonStringByIndex: no kind-2 XamStrings.xus in {}",
+             xe::path_to_utf8(path));
+      return out;
+    }
+    const uint16_t count = xe::load_and_swap<uint16_t>(table->data + 10);
+    size_t at = 12;
+    for (uint16_t i = 0; i < count && at < table->size; ++i) {
+      const auto* start = reinterpret_cast<const char*>(table->data + at);
+      const size_t length = strnlen(start, table->size - at);
+      out.emplace_back(start, length);
+      at += length + 1;
+    }
+    return out;
+  }();
+  return strings;
 }
-DECLARE_XAM_EXPORT1(XamLookupCommonStringByIndex, kNone, kStub);
+}  // namespace
+
+// Returns a pointer to the string, which the caller treats as xam's own and
+// never frees. Each one is copied into guest memory once and handed out from
+// then on. 0 for an index the table does not have, as before.
+dword_result_t XamLookupCommonStringByIndex_entry(dword_t string_index) {
+  static std::mutex lock;
+  static std::unordered_map<uint32_t, uint32_t> guest_strings;
+
+  const auto& strings = CommonStrings();
+  const uint32_t index = string_index;
+  if (index >= strings.size()) {
+    return 0;
+  }
+
+  std::lock_guard guard(lock);
+  if (const auto it = guest_strings.find(index); it != guest_strings.end()) {
+    return it->second;
+  }
+  const std::u16string text = xe::to_utf16(strings[index]);
+  const uint32_t bytes = static_cast<uint32_t>((text.size() + 1) * 2);
+  const uint32_t address = kernel_state()->memory()->SystemHeapAlloc(bytes);
+  if (!address) {
+    return 0;
+  }
+  xe::string_util::copy_and_swap_truncating(
+      kernel_memory()->TranslateVirtual<char16_t*>(address), text,
+      text.size() + 1);
+  guest_strings.emplace(index, address);
+  return address;
+}
+DECLARE_XAM_EXPORT1(XamLookupCommonStringByIndex, kNone, kImplemented);
 
 dword_result_t XamUpdateGetBaseSystemVersion_entry() {
   return kBaseKernelBuildVersion;

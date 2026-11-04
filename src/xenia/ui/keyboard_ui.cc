@@ -16,6 +16,7 @@
 
 #include "third_party/imgui/imgui.h"
 #include "third_party/imgui/imgui_internal.h"
+#include "xenia/base/host_keyboard_capture.h"
 #include "xenia/base/logging.h"
 #include "xenia/ui/imgui_dialog.h"
 #include "xenia/ui/imgui_drawer.h"
@@ -41,11 +42,12 @@ struct KeyDef {
   ImVec4 color;       // button color
 };
 
-// Standard button color
-static const ImVec4 kNormalColor = ImVec4(0.15f, 0.56f, 0.11f, 0.60f);
-static const ImVec4 kSpecialColor = ImVec4(0.4f, 0.4f, 0.4f, 0.60f);
-static const ImVec4 kAccentColor = ImVec4(0.0f, 0.5f, 0.0f, 0.80f);
-static const ImVec4 kDangerColor = ImVec4(0.6f, 0.1f, 0.1f, 0.80f);
+// Standard button color. Mid tones under the guide skin's dark text; hovering
+// lightens them.
+static const ImVec4 kNormalColor = ImVec4(0.80f, 0.82f, 0.84f, 1.00f);
+static const ImVec4 kSpecialColor = ImVec4(0.66f, 0.69f, 0.72f, 1.00f);
+static const ImVec4 kAccentColor = ImVec4(0.45f, 0.74f, 0.32f, 1.00f);
+static const ImVec4 kDangerColor = ImVec4(0.84f, 0.42f, 0.38f, 1.00f);
 
 // Keyboard layouts
 static const std::vector<std::vector<KeyDef>> kLowercaseLayout = {
@@ -287,6 +289,9 @@ KeyboardDialog::KeyboardDialog(ImGuiDrawer* imgui_drawer,
       input_text_(initial_text),
       input_type_(type),
       callback_(callback) {
+  // From here until the destructor, host key presses are this keyboard's.
+  host_keyboard_capture_count.fetch_add(1, std::memory_order_acq_rel);
+
   // Enable controller navigation in the drawer
   if (imgui_drawer) {
     imgui_drawer->SetControllerNavigationEnabled(true);
@@ -305,7 +310,9 @@ KeyboardDialog::KeyboardDialog(ImGuiDrawer* imgui_drawer,
   }
 }
 
-KeyboardDialog::~KeyboardDialog() {}
+KeyboardDialog::~KeyboardDialog() {
+  host_keyboard_capture_count.fetch_sub(1, std::memory_order_acq_rel);
+}
 
 namespace {
 
@@ -822,7 +829,8 @@ void KeyboardDialog::OnClose() {
 
 void KeyboardDialog::DrawTextInput() {
   // Show the current input with a cursor
-  ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.1f, 0.1f, 0.1f, 0.9f));
+  // A white field under the guide skin's dark text.
+  ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
   ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10, 10));
 
   std::string display_text = input_text_;
@@ -969,7 +977,7 @@ void KeyboardDialog::DrawKeyboardLayout() {
   ImGui::Separator();
   ImGui::Spacing();
 
-  ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.6f, 0.6f, 1.0f));
+  ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.38f, 0.40f, 0.42f, 1.0f));
   if (input_type_ == InputType::kNumber) {
     ImGui::TextWrapped(
         "Keyboard: Type numbers | Enter: Done | Esc: Cancel | D-Pad: Navigate "

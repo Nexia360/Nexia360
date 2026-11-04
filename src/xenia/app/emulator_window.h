@@ -40,6 +40,7 @@ namespace app {
 
 class ConsoleSettingsDialog;
 class ContentListDialog;
+class GuideDialog;
 class MessagesDialog;
 class RecentTitlesDialog;
 
@@ -147,6 +148,8 @@ class EmulatorWindow {
 
   void ToggleMousehook();
   void OpenMousehookConfig();
+  // The global menu on the Guide button.
+  void ToggleGuideDialog();
   void ToggleProfilesConfigDialog();
   void ToggleGamerpicBrowserDialog();
   void ToggleXMPConfigDialog();
@@ -400,6 +403,9 @@ class EmulatorWindow {
   void FileClose();
   // Stops the running title without closing the emulator.
   void ExitTitle();
+  // The guide's Leave Game: back to the dashboard when the dashboard was up
+  // before this game was, otherwise the same as ExitTitle.
+  void LeaveGame();
 
   // Drops a pending dashboard switch. Called by RunTitle, so anything the
   // user starts during the animation wins.
@@ -489,7 +495,7 @@ class EmulatorWindow {
   std::atomic<bool> cancel_request;
 
   // Guide button: tracked per user so a solo press can be classified as a
-  // short press (netplay manager) or a long press (profile menu).
+  // short press (the guide) or a long press (console settings).
   bool guide_button_was_pressed_[XUserMaxUserCount] = {};
   uint64_t guide_button_press_time_[XUserMaxUserCount] = {};
   bool back_button_was_pressed_[XUserMaxUserCount] = {};
@@ -522,6 +528,7 @@ class EmulatorWindow {
   AvatarEditorDialog* avatar_editor_dialog_ = nullptr;
   XuiSceneDialog* xui_scene_dialog_ = nullptr;
   RecentTitlesDialog* recent_titles_dialog_ = nullptr;
+  GuideDialog* guide_dialog_ = nullptr;
 
   // The thread waiting out the boot animation, and the flag that calls it
   // off. Shared, because the thread outlives the window's interest in it.

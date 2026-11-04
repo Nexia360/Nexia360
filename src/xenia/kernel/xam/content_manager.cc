@@ -621,6 +621,22 @@ std::vector<XCONTENT_DATA_INTERNAL> ContentManager::ListContent(
       title_ids.emplace(xe::string_util::from_string<uint32_t>(
           xe::path_to_utf8(title.name), true));
     }
+
+    // Installed games live in the library, and a title with nothing else in
+    // the common tree has no folder there at all - Tetris Splash was
+    // installed and missing from Installed Content, while Castle Crashers
+    // only showed because it also had a save folder. Same walk as
+    // FindAllTitleIds.
+    if (kernel_state_->emulator() &&
+        kernel_state_->emulator()->title_update_manager()) {
+      const auto library = root_path_.parent_path() / "Library";
+      for (const auto& title : xe::filesystem::FilterByName(
+               xe::filesystem::ListDirectories(library),
+               std::regex("^[A-Fa-f0-9]{8}$"))) {
+        title_ids.emplace(xe::string_util::from_string<uint32_t>(
+            xe::path_to_utf8(title.name), true));
+      }
+    }
   }
 
   // One slot directory's worth of content. `slot_type` is the real type,

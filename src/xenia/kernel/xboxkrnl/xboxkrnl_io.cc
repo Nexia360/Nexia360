@@ -11,6 +11,7 @@
 #include "xenia/kernel/info/file.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/shim_utils.h"
+#include "xenia/kernel/xam/xam_private.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_private.h"
 #include "xenia/kernel/xevent.h"
 #include "xenia/kernel/xfile.h"
@@ -76,6 +77,22 @@ dword_result_t NtCreateFile_entry(lpdword_t handle_out, dword_t desired_access,
     assert_true(root_file->type() == XObject::Type::File);
 
     root_entry = root_file->entry();
+  }
+
+  // The dashboard's My Games tiles draw a package's title image; open the
+  // title's box art in its place when there is one.
+  if (!root_entry &&
+      creation_disposition == uint32_t(vfs::FileDisposition::kOpen)) {
+    const std::string box_art = xam::DashboardTitleImageRedirect(target_path);
+    if (!box_art.empty()) {
+      target_path = box_art;
+    }
+    // Our online channel packages (the Social channel's Nexia.Social.xzp),
+    // served from the hub.
+    const std::string channel = xam::DashChannelPackageRedirect(target_path);
+    if (!channel.empty()) {
+      target_path = channel;
+    }
   }
 
   // Attempt open (or create).

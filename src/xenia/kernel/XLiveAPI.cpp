@@ -19,6 +19,9 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <optional>
 #include <random>
 #include <thread>
 
@@ -28,6 +31,7 @@ extern "C" {
 }
 
 #include "xenia/base/cvar.h"
+#include "xenia/base/filesystem.h"
 #include "xenia/base/firewall.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/string_util.h"
@@ -36,6 +40,7 @@ extern "C" {
 #include "xenia/kernel/xam/xam_state.h"
 #include "xenia/kernel/xam/xam_ui.h"
 #include "xenia/emulator.h"
+#include "xenia/kernel/util/title_update_manager.h"
 #include "xenia/kernel/XLiveAPI.h"
 #include "xenia/kernel/xna/xna_launcher.h"
 #include "xenia/kernel/user_module.h"
@@ -504,6 +509,14 @@ void XLiveAPI::RequestFirewallSetup() {
 
 void XLiveAPI::Init() {
   if (GetInitState() != InitState::Pending) {
+    // Init runs once, for whichever title launched first - usually the
+    // dashboard. Port mappings are per title (MW3 connects to its LSP on 1021,
+    // which the hub's ports.json maps to 1020), so every later launch fetches
+    // its own; otherwise a game started from the dash connects to the raw port
+    // and never reaches the server.
+    if (IsConnectedToServer()) {
+      DownloadPortMappings();
+    }
     return;
   }
 
@@ -1189,6 +1202,12 @@ sockaddr_in XLiveAPI::Getwhoami() {
 }
 
 void XLiveAPI::DownloadPortMappings() {
+  // The previous title's mappings must not outlive it, even when this title
+  // has no ports.json at all.
+  if (const auto upnp = kernel_state()->emulator()->GetUPnP()) {
+    upnp->ClearMappedPorts();
+  }
+
   std::string endpoint = BuildEndpoint(
       fmt::format("title/{:08X}/ports", kernel_state()->title_id()));
 
@@ -1339,6 +1358,22 @@ std::unique_ptr<HTTPResponseObjectJSON> XLiveAPI::RegisterPlayer(
   }
 
   XELOGI("POST Success");
+
+  if (response->RawResponse().response) {
+    Document doc;
+    doc.Parse(response->RawResponse().response);
+    if (!doc.HasParseError() && doc.IsObject() &&
+        doc.HasMember("nexiaSession") && doc["nexiaSession"].IsString()) {
+      std::lock_guard<std::mutex> lock(hub_session_mutex_);
+      hub_session_token_ = doc["nexiaSession"].GetString();
+    }
+  }
+
+  // The friend list goes up after registering, so the hub's record of this
+  // player carries it from the start (dash Friends, friends of friends).
+  if (user_profile->IsLiveEnabled()) {
+    std::thread([this, xuid]() { PublishFriendList(xuid); }).detach();
+  }
 
   // Advertise our net-protocol version if the hub supports the in-packet tag.
   // Capabilities are probed when a mode reaches Success (RefreshNetworkMode).
@@ -1783,8 +1818,76 @@ std::future<std::vector<HubPlayer>> XLiveAPI::GetHubPlayersAsync(
   });
 }
 
-void XLiveAPI::PublishFriendPrivacy(uint64_t xuid, FriendPrivacy privacy,
+namespace {
+// The local copy of a player's friend-request setting, in
+// Library/friend_privacy/<online xuid>: one digit, then "*" while the hub has
+// not taken it yet. Kept beside the hub's, so the setting survives the hub
+// being away and the Friends dialog and the dashboard's Privacy app read the
+// same value either way. The pending mark is what stops a later read from
+// replacing a change made offline with the hub's older value.
+struct LocalPrivacy {
+  XLiveAPI::FriendPrivacy value;
+  bool pending;
+};
+
+std::filesystem::path LocalFriendPrivacyPath(uint64_t xuid) {
+  return kernel_state()->emulator()->storage_root() / "Library" /
+         "friend_privacy" / fmt::format("{:016X}", xuid);
+}
+
+std::optional<LocalPrivacy> LocalFriendPrivacy(uint64_t xuid) {
+  std::ifstream file(LocalFriendPrivacyPath(xuid));
+  std::string text;
+  if (!(file >> text) || text.empty() || text[0] < '0' || text[0] > '2') {
+    return std::nullopt;
+  }
+  return LocalPrivacy{static_cast<XLiveAPI::FriendPrivacy>(text[0] - '0'),
+                      text.size() > 1 && text[1] == '*'};
+}
+
+void StoreLocalFriendPrivacy(uint64_t xuid, XLiveAPI::FriendPrivacy privacy,
+                             bool pending) {
+  const auto path = LocalFriendPrivacyPath(xuid);
+  std::error_code ec;
+  std::filesystem::create_directories(path.parent_path(), ec);
+  std::ofstream file(path, std::ios::trunc);
+  file << static_cast<uint32_t>(privacy) << (pending ? "*" : "");
+  if (!file) {
+    XELOGE("FriendPrivacy: could not store the local copy at {}",
+           xe::path_to_utf8(path));
+  }
+}
+}  // namespace
+
+bool XLiveAPI::SetFriendPrivacy(uint64_t xuid, FriendPrivacy privacy) {
+  StoreLocalFriendPrivacy(xuid, privacy, true);
+
+  Document doc;
+  doc.SetObject();
+  doc.AddMember("xuid", fmt::format("{:016X}", xuid), doc.GetAllocator());
+  doc.AddMember("privacy", static_cast<uint32_t>(privacy), doc.GetAllocator());
+
+  rapidjson::StringBuffer buffer;
+  PrettyWriter<rapidjson::StringBuffer> writer(buffer);
+  doc.Accept(writer);
+
+  std::unique_ptr<HTTPResponseObjectJSON> response =
+      Post(BuildEndpoint("players/friendprivacy"),
+           reinterpret_cast<const uint8_t*>(buffer.GetString()));
+
+  if (response->StatusCode() != HTTP_STATUS_CODE::HTTP_CREATED &&
+      response->StatusCode() != HTTP_STATUS_CODE::HTTP_OK) {
+    XELOGE("SetFriendPrivacy: hub did not take it: {}", response->Message());
+    return false;
+  }
+  StoreLocalFriendPrivacy(xuid, privacy, false);
+  return true;
+}
+
+bool XLiveAPI::PublishFriendPrivacy(uint64_t xuid, FriendPrivacy privacy,
                                     const std::vector<uint64_t>& friends) {
+  StoreLocalFriendPrivacy(xuid, privacy, true);
+
   Document doc;
   doc.SetObject();
 
@@ -1813,26 +1916,67 @@ void XLiveAPI::PublishFriendPrivacy(uint64_t xuid, FriendPrivacy privacy,
   if (response->StatusCode() != HTTP_STATUS_CODE::HTTP_CREATED &&
       response->StatusCode() != HTTP_STATUS_CODE::HTTP_OK) {
     XELOGE("PublishFriendPrivacy error message: {}", response->Message());
+    return false;
   }
+  StoreLocalFriendPrivacy(xuid, privacy, false);
+  return true;
+}
+
+// The hub keeps no friend graph of its own: it shows (dash friends.xml) and
+// judges (friends of friends) from the list each client publishes. Until now
+// only changing the privacy setting in the Friends dialog published it, so a
+// profile that never did had no friends on the hub at all.
+bool XLiveAPI::PublishFriendList(uint64_t profile_xuid) {
+  const auto profile = kernel_state()->xam_state()->GetUserProfile(profile_xuid);
+  if (!profile) {
+    return false;
+  }
+  const uint64_t online_xuid = profile->GetOnlineXUID();
+  if (!online_xuid) {
+    return false;
+  }
+  const auto friends =
+      kernel_state()->friends_manager()->GetFriendsXUIDs(profile->xuid());
+  return PublishFriendPrivacy(
+      online_xuid, GetFriendPrivacy(online_xuid),
+      std::vector<uint64_t>(friends.cbegin(), friends.cend()));
 }
 
 XLiveAPI::FriendPrivacy XLiveAPI::GetFriendPrivacy(uint64_t xuid) {
+  const auto local = LocalFriendPrivacy(xuid);
+
+  // Changed while the hub was away: this copy is the newer one, so it goes
+  // up rather than being replaced by what the hub still has.
+  if (local && local->pending) {
+    SetFriendPrivacy(xuid, local->value);
+    return local->value;
+  }
+
+  const FriendPrivacy fallback =
+      local ? local->value : FriendPrivacy::kAnyone;
+
   std::unique_ptr<HTTPResponseObjectJSON> response = Get(BuildEndpoint(
       fmt::format("players/friendprivacy/{:016X}", xuid)));
 
   if (response->StatusCode() != HTTP_STATUS_CODE::HTTP_OK) {
-    return FriendPrivacy::kAnyone;
+    return fallback;
   }
 
   Document doc;
   doc.Swap(doc.Parse(response->RawResponse().response));
 
   if (!doc.IsObject() || !doc.HasMember("privacy") ||
-      !doc["privacy"].IsNumber()) {
-    return FriendPrivacy::kAnyone;
+      !doc["privacy"].IsUint() || doc["privacy"].GetUint() > 2) {
+    return fallback;
   }
 
-  return static_cast<FriendPrivacy>(doc["privacy"].GetUint());
+  // The hub is the copy friend requests are judged against, so it wins; the
+  // local one follows it.
+  const auto remote = static_cast<FriendPrivacy>(doc["privacy"].GetUint());
+  if (!local || local->value != remote) {
+    StoreLocalFriendPrivacy(xuid, remote, false);
+  }
+  return remote;
 }
 
 XLiveAPI::FriendRequestOutcome XLiveAPI::SendFriendRequest(uint64_t from_xuid,
@@ -2361,6 +2505,52 @@ std::future<std::vector<HubMessage>> XLiveAPI::GetMessagesAsync(
     uint64_t xuid, const std::string& kind) {
   return std::async(std::launch::async,
                     [this, xuid, kind]() { return GetMessages(xuid, kind); });
+}
+
+void XLiveAPI::MarkMessageUnread(uint64_t xuid, const std::string& id) {
+  Get(BuildEndpoint(
+      fmt::format("players/message/{:016X}/{}/unread", xuid, id)));
+}
+
+std::optional<HubPlayerCard> XLiveAPI::GetPlayerCard(uint64_t xuid) {
+  std::unique_ptr<HTTPResponseObjectJSON> response =
+      Get(BuildEndpoint(fmt::format("players/{:016X}/card", xuid)));
+
+  if (response->StatusCode() != HTTP_STATUS_CODE::HTTP_OK) {
+    return std::nullopt;
+  }
+
+  Document doc;
+  doc.Swap(doc.Parse(response->RawResponse().response));
+
+  if (!doc.IsObject() || !doc.HasMember("found") || !doc["found"].IsBool() ||
+      !doc["found"].GetBool()) {
+    return std::nullopt;
+  }
+
+  HubPlayerCard card = {};
+
+  if (doc.HasMember("gamertag") && doc["gamertag"].IsString()) {
+    card.gamertag = doc["gamertag"].GetString();
+  }
+  if (doc.HasMember("rep") && doc["rep"].IsNumber()) {
+    card.rep = static_cast<float>(doc["rep"].GetDouble());
+  }
+  if (doc.HasMember("gamerscore") && doc["gamerscore"].IsNumber()) {
+    card.gamerscore = static_cast<uint32_t>(doc["gamerscore"].GetDouble());
+  }
+  if (doc.HasMember("zone") && doc["zone"].IsString()) {
+    card.zone = doc["zone"].GetString();
+  }
+
+  card.gamerpic = GetUserGamerpicTile(xuid, false);
+  return card;
+}
+
+std::future<std::optional<HubPlayerCard>> XLiveAPI::GetPlayerCardAsync(
+    uint64_t xuid) {
+  return std::async(std::launch::async,
+                    [this, xuid]() { return GetPlayerCard(xuid); });
 }
 
 bool XLiveAPI::GetMessageAudio(uint64_t xuid, const std::string& id,
@@ -3855,6 +4045,30 @@ PresenceObjectJSON XLiveAPI::BuildRichPresenceRequest(
     profile_presence.XUID(user_profile->GetOnlineXUID());
     profile_presence.RichPresence(user_profile->GetPresenceString());
 
+    // What is running, so friends see "Playing <game>", and which title
+    // update it has active (its library entry's name: "TU-23" from the
+    // downloader, or whatever the user named it; nothing for no update).
+    if (const uint32_t title_id = kernel_state()->title_id()) {
+      profile_presence.TitleID(fmt::format("{:08X}", title_id));
+      profile_presence.TitleName(kernel_state()->emulator()->title_name());
+      if (auto* updates = kernel_state()->emulator()->title_update_manager()) {
+        const std::string active = updates->GetActive(title_id);
+        if (!active.empty() && active != util::kNoTitleUpdateId) {
+          std::string label = active;
+          std::string hash;
+          for (const auto& entry : updates->List(title_id)) {
+            if (entry.id == active) {
+              label = !entry.name.empty() ? entry.name : entry.version;
+              hash = entry.hash;
+              break;
+            }
+          }
+          profile_presence.TitleUpdate(label);
+          profile_presence.TitleUpdateHash(hash);
+        }
+      }
+    }
+
     presence.AddPresence(profile_presence);
   }
 
@@ -4079,8 +4293,14 @@ std::map<uint32_t, std::vector<uint8_t>> XLiveAPI::GetMultiGameInfo(
   std::vector<std::string> urls = {};
 
   for (const auto& [title_id, image] : images_data) {
-    urls.push_back(fmt::format("https://assets.xboxgamer.pics/titles/{:x}/{}",
-                               title_id, image));
+    // The API used to give a file name and now gives the whole URL; prefixing
+    // that doubled it, and every title image came back as a 404 page.
+    if (image.starts_with("http://") || image.starts_with("https://")) {
+      urls.push_back(image);
+    } else {
+      urls.push_back(fmt::format("https://assets.xboxgamer.pics/titles/{:x}/{}",
+                                 title_id, image));
+    }
   }
 
   std::vector<HTTPResponseObjectJSON> games_info = GetMulti(urls, 5);

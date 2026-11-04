@@ -327,7 +327,7 @@ void UpdaterDialog::OnDraw(ImGuiIO& io) {
         ImGui::TextLinkOpenURL(
             fmt::format("Release {} details", update_check_result_.metadata.tag)
                 .c_str(),
-            "https://github.com/AdrianCassar/xenia-canary/releases/latest");
+            "https://github.com/Nexia360/Nexia360/releases/latest");
 
         ImGui::Spacing();
       }

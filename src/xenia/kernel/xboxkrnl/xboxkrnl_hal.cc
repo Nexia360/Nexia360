@@ -11,6 +11,8 @@
 #include "xenia/kernel/smc.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_private.h"
+#include "xenia/ui/window.h"
+#include "xenia/ui/windowed_app_context.h"
 
 DECLARE_int32(avpack);
 
@@ -42,6 +44,23 @@ void HalReturnToFirmware_entry(dword_t routine) {
   exit(0);
 }
 DECLARE_XBOXKRNL_EXPORT2(HalReturnToFirmware, kNone, kStub, kImportant);
+
+// The dashboard's Settings > Turn Off. dash.xex's command executor
+// (sub_92323FF0, EcShutdownConsole, verb 0x21) asks to confirm and then makes
+// this call - its only caller in the dash. On a console it powers down to
+// standby; here the console is the window, so close it the way its own close
+// button does: through the UI thread, so shutdown runs the normal path rather
+// than exit() from a guest thread. Not FileExit(): that one relaunches when
+// launch data is waiting, and turning off is not a title switch.
+void HalPowerDownToBackgroundMode_entry() {
+  XELOGI("HalPowerDownToBackgroundMode: the console was turned off");
+  ui::Window* window = kernel_state()->emulator()->display_window();
+  if (!window) {
+    return;
+  }
+  window->app_context().CallInUIThread([window]() { window->RequestClose(); });
+}
+DECLARE_XBOXKRNL_EXPORT1(HalPowerDownToBackgroundMode, kNone, kImplemented);
 
 dword_result_t HalGetCurrentAVPack_entry() { return cvars::avpack; }
 DECLARE_XBOXKRNL_EXPORT1(HalGetCurrentAVPack, kNone, kImplemented);

@@ -148,6 +148,13 @@ class UPnP {
     mapped_bind_ports_.insert({port, mapped_port});
   }
 
+  // Mappings are per title; called before a launching title's are loaded.
+  void ClearMappedPorts() {
+    std::lock_guard mapped_lock(mapped_mutex_);
+    mapped_connect_ports_.clear();
+    mapped_bind_ports_.clear();
+  }
+
  private:
   void CleanupIGD();
   void StartPeriodicPortsRefresher();

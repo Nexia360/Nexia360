@@ -55,6 +55,23 @@ class FriendPresenceObjectJSON : public BaseObjectJSON {
   const std::string& TitleID() const { return title_id_; }
   void TitleID(const std::string& titleID) { title_id_ = titleID; }
 
+  // The running game's name, sent with presence so the hub can show friends
+  // "Playing <game>" (it keeps names by title ID; it has no catalogue).
+  const std::string& TitleName() const { return title_name_; }
+  void TitleName(const std::string& title_name) { title_name_ = title_name; }
+
+  // The title update the running game has active ("TU 23"), for friends.
+  const std::string& TitleUpdate() const { return title_update_; }
+  void TitleUpdate(const std::string& title_update) {
+    title_update_ = title_update;
+  }
+  // That update's content hash from the library. The same file hashes the same
+  // on every machine, whatever each one named it or whatever its id/version
+  // fields hold (often the file it was installed from) - what Join Game
+  // matches on.
+  const std::string& TitleUpdateHash() const { return title_update_hash_; }
+  void TitleUpdateHash(const std::string& hash) { title_update_hash_ = hash; }
+
   const xe::be<uint64_t>& StateChangeTime() const { return state_change_time_; }
   void StateChangeTime(const xe::be<uint64_t>& stateChangeTime) {
     state_change_time_ = stateChangeTime;
@@ -97,6 +114,9 @@ class FriendPresenceObjectJSON : public BaseObjectJSON {
   xe::be<uint32_t> state_;
   xe::be<uint64_t> sessionId_;
   std::string title_id_;
+  std::string title_name_;
+  std::string title_update_;
+  std::string title_update_hash_;
   xe::be<uint64_t> state_change_time_;
   xe::be<uint32_t> rich_state_presence_size_;
   std::u16string rich_presence_;

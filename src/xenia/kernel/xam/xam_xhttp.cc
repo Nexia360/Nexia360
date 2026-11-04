@@ -8,10 +8,19 @@
  */
 
 #include <algorithm>
+#include <cctype>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <map>
+#include <mutex>
 #include <regex>
+#include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "xenia/base/platform.h"
@@ -20,16 +29,22 @@
 
 #include "third_party/stb/stb_image.h"
 #include "third_party/stb/stb_image_write.h"
+#include "xenia/apu/sdl/voice_chat.h"
 #include "xenia/base/assert.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/memory.h"
 #include "xenia/base/string_util.h"
+#include "xenia/base/threading.h"
 #include "xenia/base/utf8.h"
 #include "xenia/cpu/processor.h"
 #include "xenia/emulator.h"
+#include "xenia/kernel/XLiveAPI.h"
+#include "xenia/kernel/json/base_object_json.h"
 #include "xenia/kernel/kernel_state.h"
+#include "xenia/kernel/util/friends_util.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xam/xam_private.h"
+#include "xenia/kernel/xam/xam_state.h"
 #include "xenia/kernel/xam/xam_xhttp.h"
 #include "xenia/kernel/xnet.h"
 #include "xenia/kernel/xthread.h"
@@ -274,11 +289,80 @@ std::string BuildUrl(XHttpHandle* request) {
   return url;
 }
 
+// The title's box art from Live's marketplace image server, which still serves
+// it, kept on disk once fetched. Empty when it cannot be had - offline, or a
+// title the marketplace never listed.
+std::vector<uint8_t> FetchDiscBoxArt(uint32_t title_id) {
+  Emulator* emulator = kernel_state()->emulator();
+  const std::filesystem::path cache =
+      emulator->cache_root() / "disc_art" / fmt::format("{:08X}.jpg", title_id);
+  std::vector<uint8_t> art;
+  std::error_code ec;
+  if (std::filesystem::is_regular_file(cache, ec)) {
+    std::ifstream file(cache, std::ios::binary);
+    art.assign(std::istreambuf_iterator<char>(file),
+               std::istreambuf_iterator<char>());
+    return art;
+  }
+
+  // A title with no art, or no network, is tried once per session: the
+  // dashboard asks for metadata on every listing, and each miss would
+  // otherwise wait out the timeout again.
+  static std::mutex missing_mutex;
+  static std::set<uint32_t> missing;
+  {
+    std::lock_guard<std::mutex> lock(missing_mutex);
+    if (missing.contains(title_id)) {
+      return {};
+    }
+  }
+
+  CURL* curl = curl_easy_init();
+  if (!curl) {
+    return {};
+  }
+  const std::string url = fmt::format(
+      "http://download.xbox.com/content/images/"
+      "66acd000-77fe-1000-9115-d802{:08x}/1033/boxartlg.jpg",
+      title_id);
+  curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+  curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+  curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 3000L);
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 8000L);
+  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteBody);
+  curl_easy_setopt(curl, CURLOPT_WRITEDATA, &art);
+  const CURLcode result = curl_easy_perform(curl);
+  long status = 0;
+  curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+  curl_easy_cleanup(curl);
+
+  int width = 0;
+  int height = 0;
+  int channels = 0;
+  if (result != CURLE_OK || status != 200 ||
+      !stbi_info_from_memory(art.data(), static_cast<int>(art.size()), &width,
+                             &height, &channels)) {
+    XELOGI("XHttp: no box art for {:08X} ({} / HTTP {})", title_id,
+           curl_easy_strerror(result), status);
+    std::lock_guard<std::mutex> lock(missing_mutex);
+    missing.insert(title_id);
+    return {};
+  }
+  std::filesystem::create_directories(cache.parent_path(), ec);
+  std::ofstream file(cache, std::ios::binary);
+  file.write(reinterpret_cast<const char*>(art.data()),
+             static_cast<std::streamsize>(art.size()));
+  return art;
+}
+
 // The disc in the tray's art. The moment a disc goes in, the dashboard asks
 // Live's tile service - GameImageAssetUriRoot, pointed at the hub in
 // xam_info.cc - for <root>/<title id>/<locale>/discintray.jpg. Nothing online
-// has art for a disc image off the user's drive, so the disc's own title image
-// answers it, encoded as the JPEG the name asks for.
+// has that file for a disc image off the user's drive, so the title's box art
+// answers it, cut to the tile's 4:3. Without the box art, the disc's own title
+// image stands in - but that is a 64x64 icon, and the tile stretches it three
+// times over.
 bool AnswerDiscInTray(XHttpHandle* request, const std::string& verb,
                       const std::string& url) {
   if (verb != "GET") {
@@ -305,13 +389,27 @@ bool AnswerDiscInTray(XHttpHandle* request, const std::string& verb,
     return false;
   }
 
+  const std::vector<uint8_t> box_art = FetchDiscBoxArt(title_id);
+  const bool from_box_art = !box_art.empty();
+  const std::vector<uint8_t>& source = from_box_art ? box_art : png;
   int width = 0;
   int height = 0;
   int channels = 0;
-  uint8_t* pixels = stbi_load_from_memory(
-      png.data(), static_cast<int>(png.size()), &width, &height, &channels, 3);
+  uint8_t* pixels =
+      stbi_load_from_memory(source.data(), static_cast<int>(source.size()),
+                            &width, &height, &channels, 3);
   if (!pixels) {
     return false;
+  }
+  // Box art is portrait; the tile is 4:3. The band starts just under the
+  // "XBOX 360" strip across the top 12% of every cover, because the game's
+  // logo sits anywhere from straight under it (Black Ops II) to the middle
+  // (Modern Warfare 3) - a centred band cut the first one's off.
+  int top = 0;
+  int rows = height;
+  if (from_box_art && height * 4 > width * 3) {
+    rows = width * 3 / 4;
+    top = std::min(height * 13 / 100, height - rows);
   }
   std::vector<uint8_t> jpeg;
   stbi_write_jpg_to_func(
@@ -320,8 +418,9 @@ bool AnswerDiscInTray(XHttpHandle* request, const std::string& verb,
         const auto* bytes = static_cast<const uint8_t*>(data);
         out->insert(out->end(), bytes, bytes + size);
       },
-      &jpeg, width, height, 3, pixels, 90);
+      &jpeg, width, rows, 3, pixels + size_t(top) * size_t(width) * 3, 92);
   stbi_image_free(pixels);
+  height = rows;
   if (jpeg.empty()) {
     return false;
   }
@@ -335,11 +434,703 @@ bool AnswerDiscInTray(XHttpHandle* request, const std::string& verb,
   request->read_pos = 0;
   request->auth_schemes = 0;
   request->received = true;
-  XELOGI(
-      "XHttp: {} {} -> answered from the disc's title image ({}x{}, {} "
-      "bytes)",
-      verb, url, width, height, request->response_body.size());
+  XELOGI("XHttp: {} {} -> answered from the {} ({}x{}, {} bytes)", verb, url,
+         from_box_art ? "title's box art" : "disc's title image", width, height,
+         request->response_body.size());
   return true;
+}
+
+void AnswerWith(XHttpHandle* request, uint32_t status, const char* status_text,
+                const std::string& body) {
+  request->raw_headers = fmt::format(
+      "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\n"
+      "Content-Length: {}\r\n",
+      status, status_text, body.size());
+  request->status_text = status_text;
+  request->status_code = status;
+  request->response_body.assign(body.begin(), body.end());
+  request->read_pos = 0;
+  request->auth_schemes = 0;
+  request->received = true;
+}
+
+// The dashboard's Privacy app (our Dash.PrivacyUI.lex) reads and writes the
+// friend-request setting at <hub>/players/friendprivacy. Answered here through
+// XLiveAPI so it gets exactly what the Friends dialog gets: the hub's value
+// with the local copy behind it, and a save that lands locally first, then on
+// the hub. A POST carrying a "friends" list is not the app's and goes out
+// untouched - SetFriendPrivacy deliberately sends no list, because an empty
+// one would wipe the hub's.
+bool AnswerFriendPrivacy(XHttpHandle* request, const std::string& verb,
+                         const std::string& url) {
+  std::string path = xe::utf8::lower_ascii(url);
+  path = path.substr(0, path.find('?'));
+  constexpr std::string_view kRoute = "/players/friendprivacy";
+  const size_t route = path.find(kRoute);
+  if (route == std::string::npos) {
+    return false;
+  }
+  std::string rest = path.substr(route + kRoute.size());
+  auto* xlive_api = kernel_state()->GetXboxLiveAPI();
+  if (!xlive_api) {
+    return false;
+  }
+
+  if (verb == "GET") {
+    static const std::regex kXuid("^/([0-9a-f]{16})$");
+    std::smatch match;
+    if (!std::regex_match(rest, match, kXuid)) {
+      return false;
+    }
+    const uint64_t xuid = std::strtoull(match[1].str().c_str(), nullptr, 16);
+    const auto privacy = xlive_api->GetFriendPrivacy(xuid);
+    AnswerWith(request, 200, "OK",
+               fmt::format("{{\"privacy\":{}}}", static_cast<uint32_t>(privacy)));
+    XELOGI("XHttp: GET {} -> friend privacy {} for {:016X}", url,
+           static_cast<uint32_t>(privacy), xuid);
+    return true;
+  }
+
+  if (verb != "POST" || !(rest.empty() || rest == "/")) {
+    return false;
+  }
+  const std::string body(request->request_body.begin(),
+                         request->request_body.end());
+  if (body.find("\"friends\"") != std::string::npos) {
+    return false;
+  }
+  static const std::regex kXuidField("\"xuid\"\\s*:\\s*\"([0-9A-Fa-f]{16})\"");
+  static const std::regex kPrivacyField("\"privacy\"\\s*:\\s*([0-2])");
+  std::smatch xuid_match;
+  std::smatch privacy_match;
+  if (!std::regex_search(body, xuid_match, kXuidField) ||
+      !std::regex_search(body, privacy_match, kPrivacyField)) {
+    return false;
+  }
+  const uint64_t xuid = std::strtoull(xuid_match[1].str().c_str(), nullptr, 16);
+  const auto privacy = static_cast<XLiveAPI::FriendPrivacy>(
+      std::stoul(privacy_match[1].str()));
+  const bool on_hub = xlive_api->SetFriendPrivacy(xuid, privacy);
+  const std::string answer =
+      fmt::format("{{\"privacy\":{}}}", static_cast<uint32_t>(privacy));
+  // Saved locally either way; the app is told the truth about the hub,
+  // because the hub is what gates friend requests.
+  if (on_hub) {
+    AnswerWith(request, 201, "Created", answer);
+  } else {
+    AnswerWith(request, 503, "Service Unavailable", answer);
+  }
+  XELOGI("XHttp: POST {} -> friend privacy {} for {:016X}, {}", url,
+         static_cast<uint32_t>(privacy), xuid,
+         on_hub ? "local and hub" : "local only (hub did not take it)");
+  return true;
+}
+
+// ---- The dashboard hub apps' local routes ---------------------------------
+// Dash.NexiaAddFriend/Messages/Voice.lex are Lua, and the dashboard's Lua has
+// no API for the keyboard, another player's gamercard, a friend request or
+// voice mail (checked against all 264 of its .lub files). What it has is
+// Xbox.Net, and every request it makes comes through here, so those things
+// are asked for as requests to <hub>/nexia/... and answered locally - the
+// network never sees them. Every route takes its parameters from the query
+// string (GET, which the Privacy app proved) or a JSON body (POST).
+
+std::string PercentDecode(const std::string& text) {
+  std::string out;
+  out.reserve(text.size());
+  for (size_t i = 0; i < text.size(); ++i) {
+    const char c = text[i];
+    if (c == '+') {
+      out += ' ';
+    } else if (c == '%' && i + 2 < text.size() &&
+               std::isxdigit(static_cast<unsigned char>(text[i + 1])) &&
+               std::isxdigit(static_cast<unsigned char>(text[i + 2]))) {
+      out += static_cast<char>(
+          std::strtoul(text.substr(i + 1, 2).c_str(), nullptr, 16));
+      i += 2;
+    } else {
+      out += c;
+    }
+  }
+  return out;
+}
+
+class HubParams {
+ public:
+  HubParams(const std::string& url, const std::vector<uint8_t>& body) {
+    const size_t q = url.find('?');
+    if (q != std::string::npos) {
+      size_t at = q + 1;
+      while (at <= url.size()) {
+        size_t end = url.find('&', at);
+        if (end == std::string::npos) {
+          end = url.size();
+        }
+        const std::string pair = url.substr(at, end - at);
+        const size_t eq = pair.find('=');
+        if (eq != std::string::npos) {
+          query_[PercentDecode(pair.substr(0, eq))] =
+              PercentDecode(pair.substr(eq + 1));
+        }
+        at = end + 1;
+      }
+    }
+    if (!body.empty()) {
+      const std::string text(body.begin(), body.end());
+      json_.Parse(text.c_str());
+    }
+  }
+
+  std::string Get(const char* name) const {
+    auto it = query_.find(name);
+    if (it != query_.end()) {
+      return it->second;
+    }
+    if (json_.IsObject() && json_.HasMember(name)) {
+      const auto& value = json_[name];
+      if (value.IsString()) {
+        return value.GetString();
+      }
+      if (value.IsUint64()) {
+        return std::to_string(value.GetUint64());
+      }
+    }
+    return "";
+  }
+
+  uint64_t Xuid(const char* name) const {
+    std::string text = Get(name);
+    if (text.rfind("Xuid:", 0) == 0) {
+      text = text.substr(5);
+    }
+    if (text.size() != 16) {
+      return 0;
+    }
+    char* end = nullptr;
+    const uint64_t xuid = std::strtoull(text.c_str(), &end, 16);
+    return end == text.c_str() + 16 ? xuid : 0;
+  }
+
+ private:
+  std::map<std::string, std::string> query_;
+  rapidjson::Document json_;
+};
+
+std::string JsonString(const std::string& text) {
+  rapidjson::StringBuffer buffer;
+  rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+  writer.String(text.c_str(), static_cast<rapidjson::SizeType>(text.size()));
+  return buffer.GetString();
+}
+
+// At most `limit` characters (code points, not bytes) of UTF-8 text.
+std::string TruncateUtf8(const std::string& text, size_t limit) {
+  size_t count = 0;
+  for (size_t i = 0; i < text.size(); ++i) {
+    if ((static_cast<unsigned char>(text[i]) & 0xC0) != 0x80) {
+      if (count == limit) {
+        return text.substr(0, i);
+      }
+      ++count;
+    }
+  }
+  return text;
+}
+
+// The Voice Messages app's recorder: the Nexia Voice Messages dialog's own
+// recording steps (app/messages_dialog.cc), run on a thread of their own
+// because nothing here draws a frame to pump them. The mixer captures at 16 kHz
+// and mail is stored at 8 kHz, each pair averaged; a minute at most. The voice
+// device is held while recording and while anything is playing, then let go.
+class HubVoice {
+ public:
+  static constexpr uint32_t kCaptureRate = 16000;
+  static constexpr uint32_t kStoreRate = 8000;
+  static constexpr size_t kMaxSamples = 60 * kStoreRate;
+
+  static HubVoice& Get() {
+    static HubVoice* instance = new HubVoice();  // never torn down at exit
+    return *instance;
+  }
+
+  bool Start() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (recording_) {
+      return true;
+    }
+    HoldLocked(std::chrono::hours(1));
+    pcm_.clear();
+    cursor_ = apu::sdl::VoiceChat::Get().capture_position();
+    have_pending_ = false;
+    recording_ = true;
+    EnsureThreadLocked();
+    return true;
+  }
+
+  // Leaves the clip for preview and send; the device stays up a while for it.
+  uint32_t Stop() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (recording_) {
+      PumpLocked();
+      recording_ = false;
+    }
+    HoldLocked(std::chrono::minutes(2));
+    return DurationMsLocked();
+  }
+
+  uint32_t Preview() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (recording_ || pcm_.empty()) {
+      return 0;
+    }
+    PlayLocked(pcm_, kStoreRate);
+    return DurationMsLocked();
+  }
+
+  void Discard() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    recording_ = false;
+    pcm_.clear();
+    apu::sdl::VoiceChat::Get().StopPcmMessage();
+    release_at_ = std::chrono::steady_clock::now();
+  }
+
+  // The clip, for sending; empty while still recording.
+  std::vector<int16_t> Clip() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return recording_ ? std::vector<int16_t>() : pcm_;
+  }
+
+  void State(bool* out_recording, uint32_t* out_duration_ms) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    *out_recording = recording_;
+    *out_duration_ms = DurationMsLocked();
+  }
+
+  // A message from the hub (stored at its own rate).
+  uint32_t Play(const std::vector<int16_t>& pcm, uint32_t sample_rate) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    PlayLocked(pcm, sample_rate ? sample_rate : kStoreRate);
+    const uint32_t rate = sample_rate ? sample_rate : kStoreRate;
+    return static_cast<uint32_t>(uint64_t(pcm.size()) * 1000 / rate);
+  }
+
+ private:
+  uint32_t DurationMsLocked() const {
+    return static_cast<uint32_t>(uint64_t(pcm_.size()) * 1000 / kStoreRate);
+  }
+
+  void HoldLocked(std::chrono::steady_clock::duration for_at_least) {
+    if (!referenced_) {
+      apu::sdl::VoiceChat::Get().AddRef();
+      apu::sdl::VoiceChat::Get().SetMessagePlayback(true);
+      referenced_ = true;
+    }
+    const auto until = std::chrono::steady_clock::now() + for_at_least;
+    if (until > release_at_) {
+      release_at_ = until;
+    }
+    EnsureThreadLocked();
+  }
+
+  void PlayLocked(const std::vector<int16_t>& pcm, uint32_t sample_rate) {
+    const uint64_t ms = uint64_t(pcm.size()) * 1000 / sample_rate;
+    HoldLocked(std::chrono::milliseconds(ms + 2000));
+    if (sample_rate == kCaptureRate) {
+      apu::sdl::VoiceChat::Get().PlayPcmMessage(pcm.data(), pcm.size());
+      return;
+    }
+    // 8 kHz back up to what the mixer plays, each sample held twice - as the
+    // dialog does.
+    std::vector<int16_t> playable;
+    playable.reserve(pcm.size() * 2);
+    for (const int16_t sample : pcm) {
+      playable.push_back(sample);
+      playable.push_back(sample);
+    }
+    apu::sdl::VoiceChat::Get().PlayPcmMessage(playable.data(), playable.size());
+  }
+
+  // Everything captured since the last pump, exactly once (the dialog's
+  // PumpRecording).
+  void PumpLocked() {
+    int16_t buffer[4096];
+    while (recording_) {
+      const size_t read = apu::sdl::VoiceChat::Get().ReadCaptureSince(
+          cursor_, buffer, sizeof(buffer) / sizeof(buffer[0]));
+      if (!read) {
+        break;
+      }
+      size_t i = 0;
+      if (have_pending_) {
+        pcm_.push_back(static_cast<int16_t>(
+            (int32_t(pending_) + int32_t(buffer[0])) / 2));
+        have_pending_ = false;
+        i = 1;
+      }
+      for (; i + 1 < read; i += 2) {
+        pcm_.push_back(static_cast<int16_t>(
+            (int32_t(buffer[i]) + int32_t(buffer[i + 1])) / 2));
+      }
+      if (i < read) {
+        pending_ = buffer[i];
+        have_pending_ = true;
+      }
+      if (pcm_.size() >= kMaxSamples) {
+        pcm_.resize(kMaxSamples);
+        recording_ = false;
+        release_at_ = std::chrono::steady_clock::now() + std::chrono::minutes(2);
+      }
+    }
+  }
+
+  void EnsureThreadLocked() {
+    if (thread_running_) {
+      return;
+    }
+    thread_running_ = true;
+    std::thread([this]() {
+      while (true) {
+        xe::threading::Sleep(std::chrono::milliseconds(20));
+        std::lock_guard<std::mutex> lock(mutex_);
+        PumpLocked();
+        if (!recording_ && referenced_ &&
+            std::chrono::steady_clock::now() >= release_at_) {
+          apu::sdl::VoiceChat::Get().SetMessagePlayback(false);
+          apu::sdl::VoiceChat::Get().Release();
+          referenced_ = false;
+        }
+        if (!recording_ && !referenced_) {
+          thread_running_ = false;
+          return;
+        }
+      }
+    }).detach();
+  }
+
+  std::mutex mutex_;
+  bool recording_ = false;
+  bool referenced_ = false;
+  bool thread_running_ = false;
+  std::chrono::steady_clock::time_point release_at_;
+  std::vector<int16_t> pcm_;
+  uint64_t cursor_ = 0;
+  bool have_pending_ = false;
+  int16_t pending_ = 0;
+};
+
+bool AnswerNexiaHub(XHttpHandle* request, const std::string& verb,
+                    const std::string& url) {
+  const std::string lowered = xe::utf8::lower_ascii(url);
+  const std::string path = lowered.substr(0, lowered.find('?'));
+  constexpr std::string_view kRoot = "/nexia/";
+  const size_t root = path.find(kRoot);
+  if (root == std::string::npos) {
+    return false;
+  }
+  // No scheme or host before it: only <host>/nexia/..., never a path that
+  // merely contains it.
+  const size_t host_end = path.find('/', path.find("//") + 2);
+  if (host_end != root) {
+    return false;
+  }
+  const std::string route = path.substr(root + kRoot.size());
+  const HubParams params(url, request->request_body);
+  auto* xlive_api = kernel_state()->GetXboxLiveAPI();
+
+  if (route == "keyboard") {
+    const std::string title = params.Get("title");
+    const uint32_t ticket =
+        OpenHubKeyboard(title.empty() ? "Message" : title, params.Get("text"));
+    if (!ticket) {
+      AnswerWith(request, 200, "OK", "{\"ticket\":0}");
+    } else {
+      AnswerWith(request, 200, "OK", fmt::format("{{\"ticket\":{}}}", ticket));
+    }
+    XELOGI("XHttp: {} {} -> hub keyboard ticket {}", verb, url, ticket);
+    return true;
+  }
+
+  if (route.rfind("keyboard/", 0) == 0) {
+    const uint32_t ticket = static_cast<uint32_t>(
+        std::strtoul(route.substr(9).c_str(), nullptr, 10));
+    bool cancelled = false;
+    std::string text;
+    if (!PollHubKeyboard(ticket, &cancelled, &text)) {
+      AnswerWith(request, 200, "OK", "{\"done\":false}");
+      return true;
+    }
+    size_t limit = 240;
+    const std::string max = params.Get("max");
+    if (!max.empty()) {
+      limit = std::clamp<size_t>(std::strtoul(max.c_str(), nullptr, 10), 1, 240);
+    }
+    text = TruncateUtf8(text, limit);
+    AnswerWith(request, 200, "OK",
+               fmt::format("{{\"done\":true,\"cancelled\":{},\"text\":{}}}",
+                           cancelled ? "true" : "false", JsonString(text)));
+    XELOGI("XHttp: hub keyboard {} {}", ticket,
+           cancelled ? "cancelled" : "done");
+    return true;
+  }
+
+  if (route == "gamercard") {
+    const uint64_t xuid = params.Xuid("xuid");
+    const uint32_t result = ShowHubGamerCard(0, xuid);
+    if (result == X_ERROR_SUCCESS) {
+      AnswerWith(request, 200, "OK", "{\"shown\":true}");
+    } else {
+      AnswerWith(request, 200, "OK", "{\"shown\":false}");
+    }
+    XELOGI("XHttp: {} {} -> gamercard {:016X}: {:08X}", verb, url, xuid,
+           result);
+    return true;
+  }
+
+  // Nexia's own friends list - the one the Friends dialog shows. The hub only
+  // knows what a client has published, so the hub apps ask here.
+  if (route == "friends") {
+    std::string body = "{\"friends\":[";
+    bool first = true;
+    for (const auto& [xuid, gamertag] : HubFriends(0)) {
+      body += fmt::format("{}{{\"xuid\":\"{:016X}\",\"gamertag\":{}}}",
+                          first ? "" : ",", xuid, JsonString(gamertag));
+      first = false;
+    }
+    body += "]}";
+    AnswerWith(request, 200, "OK", body);
+    return true;
+  }
+
+  // A player's gamerpic for the hub apps' card. An XUI image cannot take a
+  // web address here (17559 has no LoadRemoteImage, and an https:// path is
+  // never fetched), but it reads memory://<address>,<size> - the dash builds
+  // those itself for pictures it has in memory. The tile comes from
+  // friends.sqlite where it is cached (friends, and SeenPlayers for everyone
+  // else), fetched and stored only when it is not (GetFriendGamerpic, the
+  // ImGui dialogs' own source); it is copied into guest memory once and kept,
+  // and the app gets that path.
+  if (route == "gamerpic") {
+    static std::mutex gamerpic_mutex;
+    static std::map<uint64_t, std::pair<uint32_t, uint32_t>> gamerpics;
+    const uint64_t xuid = params.Xuid("xuid");
+    std::pair<uint32_t, uint32_t> found = {0, 0};
+    if (xuid) {
+      {
+        std::lock_guard<std::mutex> lock(gamerpic_mutex);
+        if (auto it = gamerpics.find(xuid); it != gamerpics.end()) {
+          found = it->second;
+        }
+      }
+      auto* profile = kernel_state()->xam_state()->GetUserProfile(uint32_t(0));
+      if (!found.first && profile) {
+        const std::vector<uint8_t> tile =
+            GetFriendGamerpic(profile->xuid(), xuid, false);
+        if (!tile.empty()) {
+          const uint32_t size = static_cast<uint32_t>(tile.size());
+          const uint32_t address =
+              kernel_state()->memory()->SystemHeapAlloc(size);
+          if (address) {
+            std::memcpy(
+                kernel_state()->memory()->TranslateVirtual<uint8_t*>(address),
+                tile.data(), size);
+            found = {address, size};
+            std::lock_guard<std::mutex> lock(gamerpic_mutex);
+            gamerpics[xuid] = found;
+          }
+        }
+      }
+    }
+    if (found.first) {
+      AnswerWith(request, 200, "OK",
+                 fmt::format("{{\"path\":\"memory://{:X},{:X}\"}}",
+                             found.first, found.second));
+    } else {
+      AnswerWith(request, 200, "OK", "{\"path\":\"\"}");
+    }
+    return true;
+  }
+
+  if (route == "friendrequest") {
+    const uint64_t target = params.Xuid("target");
+    // The name the app already shows, so the new friend is not "Friend N".
+    const uint32_t outcome =
+        target ? RequestHubFriend(0, target, params.Get("gamertag")) : 2;
+    static const char* kOutcomes[] = {"accepted", "pending", "failed"};
+    // Always 200: Xbox.Net.HttpGet hands Lua the body only on success, and
+    // the outcome is the answer.
+    AnswerWith(request, 200, "OK",
+               fmt::format("{{\"outcome\":\"{}\"}}", kOutcomes[outcome]));
+    XELOGI("XHttp: {} {} -> friend request to {:016X}: {}", verb, url, target,
+           kOutcomes[outcome]);
+    return true;
+  }
+
+  if (route == "unfriend") {
+    const uint64_t target = params.Xuid("target");
+    const bool removed = target && RemoveHubFriend(0, target);
+    AnswerWith(request, 200, "OK",
+               removed ? "{\"removed\":true}" : "{\"removed\":false}");
+    return true;
+  }
+
+  // Join Game: whether the friend's game (title=<hex id>, update=<label>,
+  // hash=<the update's content hash>) is here with the same update, and then
+  // starting it. The answer goes out before the launch: the switch tears the
+  // dash down.
+  if (route == "joinable" || route == "joingame") {
+    const uint32_t title_id = static_cast<uint32_t>(
+        std::strtoul(params.Get("title").c_str(), nullptr, 16));
+    const std::string update = params.Get("update");
+    const std::string hash = params.Get("hash");
+    const HubJoinTarget target = FindHubJoinTarget(title_id, update, hash);
+    if (route == "joinable") {
+      AnswerWith(request, 200, "OK",
+                 fmt::format("{{\"ok\":{},\"reason\":{}}}",
+                             target.ok ? "true" : "false",
+                             JsonString(target.reason)));
+      return true;
+    }
+    const uint64_t inviter = params.Xuid("target");
+    const bool can = target.ok && inviter;
+    AnswerWith(request, 200, "OK",
+               fmt::format("{{\"started\":{},\"reason\":{}}}",
+                           can ? "true" : "false", JsonString(target.reason)));
+    if (can && !StartHubJoin(inviter, title_id, update, hash)) {
+      XELOGE("XHttp: Join Game into {:08X} for {:016X} did not start",
+             title_id, inviter);
+    }
+    return true;
+  }
+
+  // Sending goes through XLiveAPI for the same reason as the friend request:
+  // the hub's rule comes back as the outcome the dialog already reports.
+  auto outcome_answer = [&](SendMessageOutcome outcome) -> const char* {
+    switch (outcome) {
+      case SendMessageOutcome::kSent:
+        AnswerWith(request, 200, "OK", "{\"outcome\":\"sent\"}");
+        return "sent";
+      case SendMessageOutcome::kDenied:
+        AnswerWith(request, 200, "OK", "{\"outcome\":\"denied\"}");
+        return "denied";
+      default:
+        AnswerWith(request, 200, "OK", "{\"outcome\":\"invalid\"}");
+        return "invalid";
+    }
+  };
+
+  if (route == "message/send") {
+    const uint64_t from = params.Xuid("xuid");
+    const uint64_t target = params.Xuid("target");
+    const std::string text = TruncateUtf8(params.Get("text"), 240);
+    const char* result = "invalid";
+    if (!xlive_api || !from || !target || text.empty()) {
+      AnswerWith(request, 200, "OK", "{\"outcome\":\"invalid\"}");
+    } else {
+      result = outcome_answer(xlive_api->SendTextMessage(from, target, text));
+    }
+    XELOGI("XHttp: hub text message to {:016X}: {}", target, result);
+    return true;
+  }
+
+  if (route == "message/read") {
+    const uint64_t xuid = params.Xuid("xuid");
+    const std::string id = params.Get("id");
+    if (xlive_api && xuid && !id.empty()) {
+      xlive_api->MarkMessageRead(xuid, id);
+      xlive_api->RefreshMessageCounts();
+    }
+    AnswerWith(request, 200, "OK", "{}");
+    return true;
+  }
+
+  if (route == "voice/record") {
+    HubVoice::Get().Start();
+    AnswerWith(request, 200, "OK", "{\"recording\":true}");
+    XELOGI("XHttp: hub voice recording started");
+    return true;
+  }
+  if (route == "voice/stop") {
+    const uint32_t ms = HubVoice::Get().Stop();
+    AnswerWith(request, 200, "OK", fmt::format("{{\"durationMs\":{}}}", ms));
+    XELOGI("XHttp: hub voice recording stopped, {} ms", ms);
+    return true;
+  }
+  if (route == "voice/state") {
+    bool recording = false;
+    uint32_t ms = 0;
+    HubVoice::Get().State(&recording, &ms);
+    AnswerWith(request, 200, "OK",
+               fmt::format("{{\"recording\":{},\"durationMs\":{}}}",
+                           recording ? "true" : "false", ms));
+    return true;
+  }
+  if (route == "voice/preview") {
+    const uint32_t ms = HubVoice::Get().Preview();
+    AnswerWith(request, 200, "OK", fmt::format("{{\"durationMs\":{}}}", ms));
+    return true;
+  }
+  if (route == "voice/discard") {
+    HubVoice::Get().Discard();
+    AnswerWith(request, 200, "OK", "{}");
+    return true;
+  }
+  if (route == "voice/send") {
+    const uint64_t from = params.Xuid("xuid");
+    const uint64_t target = params.Xuid("target");
+    const std::vector<int16_t> clip = HubVoice::Get().Clip();
+    const char* result = "invalid";
+    if (!xlive_api || !from || !target || clip.empty()) {
+      AnswerWith(request, 200, "OK", "{\"outcome\":\"invalid\"}");
+    } else {
+      result = outcome_answer(xlive_api->SendVoiceMessage(
+          from, target, clip, HubVoice::kStoreRate));
+      if (std::string_view(result) == "sent") {
+        HubVoice::Get().Discard();
+      }
+    }
+    XELOGI("XHttp: hub voice message to {:016X} ({} samples): {}", target,
+           clip.size(), result);
+    return true;
+  }
+  if (route == "voice/play") {
+    const uint64_t xuid = params.Xuid("xuid");
+    const std::string id = params.Get("id");
+    std::vector<int16_t> pcm;
+    uint32_t sample_rate = 0;
+    if (!xlive_api || !xuid || id.empty() ||
+        !xlive_api->GetMessageAudio(xuid, id, pcm, sample_rate) ||
+        pcm.empty()) {
+      AnswerWith(request, 200, "OK", "{\"durationMs\":0}");
+      XELOGI("XHttp: hub voice message {} could not be fetched", id);
+      return true;
+    }
+    const uint32_t ms = HubVoice::Get().Play(pcm, sample_rate);
+    xlive_api->MarkMessageRead(xuid, id);
+    xlive_api->RefreshMessageCounts();
+    AnswerWith(request, 200, "OK", fmt::format("{{\"durationMs\":{}}}", ms));
+    XELOGI("XHttp: hub voice message {} playing, {} ms", id, ms);
+    return true;
+  }
+
+  AnswerWith(request, 404, "Not Found", "{}");
+  XELOGW("XHttp: {} {} -> no such hub app route", verb, url);
+  return true;
+}
+
+// The host part of scheme://host[:port]/..., lowercase.
+std::string UrlHost(const std::string& url) {
+  const size_t scheme = url.find("://");
+  const size_t start = scheme == std::string::npos ? 0 : scheme + 3;
+  const size_t end = url.find_first_of(":/?", start);
+  return xe::utf8::lower_ascii(url.substr(
+      start, end == std::string::npos ? std::string::npos : end - start));
+}
+
+// Our hub, as XLiveAPI addresses it.
+bool IsHubUrl(const std::string& url) {
+  const std::string hub = UrlHost(XLiveAPI::GetApiAddress());
+  return !hub.empty() && UrlHost(url) == hub;
 }
 
 bool Perform(XHttpHandle* request) {
@@ -352,8 +1143,15 @@ bool Perform(XHttpHandle* request) {
     return false;
   }
 
-  if (AnswerDiscInTray(request, request->verb.empty() ? "GET" : request->verb,
-                       url)) {
+  const std::string request_verb =
+      request->verb.empty() ? "GET" : request->verb;
+  if (AnswerDiscInTray(request, request_verb, url)) {
+    return true;
+  }
+  if (AnswerFriendPrivacy(request, request_verb, url)) {
+    return true;
+  }
+  if (AnswerNexiaHub(request, request_verb, url)) {
     return true;
   }
 
@@ -371,6 +1169,22 @@ bool Perform(XHttpHandle* request) {
   for (const std::string& header : request->request_headers) {
     headers = curl_slist_append(headers, header.c_str());
   }
+  // Tell the hub what this Nexia can do, so it only hands the dashboard what
+  // it can open: channel-packages = a channel:// .xzp the hub publishes is
+  // fetched and served (xam_info.cc DashChannelPackageRedirect), which the
+  // online Social channel needs. Hub requests only.
+  const bool hub_url = IsHubUrl(url);
+  if (hub_url) {
+    headers = curl_slist_append(headers,
+                                "X-Nexia-Features: channel-packages");
+    if (auto* xlive_api = kernel_state()->GetXboxLiveAPI()) {
+      const std::string token = xlive_api->hub_session_token();
+      if (!token.empty()) {
+        headers = curl_slist_append(
+            headers, ("X-Nexia-Session: " + token).c_str());
+      }
+    }
+  }
 
   std::string verb = request->verb.empty() ? "GET" : request->verb;
 
@@ -381,7 +1195,9 @@ bool Perform(XHttpHandle* request) {
   if (headers) {
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
   }
-  if (session && !session->agent.empty()) {
+  if (hub_url) {
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "nexia360");
+  } else if (session && !session->agent.empty()) {
     curl_easy_setopt(curl, CURLOPT_USERAGENT, session->agent.c_str());
   } else {
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "Xbox");
@@ -527,6 +1343,119 @@ bool CopyOut(uint32_t buffer_ptr, uint32_t length_ptr, const void* data,
 }
 
 }  // namespace
+
+std::vector<uint8_t> FetchTitleBoxArt(uint32_t title_id) {
+  return FetchDiscBoxArt(title_id);
+}
+
+namespace {
+
+// One GET, body and status. Empty body on any failure.
+std::vector<uint8_t> HttpGet(const std::string& url, long* status) {
+  std::vector<uint8_t> body;
+  *status = 0;
+  CURL* curl = curl_easy_init();
+  if (!curl) {
+    return body;
+  }
+  curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+  curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+  curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 3000L);
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 10000L);
+  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteBody);
+  curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
+  const CURLcode result = curl_easy_perform(curl);
+  curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, status);
+  curl_easy_cleanup(curl);
+  if (result != CURLE_OK || *status != 200) {
+    body.clear();
+  }
+  return body;
+}
+
+}  // namespace
+
+// The title's official retail cover from XboxUnity: the whole 900x600 case
+// jacket, back, spine and front. Kept on disk once fetched; a title with no
+// official cover, or no network, is tried once per session.
+std::vector<uint8_t> FetchTitleCoverJacket(uint32_t title_id) {
+  Emulator* emulator = kernel_state()->emulator();
+  const std::filesystem::path cache = emulator->cache_root() / "disc_art" /
+                                      fmt::format("{:08X}_cover.img", title_id);
+  std::vector<uint8_t> jacket;
+  std::error_code ec;
+  if (std::filesystem::is_regular_file(cache, ec)) {
+    std::ifstream file(cache, std::ios::binary);
+    jacket.assign(std::istreambuf_iterator<char>(file),
+                  std::istreambuf_iterator<char>());
+    return jacket;
+  }
+
+  static std::mutex missing_mutex;
+  static std::set<uint32_t> missing;
+  {
+    std::lock_guard<std::mutex> lock(missing_mutex);
+    if (missing.contains(title_id)) {
+      return {};
+    }
+  }
+  auto give_up = [&](std::string_view why) {
+    XELOGI("XboxUnity: no official cover for {:08X} ({})", title_id, why);
+    std::lock_guard<std::mutex> lock(missing_mutex);
+    missing.insert(title_id);
+    return std::vector<uint8_t>();
+  };
+
+  long status = 0;
+  const std::vector<uint8_t> info = HttpGet(
+      fmt::format(
+          "http://xboxunity.net/Resources/Lib/CoverInfo.php?titleid={:08X}",
+          title_id),
+      &status);
+  if (info.empty()) {
+    return give_up(fmt::format("cover list HTTP {}", status));
+  }
+  rapidjson::Document document;
+  document.Parse(reinterpret_cast<const char*>(info.data()), info.size());
+  if (document.HasParseError() || !document.IsObject() ||
+      !document.HasMember("Covers") || !document["Covers"].IsArray()) {
+    return give_up("cover list did not parse");
+  }
+  std::string cover_id;
+  for (const auto& cover : document["Covers"].GetArray()) {
+    if (cover.IsObject() && cover.HasMember("Official") &&
+        cover["Official"].IsString() &&
+        std::string_view(cover["Official"].GetString()) == "1" &&
+        cover.HasMember("CoverID") && cover["CoverID"].IsString()) {
+      cover_id = cover["CoverID"].GetString();
+      break;
+    }
+  }
+  if (cover_id.empty()) {
+    return give_up("none marked official");
+  }
+  jacket = HttpGet(
+      fmt::format(
+          "http://xboxunity.net/Resources/Lib/Cover.php?size=large&cid={}",
+          cover_id),
+      &status);
+  int width = 0;
+  int height = 0;
+  int channels = 0;
+  if (jacket.empty() ||
+      !stbi_info_from_memory(jacket.data(), static_cast<int>(jacket.size()),
+                             &width, &height, &channels)) {
+    return give_up(fmt::format("cover {} HTTP {}", cover_id, status));
+  }
+  std::filesystem::create_directories(cache.parent_path(), ec);
+  std::ofstream file(cache, std::ios::binary);
+  file.write(reinterpret_cast<const char*>(jacket.data()),
+             static_cast<std::streamsize>(jacket.size()));
+  XELOGI("XboxUnity: official cover {} for {:08X} ({}x{})", cover_id, title_id,
+         width, height);
+  return jacket;
+}
 
 dword_result_t NetDll_XHttpStartup_entry(dword_t caller, dword_t reserved,
                                          dword_t reserved_ptr) {
@@ -1209,7 +2138,7 @@ dword_result_t NetDll_XHttpQueryAuthSchemes_entry(dword_t caller,
 DECLARE_XAM_EXPORT1(NetDll_XHttpQueryAuthSchemes, kNetworking, kImplemented);
 
 dword_result_t NetDll_XHttpCrackUrl_entry(
-    dword_t caller, lpstring_t url_ptr, dword_t url_length, dword_t flags,
+    dword_t caller, dword_t url_ptr, dword_t url_length, dword_t flags,
     pointer_t<XHTTP_URL_COMPONENTS> url_components_ptr) {
   if (!url_ptr || !url_components_ptr ||
       url_components_ptr->struct_size != sizeof(XHTTP_URL_COMPONENTS)) {
@@ -1256,10 +2185,17 @@ dword_result_t NetDll_XHttpCrackUrl_entry(
     return decoded_component;
   };
 
-  std::string url_to_process = url_ptr.value();
-
+  // A given length is read exactly: the buffer need not be terminated (see
+  // XHttpCrackUrlW), and reading to a terminator could run off the page.
+  std::string url_to_process;
   if (url_length) {
-    url_to_process = url_ptr.value().substr(0, url_length);
+    const char* host_ptr = kernel_memory()->TranslateVirtual<const char*>(
+        url_ptr.value());
+    url_to_process.assign(host_ptr, strnlen(host_ptr, url_length));
+  } else {
+    // Unbounded only when the caller said it is terminated (no length).
+    url_to_process =
+        kernel_memory()->TranslateVirtual<const char*>(url_ptr.value());
   }
 
   CURLU* url = curl_url();
@@ -1325,7 +2261,7 @@ dword_result_t NetDll_XHttpCrackUrl_entry(
       std::ssub_match sub_match = matches[i];
 
       if (sub_match.matched) {
-        const uint32_t result_ptr = url_ptr.guest_address() +
+        const uint32_t result_ptr = url_ptr.value() +
                                     static_cast<uint32_t>(matches.position(i));
 
         const uint32_t length = static_cast<uint32_t>(sub_match.length());
@@ -1502,7 +2438,7 @@ dword_result_t NetDll_XHttpCrackUrl_entry(
 DECLARE_XAM_EXPORT1(NetDll_XHttpCrackUrl, kNetworking, kImplemented);
 
 dword_result_t NetDll_XHttpCrackUrlW_entry(
-    dword_t caller, lpu16string_t url_ptr, dword_t url_length, dword_t flags,
+    dword_t caller, dword_t url_ptr, dword_t url_length, dword_t flags,
     pointer_t<XHTTP_URL_COMPONENTS> url_components_ptr) {
   if (!url_ptr || !url_components_ptr ||
       url_components_ptr->struct_size != sizeof(XHTTP_URL_COMPONENTS)) {
@@ -1510,9 +2446,30 @@ dword_result_t NetDll_XHttpCrackUrlW_entry(
     return 0;
   }
 
-  std::string url = GuestStringW(url_ptr.guest_address());
-  if (url_length && url_length < url.size()) {
-    url = url.substr(0, url_length);
+  // With a length the URL need not be terminated - the dash cracks its own
+  // buffers that way - and searching for the terminator ran off the end of the
+  // page (Mark Unread: access violation at a page boundary, then a crash). So
+  // a given length is read exactly, never past.
+  std::string url;
+  if (url_length) {
+    const auto* host_ptr = kernel_memory()->TranslateVirtual<const char16_t*>(
+        url_ptr.value());
+    // Grown as read, never sized from the length up front: a caller can pass
+    // a length far beyond the URL (or ~0 for "to the terminator").
+    constexpr uint32_t kMaxUrlChars = 8192;
+    const uint32_t limit = std::min<uint32_t>(url_length, kMaxUrlChars);
+    std::u16string wide;
+    for (uint32_t used = 0; used < limit; ++used) {
+      const char16_t unit = static_cast<char16_t>(
+          xe::byte_swap(static_cast<uint16_t>(host_ptr[used])));
+      if (!unit) {
+        break;
+      }
+      wide.push_back(unit);
+    }
+    url = xe::to_utf8(wide);
+  } else {
+    url = GuestStringW(url_ptr.value());
   }
 
   std::regex url_regex(
@@ -1546,7 +2503,7 @@ dword_result_t NetDll_XHttpCrackUrlW_entry(
       component_length = units;
     } else {
       component_ptr =
-          url_ptr.guest_address() +
+          url_ptr.value() +
           static_cast<uint32_t>(matches.position(index) * sizeof(char16_t));
       component_length = units;
     }

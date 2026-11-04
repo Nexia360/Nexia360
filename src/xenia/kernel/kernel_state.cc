@@ -13,7 +13,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <mutex>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -493,6 +495,15 @@ object_ref<XThread> KernelState::LaunchModule(object_ref<UserModule> module) {
   SetExecutableModule(module);
   XELOGI("KernelState: Launching module...");
 
+  // The startup notifications belong to each title, not to the process. When
+  // the dashboard launched first it used them up, so a game started from it
+  // never got kXNotificationLiveConnectionChanged - MW3 asks for its NAT type
+  // only from that handler and reported Strict. A title launched from the dash
+  // now gets exactly what it gets when launched directly.
+  has_notified_startup_ = false;
+  has_notified_live_startup_ = false;
+  has_notified_xmp_startup_ = false;
+
   // Create a thread to run in.
   // We start suspended so we can run the debugger prep.
   auto thread = object_ref<XThread>(
@@ -725,6 +736,180 @@ object_ref<UserModule> KernelState::LoadUserModuleFromMemory(
   return module;
 }
 
+namespace {
+
+// The end of one function in a Lua 5.1 dump as the console writes it: big
+// endian, 4-byte int, size_t and instruction, 8-byte number. Zero if the bytes
+// do not parse, so a caller never patches something it did not understand.
+size_t SkipLuaFunction(const uint8_t* data, size_t size, size_t at,
+                       int depth = 0) {
+  auto u32 = [&](size_t& pos, uint32_t& out) {
+    if (pos + 4 > size) {
+      return false;
+    }
+    out = xe::load_and_swap<uint32_t>(data + pos);
+    pos += 4;
+    return true;
+  };
+  auto skip_string = [&](size_t& pos) {
+    uint32_t length = 0;
+    if (!u32(pos, length) || pos + length > size) {
+      return false;
+    }
+    pos += length;
+    return true;
+  };
+  uint32_t count = 0;
+  if (depth > 64 || !skip_string(at) || at + 12 > size) {
+    return 0;
+  }
+  at += 12;  // linedefined, lastlinedefined, nups, numparams, vararg, stack
+  if (!u32(at, count) || at + size_t(count) * 4 > size) {
+    return 0;
+  }
+  at += size_t(count) * 4;  // code
+  if (!u32(at, count)) {
+    return 0;
+  }
+  for (uint32_t i = 0; i < count; ++i) {  // constants
+    if (at >= size) {
+      return 0;
+    }
+    switch (data[at++]) {
+      case 0:  // nil
+        break;
+      case 1:  // boolean
+        at += 1;
+        break;
+      case 3:  // number
+        at += 8;
+        break;
+      case 4:  // string
+        if (!skip_string(at)) {
+          return 0;
+        }
+        break;
+      default:
+        return 0;
+    }
+  }
+  if (!u32(at, count)) {
+    return 0;
+  }
+  for (uint32_t i = 0; i < count; ++i) {  // nested functions
+    at = SkipLuaFunction(data, size, at, depth + 1);
+    if (!at) {
+      return 0;
+    }
+  }
+  if (!u32(at, count) || at + size_t(count) * 4 > size) {
+    return 0;
+  }
+  at += size_t(count) * 4;  // line info
+  if (!u32(at, count)) {
+    return 0;
+  }
+  for (uint32_t i = 0; i < count; ++i) {  // locals
+    if (!skip_string(at) || at + 8 > size) {
+      return 0;
+    }
+    at += 8;
+  }
+  if (!u32(at, count)) {
+    return 0;
+  }
+  for (uint32_t i = 0; i < count; ++i) {  // upvalue names
+    if (!skip_string(at)) {
+      return 0;
+    }
+  }
+  return at;
+}
+
+// My Games draws a game's tile from dataItem.boxart - the scene binds
+// MarketplaceSlotImage {img_0=boxart;img_1=thumbnailLargeMediaType} - but the
+// 17559 scripts only ever fill boxart from a Quick Play URL, so every other
+// game showed the controller icon. The picture the dashboard does load for the
+// tile, titleInfo:GetImageInfo().Path, is written by
+// Marketplace.AsyncMetadataLoader to dataItem.thumbnail, which that scene never
+// reads. Renaming that one constant to "boxart" puts the loaded picture on the
+// tile; the loader already fires ItemChangedEvent right after the write.
+//
+// The constant is 3 bytes shorter, so the rest of the chunk moves down and the
+// freed tail is zeroed: undump reads exactly what it parses and nothing after.
+void PatchDashboardLibraryArt(Memory* memory, cpu::XexModule* xex) {
+  const uint32_t base = xex->base_address();
+  const uint32_t size = xex->image_size();
+  if (!base || !size) {
+    return;
+  }
+  uint8_t* image = memory->TranslateVirtual<uint8_t*>(base);
+  const std::string_view source = "@Marketplace.AsyncMetadataLoader.lua";
+  const std::string_view haystack(reinterpret_cast<const char*>(image), size);
+  const size_t source_at = haystack.find(source);
+  // header (12) and the source string's size_t (4) come before its characters
+  if (source_at == std::string_view::npos || source_at < 16) {
+    XELOGW("Dashboard: no AsyncMetadataLoader chunk; My Games art unpatched");
+    return;
+  }
+  const size_t start = source_at - 16;
+  static constexpr uint8_t kHeader[] = {0x1B, 'L', 'u', 'a', 0x51, 0,
+                                        0,    4,   4,   4,   8,    0};
+  if (std::memcmp(image + start, kHeader, sizeof(kHeader)) != 0) {
+    XELOGW("Dashboard: AsyncMetadataLoader chunk has an unexpected header");
+    return;
+  }
+  const size_t end = SkipLuaFunction(image, size, start + sizeof(kHeader));
+  if (!end) {
+    XELOGW("Dashboard: AsyncMetadataLoader chunk does not parse; unpatched");
+    return;
+  }
+
+  static constexpr uint8_t kOld[] = {4,   0,   0,   0,   10,  't', 'h', 'u',
+                                     'm', 'b', 'n', 'a', 'i', 'l', 0};
+  static constexpr uint8_t kNew[] = {4,   0,   0,   0,   7,   'b',
+                                     'o', 'x', 'a', 'r', 't', 0};
+  size_t hit = 0;
+  uint32_t hits = 0;
+  for (size_t at = start; at + sizeof(kOld) <= end; ++at) {
+    if (std::memcmp(image + at, kOld, sizeof(kOld)) == 0) {
+      hit = at;
+      ++hits;
+    }
+  }
+  if (hits != 1) {
+    XELOGW(
+        "Dashboard: AsyncMetadataLoader has {} 'thumbnail' constant(s), "
+        "expected 1; unpatched",
+        hits);
+    return;
+  }
+  // The loader leaves the image's data pages read-only; open the stretch being
+  // rewritten for the length of the write and put the protection back.
+  const uint32_t write_start = base + uint32_t(hit);
+  const uint32_t write_size = uint32_t(end - hit);
+  auto* heap = memory->LookupHeap(write_start);
+  uint32_t old_protect = 0;
+  if (!heap ||
+      !heap->Protect(write_start, write_size,
+                     kMemoryProtectRead | kMemoryProtectWrite, &old_protect)) {
+    XELOGW("Dashboard: could not make the AsyncMetadataLoader chunk writable");
+    return;
+  }
+  constexpr size_t kShrink = sizeof(kOld) - sizeof(kNew);
+  std::memcpy(image + hit, kNew, sizeof(kNew));
+  std::memmove(image + hit + sizeof(kNew), image + hit + sizeof(kOld),
+               end - (hit + sizeof(kOld)));
+  std::memset(image + end - kShrink, 0, kShrink);
+  heap->Protect(write_start, write_size, old_protect);
+  XELOGI(
+      "Dashboard: My Games tiles take the loaded picture (dataItem.boxart, "
+      "chunk {:08X}..{:08X})",
+      base + uint32_t(start), base + uint32_t(end));
+}
+
+}  // namespace
+
 X_RESULT KernelState::FinishLoadingUserModule(
     const object_ref<UserModule> module, bool call_entry) {
   // TODO(Gliniak): Apply custom patches here
@@ -735,6 +920,9 @@ X_RESULT KernelState::FinishLoadingUserModule(
   module->Dump();
   emulator_->patcher()->ApplyPatchesForTitle(memory_, module->title_id(),
                                              module->hash());
+  if (module->title_id() == kDashboardID && module->xex_module()) {
+    PatchDashboardLibraryArt(memory_, module->xex_module());
+  }
   emulator_->on_patch_apply();
   if (module->xex_module()) {
     module->xex_module()->Precompile();
@@ -1536,6 +1724,32 @@ void KernelState::RegisterNotifyListener(XNotifyListener* listener) {
     listener->EnqueueNotification(
         kXNotificationLiveConnectionChanged,
         static_cast<uint32_t>(xam_state()->user_tracker()->GetLogonState()));
+  }
+
+  // Join Game from the hub apps' Friends launched this title to join a friend.
+  // Accepted here, on the first Live listener, for the same reason as the
+  // connection state above: earlier there is nobody to tell. The invite is
+  // the one the Join Session buttons set - the guest reads it through
+  // XInviteGetAcceptedInfo.
+  if (listener->mask() & kXNotifyLive) {
+    uint64_t inviter = 0;
+    if (xam::TakePendingHubJoin(title_id(), &inviter)) {
+      if (auto* profile = xam_state()->GetUserProfile(uint32_t(0))) {
+        X_INVITE_INFO invite = {};
+        invite.xuid_invitee = profile->GetOnlineXUID();
+        invite.xuid_inviter = inviter;
+        invite.title_id = title_id();
+        invite.from_game_invite = true;
+        profile->SetSelfInvite(invite);
+        const uint32_t user_index =
+            xam_state()->GetUserIndexAssignedToProfileFromXUID(
+                profile->xuid());
+        listener->EnqueueNotification(kXNotificationLiveInviteAccepted,
+                                      user_index);
+        XELOGI("HubJoin: invite from {:016X} accepted into {:08X}", inviter,
+               title_id());
+      }
+    }
   }
 
   // 4E4D07ED, 58410869. Fixes creating Xbox Live sessions.

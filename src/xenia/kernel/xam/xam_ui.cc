@@ -8,15 +8,27 @@
  */
 
 #include "xenia/kernel/xam/xam_ui.h"
+
+#include <cstring>
+#include <map>
+#include <mutex>
+
 #include "xenia/app/emulator_window.h"
+#include "xenia/base/filesystem.h"
 #include "xenia/base/png_utils.h"
+#include "xenia/base/utf8.h"
+#include "xenia/emulator.h"
+#include "xenia/kernel/title_id_utils.h"
 #include "xenia/base/system.h"
 #include "xenia/hid/input_system.h"
 #include "xenia/kernel/XLiveAPI.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/user_module.h"
 #include "xenia/kernel/util/friends_util.h"
+#include "xenia/kernel/util/played_db.h"
 #include "xenia/kernel/util/shim_utils.h"
+#include "xenia/kernel/util/title_update_manager.h"
+#include "xenia/kernel/xam/xui_game_library.h"
 #include "xenia/kernel/xam/xam_content_device.h"
 #include "xenia/kernel/xam/xam_private.h"
 #include "xenia/ui/file_picker.h"
@@ -207,6 +219,12 @@ X_RESULT xeXamDispatchHeadlessEx(
 template <typename T>
 X_RESULT xeXamDispatchDialogAsync(T* dialog,
                                   std::function<void(T*)> close_callback) {
+  // The guest's input stops while a system dialog is up (xam_input.cc gates on
+  // IsUIActive), and the close below lets it go again. Only some callers set
+  // this before dispatching; the gamercard, achievements, edit profile,
+  // friends and sessions dialogs did not, so the d-pad and buttons kept
+  // reaching the dashboard menu underneath them.
+  kernel_state()->xam_state()->is_xam_dialog_present_.store(true);
   kernel_state()->BroadcastNotification(kXNotificationSystemUI, true);
   // Important to pass captured vars by value here since we return from this
   // without waiting for the dialog to close so the original local vars will be
@@ -1917,7 +1935,7 @@ bool xeDrawSessionContent(xe::ui::ImGuiDrawer* imgui_drawer,
   ImGui::Text("NexiaHub-Transport:");
   ImGui::SameLine();
   ImGui::PushStyleColor(ImGuiCol_Text, host_on_transport
-                                           ? IM_COL32(80, 220, 100, 255)
+                                           ? IM_COL32(30, 130, 20, 255)
                                            : IM_COL32(240, 50, 50, 255));
   ImGui::Text(host_on_transport ? "Yes" : "No");
   ImGui::PopStyleColor();
@@ -2672,6 +2690,328 @@ dword_result_t XamShowGamerCardUIForXUID_entry(dword_t user_index,
   return X_ERROR_INVALID_PARAMETER;
 }
 DECLARE_XAM_EXPORT1(XamShowGamerCardUIForXUID, kUserProfiles, kStub);
+
+// The dashboard hub apps' gamercard (POST /nexia/gamercard, answered in
+// xam_xhttp.cc): the same checks and the same dialog as
+// XamShowGamerCardUIForXUID above, callable with plain values.
+uint32_t ShowHubGamerCard(uint32_t user_index, uint64_t xuid) {
+  // One at a time, as the export; a second press while it is up is not an
+  // error to report - the card is showing.
+  if (gamercard_open) {
+    return X_ERROR_SUCCESS;
+  }
+  if (user_index >= XUserMaxUserCount || !xuid || IsGuestXUID(xuid) ||
+      !IsValidXUID(xuid)) {
+    return X_ERROR_INVALID_PARAMETER;
+  }
+  auto user = kernel_state()->xam_state()->GetUserProfile(user_index);
+  if (!user) {
+    return X_ERROR_INVALID_PARAMETER;
+  }
+  if (IsOnlineXUID(xuid) &&
+      !kernel_state()->xam_state()->user_tracker()->LoggedInToLive()) {
+    return X_ERROR_ACCESS_DENIED;
+  }
+
+  auto close = [](ui::GamercardFromXUIDUI* dialog) -> void {
+    gamercard_open = false;
+  };
+  xe::ui::ImGuiDrawer* imgui_drawer =
+      kernel_state()->emulator()->imgui_drawer();
+  gamercard_open = true;
+  return xeXamDispatchDialogAsync<ui::GamercardFromXUIDUI>(
+      new ui::GamercardFromXUIDUI(imgui_drawer, xuid, user), close);
+}
+
+namespace {
+// Keyboards the hub apps opened, by ticket. The app polls its ticket
+// (GET /nexia/keyboard/<ticket>) because a request that waited for the user
+// would hold the dashboard thread that sent it for as long as they type.
+struct HubKeyboard {
+  bool done = false;
+  bool cancelled = false;
+  std::string text;
+};
+std::mutex hub_keyboard_mutex;
+std::map<uint32_t, HubKeyboard> hub_keyboards;
+uint32_t hub_keyboard_next = 1;
+}  // namespace
+
+uint32_t OpenHubKeyboard(const std::string& title, const std::string& text) {
+  if (kernel_state()->xam_state()->IsUIActive()) {
+    return 0;
+  }
+  uint32_t ticket;
+  {
+    std::lock_guard<std::mutex> lock(hub_keyboard_mutex);
+    ticket = hub_keyboard_next++;
+    if (!hub_keyboard_next) {
+      hub_keyboard_next = 1;
+    }
+    hub_keyboards[ticket] = HubKeyboard{};
+  }
+
+  auto close = [ticket](xe::ui::KeyboardDialog* dialog) -> void {
+    std::lock_guard<std::mutex> lock(hub_keyboard_mutex);
+    auto it = hub_keyboards.find(ticket);
+    if (it == hub_keyboards.end()) {
+      return;
+    }
+    it->second.done = true;
+    it->second.cancelled = dialog->was_cancelled();
+    if (!it->second.cancelled) {
+      it->second.text = dialog->result_text();
+    }
+  };
+
+  kernel_state()->xam_state()->is_xam_dialog_present_.store(true);
+  xe::ui::ImGuiDrawer* imgui_drawer =
+      kernel_state()->emulator()->imgui_drawer();
+  xeXamDispatchDialogAsync<xe::ui::KeyboardDialog>(
+      xe::ui::KeyboardDialog::ShowKeyboard(
+          imgui_drawer, title, text, xe::ui::KeyboardDialog::InputType::kText,
+          nullptr),
+      close);
+  return ticket;
+}
+
+// Add Friend from the hub app: the same path as the Friends dialog's add
+// (xeRequestFriend) - the hub decides, and an accepted request is added
+// locally too. 0 added, 1 waiting for their approval, 2 failed.
+// A friend added by XUID alone is stored as "Friend N" until a presence
+// update brings the real name - which never comes for someone who is not
+// online. The caller usually knows the name, so it is set at once.
+static void NameHubFriend(uint64_t profile_xuid, uint64_t friend_xuid,
+                          const std::string& gamertag) {
+  if (gamertag.empty()) {
+    return;
+  }
+  auto* friends = kernel_state()->friends_manager();
+  const auto list = friends->GetFriends(profile_xuid);
+  if (!list) {
+    return;
+  }
+  for (X_ONLINE_FRIEND peer : *list) {
+    if (static_cast<uint64_t>(peer.xuid) != friend_xuid) {
+      continue;
+    }
+    std::memset(peer.Gamertag, 0, sizeof(peer.Gamertag));
+    xe::string_util::copy_truncating(peer.Gamertag, gamertag.c_str(),
+                                     xe::countof(peer.Gamertag));
+    friends->UpdateFriend(profile_xuid, peer);
+    return;
+  }
+}
+
+uint32_t RequestHubFriend(uint32_t user_index, uint64_t target_xuid,
+                          const std::string& gamertag) {
+  auto* profile = kernel_state()->xam_state()->GetUserProfile(user_index);
+  auto* xlive_api = kernel_state()->GetXboxLiveAPI();
+  if (!profile || !xlive_api || !target_xuid) {
+    return 2;
+  }
+  const auto outcome =
+      xlive_api->SendFriendRequest(profile->GetOnlineXUID(), target_xuid);
+  if (outcome == XLiveAPI::FriendRequestOutcome::kPending) {
+    return 1;
+  }
+  auto* friends = kernel_state()->friends_manager();
+  // Already a friend here: the hub accepted, so that is the answer. AddFriend
+  // refuses a friend it already has, and that refusal was reported as
+  // "couldn't be sent" - the hub only lacked the list (PublishFriendList).
+  const bool added = friends->IsFriend(profile->xuid(), target_xuid) ||
+                     friends->AddFriend(profile->xuid(), target_xuid);
+  if (added) {
+    const uint64_t profile_xuid = profile->xuid();
+    NameHubFriend(profile_xuid, target_xuid, gamertag);
+    std::thread([xlive_api, profile_xuid]() {
+      xlive_api->PublishFriendList(profile_xuid);
+    }).detach();
+  }
+  return added ? 0 : 2;
+}
+
+// ---- Join Game (the hub apps' Friends) -------------------------------------
+// A friend is in a game this machine has (played.db) with the same title
+// update (the per-title library): Join Game makes that update active,
+// launches the game in place, and once the game is listening hands it the
+// friend's session the way an accepted invite does (TakePendingHubJoin, from
+// KernelState::RegisterNotifyListener).
+
+namespace {
+std::mutex hub_join_mutex;
+uint32_t hub_join_title = 0;
+uint64_t hub_join_inviter = 0;
+
+// "TU-23", "TU 23", "tu23" and "23" are one update.
+std::string UpdateKey(std::string label) {
+  label = xe::utf8::lower_ascii(label);
+  std::string key;
+  for (const char c : label) {
+    if (c != ' ' && c != '-' && c != '_') {
+      key.push_back(c);
+    }
+  }
+  if (key.rfind("tu", 0) == 0) {
+    key = key.substr(2);
+  }
+  return key;
+}
+}  // namespace
+
+HubJoinTarget FindHubJoinTarget(uint32_t title_id, const std::string& update,
+                                const std::string& hash) {
+  HubJoinTarget target;
+  auto* emulator = kernel_state()->emulator();
+  if (!title_id || title_id == kDashboardID || !emulator) {
+    target.reason = "There is no game to join.";
+    return target;
+  }
+
+  auto* played = emulator->played_db();
+  if (played && played->is_open()) {
+    for (const auto& title : played->GetRecent(0)) {
+      if (title.title_id == title_id && !title.is_xna) {
+        target.path = xe::path_to_utf8(title.path);
+        target.title_name = title.title_name;
+        break;
+      }
+    }
+  }
+  if (target.path.empty()) {
+    target.reason = "You don't have this game.";
+    return target;
+  }
+
+  auto* updates = emulator->title_update_manager();
+  if (update.empty() && hash.empty()) {
+    // The friend runs the game with no update: so must we.
+    target.update_id = util::kNoTitleUpdateId;
+    target.ok = true;
+    return target;
+  }
+  // By content hash where both sides have one: the same file hashes the same
+  // everywhere, while ids and versions are often just the file it was
+  // installed from ("nexia_tu_584111F7_22459.bin" here, "TU_1C424FN_..."
+  // there, for one TU 4). By the label otherwise ("TU-4" = "TU4").
+  const std::string wanted_hash = xe::utf8::lower_ascii(hash);
+  const std::string wanted = UpdateKey(update);
+  if (updates) {
+    for (const auto& entry : updates->List(title_id)) {
+      const bool same =
+          !wanted_hash.empty() && !entry.hash.empty()
+              ? xe::utf8::lower_ascii(entry.hash) == wanted_hash
+              : !wanted.empty() && (UpdateKey(entry.name) == wanted ||
+                                    UpdateKey(entry.id) == wanted);
+      if (same) {
+        target.update_id = entry.id;
+        target.ok = true;
+        return target;
+      }
+    }
+  }
+  target.reason = "You don't have " + (update.empty() ? "their update" : update) +
+                  " for this game.";
+  return target;
+}
+
+bool StartHubJoin(uint64_t inviter_xuid, uint32_t title_id,
+                  const std::string& update, const std::string& hash) {
+  const HubJoinTarget target = FindHubJoinTarget(title_id, update, hash);
+  if (!target.ok || !inviter_xuid) {
+    return false;
+  }
+  if (auto* updates = kernel_state()->emulator()->title_update_manager()) {
+    // No update is an empty selection (the global content tree).
+    updates->SetActive(title_id, target.update_id == util::kNoTitleUpdateId
+                                     ? std::string()
+                                     : target.update_id);
+  }
+  {
+    std::lock_guard<std::mutex> lock(hub_join_mutex);
+    hub_join_title = title_id;
+    hub_join_inviter = inviter_xuid;
+  }
+  XELOGI("HubJoin: launching {:08X} ({}) with {} to join {:016X}", title_id,
+         target.title_name, target.update_id, inviter_xuid);
+  if (!LaunchGameLibraryItem(target.path)) {
+    std::lock_guard<std::mutex> lock(hub_join_mutex);
+    hub_join_title = 0;
+    hub_join_inviter = 0;
+    return false;
+  }
+  return true;
+}
+
+bool TakePendingHubJoin(uint32_t title_id, uint64_t* out_inviter) {
+  std::lock_guard<std::mutex> lock(hub_join_mutex);
+  if (!hub_join_title || hub_join_title != title_id) {
+    return false;
+  }
+  *out_inviter = hub_join_inviter;
+  hub_join_title = 0;
+  hub_join_inviter = 0;
+  return true;
+}
+
+bool RemoveHubFriend(uint32_t user_index, uint64_t target_xuid) {
+  auto* profile = kernel_state()->xam_state()->GetUserProfile(user_index);
+  auto* xlive_api = kernel_state()->GetXboxLiveAPI();
+  if (!profile || !target_xuid) {
+    return false;
+  }
+  const uint64_t profile_xuid = profile->xuid();
+  if (!kernel_state()->friends_manager()->RemoveFriend(profile_xuid,
+                                                       target_xuid)) {
+    return false;
+  }
+  if (xlive_api) {
+    std::thread([xlive_api, profile_xuid]() {
+      xlive_api->PublishFriendList(profile_xuid);
+    }).detach();
+  }
+  return true;
+}
+
+std::vector<std::pair<uint64_t, std::string>> HubFriends(uint32_t user_index) {
+  std::vector<std::pair<uint64_t, std::string>> result;
+  auto* profile = kernel_state()->xam_state()->GetUserProfile(user_index);
+  if (!profile) {
+    return result;
+  }
+  const auto friends =
+      kernel_state()->friends_manager()->GetFriends(profile->xuid());
+  if (!friends) {
+    return result;
+  }
+  for (const auto& peer : *friends) {
+    // Not guaranteed to be NUL-terminated when the name fills the field.
+    result.emplace_back(
+        static_cast<uint64_t>(peer.xuid),
+        std::string(peer.Gamertag, strnlen(peer.Gamertag, sizeof(peer.Gamertag))));
+  }
+  return result;
+}
+
+bool PollHubKeyboard(uint32_t ticket, bool* out_cancelled,
+                     std::string* out_text) {
+  std::lock_guard<std::mutex> lock(hub_keyboard_mutex);
+  auto it = hub_keyboards.find(ticket);
+  if (it == hub_keyboards.end()) {
+    // Unknown or already collected: report it as cancelled, so a poll loop
+    // always ends.
+    *out_cancelled = true;
+    out_text->clear();
+    return true;
+  }
+  if (!it->second.done) {
+    return false;
+  }
+  *out_cancelled = it->second.cancelled;
+  *out_text = it->second.text;
+  hub_keyboards.erase(it);
+  return true;
+}
 
 dword_result_t XamShowFriendsUI_entry(dword_t user_index) {
   if (user_index >= XUserMaxUserCount && user_index != XUserIndexAny) {
