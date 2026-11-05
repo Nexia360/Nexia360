@@ -39,28 +39,7 @@ Value* SubDidCarry(PPCHIRBuilder& f, Value* v1, Value* v2) {
               f.IsFalse(trunc_v2));
 }
 
-// Titles run in 32-bit mode, where XER[OV] reflects the low 32 bits.
-Value* AddDidOverflow(PPCHIRBuilder& f, Value* v1, Value* v2, Value* v) {
-  v1 = f.Truncate(v1, INT32_TYPE);
-  v2 = f.Truncate(v2, INT32_TYPE);
-  v = f.Truncate(v, INT32_TYPE);
-  Value* a = f.Xor(v1, v);
-  Value* b = f.Xor(v2, v);
-  return f.CompareSLT(f.And(a, b), f.LoadZero(v->type));
-}
-
-Value* DivDidOverflow(PPCHIRBuilder& f, Value* divisor) {
-  return f.CompareEQ(divisor, f.LoadZero(divisor->type));
-}
-
-// The signed forms add the one quotient that has no representation.
-Value* SignedDivDidOverflow(PPCHIRBuilder& f, Value* dividend, Value* divisor,
-                            Value* most_negative) {
-  return f.Or(DivDidOverflow(f, divisor),
-              f.And(f.CompareEQ(dividend, most_negative),
-                    f.CompareEQ(divisor, f.Not(f.LoadZero(divisor->type)))));
-}
-
+// https://github.com/sebastianbiallas/pearpc/blob/0b3c823f61456faa677f6209545a7b906e797421/src/cpu/cpu_generic/ppc_tools.h#L26
 Value* AddWithCarryDidCarry(PPCHIRBuilder& f, Value* v1, Value* v2, Value* v3) {
   assert_true(v3->type == INT8_TYPE);
   // The carry out of bit 31 is bit 32 of the low words' sum, zero extended:
@@ -70,6 +49,12 @@ Value* AddWithCarryDidCarry(PPCHIRBuilder& f, Value* v1, Value* v2, Value* v3) {
                   f.ZeroExtend(f.Truncate(v2, INT32_TYPE), INT64_TYPE)),
             f.ZeroExtend(v3, INT64_TYPE));
   return f.Truncate(f.Shr(sum, 32), INT8_TYPE);
+}
+
+// Signed overflow of r = v1 + v2 (+ carry): the result sign differs from the
+// sign of both addends. Holds for the carry-in forms too.
+Value* AddDidOverflow(PPCHIRBuilder& f, Value* v1, Value* v2, Value* r) {
+  return f.Truncate(f.Shr(f.And(f.Xor(v1, r), f.Xor(v2, r)), 63), INT8_TYPE);
 }
 
 // Signed overflow of r = v1 - v2: the operands differ in sign and the result
@@ -91,7 +76,7 @@ int InstrEmit_addx(PPCHIRBuilder& f, const InstrData& i) {
   Value* v = f.Add(ra, rb);
   f.StoreGPR(i.XO.RT, v);
   if (i.XO.OE) {
-    f.StoreOV(AddDidOverflow(f, ra, rb, v));
+    f.StoreOVSO(AddDidOverflow(f, ra, rb, v));
   }
   if (i.XO.Rc) {
     f.UpdateCR(0, v);
@@ -108,7 +93,7 @@ int InstrEmit_addcx(PPCHIRBuilder& f, const InstrData& i) {
   f.StoreGPR(i.XO.RT, v);
   f.StoreCA(AddDidCarry(f, ra, rb));
   if (i.XO.OE) {
-    f.StoreOV(AddDidOverflow(f, ra, rb, v));
+    f.StoreOVSO(AddDidOverflow(f, ra, rb, v));
   }
   if (i.XO.Rc) {
     f.UpdateCR(0, v);
@@ -125,7 +110,7 @@ int InstrEmit_addex(PPCHIRBuilder& f, const InstrData& i) {
   f.StoreGPR(i.XO.RT, v);
   f.StoreCA(AddWithCarryDidCarry(f, ra, rb, f.LoadCA()));
   if (i.XO.OE) {
-    f.StoreOV(AddDidOverflow(f, ra, rb, v));
+    f.StoreOVSO(AddDidOverflow(f, ra, rb, v));
   }
   if (i.XO.Rc) {
     f.UpdateCR(0, v);
@@ -190,7 +175,7 @@ int InstrEmit_addmex(PPCHIRBuilder& f, const InstrData& i) {
   f.StoreGPR(i.XO.RT, v);
   f.StoreCA(AddWithCarryDidCarry(f, ra, f.LoadConstantInt64(-1), f.LoadCA()));
   if (i.XO.OE) {
-    f.StoreOV(AddDidOverflow(f, ra, f.LoadConstantInt64(-1), v));
+    f.StoreOVSO(AddDidOverflow(f, ra, f.LoadConstantInt64(-1), v));
   }
   if (i.XO.Rc) {
     f.UpdateCR(0, v);
@@ -206,7 +191,7 @@ int InstrEmit_addzex(PPCHIRBuilder& f, const InstrData& i) {
   f.StoreGPR(i.XO.RT, v);
   f.StoreCA(AddWithCarryDidCarry(f, ra, f.LoadZeroInt64(), f.LoadCA()));
   if (i.XO.OE) {
-    f.StoreOV(AddDidOverflow(f, ra, f.LoadZeroInt64(), v));
+    f.StoreOVSO(AddDidOverflow(f, ra, f.LoadZeroInt64(), v));
   }
   if (i.XO.Rc) {
     f.UpdateCR(0, v);
@@ -224,11 +209,18 @@ int InstrEmit_divdx(PPCHIRBuilder& f, const InstrData& i) {
   // RT <- dividend ÷ divisor
   Value* divisor = f.LoadGPR(i.XO.RB);
   Value* dividend = f.LoadGPR(i.XO.RA);
+  // TODO(benvanik): check if zero
+  //                 else skip the divide
   Value* v = f.Div(dividend, divisor);
   f.StoreGPR(i.XO.RT, v);
   if (i.XO.OE) {
-    f.StoreOV(SignedDivDidOverflow(f, dividend, divisor,
-                                   f.LoadConstantInt64(INT64_MIN)));
+    // Undefined result on divide by zero, or on the one quotient too large to
+    // represent.
+    f.StoreOVSO(f.Or(
+        f.IsFalse(divisor),
+        f.And(f.CompareEQ(dividend, f.LoadConstantInt64(
+                                        std::numeric_limits<int64_t>::min())),
+              f.CompareEQ(divisor, f.LoadConstantInt64(-1)))));
   }
   if (i.XO.Rc) {
     f.UpdateCR(0, v);
@@ -245,10 +237,12 @@ int InstrEmit_divdux(PPCHIRBuilder& f, const InstrData& i) {
   //   return
   // RT <- dividend ÷ divisor
   Value* divisor = f.LoadGPR(i.XO.RB);
+  // TODO(benvanik): check if zero
+  //                 else skip the divide
   Value* v = f.Div(f.LoadGPR(i.XO.RA), divisor, ARITHMETIC_UNSIGNED);
   f.StoreGPR(i.XO.RT, v);
   if (i.XO.OE) {
-    f.StoreOV(DivDidOverflow(f, divisor));
+    f.StoreOVSO(f.IsFalse(divisor));
   }
   if (i.XO.Rc) {
     f.UpdateCR(0, v);
@@ -267,12 +261,19 @@ int InstrEmit_divwx(PPCHIRBuilder& f, const InstrData& i) {
   // RT[0:31] <- undefined
   Value* divisor = f.Truncate(f.LoadGPR(i.XO.RB), INT32_TYPE);
   Value* dividend = f.Truncate(f.LoadGPR(i.XO.RA), INT32_TYPE);
+  // TODO(benvanik): check if zero
+  //                 else skip the divide
   Value* v = f.Div(dividend, divisor);
   v = f.ZeroExtend(v, INT64_TYPE);
   f.StoreGPR(i.XO.RT, v);
   if (i.XO.OE) {
-    f.StoreOV(SignedDivDidOverflow(f, dividend, divisor,
-                                   f.LoadConstantInt32(INT32_MIN)));
+    // Undefined result on divide by zero, or on the one quotient too large to
+    // represent.
+    f.StoreOVSO(f.Or(
+        f.IsFalse(divisor),
+        f.And(f.CompareEQ(dividend, f.LoadConstantInt32(
+                                        std::numeric_limits<int32_t>::min())),
+              f.CompareEQ(divisor, f.LoadConstantInt32(-1)))));
   }
   if (i.XO.Rc) {
     f.UpdateCR(0, v);
@@ -290,12 +291,14 @@ int InstrEmit_divwux(PPCHIRBuilder& f, const InstrData& i) {
   // RT[32:63] <- dividend ÷ divisor
   // RT[0:31] <- undefined
   Value* divisor = f.Truncate(f.LoadGPR(i.XO.RB), INT32_TYPE);
+  // TODO(benvanik): check if zero
+  //                 else skip the divide
   Value* v = f.Div(f.Truncate(f.LoadGPR(i.XO.RA), INT32_TYPE), divisor,
                    ARITHMETIC_UNSIGNED);
   v = f.ZeroExtend(v, INT64_TYPE);
   f.StoreGPR(i.XO.RT, v);
   if (i.XO.OE) {
-    f.StoreOV(DivDidOverflow(f, divisor));
+    f.StoreOVSO(f.IsFalse(divisor));
   }
   if (i.XO.Rc) {
     f.UpdateCR(0, v);
@@ -373,7 +376,9 @@ int InstrEmit_mulldx(PPCHIRBuilder& f, const InstrData& i) {
   Value* v = f.Mul(ra, rb);
   f.StoreGPR(i.XO.RT, v);
   if (i.XO.OE) {
-    f.StoreOV(f.CompareNE(f.MulHi(ra, rb), f.Sha(v, int8_t(63))));
+    // The full product needs more than 64 bits when the high half is not just
+    // the sign of the low half.
+    f.StoreOVSO(f.CompareNE(f.MulHi(ra, rb), f.Sha(v, 63)));
   }
   if (i.XO.Rc) {
     f.UpdateCR(0, v);
@@ -396,8 +401,7 @@ int InstrEmit_mullwx(PPCHIRBuilder& f, const InstrData& i) {
       f.SignExtend(f.Truncate(f.LoadGPR(i.XO.RB), INT32_TYPE), INT64_TYPE));
   f.StoreGPR(i.XO.RT, v);
   if (i.XO.OE) {
-    f.StoreOV(
-        f.CompareNE(v, f.SignExtend(f.Truncate(v, INT32_TYPE), INT64_TYPE)));
+    f.StoreOVSO(DidOverflow32(f, v));
   }
   if (i.XO.Rc) {
     f.UpdateCR(0, v);
@@ -411,8 +415,9 @@ int InstrEmit_negx(PPCHIRBuilder& f, const InstrData& i) {
   Value* v = f.Neg(ra);
   f.StoreGPR(i.XO.RT, v);
   if (i.XO.OE) {
-    f.StoreOV(f.CompareEQ(f.Truncate(ra, INT32_TYPE),
-                          f.LoadConstantInt32(INT32_MIN)));
+    // The most negative value is the only one whose negation does not fit.
+    f.StoreOVSO(f.CompareEQ(
+        ra, f.LoadConstantInt64(std::numeric_limits<int64_t>::min())));
   }
   if (i.XO.Rc) {
     f.UpdateCR(0, v);
@@ -427,7 +432,7 @@ int InstrEmit_subfx(PPCHIRBuilder& f, const InstrData& i) {
   Value* v = f.Sub(rb, ra);
   f.StoreGPR(i.XO.RT, v);
   if (i.XO.OE) {
-    f.StoreOV(AddDidOverflow(f, f.Not(ra), rb, v));
+    f.StoreOVSO(SubDidOverflow(f, rb, ra, v));
   }
   if (i.XO.Rc) {
     f.UpdateCR(0, v);
@@ -443,7 +448,7 @@ int InstrEmit_subfcx(PPCHIRBuilder& f, const InstrData& i) {
   f.StoreGPR(i.XO.RT, v);
   f.StoreCA(SubDidCarry(f, rb, ra));
   if (i.XO.OE) {
-    f.StoreOV(AddDidOverflow(f, f.Not(ra), rb, v));
+    f.StoreOVSO(SubDidOverflow(f, rb, ra, v));
   }
   if (i.XO.Rc) {
     f.UpdateCR(0, v);
@@ -468,7 +473,7 @@ int InstrEmit_subfex(PPCHIRBuilder& f, const InstrData& i) {
   f.StoreGPR(i.XO.RT, v);
   f.StoreCA(AddWithCarryDidCarry(f, not_ra, rb, f.LoadCA()));
   if (i.XO.OE) {
-    f.StoreOV(AddDidOverflow(f, not_ra, rb, v));
+    f.StoreOVSO(AddDidOverflow(f, not_ra, rb, v));
   }
   if (i.XO.Rc) {
     f.UpdateCR(0, v);
@@ -479,12 +484,12 @@ int InstrEmit_subfex(PPCHIRBuilder& f, const InstrData& i) {
 int InstrEmit_subfmex(PPCHIRBuilder& f, const InstrData& i) {
   // RT <- ¬(RA) + CA - 1
   Value* not_ra = f.Not(f.LoadGPR(i.XO.RA));
-  Value* minus_one = f.LoadConstantInt64(-1);
-  Value* v = f.AddWithCarry(not_ra, minus_one, f.LoadCA());
+  Value* v = f.AddWithCarry(not_ra, f.LoadConstantInt64(-1), f.LoadCA());
   f.StoreGPR(i.XO.RT, v);
-  f.StoreCA(AddWithCarryDidCarry(f, not_ra, minus_one, f.LoadCA()));
+  f.StoreCA(
+      AddWithCarryDidCarry(f, not_ra, f.LoadConstantInt64(-1), f.LoadCA()));
   if (i.XO.OE) {
-    f.StoreOV(AddDidOverflow(f, not_ra, minus_one, v));
+    f.StoreOVSO(AddDidOverflow(f, not_ra, f.LoadConstantInt64(-1), v));
   }
   if (i.XO.Rc) {
     f.UpdateCR(0, v);
@@ -499,7 +504,7 @@ int InstrEmit_subfzex(PPCHIRBuilder& f, const InstrData& i) {
   f.StoreGPR(i.XO.RT, v);
   f.StoreCA(AddWithCarryDidCarry(f, not_ra, f.LoadZeroInt64(), f.LoadCA()));
   if (i.XO.OE) {
-    f.StoreOV(AddDidOverflow(f, not_ra, f.LoadZeroInt64(), v));
+    f.StoreOVSO(AddDidOverflow(f, not_ra, f.LoadZeroInt64(), v));
   }
   if (i.XO.Rc) {
     f.UpdateCR(0, v);

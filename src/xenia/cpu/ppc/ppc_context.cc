@@ -167,8 +167,6 @@ void PPCContext::SetRegFromString(const char* name, const char* value) {
     this->v[n] = string_util::from_string<vec128_t>(value);
   } else if (std::strcmp(name, "cr") == 0) {
     this->set_cr(string_util::from_string<uint64_t>(value));
-  } else if (std::strcmp(name, "xer") == 0) {
-    this->set_xer(string_util::from_string<uint32_t>(value));
   } else {
     printf("Unrecognized register name: %s\n", name);
   }
@@ -217,14 +215,6 @@ bool PPCContext::CompareRegWithString(const char* name, const char* value,
     uint64_t expected = string_util::from_string<uint64_t>(value);
     if (actual != expected) {
       result = fmt::format("{:016X}", actual);
-      return false;
-    }
-    return true;
-  } else if (std::strcmp(name, "xer") == 0) {
-    uint32_t actual = this->xer();
-    uint32_t expected = string_util::from_string<uint32_t>(value);
-    if (actual != expected) {
-      result = fmt::format("{:08X}", actual);
       return false;
     }
     return true;

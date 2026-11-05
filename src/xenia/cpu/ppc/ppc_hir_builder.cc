@@ -417,9 +417,8 @@ void PPCHIRBuilder::UpdateCR(uint32_t n, Value* lhs, Value* rhs,
   Value* eq = CompareEQ(lhs, rhs);
   StoreContext(offsetof(PPCContext, cr0) + (4 * n) + 2, eq);
 
-  // A snapshot of XER[SO], so it cannot be resolved lazily at mfcr time.
-  StoreContext(offsetof(PPCContext, cr0) + (4 * n) + 3,
-               LoadContext(offsetof(PPCContext, xer_so), INT8_TYPE));
+  // CR[n][SO] is a copy of XER[SO] as of this instruction.
+  StoreContext(offsetof(PPCContext, cr0) + (4 * n) + 3, LoadSO());
 
   // TOOD(benvanik): trace CR.
 }
@@ -851,24 +850,19 @@ void PPCHIRBuilder::CopyFPSCRToCR1() {
                And(Truncate(Shr(fpscr, 28), INT8_TYPE), LoadConstantInt8(1)));
 }
 
-// SO is bit 31, OV bit 30, CA bit 29, with no byte count modelled.
 Value* PPCHIRBuilder::LoadXER() {
-  Value* v = Shl(ZeroExtend(LoadCA(), INT64_TYPE), 29);
-  v = Or(v, Shl(ZeroExtend(LoadContext(offsetof(PPCContext, xer_ov), INT8_TYPE),
-                           INT64_TYPE),
-                30));
-  v = Or(v, Shl(ZeroExtend(LoadContext(offsetof(PPCContext, xer_so), INT8_TYPE),
-                           INT64_TYPE),
-                31));
-  return Or(v, LoadXERCount());
+  // SO is bit 31, OV bit 30, CA bit 29 (big-endian bits 32/33/34), and the
+  // lswx/stswx byte count in bits 25-31 (big-endian 57-63).
+  return Or(Or(Or(Shl(ZeroExtend(LoadSO(), INT64_TYPE), 31),
+                  Shl(ZeroExtend(LoadOV(), INT64_TYPE), 30)),
+               Shl(ZeroExtend(LoadCA(), INT64_TYPE), 29)),
+            LoadXERCount());
 }
 
 void PPCHIRBuilder::StoreXER(Value* value) {
+  StoreSO(Truncate(And(Shr(value, 31), LoadConstantInt64(1)), INT8_TYPE));
+  StoreOV(Truncate(And(Shr(value, 30), LoadConstantInt64(1)), INT8_TYPE));
   StoreCA(Truncate(And(Shr(value, 29), LoadConstantInt64(1)), INT8_TYPE));
-  StoreContext(offsetof(PPCContext, xer_ov),
-               Truncate(And(Shr(value, 30), LoadConstantInt64(1)), INT8_TYPE));
-  StoreContext(offsetof(PPCContext, xer_so),
-               Truncate(And(Shr(value, 31), LoadConstantInt64(1)), INT8_TYPE));
   StoreContext(offsetof(PPCContext, xer_count),
                Truncate(And(value, LoadConstantInt64(0x7F)), INT8_TYPE));
 }
@@ -876,14 +870,6 @@ void PPCHIRBuilder::StoreXER(Value* value) {
 Value* PPCHIRBuilder::LoadXERCount() {
   return ZeroExtend(LoadContext(offsetof(PPCContext, xer_count), INT8_TYPE),
                     INT64_TYPE);
-}
-
-void PPCHIRBuilder::StoreOV(Value* value) {
-  assert_true(value->type == INT8_TYPE);
-  StoreContext(offsetof(PPCContext, xer_ov), value);
-  // Sticky until mtxer or mcrxr clears it.
-  StoreContext(offsetof(PPCContext, xer_so),
-               Or(LoadContext(offsetof(PPCContext, xer_so), INT8_TYPE), value));
 }
 
 Value* PPCHIRBuilder::LoadCA() {
@@ -901,6 +887,15 @@ void PPCHIRBuilder::StoreCA(Value* value) {
 
 Value* PPCHIRBuilder::LoadOV() {
   return LoadContext(offsetof(PPCContext, xer_ov), INT8_TYPE);
+}
+
+void PPCHIRBuilder::StoreOV(Value* value) {
+  value = Truncate(value, INT8_TYPE);
+  StoreContext(offsetof(PPCContext, xer_ov), value);
+
+  auto& trace_reg = trace_info_.dests[trace_info_.dest_count++];
+  trace_reg.reg = 68;
+  trace_reg.value = value;
 }
 
 Value* PPCHIRBuilder::LoadSO() {

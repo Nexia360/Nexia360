@@ -103,11 +103,10 @@ class PPCHIRBuilder : public hir::HIRBuilder {
   void StoreXER(Value* value);
   // XER[25:31] as an INT64
   Value* LoadXERCount();
-  // Call before UpdateCR, which copies XER[SO] into the CR field.
-  void StoreOV(Value* value);
   Value* LoadCA();
   void StoreCA(Value* value);
   Value* LoadOV();
+  void StoreOV(Value* value);
   Value* LoadSO();
   void StoreSO(Value* value);
   // Stores XER[OV] and folds it into the sticky XER[SO].
