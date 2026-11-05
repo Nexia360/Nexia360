@@ -106,6 +106,7 @@ void ImGuiDrawer::AddDialog(ImGuiDialog* dialog) {
   // whatever opened it, so shut the gate: no input reaches ImGui or any dialog
   // until the controller is completely idle - no buttons, no triggers.
   CloseInputGate();
+  const bool first_dialog = dialogs_.empty();
   if (dialogs_.empty() && !IsDrawingDialogs()) {
     // First dialog added. !IsDrawingDialogs() is also checked because in a
     // situation of removing the only dialog, then adding a dialog, from within
@@ -117,6 +118,9 @@ void ImGuiDrawer::AddDialog(ImGuiDialog* dialog) {
     }
   }
   dialogs_.push_back(dialog);
+  if (first_dialog && dialog_presence_callback_) {
+    dialog_presence_callback_(true);
+  }
 }
 
 void ImGuiDrawer::RemoveDialog(ImGuiDialog* dialog) {
@@ -134,6 +138,9 @@ void ImGuiDrawer::RemoveDialog(ImGuiDialog* dialog) {
   }
   dialogs_.erase(it);
   DetachIfLastWindowRemoved();
+  if (dialogs_.empty() && dialog_presence_callback_) {
+    dialog_presence_callback_(false);
+  }
 }
 
 void ImGuiDrawer::AddNotification(ImGuiNotification* dialog) {

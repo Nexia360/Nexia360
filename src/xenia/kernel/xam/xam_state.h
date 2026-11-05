@@ -72,7 +72,11 @@ class XamState {
 
   void SetContentRegisterCallback(uint32_t callback);
 
-  bool IsUIActive() const { return is_xam_dialog_present_.load(); }
+  // A XAM dialog, or any of the emulator's own dialogs (guide, recent list,
+  // settings...), is on screen. Guest input is withheld while this is true.
+  bool IsUIActive() const {
+    return is_xam_dialog_present_.load() || host_dialog_open_.load();
+  }
 
   uint32_t GetOnlineSchemaAddress() const { return online_schema_data_address; }
 
@@ -95,6 +99,10 @@ class XamState {
   uint32_t content_register_callback = 0;
 
   std::atomic<bool> is_xam_dialog_present_ = false;
+  // Set by the emulator while its ImGui drawer has any dialog open (see
+  // Emulator::Setup). Several host dialogs never set the flag above, and the
+  // pad then reached the guest underneath them.
+  std::atomic<bool> host_dialog_open_ = false;
 
   // True while the user has the emulator's own profile modal open. Opening it
   // is an explicit request to change accounts, so the player picker is still

@@ -203,8 +203,9 @@ DEFINE_bool(
     "Display");
 
 DEFINE_int32(recent_titles_entry_amount, 10,
-             "Allows user to define how many titles is saved in list of "
-             "recently played titles.",
+             "How many of the most recently played titles the controller "
+             "hotkey title selection cycles through. The Open Recent list "
+             "itself is not limited. 0 = no limit.",
              "General");
 DEFINE_bool(disable_doubleclick_fullscreen, false,
             "Allows the user to disable the behavior where a fast double-click "
@@ -3174,7 +3175,7 @@ EmulatorWindow::ControllerHotKey EmulatorWindow::ProcessControllerHotkey(
         selected_title_index++;
       }
 
-      if (selected_title_index < recently_launched_titles_.size()) {
+      if (selected_title_index < HotkeyTitleCount()) {
         app_context().CallInUIThread([this]() {
           RunTitle(
               recently_launched_titles_[selected_title_index].path_to_file);
@@ -3262,10 +3263,9 @@ EmulatorWindow::ControllerHotKey EmulatorWindow::ProcessControllerHotkey(
 
   if ((button_combination.function == ButtonFunctions::IncTitleSelect ||
        button_combination.function == ButtonFunctions::DecTitleSelect) &&
-      recently_launched_titles_.size() > 0) {
-    selected_title_index =
-        std::clamp(selected_title_index, 0,
-                   static_cast<int32_t>(recently_launched_titles_.size() - 1));
+      HotkeyTitleCount() > 0) {
+    selected_title_index = std::clamp(
+        selected_title_index, 0, static_cast<int32_t>(HotkeyTitleCount() - 1));
 
     // Must clear dialogs to prevent stacking
     ClearDialogs();
@@ -4528,6 +4528,14 @@ const RecentTitleEntry* EmulatorWindow::FindRecentTitle(
   return nullptr;
 }
 
+size_t EmulatorWindow::HotkeyTitleCount() const {
+  const size_t count = recently_launched_titles_.size();
+  if (cvars::recent_titles_entry_amount <= 0) {
+    return count;
+  }
+  return std::min(count, size_t(cvars::recent_titles_entry_amount));
+}
+
 std::string EmulatorWindow::GetRecentMediaId(
     const std::filesystem::path& path) const {
   for (const RecentTitleEntry& entry : recently_launched_titles_) {
@@ -4542,12 +4550,12 @@ std::string EmulatorWindow::GetRecentMediaId(
 void EmulatorWindow::LoadRecentlyLaunchedTitles() {
   // played.db is the store now - see PlayedDB. The old recent.toml is taken
   // in once, by the database itself, the first time it is opened.
+  // Every title ever played, not a capped handful: the Open Recent list
+  // scrolls, so a cap only hid games. recent_titles_entry_amount now limits
+  // the controller hotkey cycle alone (HotkeyTitleCount).
   recently_launched_titles_.clear();
-  const size_t limit = cvars::recent_titles_entry_amount > 0
-                           ? size_t(cvars::recent_titles_entry_amount)
-                           : 0;
   for (const kernel::PlayedTitle& title : emulator()->played_db()->GetRecent(
-           limit, kernel::PlayedSort::kMostRecentlyPlayed)) {
+           0, kernel::PlayedSort::kMostRecentlyPlayed)) {
     std::error_code ec;
     std::filesystem::path path = title.path;
     if (path.empty()) {

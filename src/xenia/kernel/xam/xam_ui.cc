@@ -2737,7 +2737,8 @@ std::map<uint32_t, HubKeyboard> hub_keyboards;
 uint32_t hub_keyboard_next = 1;
 }  // namespace
 
-uint32_t OpenHubKeyboard(const std::string& title, const std::string& text) {
+uint32_t OpenHubKeyboard(const std::string& title, const std::string& text,
+                         bool password) {
   if (kernel_state()->xam_state()->IsUIActive()) {
     return 0;
   }
@@ -2769,7 +2770,9 @@ uint32_t OpenHubKeyboard(const std::string& title, const std::string& text) {
       kernel_state()->emulator()->imgui_drawer();
   xeXamDispatchDialogAsync<xe::ui::KeyboardDialog>(
       xe::ui::KeyboardDialog::ShowKeyboard(
-          imgui_drawer, title, text, xe::ui::KeyboardDialog::InputType::kText,
+          imgui_drawer, title, text,
+          password ? xe::ui::KeyboardDialog::InputType::kPassword
+                   : xe::ui::KeyboardDialog::InputType::kText,
           nullptr),
       close);
   return ticket;

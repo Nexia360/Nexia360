@@ -13,7 +13,11 @@
 
 #include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
+#include "xenia/emulator.h"
+#include "xenia/gpu/gpu_flags.h"
+#include "xenia/gpu/graphics_system.h"
 #include "xenia/kernel/kernel_state.h"
+#include "xenia/kernel/title_id_utils.h"
 #include "xenia/kernel/user_module.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_private.h"
@@ -61,6 +65,8 @@ struct BootAnimation {
   uint32_t stop = 0;
   uint32_t logo = 0;
   bool running = false;
+  // async_shader_compilation as it was before the animation turned it off.
+  bool saved_async_shader_compilation = false;
 };
 
 BootAnimation& Animation() {
@@ -165,6 +171,30 @@ X_STATUS StartBootAnimation() {
         "be asked to stop");
   }
 
+  // Shader storage is only ever opened when a title launches, and the
+  // animation is not one - so every boot compiled its pipelines from nothing,
+  // and with async_shader_compilation each draw whose pipeline was still
+  // compiling was SKIPPED. Whole frames came out without the orb or the
+  // ribbons, over stale EDRAM in 16-row strips (98 skipped draws in one boot).
+  //
+  // Open the storage first, blocking, so every pipeline a previous boot saw is
+  // ready before the first frame. bootanim's own execution info carries title
+  // ID 0, which homebrew shares; it lives in the Dashboard folder and runs
+  // only ahead of the dash, so its pipelines go in the dash's storage. The
+  // dash's launch reopens that same storage right after.
+  //
+  // And compile synchronously while it plays: a pipeline the storage does not
+  // have yet (the very first boot) costs a stall, never a broken frame.
+  // Restored in AniStop, before the dash is launched.
+  if (Emulator* emulator = kernel_state()->emulator()) {
+    if (gpu::GraphicsSystem* graphics = emulator->graphics_system()) {
+      graphics->InitializeShaderStorage(emulator->cache_root(), kDashboardID,
+                                        /*blocking=*/true);
+    }
+  }
+  animation.saved_async_shader_compilation = cvars::async_shader_compilation;
+  cvars::async_shader_compilation = false;
+
   // The player thread calls proc(handle, context) - two arguments. That is
   // exactly the shape XThread's xapi_thread_startup trampoline produces: it
   // enters `startup(start_address, start_context)`, so the procedure goes in
@@ -187,6 +217,7 @@ X_STATUS StartBootAnimation() {
     XELOGW("AniStartBootAnimation: the player thread would not start ({:08X})",
            result);
     animation.hmodule = 0;
+    cvars::async_shader_compilation = animation.saved_async_shader_compilation;
     return result;
   }
 
@@ -247,6 +278,7 @@ X_STATUS AniStop(bool terminate) {
   animation.hmodule = 0;
   animation.stop = 0;
   animation.running = false;
+  cvars::async_shader_compilation = animation.saved_async_shader_compilation;
   return X_STATUS_SUCCESS;
 }
 

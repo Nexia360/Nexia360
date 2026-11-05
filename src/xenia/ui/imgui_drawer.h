@@ -116,6 +116,13 @@ class ImGuiDrawer : public WindowInputListener, public UIDrawer {
 
   bool IsAnyDialogOpen() const { return !dialogs_.empty(); };
 
+  // Called with true when the first dialog opens and false when the last one
+  // closes. The emulator uses it to keep the pad away from the guest while any
+  // host dialog is on screen - the dialog and the title read the same pad.
+  void SetDialogPresenceCallback(std::function<void(bool)> callback) {
+    dialog_presence_callback_ = std::move(callback);
+  }
+
   // Controller navigation support (Nexia)
   bool IsControllerNavigationEnabled() const {
     return controller_navigation_enabled_;
@@ -194,6 +201,7 @@ class ImGuiDrawer : public WindowInputListener, public UIDrawer {
   hid::InputSystem* input_system_ = nullptr;
 
   std::function<void(uint8_t)> onGuidePressFunction_;
+  std::function<void(bool)> dialog_presence_callback_;
   // All currently-attached dialogs that get drawn.
   std::vector<ImGuiDialog*> dialogs_;
 

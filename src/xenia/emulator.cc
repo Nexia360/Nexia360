@@ -211,6 +211,12 @@ Emulator::Emulator(const std::filesystem::path& command_line,
 Emulator::~Emulator() {
   // Note that we delete things in the reverse order they were initialized.
 
+  // Dialogs closing during teardown must not reach into a kernel that is
+  // being destroyed.
+  if (imgui_drawer_) {
+    imgui_drawer_->SetDialogPresenceCallback(nullptr);
+  }
+
   // NOTE: hub port reservations are released in EmulatorApp::OnDestroy, not
   // here - this destructor never runs on a normal exit (OnDestroy finishes with
   // std::quick_exit).
@@ -374,6 +380,45 @@ X_STATUS Emulator::Setup(
     LOAD_KERNEL_MODULE(xbdm::XbdmModule);
   }
 #undef LOAD_KERNEL_MODULE
+
+  // Any host dialog on screen counts as UI for the guest, exactly as a XAM
+  // dialog does: XamInputGetState/GetKeystroke withhold the pad and
+  // XamIsUIActive says so. Without this, every dialog that never set the XAM
+  // flag itself (recent list, title update selector, installed content,
+  // settings, display, music player...) let the buttons that drive it reach
+  // the dash or game underneath as well.
+  if (imgui_drawer_) {
+    auto announced = std::make_shared<bool>(false);
+    imgui_drawer_->SetDialogPresenceCallback([this, announced](bool open) {
+      kernel::KernelState* state = kernel_state_.get();
+      if (!state || !state->xam_state()) {
+        return;
+      }
+      auto* xam = state->xam_state();
+      if (open) {
+        // A dialog that set the XAM flag first already told the title.
+        const bool told = xam->is_xam_dialog_present_.load();
+        xam->host_dialog_open_.store(true);
+        if (!told) {
+          *announced = true;
+          state->BroadcastNotification(kXNotificationSystemUI, 1);
+        }
+        return;
+      }
+      xam->host_dialog_open_.store(false);
+      if (*announced) {
+        *announced = false;
+        if (!xam->is_xam_dialog_present_.load()) {
+          state->BroadcastNotification(kXNotificationSystemUI, 0);
+        }
+      }
+    });
+    // A dialog already up before the kernel existed (first-run prompts).
+    if (imgui_drawer_->IsAnyDialogOpen() && kernel_state_->xam_state()) {
+      kernel_state_->xam_state()->host_dialog_open_.store(true);
+    }
+  }
+
   plugin_loader_ = std::make_unique<xe::patcher::PluginLoader>(
       kernel_state_.get(), storage_root() / "plugins");
 

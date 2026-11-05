@@ -152,6 +152,13 @@ class EmulatorWindow {
   void ToggleGuideDialog();
   void ToggleProfilesConfigDialog();
   void ToggleGamerpicBrowserDialog();
+  // Opens it unless it is already up (the dashboard Profile app's Gamer
+  // Picture row).
+  void ShowGamerpicBrowserDialog() {
+    if (!gamerpic_browser_dialog_) {
+      ToggleGamerpicBrowserDialog();
+    }
+  }
   void ToggleXMPConfigDialog();
   void ToggleConsoleSettingsDialog();
   void ToggleContentListDialog();
@@ -559,6 +566,9 @@ class EmulatorWindow {
   std::string GetRecentMediaId(const std::filesystem::path& path) const;
 
  private:
+  // How many of the most recent titles the controller hotkey title selection
+  // cycles through: recent_titles_entry_amount, or all of them when it is 0.
+  size_t HotkeyTitleCount() const;
 };
 
 }  // namespace app

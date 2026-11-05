@@ -299,6 +299,19 @@ void MousehookConfig::ApplyToGamepad(X_INPUT_GAMEPAD* gamepad,
 
   double move_x = dx * scale;
   double move_y = invert_y() ? (dy * scale) : -(dy * scale);
+  move_y *= vertical_factor();
+
+  // Response curve, applied to the vector's length so direction is kept.
+  // n is the deflection as a fraction of full stick (above 1 on a fast flick,
+  // trimmed by the circle clamp later); the output length is n^curve.
+  const double curve = response_curve();
+  if (curve != 1.0 && (move_x != 0.0 || move_y != 0.0)) {
+    const double magnitude = std::sqrt(move_x * move_x + move_y * move_y);
+    const double normalized = magnitude / 32767.0;
+    const double factor = (std::pow(normalized, curve) * 32767.0) / magnitude;
+    move_x *= factor;
+    move_y *= factor;
+  }
 
   // Deadzone compensation. The mouse is a relative device but the stick is an
   // absolute one, so a slow drag produces a tiny deflection that the title
@@ -318,6 +331,19 @@ void MousehookConfig::ApplyToGamepad(X_INPUT_GAMEPAD* gamepad,
       move_x *= factor;
       move_y *= factor;
     }
+  }
+
+  // Diagonal acceleration. The weight is |sin 2θ| = 2|x||y| / (x² + y²):
+  // 0 on a cardinal, 1 at 45 degrees, so pure horizontal/vertical motion is
+  // untouched and the gain ramps in smoothly toward the diagonal. Overshoot
+  // past full deflection is pulled back by the circle clamp below.
+  const double diagonal = diagonal_acceleration();
+  if (diagonal != 1.0 && move_x != 0.0 && move_y != 0.0) {
+    const double sum_sq = move_x * move_x + move_y * move_y;
+    const double weight = 2.0 * std::abs(move_x) * std::abs(move_y) / sum_sq;
+    const double gain = 1.0 + (diagonal - 1.0) * weight;
+    move_x *= gain;
+    move_y *= gain;
   }
 
   // Mouse drives the right stick (look) by default, or the left stick (move)
@@ -449,6 +475,19 @@ void MousehookConfig::Load(const std::filesystem::path& path) {
     set_deadzone_compensation(
         std::clamp(doc["deadzone_compensation"].GetDouble(), 0.0, 0.95));
   }
+  if (doc.HasMember("vertical_factor") && doc["vertical_factor"].IsNumber()) {
+    set_vertical_factor(
+        std::clamp(doc["vertical_factor"].GetDouble(), 0.1, 4.0));
+  }
+  if (doc.HasMember("response_curve") && doc["response_curve"].IsNumber()) {
+    set_response_curve(
+        std::clamp(doc["response_curve"].GetDouble(), 0.25, 4.0));
+  }
+  if (doc.HasMember("diagonal_acceleration") &&
+      doc["diagonal_acceleration"].IsNumber()) {
+    set_diagonal_acceleration(
+        std::clamp(doc["diagonal_acceleration"].GetDouble(), 1.0, 3.0));
+  }
   if (doc.HasMember("pixels_per_full_deflection") &&
       doc["pixels_per_full_deflection"].IsNumber()) {
     set_pixels_per_full_deflection(
@@ -496,6 +535,9 @@ void MousehookConfig::Save() const {
   doc.AddMember("swap_thumbsticks", swap_thumbsticks(), alloc);
   doc.AddMember("user_index", user_index(), alloc);
   doc.AddMember("deadzone_compensation", deadzone_compensation(), alloc);
+  doc.AddMember("diagonal_acceleration", diagonal_acceleration(), alloc);
+  doc.AddMember("response_curve", response_curve(), alloc);
+  doc.AddMember("vertical_factor", vertical_factor(), alloc);
   doc.AddMember("pixels_per_full_deflection", pixels_per_full_deflection(),
                 alloc);
   doc.AddMember("left_button", static_cast<int>(left_button()), alloc);

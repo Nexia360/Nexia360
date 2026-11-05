@@ -886,6 +886,11 @@ void EmulatorApp::EmulatorThread() {
         [this]() { emulator_window_->ShowAvatarEditorDialog(); });
   });
 
+  emulator_->on_gamerpic_browser.AddListener([this]() {
+    app_context().CallInUIThread(
+        [this]() { emulator_window_->ShowGamerpicBrowserDialog(); });
+  });
+
   emulator_->on_title_switch.AddListener([this]() {
     app_context().CallInUIThread([this]() { emulator_window_->SwitchTitle(); });
   });

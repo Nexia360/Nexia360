@@ -62,7 +62,9 @@ std::string DashChannelPackageRedirect(const std::string& guest_path);
 uint32_t ShowHubGamerCard(uint32_t user_index, uint64_t xuid);
 // Opens the on-screen keyboard without blocking; 0 when it cannot open (a
 // dialog is already up). Poll the ticket: false while it is still open.
-uint32_t OpenHubKeyboard(const std::string& title, const std::string& text);
+// `password` masks what is typed (the Account app's password fields).
+uint32_t OpenHubKeyboard(const std::string& title, const std::string& text,
+                         bool password = false);
 bool PollHubKeyboard(uint32_t ticket, bool* out_cancelled,
                      std::string* out_text);
 // Add Friend, as the Friends dialog adds: 0 added, 1 waiting for approval,

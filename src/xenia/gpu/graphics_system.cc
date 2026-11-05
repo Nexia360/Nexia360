@@ -167,22 +167,20 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
                                        1000.0 / static_cast<double>(
                                                     normalized_framerate_limit))
                     : 1.0;
-            uint64_t last_frame_time = Clock::QueryGuestTickCount();
-            // Deadline the Linux branch paces to, and the most lateness it
+            // Deadline the beats are paced to, and the most lateness the loop
             // will try to make up before giving the missed beats up.
             using steady_time_point = std::chrono::steady_clock::time_point;
             steady_time_point next_vblank_deadline{};
             constexpr auto kMaxVblankCatchUp = std::chrono::seconds(1);
-            (void)next_vblank_deadline;
-            (void)kMaxVblankCatchUp;
-    // Sleep for 90% of the vblank duration on Windows, spin for 10%
-    // Linux uses full sleep duration due to scheduler quantum issues
-#if XE_PLATFORM_WIN32
-            constexpr double duration_scalar = 0.90;
-#endif
-#if XE_PLATFORM_LINUX
-            constexpr double duration_scalar = 1.0;
-#endif
+
+            // Probe: beats delivered more than half a period late, reported
+            // every five seconds while any occur.
+            constexpr auto kLateReportInterval = std::chrono::seconds(5);
+            steady_time_point late_report_start =
+                std::chrono::steady_clock::now();
+            uint32_t beats_in_window = 0;
+            uint32_t late_beats_in_window = 0;
+            int64_t worst_lateness_us = 0;
 
             while (frame_limiter_worker_running_) {
               // NO TITLE GATE HERE.
@@ -200,44 +198,14 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
               register_file()->values[XE_GPU_REG_D1MODE_V_COUNTER] +=
                   GetResolution().second;
 
-#if XE_PLATFORM_WIN32
-              if (cvars::vsync) {
-                const uint64_t current_time = Clock::QueryGuestTickCount();
-                const uint64_t tick_freq = Clock::guest_tick_frequency();
-                const uint64_t time_delta = current_time - last_frame_time;
-                const double elapsed_d =
-                    static_cast<double>(time_delta) /
-                    (static_cast<double>(tick_freq) / 1000.0);
-                if (elapsed_d >= vsync_duration_d) {
-                  last_frame_time = current_time;
-
-                  MarkVblank();
-                  const uint64_t estimated_nanoseconds = static_cast<uint64_t>(
-                      (vsync_duration_d * 1000000.0) *
-                      duration_scalar);  // 1000 microseconds = 1 ms
-
-                  threading::NanoSleep(estimated_nanoseconds);
-                }
-              }
-
-              if (!cvars::vsync) {
-                MarkVblank();
-                if (normalized_framerate_limit > 0) {
-                  // framerate_limit is over 0, vsync disabled
-                  //  - No VSYNC + limited frames defined by user
-                  uint64_t framerate_limited_sleep_time =
-                      1000000000 / normalized_framerate_limit;
-                  xe::threading::NanoSleep(framerate_limited_sleep_time);
-                } else {
-                  // framerate_limit is 0, vsync disabled
-                  //  - No VSYNC + unlimited frames
-                  xe::threading::Sleep(std::chrono::milliseconds(1));
-                }
-              }
-#endif
-#if XE_PLATFORM_LINUX
               MarkVblank();
 
+              // Windows used to sleep 90% of the period, spin out the rest at
+              // the lowest priority and restart the period from whenever the
+              // spin finally fired. Any preemption of that spin delivered the
+              // beat late and the lateness was never made up - a visible hitch
+              // in anything that steps once per vblank (the boot animation's
+              // pan most of all). Both platforms now pace to a deadline.
               if (cvars::vsync || normalized_framerate_limit > 0) {
                 uint64_t sleep_duration_ns =
                     static_cast<uint64_t>(vsync_duration_d * 1000000.0);
@@ -261,6 +229,33 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
                 if (vblank_deadline_reset_.exchange(false) ||
                     next_vblank_deadline == steady_time_point()) {
                   next_vblank_deadline = now;
+                } else {
+                  const auto lateness = now - next_vblank_deadline;
+                  if (lateness > period / 2) {
+                    ++late_beats_in_window;
+                    worst_lateness_us = std::max<int64_t>(
+                        worst_lateness_us,
+                        std::chrono::duration_cast<std::chrono::microseconds>(
+                            lateness)
+                            .count());
+                  }
+                }
+                ++beats_in_window;
+                if (now - late_report_start >= kLateReportInterval) {
+                  if (late_beats_in_window) {
+                    XELOGW(
+                        "vblank pacing: {} of {} beats over half a period "
+                        "late in the last {} s, worst {:.2f} ms",
+                        late_beats_in_window, beats_in_window,
+                        std::chrono::duration_cast<std::chrono::seconds>(
+                            now - late_report_start)
+                            .count(),
+                        worst_lateness_us / 1000.0);
+                  }
+                  late_report_start = now;
+                  beats_in_window = 0;
+                  late_beats_in_window = 0;
+                  worst_lateness_us = 0;
                 }
                 next_vblank_deadline += period;
                 if (next_vblank_deadline > now) {
@@ -281,7 +276,6 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
               } else {
                 xe::threading::Sleep(std::chrono::milliseconds(1));
               }
-#endif
             }
             return 0;
           },
@@ -290,14 +284,15 @@ X_STATUS GraphicsSystem::Setup(cpu::Processor* processor,
   frame_limiter_worker_thread_->set_can_debugger_suspend(true);
   frame_limiter_worker_thread_->set_name("GPU Frame limiter");
   frame_limiter_worker_thread_->Create();
-  // The Windows branch spins for part of each period, which is what the
-  // lowest priority is for. The Linux branch only sleeps, so there it buys
-  // nothing and costs wake-up latency: kLowest maps to nice 15 against nice 0
-  // for every other thread in the process, and any other busy program then
-  // delays the guest's vblanks.
+  // The loop only sleeps to a deadline on every platform now, so a low
+  // priority buys nothing and costs wake-up latency: behind the CPU threads at
+  // normal priority the beat is late whenever the guest keeps them busy. On
+  // Windows it is raised above them - its only work per period is the guest's
+  // vblank ISR, which is short. kLowest on POSIX mapped to nice 15, hence
+  // kNormal there.
 #if XE_PLATFORM_WIN32
   frame_limiter_worker_thread_->thread()->set_priority(
-      threading::ThreadPriority::kLowest);
+      threading::ThreadPriority::kAboveNormal);
 #else
   frame_limiter_worker_thread_->thread()->set_priority(
       threading::ThreadPriority::kNormal);

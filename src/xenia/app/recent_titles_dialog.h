@@ -15,6 +15,9 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <vector>
+
+#include "xenia/app/emulator_window.h"
 
 #include "xenia/ui/imgui_dialog.h"
 #include "xenia/ui/imgui_drawer.h"
@@ -24,7 +27,9 @@ namespace app {
 
 class EmulatorWindow;
 
-// The recently played list, with each title's own icon.
+// The recently played list, with each title's own icon, drawn flat in the
+// guide's style: one panel, the green bar on the selected row, d-pad / arrow
+// keys to move, A / Enter to pick, B / Esc to back out.
 //
 // This used to be two native submenus. A platform menu cannot scroll and
 // cannot carry a bitmap through the MenuItem abstraction, so with the recent
@@ -53,14 +58,40 @@ class RecentTitlesDialog final : public ui::ImGuiDialog {
   void OnDraw(ImGuiIO& io) override;
 
  private:
+  // Y cycles through these in order.
+  enum class Sort {
+    kRecent,                  // most recently played first
+    kRecentDescending,        // least recently played first
+    kAlphabetical,            // A to Z
+    kAlphabeticalDescending,  // Z to A
+  };
+  static const char* SortName(Sort sort);
+
+  // Re-orders entries_ for sort_, keeping the selected title selected.
+  void ApplySort();
+
   // A texture can only be created while drawing, so the icons are decoded on
-  // first sight and kept by title id for as long as the dialog is up.
-  ui::ImmediateTexture* IconFor(size_t index);
+  // first sight and kept per title file - not per row, which a re-sort moves -
+  // for as long as the dialog is up.
+  ui::ImmediateTexture* IconFor(const RecentTitleEntry& entry);
+
+  // Closes and, when a title was picked, launches it or opens its update
+  // selector once this frame is over.
+  void Finish(bool picked);
 
   EmulatorWindow* emulator_window_;
   Mode mode_;
   bool opened_ = false;
-  std::map<size_t, std::unique_ptr<ui::ImmediateTexture>> icons_;
+  bool finished_ = false;
+  // This dialog's own copy of the recent list, in the chosen order.
+  std::vector<RecentTitleEntry> entries_;
+  Sort sort_ = Sort::kRecent;
+  // The row under the green bar, and the first row on screen.
+  size_t selected_ = 0;
+  size_t first_row_ = 0;
+  // Grab offset within the scrollbar thumb while it is being dragged.
+  float drag_offset_ = 0.0f;
+  std::map<std::string, std::unique_ptr<ui::ImmediateTexture>> icons_;
   std::function<void()> closed_callback_;
 };
 

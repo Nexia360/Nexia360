@@ -560,12 +560,41 @@ void ConsoleSettingsDialog::OnDraw(ImGuiIO& io) {
 
         float sensitivity = static_cast<float>(mh.sensitivity());
         if (ImGui::SliderFloat("Sensitivity", &sensitivity, 0.05f, 10.0f,
-                               "%.2f")) {
+                               "%.2f",
+                               ImGuiSliderFlags_Logarithmic |
+                                   ImGuiSliderFlags_NoRoundToFormat)) {
           mh.set_sensitivity(sensitivity);
         }
         if (ImGui::IsItemDeactivatedAfterEdit()) {
           mh.Save();
         }
+
+        float vertical = static_cast<float>(mh.vertical_factor());
+        if (ImGui::SliderFloat("Vertical Factor", &vertical, 0.1f, 4.0f,
+                               "%.2fx",
+                               ImGuiSliderFlags_Logarithmic |
+                                   ImGuiSliderFlags_NoRoundToFormat)) {
+          mh.set_vertical_factor(vertical);
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+          mh.Save();
+        }
+        ImGui::TextDisabled(
+            "Vertical sensitivity relative to horizontal. 1.00x = same; "
+            "higher = more sensitive up/down, lower = less.");
+
+        float curve = static_cast<float>(mh.response_curve());
+        if (ImGui::SliderFloat("Response Curve", &curve, 0.25f, 4.0f, "%.2f",
+                               ImGuiSliderFlags_Logarithmic |
+                                   ImGuiSliderFlags_NoRoundToFormat)) {
+          mh.set_response_curve(curve);
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+          mh.Save();
+        }
+        ImGui::TextDisabled(
+            "1.00 = linear. Higher: slow and medium aim get finer. Lower: "
+            "they get stronger. Full-speed turns stay the same.");
 
         float pixels = static_cast<float>(mh.pixels_per_full_deflection());
         if (ImGui::SliderFloat("Pixels for Full Deflection", &pixels, 1.0f,
@@ -587,6 +616,18 @@ void ConsoleSettingsDialog::OnDraw(ImGuiIO& io) {
         ImGui::TextDisabled(
             "Lifts small movements past the game's stick deadzone. Raise if "
             "slow aiming feels jerky or dead; lower if it over-shoots.");
+
+        float diagonal = static_cast<float>(mh.diagonal_acceleration());
+        if (ImGui::SliderFloat("Diagonal Acceleration", &diagonal, 1.0f, 3.0f,
+                               "%.2fx")) {
+          mh.set_diagonal_acceleration(diagonal);
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+          mh.Save();
+        }
+        ImGui::TextDisabled(
+            "Speeds up diagonal mouse motion; straight left/right/up/down is "
+            "unchanged. 1.00x = off. Raise if diagonals feel slow.");
 
         bool invert_y = mh.invert_y();
         if (ImGui::Checkbox("Invert Y Axis", &invert_y)) {

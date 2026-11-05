@@ -70,7 +70,11 @@ class PlayerObjectJSON : public BaseObjectJSON {
   uint32_t ClientVersion() const { return clientVersion_; }
   void ClientVersion(uint32_t clientVersion) { clientVersion_ = clientVersion; }
 
+  // Serialized only, and only when set (a claimed account).
+  void AccountToken(const std::string& token) { accountToken_ = token; }
+
  private:
+  std::string accountToken_;
   xe::be<uint64_t> xuid_;
   std::string hostAddress_;
   std::string gamertag_;

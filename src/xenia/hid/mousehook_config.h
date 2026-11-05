@@ -98,6 +98,34 @@ class MousehookConfig {
     deadzone_compensation_.store(value, std::memory_order_relaxed);
   }
 
+  // Multiplier on vertical mouse motion only. 1.0 = same as horizontal;
+  // higher = vertical more sensitive, lower = less.
+  double vertical_factor() const {
+    return vertical_factor_.load(std::memory_order_relaxed);
+  }
+  void set_vertical_factor(double value) {
+    vertical_factor_.store(value, std::memory_order_relaxed);
+  }
+
+  // Exponent applied to the mouse's stick deflection (normalised to full
+  // deflection) before deadzone compensation. 1.0 = linear. Above 1, slow and
+  // medium motion get finer; below 1, stronger. Full deflection is unchanged.
+  double response_curve() const {
+    return response_curve_.load(std::memory_order_relaxed);
+  }
+  void set_response_curve(double value) {
+    response_curve_.store(value, std::memory_order_relaxed);
+  }
+
+  // Extra gain for diagonal mouse motion, blended by how diagonal the motion
+  // is: 1.0 on a pure cardinal, the full factor at 45 degrees. 1.0 = off.
+  double diagonal_acceleration() const {
+    return diagonal_acceleration_.load(std::memory_order_relaxed);
+  }
+  void set_diagonal_acceleration(double value) {
+    diagonal_acceleration_.store(value, std::memory_order_relaxed);
+  }
+
   // Pixels of motion in one poll that equal full stick deflection at
   // sensitivity 1.0. Lower = twitchier.
   double pixels_per_full_deflection() const {
@@ -232,6 +260,9 @@ class MousehookConfig {
   std::atomic<double> pixels_per_full_deflection_{25.0};
   // 8689/32767 - the stock right-stick deadzone, i.e. just enough to clear it.
   std::atomic<double> deadzone_compensation_{0.27};
+  std::atomic<double> diagonal_acceleration_{1.0};
+  std::atomic<double> response_curve_{1.0};
+  std::atomic<double> vertical_factor_{1.0};
 
   std::atomic<MouseButtonAction> left_button_{MouseButtonAction::kRightTrigger};
   std::atomic<MouseButtonAction> right_button_{MouseButtonAction::kLeftTrigger};

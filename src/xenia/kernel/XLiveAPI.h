@@ -293,6 +293,45 @@ class XLiveAPI {
   // else the local copy, else Anyone (the hub's own default).
   FriendPrivacy GetFriendPrivacy(uint64_t xuid);
 
+  // Gamertag claims on the hub (players/account/*). A claimed account keeps
+  // its device token in Library/hub_account/<online xuid>; RegisterPlayer
+  // sends it, and the hub refuses a claimed xuid without it.
+  struct AccountState {
+    bool reachable = false;
+    bool claimed = false;
+    bool token_valid = false;
+    std::string gamertag;
+  };
+  struct AccountResult {
+    // The hub's outcome string ("claimed", "taken", "denied", "invalid",
+    // "busy", ...), or "offline" when it could not be reached.
+    std::string outcome = "offline";
+    std::string field;
+    uint64_t xuid = 0;
+    std::string gamertag;
+  };
+  AccountState GetAccountState(uint64_t online_xuid);
+  AccountResult ClaimAccount(uint64_t online_xuid, const std::string& gamertag,
+                             const std::string& password);
+  // On success the token is stored under the recovered xuid; adopting that
+  // xuid and gamertag into a local profile is the caller's job.
+  AccountResult RecoverAccount(const std::string& gamertag,
+                               const std::string& password);
+  AccountResult ChangeAccountPassword(uint64_t online_xuid,
+                                      const std::string& password,
+                                      const std::string& new_password);
+  AccountResult RenameAccount(uint64_t online_xuid,
+                              const std::string& gamertag);
+  // nullopt when the hub could not be asked.
+  std::optional<bool> IsGamertagAvailable(const std::string& gamertag);
+  std::string LocalAccountToken(uint64_t online_xuid);
+  // Why the last registration was refused: "account" (claimed, no valid
+  // token here), "gamertag" (someone else claimed it), or empty.
+  std::string register_refusal() const {
+    std::lock_guard<std::mutex> lock(hub_session_mutex_);
+    return register_refusal_;
+  }
+
   FriendRequestOutcome SendFriendRequest(uint64_t from_xuid, uint64_t to_xuid);
 
   // Requests waiting for this player to approve or decline.
@@ -683,6 +722,7 @@ class XLiveAPI {
  private:
   mutable std::mutex hub_session_mutex_;
   std::string hub_session_token_;
+  std::string register_refusal_;
 
   // Friend requests the player answered with "Later". Held in memory only and
   // never written anywhere, so they are shown again on the next launch. The

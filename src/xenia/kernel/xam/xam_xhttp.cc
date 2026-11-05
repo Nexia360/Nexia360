@@ -14,6 +14,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <map>
 #include <mutex>
@@ -21,6 +22,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <variant>
 #include <vector>
 
 #include "xenia/base/platform.h"
@@ -31,18 +33,23 @@
 #include "third_party/stb/stb_image_write.h"
 #include "xenia/apu/sdl/voice_chat.h"
 #include "xenia/base/assert.h"
+#include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/memory.h"
+#include "xenia/base/string.h"
 #include "xenia/base/string_util.h"
 #include "xenia/base/threading.h"
 #include "xenia/base/utf8.h"
+#include "xenia/config.h"
 #include "xenia/cpu/processor.h"
 #include "xenia/emulator.h"
 #include "xenia/kernel/XLiveAPI.h"
 #include "xenia/kernel/json/base_object_json.h"
 #include "xenia/kernel/kernel_state.h"
+#include "xenia/kernel/title_id_utils.h"
 #include "xenia/kernel/util/friends_util.h"
 #include "xenia/kernel/util/shim_utils.h"
+#include "xenia/kernel/xam/profile_manager.h"
 #include "xenia/kernel/xam/xam_private.h"
 #include "xenia/kernel/xam/xam_state.h"
 #include "xenia/kernel/xam/xam_xhttp.h"
@@ -821,6 +828,385 @@ class HubVoice {
   int16_t pending_ = 0;
 };
 
+// The dashboard's Account, Profile and Preferences apps. They act on the
+// profile signed in to slot 0 - the one registered with the hub.
+UserProfile* HubAppProfile() {
+  return kernel_state()->xam_state()->GetUserProfile(uint32_t(0));
+}
+
+std::string ProfileText(UserProfile* profile, UserSettingId id) {
+  const auto setting = kernel_state()->xam_state()->user_tracker()->GetSetting(
+      profile, kDashboardID, static_cast<uint32_t>(id));
+  if (!setting) {
+    return {};
+  }
+  const auto data = setting->get_host_data();
+  if (const auto* text = std::get_if<std::u16string>(&data)) {
+    std::u16string trimmed = *text;
+    while (!trimmed.empty() && trimmed.back() == u'\0') {
+      trimmed.pop_back();
+    }
+    return xe::to_utf8(trimmed);
+  }
+  return {};
+}
+
+int32_t ProfileInt(UserProfile* profile, UserSettingId id) {
+  const auto setting = kernel_state()->xam_state()->user_tracker()->GetSetting(
+      profile, kDashboardID, static_cast<uint32_t>(id));
+  if (!setting) {
+    return 0;
+  }
+  const auto data = setting->get_host_data();
+  if (const auto* value = std::get_if<int32_t>(&data)) {
+    return *value;
+  }
+  if (const auto* value = std::get_if<uint32_t>(&data)) {
+    return static_cast<int32_t>(*value);
+  }
+  return 0;
+}
+
+// Writes a dashboard setting of the signed-in profile and sends it to the
+// hub (the gamercard others see is built from what the hub holds).
+void StoreProfileSetting(UserProfile* profile, UserSettingId id,
+                         UserDataTypes value) {
+  UserSetting setting(id, value);
+  kernel_state()->xam_state()->user_tracker()->UpsertSetting(
+      profile->xuid(), kDashboardID, &setting);
+  kernel_state()->BroadcastNotification(
+      kXNotificationSystemProfileSettingChanged, 1);
+  if (const uint64_t online_xuid = profile->GetOnlineXUID()) {
+    user_settingids_map settings = {};
+    settings[online_xuid][kDashboardID].push_back(id);
+    kernel_state()->GetXboxLiveAPI()->SetUsersSettings(settings);
+  }
+}
+
+// Rewrites the account record of a profile the way a gamertag change on the
+// console does: signed out, rewritten, signed back in - which registers with
+// the hub again under the new name or xuid. Runs on its own thread after the
+// app has its answer, because signing out ends the app.
+void RewriteAccountLater(uint64_t xuid,
+                         std::function<void(X_XAMACCOUNTINFO&)> change) {
+  std::thread([xuid, change]() {
+    xe::threading::Sleep(std::chrono::milliseconds(500));
+    auto* manager = kernel_state()->xam_state()->profile_manager();
+    const X_XAMACCOUNTINFO* current = manager->GetAccount(xuid);
+    if (!current) {
+      XELOGE("Account: profile {:016X} is gone; nothing rewritten", xuid);
+      return;
+    }
+    X_XAMACCOUNTINFO account = *current;
+    if (!manager->ModifyAccount(xuid, account,
+                                [&change](X_XAMACCOUNTINFO& target) {
+                                  change(target);
+                                  return true;
+                                })) {
+      XELOGE("Account: could not rewrite profile {:016X}", xuid);
+    }
+  }).detach();
+}
+
+void SetAccountGamertag(X_XAMACCOUNTINFO& account,
+                        const std::string& gamertag) {
+  string_util::copy_and_swap_truncating(
+      account.gamertag, xe::to_utf16(gamertag), std::size(account.gamertag));
+}
+
+// Preferences: Nexia settings a player would look for on the console.
+struct HubPreference {
+  const char* id;
+  const char* name;
+  const char* description;
+};
+constexpr HubPreference kHubPreferences[] = {
+    {"voice_chat", "Voice Chat",
+     "Talk with other players in games and parties."},
+    {"show_achievement_notification", "Achievement Notifications",
+     "Show a notification when you unlock an achievement."},
+    {"vibration", "Controller Vibration", "Let games rumble your controller."},
+    {"discord", "Share Activity on Discord",
+     "Show the game you are playing on your Discord profile."},
+    {"upnp", "Automatic Port Forwarding",
+     "Open the ports online games need on your router (UPnP)."},
+    {"auto_check_updates", "Check for Nexia Updates",
+     "Look for a new version of Nexia when it starts."},
+};
+
+cvar::ConfigVar<bool>* BoolConfigVar(const char* name) {
+  if (!cvar::ConfigVars) {
+    return nullptr;
+  }
+  auto it = cvar::ConfigVars->find(name);
+  if (it == cvar::ConfigVars->end()) {
+    return nullptr;
+  }
+  return dynamic_cast<cvar::ConfigVar<bool>*>(it->second);
+}
+
+std::optional<bool> PreferenceValue(const std::string& id) {
+  if (id == "voice_chat") {
+    return apu::sdl::VoiceChat::Get().enabled();
+  }
+  if (auto* config_var = BoolConfigVar(id.c_str())) {
+    return *config_var->current_value();
+  }
+  return std::nullopt;
+}
+
+bool SetPreference(const std::string& id, bool value) {
+  if (id == "voice_chat") {
+    apu::sdl::VoiceChat::Get().SetEnabled(value);
+    return true;
+  }
+  for (const auto& preference : kHubPreferences) {
+    if (id == preference.id) {
+      auto* config_var = BoolConfigVar(preference.id);
+      if (!config_var) {
+        return false;
+      }
+      config_var->OverrideConfigValue(value);
+      config::SaveConfig();
+      return true;
+    }
+  }
+  return false;
+}
+
+// Answers the Account / Profile / Preferences routes; false for any other.
+bool AnswerHubAccountApps(XHttpHandle* request, const std::string& route,
+                          const HubParams& params) {
+  auto* xlive_api = kernel_state()->GetXboxLiveAPI();
+
+  if (route == "account") {
+    UserProfile* profile = HubAppProfile();
+    if (!profile || !profile->GetOnlineXUID()) {
+      AnswerWith(request, 200, "OK", "{\"signedIn\":false}");
+      return true;
+    }
+    const uint64_t online_xuid = profile->GetOnlineXUID();
+    const auto state = xlive_api->GetAccountState(online_xuid);
+    AnswerWith(
+        request, 200, "OK",
+        fmt::format("{{\"signedIn\":true,\"xuid\":\"{:016X}\",\"gamertag\":{},"
+                    "\"reachable\":{},\"claimed\":{},\"tokenValid\":{},"
+                    "\"claimedAs\":{},\"refusal\":{}}}",
+                    online_xuid, JsonString(profile->name()),
+                    state.reachable ? "true" : "false",
+                    state.claimed ? "true" : "false",
+                    state.token_valid ? "true" : "false",
+                    JsonString(state.gamertag),
+                    JsonString(xlive_api->register_refusal())));
+    return true;
+  }
+
+  if (route == "account/claim") {
+    UserProfile* profile = HubAppProfile();
+    if (!profile || !profile->GetOnlineXUID()) {
+      AnswerWith(request, 200, "OK", "{\"outcome\":\"signedout\"}");
+      return true;
+    }
+    const auto result = xlive_api->ClaimAccount(
+        profile->GetOnlineXUID(), profile->name(), params.Get("password"));
+    AnswerWith(
+        request, 200, "OK",
+        fmt::format("{{\"outcome\":{},\"field\":{}}}",
+                    JsonString(result.outcome), JsonString(result.field)));
+    XELOGI("Account: claim {} -> {}", profile->name(), result.outcome);
+    return true;
+  }
+
+  if (route == "account/recover") {
+    UserProfile* profile = HubAppProfile();
+    if (!profile) {
+      AnswerWith(request, 200, "OK", "{\"outcome\":\"signedout\"}");
+      return true;
+    }
+    const auto result = xlive_api->RecoverAccount(params.Get("gamertag"),
+                                                  params.Get("password"));
+    AnswerWith(
+        request, 200, "OK",
+        fmt::format("{{\"outcome\":{},\"gamertag\":{}}}",
+                    JsonString(result.outcome), JsonString(result.gamertag)));
+    XELOGI("Account: recover -> {}", result.outcome);
+    if (result.outcome == "recovered") {
+      // This profile becomes the recovered account: its online xuid and its
+      // gamertag. The token is already stored under that xuid, so the
+      // sign-in that follows registers with it.
+      const uint64_t recovered_xuid = result.xuid;
+      const std::string gamertag = result.gamertag;
+      RewriteAccountLater(profile->xuid(), [recovered_xuid, gamertag](
+                                               X_XAMACCOUNTINFO& account) {
+        account.xuid_online = recovered_xuid;
+        account.ToggleLiveFlag(true);
+        SetAccountGamertag(account, gamertag);
+      });
+    }
+    return true;
+  }
+
+  if (route == "account/password") {
+    UserProfile* profile = HubAppProfile();
+    if (!profile || !profile->GetOnlineXUID()) {
+      AnswerWith(request, 200, "OK", "{\"outcome\":\"signedout\"}");
+      return true;
+    }
+    const auto result = xlive_api->ChangeAccountPassword(
+        profile->GetOnlineXUID(), params.Get("password"),
+        params.Get("newPassword"));
+    AnswerWith(
+        request, 200, "OK",
+        fmt::format("{{\"outcome\":{},\"field\":{}}}",
+                    JsonString(result.outcome), JsonString(result.field)));
+    XELOGI("Account: password change -> {}", result.outcome);
+    return true;
+  }
+
+  if (route == "profile") {
+    UserProfile* profile = HubAppProfile();
+    if (!profile) {
+      AnswerWith(request, 200, "OK", "{\"signedIn\":false}");
+      return true;
+    }
+    AnswerWith(
+        request, 200, "OK",
+        fmt::format(
+            "{{\"signedIn\":true,\"xuid\":\"{:016X}\",\"gamertag\":{},"
+            "\"motto\":{},\"name\":{},\"location\":{},\"bio\":{},"
+            "\"zone\":{}}}",
+            profile->GetOnlineXUID(), JsonString(profile->name()),
+            JsonString(
+                ProfileText(profile, UserSettingId::XPROFILE_GAMERCARD_MOTTO)),
+            JsonString(ProfileText(
+                profile, UserSettingId::XPROFILE_GAMERCARD_USER_NAME)),
+            JsonString(ProfileText(
+                profile, UserSettingId::XPROFILE_GAMERCARD_USER_LOCATION)),
+            JsonString(ProfileText(profile,
+                                   UserSettingId::XPROFILE_GAMERCARD_USER_BIO)),
+            ProfileInt(profile, UserSettingId::XPROFILE_GAMERCARD_ZONE)));
+    return true;
+  }
+
+  if (route == "profile/set") {
+    UserProfile* profile = HubAppProfile();
+    if (!profile) {
+      AnswerWith(request, 200, "OK", "{\"outcome\":\"signedout\"}");
+      return true;
+    }
+    const std::string field = params.Get("field");
+    const std::string value = params.Get("value");
+
+    struct TextField {
+      const char* name;
+      UserSettingId id;
+      size_t limit;
+    };
+    // Character limits are the settings' own sizes, less the terminator.
+    static constexpr TextField kTextFields[] = {
+        {"motto", UserSettingId::XPROFILE_GAMERCARD_MOTTO, 21},
+        {"name", UserSettingId::XPROFILE_GAMERCARD_USER_NAME, 64},
+        {"location", UserSettingId::XPROFILE_GAMERCARD_USER_LOCATION, 40},
+        {"bio", UserSettingId::XPROFILE_GAMERCARD_USER_BIO, 499},
+    };
+    for (const auto& text_field : kTextFields) {
+      if (field == text_field.name) {
+        StoreProfileSetting(
+            profile, text_field.id,
+            xe::to_utf16(TruncateUtf8(value, text_field.limit)));
+        AnswerWith(request, 200, "OK", "{\"outcome\":\"saved\"}");
+        return true;
+      }
+    }
+
+    if (field == "zone") {
+      const int32_t zone = std::atoi(value.c_str());
+      if (zone < 0 || zone > 4) {
+        AnswerWith(request, 200, "OK", "{\"outcome\":\"invalid\"}");
+        return true;
+      }
+      StoreProfileSetting(profile, UserSettingId::XPROFILE_GAMERCARD_ZONE,
+                          zone);
+      AnswerWith(request, 200, "OK", "{\"outcome\":\"saved\"}");
+      return true;
+    }
+
+    if (field == "gamertag") {
+      if (!ProfileManager::IsGamertagValid(value)) {
+        AnswerWith(request, 200, "OK", "{\"outcome\":\"invalid\"}");
+        return true;
+      }
+      if (value == profile->name()) {
+        AnswerWith(request, 200, "OK", "{\"outcome\":\"saved\"}");
+        return true;
+      }
+      // A claimed account moves its claim first; anyone else may only take
+      // a gamertag nobody has claimed.
+      const uint64_t online_xuid = profile->GetOnlineXUID();
+      const auto state = xlive_api->GetAccountState(online_xuid);
+      if (state.claimed) {
+        const auto result = xlive_api->RenameAccount(online_xuid, value);
+        if (result.outcome != "renamed") {
+          AnswerWith(
+              request, 200, "OK",
+              fmt::format("{{\"outcome\":{}}}", JsonString(result.outcome)));
+          return true;
+        }
+      } else if (xlive_api->IsGamertagAvailable(value) == false) {
+        AnswerWith(request, 200, "OK", "{\"outcome\":\"taken\"}");
+        return true;
+      }
+      RewriteAccountLater(profile->xuid(), [value](X_XAMACCOUNTINFO& account) {
+        SetAccountGamertag(account, value);
+      });
+      AnswerWith(request, 200, "OK", "{\"outcome\":\"renaming\"}");
+      XELOGI("Profile: gamertag {} -> {}", profile->name(), value);
+      return true;
+    }
+
+    AnswerWith(request, 200, "OK", "{\"outcome\":\"invalid\"}");
+    return true;
+  }
+
+  if (route == "profile/gamerpic") {
+    kernel_state()->emulator()->on_gamerpic_browser();
+    AnswerWith(request, 200, "OK", "{\"shown\":true}");
+    return true;
+  }
+
+  if (route == "prefs") {
+    std::string body = "{\"items\":[";
+    bool first = true;
+    for (const auto& preference : kHubPreferences) {
+      const auto value = PreferenceValue(preference.id);
+      if (!value) {
+        continue;
+      }
+      body += fmt::format(
+          "{}{{\"id\":\"{}\",\"name\":{},\"description\":{},\"on\":{}}}",
+          first ? "" : ",", preference.id, JsonString(preference.name),
+          JsonString(preference.description), *value ? "true" : "false");
+      first = false;
+    }
+    body += "]}";
+    AnswerWith(request, 200, "OK", body);
+    return true;
+  }
+
+  if (route == "prefs/set") {
+    const std::string id = params.Get("id");
+    const bool on = params.Get("on") == "1";
+    const bool saved = SetPreference(id, on);
+    AnswerWith(
+        request, 200, "OK",
+        fmt::format("{{\"outcome\":\"{}\"}}", saved ? "saved" : "invalid"));
+    XELOGI("Preferences: {} -> {}", id, saved ? (on ? "on" : "off") : "?");
+    return true;
+  }
+
+  return false;
+}
+
 bool AnswerNexiaHub(XHttpHandle* request, const std::string& verb,
                     const std::string& url) {
   const std::string lowered = xe::utf8::lower_ascii(url);
@@ -840,10 +1226,15 @@ bool AnswerNexiaHub(XHttpHandle* request, const std::string& verb,
   const HubParams params(url, request->request_body);
   auto* xlive_api = kernel_state()->GetXboxLiveAPI();
 
+  if (AnswerHubAccountApps(request, route, params)) {
+    return true;
+  }
+
   if (route == "keyboard") {
     const std::string title = params.Get("title");
     const uint32_t ticket =
-        OpenHubKeyboard(title.empty() ? "Message" : title, params.Get("text"));
+        OpenHubKeyboard(title.empty() ? "Message" : title, params.Get("text"),
+                        params.Get("password") == "1");
     if (!ticket) {
       AnswerWith(request, 200, "OK", "{\"ticket\":0}");
     } else {

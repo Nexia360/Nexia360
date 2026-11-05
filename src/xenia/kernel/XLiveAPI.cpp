@@ -1340,6 +1340,7 @@ std::unique_ptr<HTTPResponseObjectJSON> XLiveAPI::RegisterPlayer(
   player.MacAddress(mac_address.to_uint64());
   player.Port(GetPlayerPort());
   player.Settings(settings);
+  player.AccountToken(LocalAccountToken(registered_xuid));
 
   std::string player_output;
   bool valid = player.Serialize(player_output);
@@ -1353,8 +1354,38 @@ std::unique_ptr<HTTPResponseObjectJSON> XLiveAPI::RegisterPlayer(
   response = Post(endpoint, player_register);
 
   if (response->StatusCode() != HTTP_STATUS_CODE::HTTP_CREATED) {
-    assert_always();
+    std::string refusal;
+    if (response->RawResponse().response) {
+      Document doc;
+      doc.Parse(response->RawResponse().response);
+      if (!doc.HasParseError() && doc.IsObject() && doc.HasMember("reason") &&
+          doc["reason"].IsString()) {
+        refusal = doc["reason"].GetString();
+      }
+    }
+    {
+      std::lock_guard<std::mutex> lock(hub_session_mutex_);
+      register_refusal_ = refusal;
+    }
+    if (refusal == "account") {
+      XELOGE(
+          "Nexia Hub: {} is a claimed account and this console has no valid "
+          "token for it. Recover it in Settings > Account with its password.",
+          user_profile->name());
+    } else if (refusal == "gamertag") {
+      XELOGE(
+          "Nexia Hub: the gamertag {} has been claimed by another player. "
+          "Change your gamertag in Settings > Profile.",
+          user_profile->name());
+    } else {
+      assert_always();
+    }
     return response;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(hub_session_mutex_);
+    register_refusal_.clear();
   }
 
   XELOGI("POST Success");
@@ -1977,6 +2008,262 @@ XLiveAPI::FriendPrivacy XLiveAPI::GetFriendPrivacy(uint64_t xuid) {
     StoreLocalFriendPrivacy(xuid, remote, false);
   }
   return remote;
+}
+
+namespace {
+std::filesystem::path LocalAccountTokenPath(uint64_t xuid) {
+  return kernel_state()->emulator()->storage_root() / "Library" /
+         "hub_account" / fmt::format("{:016X}", xuid);
+}
+
+void StoreLocalAccountToken(uint64_t xuid, const std::string& token) {
+  const auto path = LocalAccountTokenPath(xuid);
+  std::error_code ec;
+  std::filesystem::create_directories(path.parent_path(), ec);
+  std::ofstream file(path, std::ios::trunc);
+  file << token;
+  if (!file) {
+    XELOGE("Account: could not store the device token at {}",
+           xe::path_to_utf8(path));
+  }
+}
+
+std::string JsonText(const Document& doc) {
+  rapidjson::StringBuffer buffer;
+  rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+  doc.Accept(writer);
+  return buffer.GetString();
+}
+
+std::string MemberString(const Document& doc, const char* name) {
+  return doc.IsObject() && doc.HasMember(name) && doc[name].IsString()
+             ? std::string(doc[name].GetString())
+             : std::string();
+}
+
+uint64_t ParseXuid(const std::string& text) {
+  if (text.size() != 16) {
+    return 0;
+  }
+  return std::strtoull(text.c_str(), nullptr, 16);
+}
+}  // namespace
+
+std::string XLiveAPI::LocalAccountToken(uint64_t online_xuid) {
+  if (!online_xuid) {
+    return {};
+  }
+  std::ifstream file(LocalAccountTokenPath(online_xuid));
+  std::string token;
+  if (!(file >> token)) {
+    return {};
+  }
+  return token;
+}
+
+XLiveAPI::AccountState XLiveAPI::GetAccountState(uint64_t online_xuid) {
+  AccountState state;
+  if (!online_xuid) {
+    return state;
+  }
+
+  Document request;
+  request.SetObject();
+  auto& alloc = request.GetAllocator();
+  request.AddMember("xuid", Value(fmt::format("{:016X}", online_xuid), alloc),
+                    alloc);
+  request.AddMember("token", Value(LocalAccountToken(online_xuid), alloc),
+                    alloc);
+  const std::string body = JsonText(request);
+
+  std::unique_ptr<HTTPResponseObjectJSON> response =
+      Post(BuildEndpoint("players/account/status"),
+           reinterpret_cast<const uint8_t*>(body.c_str()));
+  if (response->StatusCode() != HTTP_STATUS_CODE::HTTP_OK ||
+      !response->RawResponse().response) {
+    return state;
+  }
+
+  Document doc;
+  doc.Parse(response->RawResponse().response);
+  if (doc.HasParseError() || !doc.IsObject()) {
+    return state;
+  }
+  state.reachable = true;
+  state.claimed = doc.HasMember("claimed") && doc["claimed"].IsBool() &&
+                  doc["claimed"].GetBool();
+  state.token_valid = doc.HasMember("tokenValid") &&
+                      doc["tokenValid"].IsBool() && doc["tokenValid"].GetBool();
+  state.gamertag = MemberString(doc, "gamertag");
+  return state;
+}
+
+XLiveAPI::AccountResult XLiveAPI::ClaimAccount(uint64_t online_xuid,
+                                               const std::string& gamertag,
+                                               const std::string& password) {
+  AccountResult result;
+  Document request;
+  request.SetObject();
+  auto& alloc = request.GetAllocator();
+  request.AddMember("xuid", Value(fmt::format("{:016X}", online_xuid), alloc),
+                    alloc);
+  request.AddMember("gamertag", Value(gamertag, alloc), alloc);
+  request.AddMember("password", Value(password, alloc), alloc);
+  const std::string body = JsonText(request);
+
+  std::unique_ptr<HTTPResponseObjectJSON> response =
+      Post(BuildEndpoint("players/account/claim"),
+           reinterpret_cast<const uint8_t*>(body.c_str()));
+  if (response->StatusCode() != HTTP_STATUS_CODE::HTTP_OK ||
+      !response->RawResponse().response) {
+    return result;
+  }
+
+  Document doc;
+  doc.Parse(response->RawResponse().response);
+  if (doc.HasParseError() || !doc.IsObject()) {
+    return result;
+  }
+  result.outcome = MemberString(doc, "outcome");
+  result.field = MemberString(doc, "field");
+  if (result.outcome == "claimed") {
+    const std::string token = MemberString(doc, "token");
+    if (!token.empty()) {
+      StoreLocalAccountToken(online_xuid, token);
+    }
+    result.xuid = online_xuid;
+    result.gamertag = MemberString(doc, "gamertag");
+  }
+  return result;
+}
+
+XLiveAPI::AccountResult XLiveAPI::RecoverAccount(const std::string& gamertag,
+                                                 const std::string& password) {
+  AccountResult result;
+  Document request;
+  request.SetObject();
+  auto& alloc = request.GetAllocator();
+  request.AddMember("gamertag", Value(gamertag, alloc), alloc);
+  request.AddMember("password", Value(password, alloc), alloc);
+  const std::string body = JsonText(request);
+
+  std::unique_ptr<HTTPResponseObjectJSON> response =
+      Post(BuildEndpoint("players/account/recover"),
+           reinterpret_cast<const uint8_t*>(body.c_str()));
+  if (response->StatusCode() != HTTP_STATUS_CODE::HTTP_OK ||
+      !response->RawResponse().response) {
+    return result;
+  }
+
+  Document doc;
+  doc.Parse(response->RawResponse().response);
+  if (doc.HasParseError() || !doc.IsObject()) {
+    return result;
+  }
+  result.outcome = MemberString(doc, "outcome");
+  if (result.outcome == "recovered") {
+    result.xuid = ParseXuid(MemberString(doc, "xuid"));
+    result.gamertag = MemberString(doc, "gamertag");
+    const std::string token = MemberString(doc, "token");
+    if (!result.xuid || token.empty()) {
+      result.outcome = "invalid";
+      return result;
+    }
+    StoreLocalAccountToken(result.xuid, token);
+  }
+  return result;
+}
+
+XLiveAPI::AccountResult XLiveAPI::ChangeAccountPassword(
+    uint64_t online_xuid, const std::string& password,
+    const std::string& new_password) {
+  AccountResult result;
+  Document request;
+  request.SetObject();
+  auto& alloc = request.GetAllocator();
+  request.AddMember("xuid", Value(fmt::format("{:016X}", online_xuid), alloc),
+                    alloc);
+  request.AddMember("token", Value(LocalAccountToken(online_xuid), alloc),
+                    alloc);
+  request.AddMember("password", Value(password, alloc), alloc);
+  request.AddMember("newPassword", Value(new_password, alloc), alloc);
+  const std::string body = JsonText(request);
+
+  std::unique_ptr<HTTPResponseObjectJSON> response =
+      Post(BuildEndpoint("players/account/password"),
+           reinterpret_cast<const uint8_t*>(body.c_str()));
+  if (response->StatusCode() != HTTP_STATUS_CODE::HTTP_OK ||
+      !response->RawResponse().response) {
+    return result;
+  }
+
+  Document doc;
+  doc.Parse(response->RawResponse().response);
+  if (doc.HasParseError() || !doc.IsObject()) {
+    return result;
+  }
+  result.outcome = MemberString(doc, "outcome");
+  result.field = MemberString(doc, "field");
+  return result;
+}
+
+XLiveAPI::AccountResult XLiveAPI::RenameAccount(uint64_t online_xuid,
+                                                const std::string& gamertag) {
+  AccountResult result;
+  Document request;
+  request.SetObject();
+  auto& alloc = request.GetAllocator();
+  request.AddMember("xuid", Value(fmt::format("{:016X}", online_xuid), alloc),
+                    alloc);
+  request.AddMember("token", Value(LocalAccountToken(online_xuid), alloc),
+                    alloc);
+  request.AddMember("gamertag", Value(gamertag, alloc), alloc);
+  const std::string body = JsonText(request);
+
+  std::unique_ptr<HTTPResponseObjectJSON> response =
+      Post(BuildEndpoint("players/account/rename"),
+           reinterpret_cast<const uint8_t*>(body.c_str()));
+  if (response->StatusCode() != HTTP_STATUS_CODE::HTTP_OK ||
+      !response->RawResponse().response) {
+    return result;
+  }
+
+  Document doc;
+  doc.Parse(response->RawResponse().response);
+  if (doc.HasParseError() || !doc.IsObject()) {
+    return result;
+  }
+  result.outcome = MemberString(doc, "outcome");
+  result.field = MemberString(doc, "field");
+  result.gamertag = MemberString(doc, "gamertag");
+  return result;
+}
+
+std::optional<bool> XLiveAPI::IsGamertagAvailable(const std::string& gamertag) {
+  std::string query;
+  for (const char c : gamertag) {
+    if (std::isalnum(static_cast<unsigned char>(c))) {
+      query.push_back(c);
+    } else if (c == ' ') {
+      query += "%20";
+    } else {
+      return false;
+    }
+  }
+
+  std::unique_ptr<HTTPResponseObjectJSON> response = Get(BuildEndpoint(
+      fmt::format("players/account/available?gamertag={}", query)));
+  if (response->StatusCode() != HTTP_STATUS_CODE::HTTP_OK ||
+      !response->RawResponse().response) {
+    return std::nullopt;
+  }
+  Document doc;
+  doc.Parse(response->RawResponse().response);
+  if (doc.HasParseError() || !doc.IsObject() || !doc.HasMember("available") ||
+      !doc["available"].IsBool()) {
+    return std::nullopt;
+  }
+  return doc["available"].GetBool();
 }
 
 XLiveAPI::FriendRequestOutcome XLiveAPI::SendFriendRequest(uint64_t from_xuid,

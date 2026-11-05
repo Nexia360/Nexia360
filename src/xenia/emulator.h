@@ -411,6 +411,8 @@ class Emulator {
   xe::Delegate<const kernel::XSESSION_INFO*, uint32_t, uint32_t, uint64_t>
       on_session_change;
   xe::Delegate<uint32_t> on_avatar_editor;
+  // The dashboard Profile app asked for the gamer picture browser.
+  xe::Delegate<> on_gamerpic_browser;
   xe::Delegate<> on_title_switch;
   // A hosted XNA title's Main returned. Raised from a managed thread; the
   // handler marshals to the UI thread to tear down and boot the dashboard.

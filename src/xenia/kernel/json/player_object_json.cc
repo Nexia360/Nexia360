@@ -116,6 +116,13 @@ bool PlayerObjectJSON::Serialize(
 
   writer->EndObject();
 
+  // Only once this player has claimed their gamertag on the hub: the device
+  // token that proves this console may register as them.
+  if (!accountToken_.empty()) {
+    writer->String("accountToken");
+    writer->String(accountToken_);
+  }
+
   writer->EndObject();
 
   return true;
