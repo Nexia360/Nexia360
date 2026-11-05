@@ -870,7 +870,11 @@ int InstrEmit_ldarx(PPCHIRBuilder& f, const InstrData& i) {
   // RESERVE_ADDR <- real_addr(EA)
   // RT <- MEM(EA, 8)
 
-  // The barrier is here so we read a current value.
+  // NOTE: we assume we are within a global lock.
+  // We could assert here that the block (or its parent) has taken a global lock
+  // already, but I haven't see anything but interrupt callbacks (which are
+  // always under a global lock) do that yet.
+  // We issue a memory barrier here to make sure that we get good values.
   Value* ea = CalculateEA_0(f, i.X.RA, i.X.RB);
 
   if (cvars::no_reserved_ops) {
@@ -896,7 +900,11 @@ int InstrEmit_lwarx(PPCHIRBuilder& f, const InstrData& i) {
   // RESERVE_ADDR <- real_addr(EA)
   // RT <- i32.0 || MEM(EA, 4)
 
-  // The barrier is here so we read a current value.
+  // NOTE: we assume we are within a global lock.
+  // We could assert here that the block (or its parent) has taken a global lock
+  // already, but I haven't see anything but interrupt callbacks (which are
+  // always under a global lock) do that yet.
+  // We issue a memory barrier here to make sure that we get good values.
 
   Value* ea = CalculateEA_0(f, i.X.RA, i.X.RB);
   if (cvars::no_reserved_ops) {
@@ -924,7 +932,12 @@ int InstrEmit_stdcx(PPCHIRBuilder& f, const InstrData& i) {
   // n <- 1 if store performed
   // CR0[LT GT EQ SO] = 0b00 || n || XER[SO]
 
-  // Fails if the reservation was lost, see the backend reserve helpers.
+  // NOTE: we assume we are within a global lock.
+  // As we have been exclusively executing this entire time, we assume that no
+  // one else could have possibly touched the memory and must always succeed.
+  // We use atomic compare exchange here to support reserved load/store without
+  // being under the global lock (flag disable_global_lock - see mtmsr/mtmsrd).
+  // This will always succeed if under the global lock, however.
 
   Value* ea = CalculateEA_0(f, i.X.RA, i.X.RB);
   Value* rt = f.ByteSwap(f.LoadGPR(i.X.RT));
@@ -962,7 +975,12 @@ int InstrEmit_stwcx(PPCHIRBuilder& f, const InstrData& i) {
   // n <- 1 if store performed
   // CR0[LT GT EQ SO] = 0b00 || n || XER[SO]
 
-  // Fails if the reservation was lost, see the backend reserve helpers.
+  // NOTE: we assume we are within a global lock.
+  // As we have been exclusively executing this entire time, we assume that no
+  // one else could have possibly touched the memory and must always succeed.
+  // We use atomic compare exchange here to support reserved load/store without
+  // being under the global lock (flag disable_global_lock - see mtmsr/mtmsrd).
+  // This will always succeed if under the global lock, however.
 
   Value* ea = CalculateEA_0(f, i.X.RA, i.X.RB);
 
@@ -973,7 +991,7 @@ int InstrEmit_stwcx(PPCHIRBuilder& f, const InstrData& i) {
 
     f.StoreContext(offsetof(PPCContext, cr0.cr0_eq), f.LoadConstantInt8(1));
   } else {
-    Value* v = f.StoreWithReserve(ea, rt, INT32_TYPE);
+    Value* v = f.StoreWithReserve(ea, rt, INT64_TYPE);
     f.StoreContext(offsetof(PPCContext, cr0.cr0_eq), v);
   }
 
