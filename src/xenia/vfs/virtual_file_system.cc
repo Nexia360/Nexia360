@@ -485,8 +485,20 @@ X_STATUS VirtualFileSystem::OpenFile(Entry* root_entry,
   }
   if (!entry) {
     // Create if needed (either new or as a replacement).
-    entry = CreatePath(
-        path, !is_directory ? kFileAttributeNormal : kFileAttributeDirectory);
+    const uint32_t attributes =
+        !is_directory ? kFileAttributeNormal : kFileAttributeDirectory;
+    if (parent_entry) {
+      // In the folder already resolved above. CreatePath walks the path again
+      // from its first component, and a device path's first component -
+      // "Device" of \Device\... - resolves to nothing: every create through a
+      // device path failed, and one relative to a root directory was looked
+      // up as an absolute path. Battlefield Hardline creates its installed HD
+      // packages through the \Device path XamContentResolve hands back.
+      entry = parent_entry->CreateEntry(
+          xe::utf8::find_name_from_guest_path(path), attributes);
+    } else {
+      entry = CreatePath(path, attributes);
+    }
     if (!entry) {
       return X_STATUS_ACCESS_DENIED;
     }

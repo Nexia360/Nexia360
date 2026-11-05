@@ -157,6 +157,17 @@ class ContentManager {
   std::filesystem::path ResolvePackagePath(const uint64_t xuid,
                                            const XCONTENT_DATA_INTERNAL& data);
 
+  // Content on the disc drive is a package in the disc's own Content folder,
+  // the folder ListContentODD lists. Not a host path: the disc is an image.
+  std::string DiscPackageGuestPath(const uint64_t xuid,
+                                   const XCONTENT_DATA_INTERNAL& data) const;
+  vfs::Entry* ResolveDiscPackageEntry(const uint64_t xuid,
+                                      const XCONTENT_DATA_INTERNAL& data) const;
+  // Reads that package in place through the disc's mapping - nothing is
+  // copied to the host.
+  std::unique_ptr<ContentPackage> OpenDiscPackage(
+      const uint64_t xuid, const XCONTENT_DATA_INTERNAL& data);
+
   // The root ResolvePackageRoot did not choose. Used to find content an older
   // build filed on the other side of the title-update split.
   std::filesystem::path AlternatePackageRoot(uint64_t xuid, uint32_t title_id,

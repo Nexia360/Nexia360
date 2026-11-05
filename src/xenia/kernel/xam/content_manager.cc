@@ -216,6 +216,57 @@ std::unique_ptr<ContentPackage> ContentManager::OpenPackage(
   return OpenPackage(host_path);
 }
 
+std::string ContentManager::DiscPackageGuestPath(
+    const uint64_t xuid, const XCONTENT_DATA_INTERNAL& data) const {
+  const uint32_t title_id =
+      data.title_id == kCurrentlyRunningTitleId || data.title_id == 0
+          ? kernel_state_->title_id()
+          : data.title_id.get();
+  // ListContentODD lists the disc's shared folder only, so that is the folder
+  // an item it handed out names.
+  const uint64_t used_xuid =
+      (data.xuid != -1 && data.xuid != 0) ? data.xuid.get() : xuid;
+  return fmt::format("{}\\content\\{:016X}\\{:08X}\\{:08X}\\{}",
+                     kDefaultGameSymbolicLink, used_xuid, title_id,
+                     static_cast<uint32_t>(data.content_type.get()),
+                     xe::string_util::trim(data.file_name()));
+}
+
+vfs::Entry* ContentManager::ResolveDiscPackageEntry(
+    const uint64_t xuid, const XCONTENT_DATA_INTERNAL& data) const {
+  vfs::Entry* entry = kernel_state_->file_system()->ResolvePath(
+      DiscPackageGuestPath(xuid, data));
+  if (!entry || (entry->attributes() & vfs::kFileAttributeDirectory)) {
+    return nullptr;
+  }
+  return entry;
+}
+
+std::unique_ptr<ContentPackage> ContentManager::OpenDiscPackage(
+    const uint64_t xuid, const XCONTENT_DATA_INTERNAL& data) {
+  vfs::Entry* entry = ResolveDiscPackageEntry(xuid, data);
+  if (!entry) {
+    return nullptr;
+  }
+  // A disc image hands back a slice of its own mapping; an extracted disc
+  // folder maps the host file. Either way the package is read where it lies.
+  std::unique_ptr<MappedMemory> mapping =
+      entry->OpenMapped(MappedMemory::Mode::kRead);
+  const std::string guest_path = DiscPackageGuestPath(xuid, data);
+  if (!mapping) {
+    XELOGE("Content: cannot map {} off the disc", guest_path);
+    return nullptr;
+  }
+  auto package = std::make_unique<ContentPackageContainer>(
+      kernel_state_->file_system(), GeneratePackageDevicePath({}),
+      xe::to_path(guest_path), std::move(mapping));
+  if (!package->IsValidPackage()) {
+    XELOGE("Content: {} on the disc is not a content package", guest_path);
+    return nullptr;
+  }
+  return package;
+}
+
 std::unique_ptr<ContentPackage> ContentManager::CreatePackage(
     const std::filesystem::path host_path, const XCONTENT_DATA_INTERNAL& data) {
 #if 0
@@ -842,6 +893,9 @@ std::vector<XCONTENT_DATA_INTERNAL> ContentManager::ListContentODD(
 
 bool ContentManager::ContentExists(const uint64_t xuid,
                                    const XCONTENT_DATA_INTERNAL& data) {
+  if (data.device_id == static_cast<uint32_t>(DummyDeviceId::ODD)) {
+    return ResolveDiscPackageEntry(xuid, data) != nullptr;
+  }
   auto path = ResolvePackagePath(xuid, data);
   return std::filesystem::exists(path);
 }
@@ -854,6 +908,12 @@ X_RESULT ContentManager::CreateContent(const std::string_view root_name,
   if (IsContentOpen(root_name)) {
     // Already content open with this root name.
     return X_ERROR_ALREADY_EXISTS;
+  }
+
+  if (data.device_id == static_cast<uint32_t>(DummyDeviceId::ODD)) {
+    // Nothing is written to a disc. Falling through would file it on the
+    // hard drive under a device the title did not ask for.
+    return X_ERROR_ACCESS_DENIED;
   }
 
   auto package_path = ResolvePackagePath(xuid, data);
@@ -894,17 +954,30 @@ X_RESULT ContentManager::OpenContent(const std::string_view root_name,
     return X_ERROR_ALREADY_EXISTS;
   }
 
-  auto package_path = ResolvePackagePath(xuid, data);
-  if (!std::filesystem::exists(package_path)) {
-    // Does not exist, must be created.
-    return X_ERROR_FILE_NOT_FOUND;
-  }
-
   const std::string root_path =
       disc_number != -1 ? fmt::format("disc{:03}", disc_number) : "";
 
-  // Open package.
-  auto package = OpenAndMountPackage(package_path, root_name, root_path);
+  ContentPackage* package = nullptr;
+  std::filesystem::path package_path;
+  if (data.device_id == static_cast<uint32_t>(DummyDeviceId::ODD)) {
+    // Content shipped on the disc - Battlefield Hardline's two HD packages
+    // are opened from Disc 1 as DLC00000001: and DLC00000002:.
+    package_path = xe::to_path(DiscPackageGuestPath(xuid, data));
+    auto disc_package = OpenDiscPackage(xuid, data);
+    if (!disc_package) {
+      return X_ERROR_FILE_NOT_FOUND;
+    }
+    package = MountPackage(root_name, std::move(disc_package), root_path);
+  } else {
+    package_path = ResolvePackagePath(xuid, data);
+    if (!std::filesystem::exists(package_path)) {
+      // Does not exist, must be created.
+      return X_ERROR_FILE_NOT_FOUND;
+    }
+
+    // Open package.
+    package = OpenAndMountPackage(package_path, root_name, root_path);
+  }
   if (!package) {
     // No device behind the root name. Handing back success would give the
     // guest a drive letter that answers nothing, which a game reports as its

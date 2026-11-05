@@ -181,6 +181,7 @@ std::unique_ptr<ImmediateTexture> VulkanImmediateDrawer::CreateTexture(
     bool is_repeated, const uint8_t* data) {
   assert_not_null(data);
   auto texture = std::make_unique<VulkanImmediateTexture>(width, height);
+  std::lock_guard<std::mutex> lock(textures_mutex_);
   size_t pending_upload_index;
   if (CreateTextureResource(width, height, filter, is_repeated, data,
                             texture->resource_, pending_upload_index)) {
@@ -217,13 +218,16 @@ void VulkanImmediateDrawer::Begin(UIDrawContext& ui_draw_context,
   const VkDevice device = vulkan_device_->device();
 
   // Destroy deleted textures.
-  for (auto it = textures_deleted_.begin(); it != textures_deleted_.end();) {
-    if (it->second > last_completed_submission_index_) {
-      ++it;
-      continue;
+  {
+    std::lock_guard<std::mutex> lock(textures_mutex_);
+    for (auto it = textures_deleted_.begin(); it != textures_deleted_.end();) {
+      if (it->second > last_completed_submission_index_) {
+        ++it;
+        continue;
+      }
+      DestroyTextureResource(it->first);
+      it = textures_deleted_.erase(it);
     }
-    DestroyTextureResource(it->first);
-    it = textures_deleted_.erase(it);
   }
 
   // Release upload buffers for completed texture uploads.
@@ -397,8 +401,11 @@ void VulkanImmediateDrawer::Draw(const ImmediateDraw& draw) {
   }
   if (current_texture_descriptor_index_ != texture_descriptor_index) {
     current_texture_descriptor_index_ = texture_descriptor_index;
-    VkDescriptorSet texture_descriptor_set =
-        GetTextureDescriptor(texture_descriptor_index);
+    VkDescriptorSet texture_descriptor_set;
+    {
+      std::lock_guard<std::mutex> lock(textures_mutex_);
+      texture_descriptor_set = GetTextureDescriptor(texture_descriptor_index);
+    }
     dfn.vkCmdBindDescriptorSets(
         draw_command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_,
         0, 1, &texture_descriptor_set, 0, nullptr);
@@ -419,6 +426,7 @@ void VulkanImmediateDrawer::End() {
   assert_false(batch_open_);
 
   // Upload textures.
+  std::unique_lock<std::mutex> textures_lock(textures_mutex_);
   if (!texture_uploads_pending_.empty()) {
     VulkanPresenter& vulkan_presenter =
         *static_cast<VulkanPresenter*>(presenter());
@@ -525,6 +533,7 @@ void VulkanImmediateDrawer::End() {
       texture_uploads_pending_.clear();
     }
   }
+  textures_lock.unlock();
 
   vertex_buffer_pool_->FlushWrites();
 
@@ -540,8 +549,11 @@ void VulkanImmediateDrawer::OnLeavePresenter() {
   vulkan_presenter.AwaitUISubmissionCompletionFromUIThread(
       last_paint_submission_index_);
 
-  for (VulkanImmediateTexture* texture : textures_) {
-    texture->last_usage_submission_ = 0;
+  {
+    std::lock_guard<std::mutex> lock(textures_mutex_);
+    for (VulkanImmediateTexture* texture : textures_) {
+      texture->last_usage_submission_ = 0;
+    }
   }
 
   const VulkanDevice::Functions& dfn = vulkan_device_->functions();
@@ -1056,6 +1068,7 @@ void VulkanImmediateDrawer::DestroyTextureResource(
 
 void VulkanImmediateDrawer::OnImmediateTextureDestroyed(
     VulkanImmediateTexture& texture) {
+  std::lock_guard<std::mutex> lock(textures_mutex_);
   // Remove from the pending uploads.
   size_t pending_upload_index = texture.pending_upload_index_;
   if (pending_upload_index != SIZE_MAX) {

@@ -49,6 +49,25 @@ ContentPackageContainer::ContentPackageContainer(
   CreatePackage(package_path, metadata);
 }
 
+ContentPackageContainer::ContentPackageContainer(
+    vfs::VirtualFileSystem* file_system, const std::string_view device_path,
+    const std::filesystem::path& package_path,
+    std::unique_ptr<MappedMemory> package_data)
+    : ContentPackage(file_system, device_path, package_path), in_place_(true) {
+  if (!package_data || package_data->size() <
+                           sizeof(XContentHeader) + sizeof(XContentMetadata)) {
+    return;
+  }
+  const auto package_header =
+      reinterpret_cast<const XContentContainerHeader*>(package_data->data());
+  if (!package_header->content_header.is_magic_valid()) {
+    return;
+  }
+  header_ = *package_header;
+  package_ = std::move(package_data);
+  ComputePackageLicenseMask();
+}
+
 ContentPackageContainer::~ContentPackageContainer() {
   // Unmount device first as it stores slice of memory mapped file.
   // TODO(Gliniak): Mark device as closed, so there is no way to write to it. At
@@ -167,6 +186,13 @@ std::unique_ptr<vfs::Device> ContentPackageContainer::MountPackage() {
                           package_->size() - package_data_offset));
       break;
     case XContentVolumeType::kSvod:
+      if (in_place_) {
+        XELOGE(
+            "Content: {} is an SVOD package on a disc, which cannot be read "
+            "in place",
+            xe::path_to_utf8(host_path_));
+        break;
+      }
       device = std::make_unique<vfs::SvodContainerDevice>(
           device_path_, host_path_, header_.content_metadata.data_file_count,
           &header_.content_metadata.volume_descriptor.svod);
@@ -219,6 +245,10 @@ X_RESULT ContentPackageContainer::GetThumbnail(std::vector<uint8_t>& buffer) {
 size_t ContentPackageContainer::GetPackageSize() const {
   if (header_.content_metadata.content_size > 0) {
     return header_.content_metadata.content_size;
+  }
+
+  if (in_place_) {
+    return package_ ? package_->size() : 0;
   }
 
   // Search for .data directory.

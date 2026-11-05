@@ -38,6 +38,7 @@
 #include <fstream>
 #include <map>
 #include <mutex>
+#include <set>
 #include <span>
 
 #include "third_party/stb/stb_image.h"
@@ -111,6 +112,65 @@ dword_result_t XamContentGetLicenseMask_entry(lpdword_t mask_ptr,
 }
 DECLARE_XAM_EXPORT2(XamContentGetLicenseMask, kContent, kStub, kHighFrequency);
 
+// The guest path of a hard drive package, for a title that opens or writes the
+// package file itself (XContentOpenPackage / XContentCreatePackage, which
+// NtOpenFile / NtCreateFile what XamContentResolve hands back). Battlefield
+// Hardline installs its HD content that way, copying each package off the disc
+// 512 KB at a time.
+//
+// It used to answer \Device\Harddisk0\Partition1\Content\..., which nothing
+// answers while a disc is running, and which is not where the content tree is
+// anyway: add-ons and saves follow the active title update. So the create
+// failed, the copy gave up, and the title asked to install again. Each folder
+// ResolvePackagePath picks is mounted writable as a device of its own, and
+// the path handed back lands exactly where enumeration and XamContentCreate
+// look for the package.
+static std::string ResolveHddPackageForRawAccess(
+    uint64_t xuid, const XCONTENT_DATA_INTERNAL& content_data) {
+  const std::filesystem::path package_path =
+      kernel_state()->content_manager()->FindPackagePath(xuid, content_data);
+  const std::filesystem::path folder = package_path.parent_path();
+  const std::string file_name = xe::path_to_utf8(package_path.filename());
+  if (folder.empty() || file_name.empty()) {
+    return {};
+  }
+  std::error_code ec;
+  std::filesystem::create_directories(folder, ec);
+
+  static std::mutex mount_mutex;
+  // Devices registered here before. Only those are looked up first: a lookup
+  // of one never mounted logs a failed ResolvePath.
+  static std::set<std::string> mounted;
+  std::lock_guard<std::mutex> lock(mount_mutex);
+
+  const std::string device_path =
+      fmt::format("\\Device\\NexiaContent\\{:016X}",
+                  std::hash<std::string>{}(xe::path_to_utf8(folder)));
+  auto* file_system = kernel_state()->file_system();
+  vfs::HostPathDevice* device = nullptr;
+  vfs::Entry* root = mounted.contains(device_path)
+                         ? file_system->ResolvePath(device_path + "\\")
+                         : nullptr;
+  if (root) {
+    device = static_cast<vfs::HostPathDevice*>(root->device());
+  } else {
+    auto created =
+        std::make_unique<vfs::HostPathDevice>(device_path, folder, false);
+    if (!created->Initialize()) {
+      return {};
+    }
+    device = created.get();
+    if (!file_system->RegisterDevice(std::move(created))) {
+      return {};
+    }
+    mounted.insert(device_path);
+  }
+  // The device lists its folder once; a package that arrived since is not in
+  // its tree. None there yet is fine: the title is about to create it.
+  device->AddRootFile(file_name);
+  return fmt::format("{}\\{}", device_path, file_name);
+}
+
 dword_result_t xeXamContentResolve(
     dword_t user_index, lpvoid_t content_data_ptr, dword_t content_data_size,
     lpstring_t path_ptr, dword_t path_size, dword_t create_directory,
@@ -144,7 +204,13 @@ dword_result_t xeXamContentResolve(
       return X_ERROR_INVALID_PARAMETER;
     } else {
       if (content_data.device_id == static_cast<uint32_t>(DummyDeviceId::HDD)) {
-        root_device_path = "\\Device\\Harddisk0\\Partition1\\Content\\";
+        const std::string package_path =
+            ResolveHddPackageForRawAccess(xuid, content_data);
+        if (package_path.empty()) {
+          return X_ERROR_PATH_NOT_FOUND;
+        }
+        string_util::copy_truncating(path_ptr, package_path, path_size);
+        return X_ERROR_SUCCESS;
       } else if (content_data.device_id ==
                  static_cast<uint32_t>(DummyDeviceId::ODD)) {
         // Or GAME, but D: usually means DVD drive meanwhile GAME always

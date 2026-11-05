@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <deque>
 #include <memory>
+#include <mutex>
 #include <utility>
 #include <vector>
 
@@ -117,6 +118,12 @@ class VulkanImmediateDrawer : public ImmediateDrawer {
 
   // Combined image sampler pools for textures.
   VkDescriptorSetLayout texture_descriptor_set_layout_;
+  // Textures are created and destroyed on any thread (the gamerpic browser
+  // loads its icons on workers), but uploaded and drawn on the UI thread:
+  // guards the descriptor pools, textures_, texture_uploads_pending_ and
+  // textures_deleted_.
+  std::mutex textures_mutex_;
+
   std::vector<TextureDescriptorPool*> texture_descriptor_pools_;
   TextureDescriptorPool* texture_descriptor_pool_unallocated_first_ = nullptr;
   TextureDescriptorPool* texture_descriptor_pool_recycled_first_ = nullptr;
