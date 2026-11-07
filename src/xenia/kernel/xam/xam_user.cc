@@ -7,14 +7,18 @@
  ******************************************************************************
  */
 
+#include <algorithm>
 #include <chrono>
 #include <ranges>
 
 #include "xenia/base/logging.h"
+#include "xenia/base/utf8.h"
 #include "xenia/emulator.h"
 #include "xenia/kernel/XLiveAPI.h"
 #include "xenia/kernel/kernel_state.h"
+#include "xenia/kernel/util/played_db.h"
 #include "xenia/kernel/util/shim_utils.h"
+#include "xenia/kernel/util/title_update_manager.h"
 #include "xenia/kernel/xam/user_profile.h"
 #include "xenia/kernel/xam/user_settings.h"
 #include "xenia/kernel/xam/xam_private.h"
@@ -1024,9 +1028,64 @@ dword_result_t XamUserCreateTitlesPlayedEnumerator_entry(
     return result;
   }
 
-  const auto user_titles =
+  auto user_titles =
       kernel_state()->xam_state()->user_tracker()->GetPlayedTitles(
           requester_xuid);
+
+  // My Games: the profile only lists titles with achievements, so everything
+  // launched here (Open Recent) is added, deduplicated and alphabetised.
+  if (requester_xuid == user->xuid()) {
+    Emulator* emulator = kernel_state()->emulator();
+    PlayedDB* played = emulator ? emulator->played_db() : nullptr;
+    if (played && played->is_open()) {
+      for (const PlayedTitle& title : played->GetRecent(0)) {
+        if (!title.title_id || title.title_id == kDashboardID ||
+            title.title_id == 0x5848085B) {
+          continue;
+        }
+        std::error_code ec;
+        std::filesystem::path path = title.path;
+        if (!path.empty() && !std::filesystem::exists(path, ec) &&
+            emulator->title_update_manager()) {
+          path = emulator->title_update_manager()->RelocateContentPath(
+              title.title_id, path);
+        }
+        if (path.empty() || !std::filesystem::exists(path, ec)) {
+          continue;
+        }
+        auto known =
+            std::ranges::find(user_titles, title.title_id, &TitleInfo::id);
+        if (known != user_titles.end()) {
+          if (known->title_name.empty()) {
+            known->title_name = xe::to_utf16(title.title_name);
+          }
+          continue;
+        }
+        TitleInfo info{};
+        info.id = title.title_id;
+        info.title_name = xe::to_utf16(title.title_name);
+        info.last_played =
+            std::chrono::system_clock::from_time_t(title.last_run_utc);
+        user_titles.push_back(std::move(info));
+      }
+    }
+    std::vector<TitleInfo> unique_titles;
+    for (auto& title : user_titles) {
+      if (std::ranges::find(unique_titles, title.id, &TitleInfo::id) ==
+          unique_titles.end()) {
+        unique_titles.push_back(std::move(title));
+      }
+    }
+    std::ranges::stable_sort(
+        unique_titles, [](const TitleInfo& a, const TitleInfo& b) {
+          if (a.title_name.empty() != b.title_name.empty()) {
+            return b.title_name.empty();
+          }
+          return xe::utf8::lower_ascii(xe::to_utf8(a.title_name)) <
+                 xe::utf8::lower_ascii(xe::to_utf8(b.title_name));
+        });
+    user_titles = std::move(unique_titles);
+  }
 
   for (const auto& title : user_titles) {
     e->AppendItem(title);

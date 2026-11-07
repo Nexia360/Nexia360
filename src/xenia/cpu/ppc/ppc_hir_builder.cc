@@ -123,6 +123,12 @@ bool PPCHIRBuilder::Emit(GuestFunction* function, uint32_t flags) {
 
   uint32_t start_address = function_->address();
   uint32_t end_address = function_->end_address();
+  // An extern that isn't an sc 2 import thunk runs its handler, then its code.
+  if (function_->behavior() == Function::Behavior::kExtern &&
+      xe::load_and_swap<uint32_t>(module->TranslateCode(start_address)) !=
+          0x44000042) {
+    CallExtern(function_);
+  }
   for (uint32_t address = start_address, offset = 0; address <= end_address;
        address += 4, offset++) {
     trace_info_.dest_count = 0;

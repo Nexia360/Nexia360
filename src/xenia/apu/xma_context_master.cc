@@ -345,6 +345,7 @@ void XmaContextMaster::Decode(XMA_CONTEXT_DATA* data) {
   RingBuffer output_rb(output_buffer, output_capacity);
   output_rb.set_read_offset(output_read_offset);
   output_rb.set_write_offset(output_write_offset);
+  size_t output_bytes_written = 0;
 
   // We can only decode an entire frame and write it out at a time, so
   // don't save any samples.
@@ -596,6 +597,7 @@ void XmaContextMaster::Decode(XMA_CONTEXT_DATA* data) {
       auto byte_count = kBytesPerFrameChannel << data->is_stereo;
       assert_true(output_remaining_bytes >= byte_count);
       output_rb.Write(raw_frame_.data(), byte_count);
+      output_bytes_written += byte_count;
       output_remaining_bytes -= byte_count;
       data->output_buffer_write_offset = output_rb.write_offset() / 256;
 
@@ -657,7 +659,8 @@ void XmaContextMaster::Decode(XMA_CONTEXT_DATA* data) {
 
   // The game will kick us again with a new output buffer later.
   // It's important that we only invalidate this if we actually wrote to it!!
-  if (output_rb.write_offset() == output_rb.read_offset()) {
+  if (output_bytes_written &&
+      output_rb.write_offset() == output_rb.read_offset()) {
     data->output_buffer_valid = 0;
   }
 }

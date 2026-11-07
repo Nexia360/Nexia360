@@ -35,6 +35,8 @@ struct kPacketInfo {
   uint8_t frame_count_;
   uint8_t current_frame_;
   uint32_t current_frame_size_;
+  // A frame starts at the requested offset.
+  bool frame_found_;
 
   const bool isLastFrameInPacket() const {
     return frame_count_ == 0 || current_frame_ == frame_count_ - 1;
@@ -47,12 +49,48 @@ struct kPacketHandle {
   bool is_valid_ = false;
 };
 
+// Why Decode() stopped without a frame to output.
+enum class kDecodeStop {
+  kNone,
+  // The frame continues in the other input buffer, which isn't valid yet.
+  kWaitForBuffer,
+  // The frame failed to decode, or no frame starts at the position.
+  kParserError,
+};
+
+enum class kPacketResult { kFrame, kNoFrame, kError };
+
+// Where decoding goes once the frame being output is done.
+struct kPendingAdvance {
+  bool pending_ = false;
+  bool loop_jump_ = false;
+  uint32_t offset_ = 0;
+  uint32_t buffers_consumed_ = 0;
+};
+
+struct kNextFrame {
+  // Bit offset in the buffer the frame is in.
+  uint32_t offset_ = 0;
+  // Input buffers finished on the way: the current one, then the other one
+  // when the stream has no frame start left in it either.
+  uint32_t buffers_consumed_ = 0;
+};
+
 static constexpr int kIdToSampleRate[4] = {24000, 32000, 44100, 48000};
 
 class XmaContextNew : public XmaContext {
  public:
   static constexpr uint32_t kBitsPerPacketHeader = 32;
   static constexpr uint32_t kMaxFrameSizeinBits = 0x4000 - kBitsPerPacketHeader;
+
+  // DWORD2 error_status: why decoding last stopped.
+  static constexpr uint32_t kErrorOutputFull = 1;
+  static constexpr uint32_t kErrorOutputSpace = 2;
+  static constexpr uint32_t kErrorNoInput = 4;
+  static constexpr uint32_t kErrorWaitForBuffer = 8;
+  // DWORD3 parser_error_status, until a frame decodes.
+  static constexpr uint32_t kParserErrorBitstream = 3;
+  static constexpr uint32_t kParserErrorNoFrame = 4;
 
   explicit XmaContextNew();
   ~XmaContextNew();
@@ -67,6 +105,7 @@ class XmaContextNew : public XmaContext {
 
  private:
   void ClearLocked(XMA_CONTEXT_DATA* data);
+  void FlushDecoder();
   static void SwapInputBuffer(XMA_CONTEXT_DATA* data);
   // Convert sampling rate from ID to frequency.
   static int GetSampleRate(int id);
@@ -86,18 +125,17 @@ class XmaContextNew : public XmaContext {
                                uint32_t next_packet_index,
                                uint32_t current_input_packet_count);
 
-  // Single-buffer version of GetNextPacketReadOffset: scans `buffer`
-  // from start_packet_index for the first packet whose frame_offset
-  // header is valid (<= kMaxFrameSizeinBits).
-  // Returns the bit offset of that frame in the buffer,
-  // Or kBitsPerPacketHeader when no valid frame is found.
-  const uint32_t GetNextPacketReadOffset(uint8_t* buffer,
-                                         uint32_t next_packet_index,
-                                         uint32_t current_input_packet_count);
-
-  const uint32_t GetNextPacketReadOffset(XMA_CONTEXT_DATA* data,
-                                         uint32_t next_packet_index,
-                                         uint32_t current_input_packet_count);
+  // The stream's next frame start from packet next_packet_index of the
+  // current buffer on, following packet skip counts. Indices past the end of
+  // the current buffer continue in the other one, so a multi-stream context
+  // keeps its stream's packet across the boundary. When that buffer isn't
+  // valid yet the offset is the start of the stream's packet in it. Each
+  // consumed buffer is swapped out by the caller. A frame split into the
+  // first packet by split_tail_bits is followed by the frame at its end, if
+  // that packet holds a frame start.
+  kNextFrame FindNextFrame(XMA_CONTEXT_DATA* data, uint32_t next_packet_index,
+                           uint32_t current_input_packet_count,
+                           uint32_t split_tail_bits = 0);
 
   // Returns currently used buffer
   uint8_t* GetCurrentInputBuffer(XMA_CONTEXT_DATA* data);
@@ -109,13 +147,36 @@ class XmaContextNew : public XmaContext {
                const XMA_CONTEXT_DATA* const XE_RESTRICT data);
 
   void UpdateLoopStatus(XMA_CONTEXT_DATA* data);
+  // The frame at the position is cut after loop_subframe_end and jumps to
+  // loop_start, unless decoding starts past loop_subframe_end.
+  static bool IsLoopEndFrame(const XMA_CONTEXT_DATA* data);
+  // Room the next pass needs and the frames it covers: the rest of the frame
+  // and the next frame if they fit in subframe_decode_count subframes, else
+  // that many subframes of the frame. A loop end cut doesn't shrink it.
+  uint32_t GetPassBlocks(const XMA_CONTEXT_DATA* data,
+                         uint32_t* frames = nullptr) const;
+  // Moves decoding on to the next frame, or loop_start for a loop jump, once
+  // the frame being output is done. Until then the position stays inside it.
+  void AdvanceAfterFrame(XMA_CONTEXT_DATA* data, uint32_t offset,
+                         uint32_t buffers_consumed, bool loop_jump);
+  void ApplyAdvance(XMA_CONTEXT_DATA* data);
+  // Leaves the read offset and decode_subframe at the position inside a frame
+  // that is part way out, and keeps them to tell a later seek.
+  void WritePosition(XMA_CONTEXT_DATA* data);
   int PrepareDecoder(int sample_rate, bool is_two_channel);
-  void PreparePacket(const uint32_t frame_size, const uint32_t frame_padding);
+  // A cut frame stops before its last subframe, so the next frame overlaps
+  // the one before it.
+  void PreparePacket(const uint32_t frame_size, const uint32_t frame_padding,
+                     const bool cut_frame);
 
   RingBuffer PrepareOutputRingBuffer(XMA_CONTEXT_DATA* data);
 
-  bool DecodePacket(AVCodecContext* av_context, const AVPacket* av_packet,
-                    AVFrame* av_frame);
+  kPacketResult DecodePacket(AVCodecContext* av_context,
+                             const AVPacket* av_packet, AVFrame* av_frame);
+  static void SetError(XMA_CONTEXT_DATA* data, uint32_t status);
+  // Sets the parser status, clears the error status and stops decoding with
+  // the position left where it is.
+  void StopOnParserError(XMA_CONTEXT_DATA* data, uint32_t status);
 
   // Re-reads context from guest memory and merges only decoder-owned fields,
   // preserving any game modifications made during decoding.
@@ -130,14 +191,16 @@ class XmaContextNew : public XmaContext {
 
   int32_t remaining_subframe_blocks_in_output_buffer_ = 0;
   uint8_t current_frame_remaining_subframes_ = 0;
+  // The block after the last one the frame being output writes: the end of
+  // the frame, or of loop_subframe_end on a loop end frame.
+  uint8_t current_frame_end_block_ = 0;
 
-  // Loop subframe precision state.
-  // Maximum subframe blocks to output from the current frame (loop end
-  // truncation).  0 means no limit.
-  uint8_t loop_frame_output_limit_ = 0;
-  // When true, the next decoded frame should skip leading subframes per
-  // loop_subframe_skip (loop start adjustment).
-  bool loop_start_skip_pending_ = false;
+  kPendingAdvance advance_;
+  kDecodeStop decode_stop_ = kDecodeStop::kNone;
+  // The position WritePosition() left in the context.
+  uint32_t held_offset_ = 0;
+  uint32_t held_subframe_ = 0;
+  uint32_t held_buffer_ = 0;
 };
 
 }  // namespace apu

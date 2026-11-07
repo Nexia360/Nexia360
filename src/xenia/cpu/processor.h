@@ -145,6 +145,11 @@ class Processor {
     return keep_dynamic_context_stores_.load(std::memory_order_relaxed) &&
            module && module == dynamic_code_module_.get();
   }
+  bool IsDynamicCode(const Module* module) const {
+    return module && module == dynamic_code_module_.get();
+  }
+  // xna_loose_bl: a bl in dynamic code that reads its own word when it runs.
+  void NoteLooseCall(uint32_t address);
 
   Function* QueryFunction(uint32_t address);
   std::vector<Function*> FindFunctionsWithAddress(uint32_t address);
@@ -390,6 +395,10 @@ class Processor {
   std::atomic<uint64_t> background_translated_{0};
   std::atomic<uint64_t> guest_translated_{0};
   std::atomic<uint64_t> stale_retranslated_{0};
+  std::atomic<uint64_t> dynamic_code_dropped_{0};
+  std::atomic<uint64_t> loose_calls_kept_{0};
+  std::mutex loose_calls_mutex_;
+  std::unordered_set<uint64_t> loose_calls_;
 
   // Maps thread ID to state. Updated on thread create, and threads are never
   // removed. Must be guarded with the global lock.

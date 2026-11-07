@@ -58,6 +58,10 @@ DEFINE_int32(jit_background_threads, 2,
              "runtime's JIT output) as soon as it is swept, instead of on the "
              "first call into it. 0 translates on first call only.",
              "CPU");
+DEFINE_bool(xna_loose_bl, false,
+            "Calls in code the XNA runtime compiles read their target when "
+            "they run, so rebinding a call no longer retranslates the method.",
+            "XNA");
 
 namespace xe {
 namespace kernel {
@@ -91,6 +95,65 @@ class BuiltinModule : public Module {
  private:
   std::string name_;
 };
+
+// The XNA runtimes' FlushInstructionCache(address, length): dcbf + icbi per
+// 128-byte line, then sync; isync. It never calls KeSweepIcacheRange.
+constexpr uint32_t kGuestIcacheFlush[] = {
+    0x28040000, 0x4DC20020, 0x5465067E, 0x7C842A14, 0x3884007F,
+    0x5484C9FE, 0x54630030, 0x7C8903A6, 0x7C0018AC, 0x7C001FAC,
+    0x38630080, 0x4320FFF4, 0x7C0004AC, 0x4C00012C, 0x4E800020,
+};
+
+static void GuestIcacheFlush(ppc::PPCContext* ppc_context,
+                             kernel::KernelState*) {
+  Processor* processor = ppc_context->processor;
+  const uint32_t start = uint32_t(ppc_context->r[3]);
+  const uint32_t length = uint32_t(ppc_context->r[4]);
+  if (!length) {
+    return;
+  }
+  processor->InvalidateCodeRange(start, length);
+  const uint32_t kernel_start =
+      processor->memory()->UserModeKernelAddress(start);
+  if (kernel_start != start) {
+    processor->InvalidateCodeRange(kernel_start, length);
+  }
+  const uint32_t user_start = xe::Memory::KernelModeUserAddress(start);
+  if (user_start != start) {
+    processor->InvalidateCodeRange(user_start, length);
+  }
+  processor->OnCodeSwept(start, length);
+}
+
+static bool ReadGuestWord(Memory* memory, uint32_t address, uint32_t* word) {
+  const uint32_t kernel_address = memory->UserModeKernelAddress(address);
+  auto heap = memory->LookupHeap(kernel_address);
+  uint32_t protect = 0;
+  if (!heap || !heap->QueryProtect(kernel_address, &protect) ||
+      !(protect & kMemoryProtectRead)) {
+    return false;
+  }
+  *word = xe::load_and_swap<uint32_t>(memory->TranslateForRead(kernel_address));
+  return true;
+}
+
+static bool IsGuestIcacheFlush(Memory* memory, uint32_t address) {
+  const uint32_t kernel_address = memory->UserModeKernelAddress(address);
+  auto heap = memory->LookupHeap(kernel_address);
+  uint32_t protect = 0;
+  if (!heap || !heap->QueryProtect(kernel_address, &protect) ||
+      !(protect & kMemoryProtectRead) ||
+      (kernel_address & 0xFFF) > 0x1000 - sizeof(kGuestIcacheFlush)) {
+    return false;
+  }
+  const uint8_t* code = memory->TranslateForRead(kernel_address);
+  for (size_t i = 0; i < std::size(kGuestIcacheFlush); ++i) {
+    if (xe::load_and_swap<uint32_t>(code + i * 4) != kGuestIcacheFlush[i]) {
+      return false;
+    }
+  }
+  return true;
+}
 
 class DynamicCodeModule : public Module {
  public:
@@ -370,11 +433,13 @@ void Processor::FlushCode() {
   // into the old cache. The next title that enters user mode enables it again
   // when its imports bind.
   if (dynamic_code_module_) {
-    XELOGI(
+    XELOGE(
         "Processor::FlushCode: dynamic code translated {} time(s) in the "
-        "background, {} on guest threads, {} again after a sweep mid-way",
+        "background, {} on guest threads, {} again after a sweep mid-way, {} "
+        "dropped by a sweep, {} call rebinds kept (xna_loose_bl {})",
         background_translated_.exchange(0), guest_translated_.exchange(0),
-        stale_retranslated_.exchange(0));
+        stale_retranslated_.exchange(0), dynamic_code_dropped_.exchange(0),
+        loose_calls_kept_.exchange(0), cvars::xna_loose_bl);
   }
   dynamic_calls_user_mode_.store(-1, std::memory_order_relaxed);
   dynamic_code_module_.reset();
@@ -382,6 +447,10 @@ void Processor::FlushCode() {
   keep_dynamic_context_stores_.store(false, std::memory_order_relaxed);
   swept_code_ranges_.clear();
   dynamic_code_pieces_.clear();
+  {
+    std::lock_guard<std::mutex> lock(loose_calls_mutex_);
+    loose_calls_.clear();
+  }
   if (backend_) {
     // Every thread's cache of dynamic call targets points into it too.
     backend_->InvalidateDynamicCalls(0, UINT32_MAX);
@@ -406,6 +475,21 @@ void Processor::InvalidateCodeRange(uint32_t address, uint32_t length) {
   }
   const uint32_t end = address + length - 1;
   auto global_lock = global_critical_region_.Acquire();
+  // A rebound bl that reads its own word when it runs needs no new code.
+  if (cvars::xna_loose_bl && length == 4 && !(address & 3)) {
+    const uint64_t key = CodeRangeKey(address);
+    bool loose = false;
+    {
+      std::lock_guard<std::mutex> lock(loose_calls_mutex_);
+      loose = loose_calls_.count(key) != 0;
+    }
+    uint32_t word = 0;
+    if (loose && ReadGuestWord(memory_, address, &word) &&
+        (word & 0xFC000003) == 0x48000001) {
+      ++loose_calls_kept_;
+      return;
+    }
+  }
   RecordSweptCode(address, length);
   {
     // Published after the record, for a translation to find on install.
@@ -432,6 +516,43 @@ void Processor::InvalidateCodeRange(uint32_t address, uint32_t length) {
     if (function->module() &&
         function->module() == dynamic_code_module_.get()) {
       QueueBackgroundTranslation(function->address());
+      if (function->is_guest()) {
+        auto* guest = static_cast<GuestFunction*>(function);
+        const uint32_t last = std::max(guest->end_address(), guest->address());
+        std::lock_guard<std::mutex> lock(loose_calls_mutex_);
+        for (uint32_t at = guest->address();
+             at <= last && at >= guest->address(); at += 4) {
+          loose_calls_.erase(CodeRangeKey(at));
+        }
+      }
+      const uint64_t dropped = ++dynamic_code_dropped_;
+      std::string words;
+      const uint32_t kernel_address = memory_->UserModeKernelAddress(address);
+      auto heap = memory_->LookupHeap(kernel_address);
+      uint32_t protect = 0;
+      if (heap && heap->QueryProtect(kernel_address, &protect) &&
+          (protect & kMemoryProtectRead)) {
+        const uint32_t count = std::min<uint32_t>((end - address) / 4 + 1, 4);
+        for (uint32_t i = 0; i < count; ++i) {
+          const uint32_t at = address + i * 4;
+          const uint32_t word = xe::load_and_swap<uint32_t>(
+              memory_->TranslateForRead(kernel_address + i * 4));
+          words += fmt::format(" {:08X}", word);
+          if ((word >> 26) == 18) {
+            const int32_t offset = (int32_t(word << 6) >> 6) & ~3;
+            const uint32_t target = (word & 2) ? uint32_t(offset) : at + offset;
+            words += fmt::format("(b{}{} {:08X})", (word & 1) ? "l" : "",
+                                 (word & 2) ? "a" : "", target);
+          } else if ((word >> 26) == 16) {
+            words += "(bc)";
+          } else if ((word >> 26) == 19) {
+            words += "(bclr/bcctr)";
+          }
+        }
+      }
+      XELOGE("[jit-sweep] #{} {:08X}+{} drops dynamic {:08X}-{:08X}, words{}",
+             dropped, address, end - address + 1, function->address(),
+             function->end_address(), words);
     }
     // The dynamic call cache keys a function by its entry, which the range
     // misses for a patch inside it or code compiled under another name.
@@ -494,6 +615,12 @@ void Processor::RecordDynamicCode(const Function* function) {
     }
     piece = piece_end;
   }
+}
+
+void Processor::NoteLooseCall(uint32_t address) {
+  const uint64_t key = CodeRangeKey(address);
+  std::lock_guard<std::mutex> lock(loose_calls_mutex_);
+  loose_calls_.insert(key);
 }
 
 void Processor::RecordSweptCode(uint32_t address, uint32_t length) {
@@ -844,8 +971,14 @@ bool Processor::DemandFunction(Function* function) {
   if (symbol_status == Symbol::Status::kNew) {
     // Symbol is undefined, so define now.
     assert_true(function->is_guest());
-    if (!frontend_->DefineFunction(static_cast<GuestFunction*>(function),
-                                   debug_info_flags_)) {
+    auto* guest_function = static_cast<GuestFunction*>(function);
+    if (guest_function->behavior() == Function::Behavior::kDefault &&
+        IsGuestIcacheFlush(memory_, guest_function->address())) {
+      guest_function->SetupExtern(GuestIcacheFlush);
+      XELOGE("[jit-flush] {:08X} is the runtime's instruction cache flush",
+             guest_function->address());
+    }
+    if (!frontend_->DefineFunction(guest_function, debug_info_flags_)) {
       function->set_status(Symbol::Status::kFailed);
       return false;
     }

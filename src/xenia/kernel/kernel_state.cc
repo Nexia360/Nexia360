@@ -1701,8 +1701,9 @@ void KernelState::RegisterNotifyListener(XNotifyListener* listener) {
   // changed), 0xB (this) or a change of signed-in user - so with the first
   // listener alone getting 0xB, Storage stayed empty until a disc went in.
   // 415607FA: Doesn't like receiving this notification on boot. Causes game
-  // to crash. So the dashboard only.
-  if (title_id() == kDashboardID && (listener->mask() & kXNotifySystem)) {
+  // to crash. Dashboard only, not SYSTEM|LIVE: the theme picker closes on it.
+  if (title_id() == kDashboardID && (listener->mask() & kXNotifySystem) &&
+      listener->mask() != (kXNotifySystem | kXNotifyLive)) {
     listener->EnqueueNotification(kXNotificationSystemStorageDevicesChanged, 0);
   }
 
@@ -1753,8 +1754,9 @@ void KernelState::RegisterNotifyListener(XNotifyListener* listener) {
 
   // 4E4D07ED, 58410869. Fixes creating Xbox Live sessions.
   // 4D5307D4 expects multiple notifications to access Xbox Live menus.
-  // Sign in related
-  if (listener->mask() == (kXNotifySystem | kXNotifyLive)) {
+  // Sign in related. Not the dashboard: its theme picker closes on 0xA.
+  if (listener->mask() == (kXNotifySystem | kXNotifyLive) &&
+      title_id() != kDashboardID) {
     const auto signed_in_players =
         xam_state()->profile_manager()->GetUsedUserSlots().to_ulong();
 

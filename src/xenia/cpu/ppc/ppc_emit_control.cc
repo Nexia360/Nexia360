@@ -15,8 +15,11 @@
 #include "xenia/cpu/ppc/ppc_context.h"
 #include "xenia/cpu/ppc/ppc_frontend.h"
 #include "xenia/cpu/ppc/ppc_hir_builder.h"
+#include "xenia/cpu/processor.h"
 
 #include <stddef.h>
+
+DECLARE_bool(xna_loose_bl);
 // chrispy: added this, we can have simpler control flow and do dce on the
 // inputs
 DEFINE_bool(ignore_trap_instructions, true,
@@ -176,6 +179,28 @@ int InstrEmit_bx(PPCHIRBuilder& f, const InstrData& i) {
     nia = (uint32_t)XEEXTS26(i.I.LI << 2);
   } else {
     nia = (uint32_t)(i.address + XEEXTS26(i.I.LI << 2));
+  }
+
+  // xna_loose_bl: a call in dynamic code takes its target from its own word
+  // when it runs, so the runtime can rebind it without new code.
+  GuestFunction* function = f.function();
+  Processor* processor = f.frontend()->processor();
+  if (cvars::xna_loose_bl && i.I.LK && !i.I.AA &&
+      processor->IsDynamicCode(function->module()) &&
+      (nia < function->address() || nia > function->end_address())) {
+    Value* word =
+        f.ByteSwap(f.Load(f.LoadConstantUint64(i.address), INT32_TYPE));
+    Value* offset = f.And(f.Sha(f.Shl(word, int8_t(6)), int8_t(6)),
+                          f.LoadConstantInt32(~3));
+    Value* rebound = f.Add(f.LoadConstantInt32(int32_t(i.address)), offset);
+    Value* is_bl =
+        f.CompareEQ(f.And(word, f.LoadConstantInt32(int32_t(0xFC000003))),
+                    f.LoadConstantInt32(0x48000001));
+    Value* target = f.ZeroExtend(
+        f.Select(is_bl, rebound, f.LoadConstantInt32(int32_t(nia))),
+        INT64_TYPE);
+    processor->NoteLooseCall(i.address);
+    return InstrEmit_branch(f, "bx", i.address, target, i.I.LK);
   }
 
   return InstrEmit_branch(f, "bx", i.address, f.LoadConstantUint32(nia),

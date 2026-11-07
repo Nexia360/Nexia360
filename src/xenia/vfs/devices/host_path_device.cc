@@ -58,7 +58,14 @@ Entry* HostPathDevice::ResolvePath(const std::string_view path) {
   // be in the form:
   // some\PATH.foo
   XELOGFS("HostPathDevice::ResolvePath({})", path);
-  return root_entry_->ResolvePath(path);
+  if (Entry* entry = root_entry_->ResolvePath(path)) {
+    return entry;
+  }
+  // A top-level file another mount of this folder wrote (SkinRoot:/DASHUSER:).
+  if (!path.empty() && path.find_first_of("\\/") == std::string_view::npos) {
+    return AddRootFile(path);
+  }
+  return nullptr;
 }
 
 Entry* HostPathDevice::AddRootFile(const std::string_view name) {

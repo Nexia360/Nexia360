@@ -43,6 +43,7 @@ class PPCHIRBuilder : public hir::HIRBuilder {
   bool Emit(GuestFunction* function, uint32_t flags);
 
   GuestFunction* function() const { return function_; }
+  PPCFrontend* frontend() const { return frontend_; }
   Function* LookupFunction(uint32_t address);
   Label* LookupLabel(uint32_t address);
 
