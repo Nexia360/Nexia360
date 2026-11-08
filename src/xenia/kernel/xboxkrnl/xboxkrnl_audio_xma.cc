@@ -371,32 +371,26 @@ dword_result_t XMAEnableContext_entry(lpvoid_t context_ptr) {
 DECLARE_XBOXKRNL_EXPORT2(XMAEnableContext, kAudio, kImplemented,
                          kHighFrequency);
 
+// Waits until the decoder isn't working on the context.
+void BlockWhileContextInUse(uint32_t context_ptr) {
+  kernel_state()->emulator()->audio_system()->xma_decoder()->BlockOnContext(
+      context_ptr, false);
+}
+
 dword_result_t XMADisableContext_entry(lpvoid_t context_ptr, dword_t wait) {
-  X_HRESULT result = X_E_SUCCESS;
   StoreXmaContextIndexedRegister(kernel_state(), 0x1A40, context_ptr);
-  if (!kernel_state()
-           ->emulator()
-           ->audio_system()
-           ->xma_decoder()
-           ->BlockOnContext(context_ptr, !wait)) {
-    result = X_E_FALSE;
+  if (wait) {
+    BlockWhileContextInUse(context_ptr);
+    return X_E_SUCCESS;
   }
-  return result;
+  auto* decoder = kernel_state()->emulator()->audio_system()->xma_decoder();
+  return decoder->BlockOnContext(context_ptr, true) ? X_E_SUCCESS : X_E_FALSE;
 }
 DECLARE_XBOXKRNL_EXPORT2(XMADisableContext, kAudio, kImplemented,
                          kHighFrequency);
 
 dword_result_t XMABlockWhileInUse_entry(lpvoid_t context_ptr) {
-  do {
-    XMA_CONTEXT_DATA context(context_ptr);
-    if (!context.input_buffer_0_valid && !context.input_buffer_1_valid) {
-      break;
-    }
-    if (!context.work_buffer_ptr) {
-      break;
-    }
-    xe::threading::Sleep(std::chrono::milliseconds(1));
-  } while (true);
+  BlockWhileContextInUse(context_ptr);
   return 0;
 }
 DECLARE_XBOXKRNL_EXPORT2(XMABlockWhileInUse, kAudio, kImplemented,
