@@ -2649,7 +2649,7 @@ X_STATUS Emulator::CompleteLaunch(const std::filesystem::path& path,
       game_config_load_callback_loop_next_index_ = SIZE_MAX;
 
       kernel_state_->xam_state()->user_tracker()->AddTitleToPlayedList();
-      kernel_state_->xam_state()->user_tracker()->AddDefaultProperties();
+      kernel_state_->xam_state()->user_tracker()->ClearProperties();
       kernel_state_->xam_state()->user_tracker()->AddDefaultContexts();
 
       RecordTitleLaunch(path);
@@ -2741,7 +2741,7 @@ X_STATUS Emulator::CompleteLaunch(const std::filesystem::path& path,
     kernel_state_->xam_state()->LoadSpaInfo(db.get());
 
     kernel_state_->xam_state()->user_tracker()->AddTitleToPlayedList();
-    kernel_state_->xam_state()->user_tracker()->AddDefaultProperties();
+    kernel_state_->xam_state()->user_tracker()->ClearProperties();
     kernel_state_->xam_state()->user_tracker()->AddDefaultContexts();
 
     if (game_info_database_->IsValid()) {

@@ -25,6 +25,8 @@ XSession::XSession(KernelState* kernel_state)
     : XObject(kernel_state, Type::Session) {
   session_id_ = -1;
   owner_xuid_ = 0;
+  local_details_.UserIndexHost = XUserIndexNone;
+  local_details_.GameType = X_CONTEXT_GAME_TYPE_STANDARD;
 }
 
 X_STATUS XSession::Initialize() {
@@ -81,17 +83,28 @@ X_RESULT XSession::CreateSession(uint32_t user_index, uint8_t public_slots,
   // Set early so utility functions can check flags
   local_details_.Flags = flags;
 
-  // Check we have privileges to create sessions.
-  // XPRIVILEGE_MULTIPLAYER_SESSIONS = 254
-  // XPRIVILEGE_SESSIONS = 189
-
   // 58410889
   // If a session requires online features but we're offline then we must fail.
   // e.g. Trying to create a SINGLEPLAYER_WITH_STATS session while not connected
   // to live.
-  if (IsXboxLiveSession() && !user_profile->IsSignedInToLive()) {
+  if (RequiresLiveLogon(static_cast<SessionFlags>(flags)) &&
+      !user_profile->IsSignedInToLive()) {
     return X_ONLINE_E_SESSION_NOT_LOGGED_ON;
   }
+
+  // Check we have privileges to create sessions.
+  if (flags & PEER_NETWORK && IsXboxLiveSession()) {
+    bool is_granted = false;
+
+    const X_RESULT result = user_tracker->CheckUserPrivilege(
+        user_index, xam::XPRIVILEGE_MULTIPLAYER_SESSIONS, is_granted);
+
+    if (result != X_ERROR_SUCCESS || !is_granted) {
+      return X_ONLINE_E_SESSION_INSUFFICIENT_PRIVILEGES;
+    }
+  }
+
+  user_tracker->AddDefaultProperties();
 
   XSESSION_INFO* SessionInfo_ptr =
       kernel_state_->memory()->TranslateVirtual<XSESSION_INFO*>(
@@ -102,8 +115,6 @@ X_RESULT XSession::CreateSession(uint32_t user_index, uint8_t public_slots,
 
   uint64_t* Nonce_ptr =
       kernel_state_->memory()->TranslateVirtual<uint64_t*>(nonce_ptr);
-
-  local_details_.UserIndexHost = XUserIndexNone;
 
   // CSGO only uses STATS flag to create a session to POST stats pre round.
   // Minecraft and Portal 2 use flags HOST + STATS.
@@ -144,7 +155,6 @@ X_RESULT XSession::CreateSession(uint32_t user_index, uint8_t public_slots,
   local_details_.ActualMemberCount = 0;
   local_details_.ReturnedMemberCount = 0;
   local_details_.eState = XSESSION_STATE::LOBBY;
-  local_details_.Nonce = *Nonce_ptr;
   local_details_.sessionInfo = *SessionInfo_ptr;
   local_details_.xnkidArbitration = XNKID{};
   local_details_.SessionMembers_ptr = 0;
@@ -160,15 +170,18 @@ X_RESULT XSession::CreateHostSession(XSESSION_INFO* session_info,
                                      uint8_t private_slots, uint32_t flags) {
   state_ |= STATE_FLAGS_HOST;
 
-  local_details_.UserIndexHost = user_index;
+  if (HasSessionFlag(static_cast<SessionFlags>(flags), HOST)) {
+    local_details_.UserIndexHost = user_index;
+
+    std::random_device rd;
+    std::uniform_int_distribution<uint64_t> dist(0, -1);
+    *nonce_ptr = dist(rd);
+    local_details_.Nonce = *nonce_ptr;
+  }
 
   if (!cvars::upnp) {
     XELOGI("Hosting while UPnP is disabled!");
   }
-
-  std::random_device rd;
-  std::uniform_int_distribution<uint64_t> dist(0, -1);
-  *nonce_ptr = dist(rd);
 
   XGI_SESSION_CREATE session_data = {};
   session_data.user_index = user_index;
@@ -255,6 +268,10 @@ X_RESULT XSession::JoinExistingSession(XSESSION_INFO* session_info) {
 
 X_RESULT XSession::DeleteSession(XGI_SESSION_STATE* state) {
   // Begin XNetUnregisterKey?
+
+  if (!IsCreated()) {
+    return X_E_INVALIDARG;
+  }
 
   if (IsDeleted()) {
     return X_ERROR_SUCCESS;
@@ -599,6 +616,14 @@ X_RESULT XSession::ModifySession(XGI_SESSION_MODIFY* data) {
 X_RESULT XSession::GetSessionDetails(XGI_SESSION_DETAILS* data) {
   // 4E4D085C checks ReturnedMemberCount when creating a session
 
+  if (!IsCreated()) {
+    return X_E_INVALIDARG;
+  }
+
+  if (local_details_.eState == XSESSION_STATE::LOBBY) {
+    UpdateGameMode();
+  }
+
   XSESSION_LOCAL_DETAILS* local_details_ptr =
       kernel_state_->memory()->TranslateVirtual<XSESSION_LOCAL_DETAILS*>(
           data->session_details_ptr);
@@ -748,6 +773,10 @@ X_RESULT XSession::ModifySkill(XGI_SESSION_MODIFYSKILL* data) {
 
   if (!is_matchmaking_session) {
     return X_ONLINE_E_SESSION_INVALID_FLAGS;
+  }
+
+  if (local_details_.eState == XSESSION_STATE::LOBBY) {
+    UpdateGameMode();
   }
 
   const uint32_t game_mode = local_details_.GameMode;
@@ -943,6 +972,10 @@ X_RESULT XSession::FlushStats() {
 }
 
 X_RESULT XSession::StartSession(XGI_SESSION_STATE* state) {
+  if (local_details_.Flags & STATS) {
+    UpdateGameMode();
+  }
+
   const auto profile = kernel_state()->xam_state()->GetUserProfile(owner_xuid_);
 
   if (IsXboxLiveSession() && !profile->IsSignedInToLive()) {
@@ -1261,6 +1294,17 @@ bool XSession::IsJoinInProgressEnabled() const {
 
 bool XSession::IsInvitesEnabled() const {
   return !(local_details_.Flags & INVITES_DISABLED);
+}
+
+bool XSession::IsJoinInProgressBlocked() const {
+  return local_details_.eState == XSESSION_STATE::INGAME &&
+         local_details_.Flags & (ARBITRATION | JOIN_IN_PROGRESS_DISABLED);
+}
+
+void XSession::UpdateGameMode() {
+  local_details_.GameMode =
+      kernel_state()->xam_state()->user_tracker()->GetGameModeValue(
+          owner_xuid_);
 }
 
 bool XSession::IsSessionStarted() const {

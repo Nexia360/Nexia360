@@ -313,6 +313,18 @@ void UserTracker::AddDefaultProperties() {
   }
 }
 
+void UserTracker::ClearProperties() {
+  for (const uint64_t xuid : TrackedXUIDsSnapshot()) {
+    auto user = kernel_state()->xam_state()->GetUserProfile(xuid);
+    if (!user) {
+      continue;
+    }
+
+    std::lock_guard prop_lock(user->prop_mutex);
+    user->properties_.clear();
+  }
+}
+
 void UserTracker::AddDefaultProperties(uint64_t xuid) {
   auto user = kernel_state()->xam_state()->GetUserProfile(xuid);
   if (!user) {
@@ -326,15 +338,25 @@ void UserTracker::AddDefaultProperties(uint64_t xuid) {
                static_cast<int64_t>(user->account_info_.GetOnlineXUID()));
   Property GAMER_HOST_NAME = Property(XPROPERTY_GAMER_HOSTNAME, gamertag);
   Property GAMER_NAME = Property(XPROPERTY_GAMERNAME, gamertag);
+
+  const auto gamercard_zone =
+      GetSetting(user, kDashboardID,
+                 static_cast<uint32_t>(UserSettingId::XPROFILE_GAMERCARD_ZONE));
+
+  const auto gamercard_rep =
+      GetSetting(user, kDashboardID,
+                 static_cast<uint32_t>(UserSettingId::XPROFILE_GAMERCARD_REP));
+
   Property GAMER_ZONE = Property(
       XPROPERTY_GAMER_ZONE,
-      static_cast<int32_t>(GAMERCARD_ZONE_OPTIONS::GAMERCARD_ZONE_PRO));
-  Property GAMER_RATING = Property(XPROPERTY_GAMER_RATING,
-                                   static_cast<float>(0));  // Keep value <= 51?
+      gamercard_zone ? std::get<int32_t>(gamercard_zone->get_host_data()) : 0);
+  Property GAMER_RATING = Property(
+      XPROPERTY_GAMER_RATING,
+      gamercard_rep ? gamercard_rep->get_data()->data.f32.get() : 0.0f);
   Property GAMER_COUNTRY = Property(XPROPERTY_GAMER_COUNTRY,
-                                    static_cast<int32_t>(user->GetLanguage()));
+                                    static_cast<int32_t>(user->GetCountry()));
   Property GAMER_LANGUAGE = Property(XPROPERTY_GAMER_LANGUAGE,
-                                     static_cast<int32_t>(user->GetCountry()));
+                                     static_cast<int32_t>(user->GetLanguage()));
   Property PLATFORM_TYPE = Property(
       XPROPERTY_PLATFORM_TYPE, static_cast<int32_t>(PLATFORM_TYPE::Xbox360));
   Property GAMER_MU = Property(XPROPERTY_GAMER_MU,
@@ -342,12 +364,9 @@ void UserTracker::AddDefaultProperties(uint64_t xuid) {
   Property GAMER_SIGMA = Property(
       XPROPERTY_GAMER_SIGMA, static_cast<double>(X_STATS_SKILL_SIGMA_DEFAULT));
 
-  // Normally matchmaking query returns would handle ordering.
-
   // Required
   // 4D5308AB XMAT doesn't mark this as a matchmaking property but expects it
   // for discovering sessions.
-  // 58410A59 expects this property first, otherwise crashes.
   AddProperty(xuid, &GAMER_HOST_NAME);
 
   // Required
@@ -359,11 +378,8 @@ void UserTracker::AddDefaultProperties(uint64_t xuid) {
   AddProperty(xuid, &GAMER_ZONE);
   AddProperty(xuid, &GAMER_COUNTRY);
   AddProperty(xuid, &GAMER_LANGUAGE);
-
-  // 4D5307D5 does not expect these in XSessionSearch results.
   AddProperty(xuid, &GAMER_MU);
   AddProperty(xuid, &GAMER_SIGMA);
-
   AddProperty(xuid, &PLATFORM_TYPE);
 }
 
@@ -378,48 +394,34 @@ void UserTracker::AddDefaultContexts() {
 }
 
 void UserTracker::AddDefaultContexts(uint64_t xuid) {
+  auto user = kernel_state()->xam_state()->GetUserProfile(xuid);
+  if (!user) {
+    return;
+  }
+
+  const auto& contexts = spa_data_->GetPropertyBag()->contexts;
+
+  {
+    std::lock_guard prop_lock(user->prop_mutex);
+
+    user->default_contexts_ =
+        std::set<uint32_t>(contexts.cbegin(), contexts.cend());
+  }
+
   Property GAME_MODE = Property(XCONTEXT_GAME_MODE, static_cast<uint32_t>(0));
   Property GAME_TYPE = Property(XCONTEXT_GAME_TYPE, static_cast<uint32_t>(0));
 
-  const util::XLast* xlast =
-      kernel_state()->emulator()->game_info_database()->GetXLast();
-
-  if (xlast) {
-    // System contexts
-    std::optional<uint32_t> game_type_default =
-        xlast->GetContextsQuery()->GetContextDefaultValue(XCONTEXT_GAME_TYPE);
-    std::optional<uint32_t> game_mode_default =
-        xlast->GetGameModeQuery()->GetGameModeDefaultValue();
-
-    if (game_type_default.has_value()) {
-      GAME_TYPE = Property(XCONTEXT_GAME_TYPE, game_type_default.value());
-    }
-
-    if (game_mode_default.has_value()) {
-      GAME_MODE = Property(XCONTEXT_GAME_MODE, game_mode_default.value());
-    }
-  }
-
-  // Ordered!
-  // Normally matchmaking query returns would handle ordering.
+  // System contexts can be missing from the SPA.
   AddProperty(xuid, &GAME_TYPE);
   AddProperty(xuid, &GAME_MODE);
 
-  bool initialize_all_contexts = false;
+  for (const uint32_t context_id : contexts) {
+    const auto context = spa_data_->GetContext(context_id);
 
-  // Initialize all contexts to default values
-  if (xlast && initialize_all_contexts) {
-    for (const uint32_t& context_id :
-         xlast->GetContextsQuery()->GetContextsIDs()) {
-      std::optional<uint32_t> default_value =
-          xlast->GetContextsQuery()->GetContextDefaultValue(context_id);
+    Property default_context =
+        Property(context_id, context ? context->default_value.get() : 0u);
 
-      if (default_value.has_value()) {
-        Property prop = Property(context_id, default_value.value());
-
-        AddProperty(xuid, &prop);
-      }
-    }
+    AddProperty(xuid, &default_context);
   }
 }
 
@@ -1180,6 +1182,64 @@ std::pair<uint32_t, uint32_t> UserTracker::GetUserSubscriptionData(
   return data;
 }
 
+X_RESULT UserTracker::CheckUserPrivilege(uint32_t user_index,
+                                         uint32_t privilege_type,
+                                         bool& is_granted) const {
+  is_granted = false;
+
+  const auto xam_state = kernel_state()->xam_state();
+
+  if (user_index == XUserIndexAny) {
+    // Every user signed in to Live must hold the privilege, local users are
+    // skipped.
+    bool is_user_signed_in = false;
+    bool is_user_signed_in_to_live = false;
+
+    for (uint32_t i = 0; i < XUserMaxUserCount; ++i) {
+      if (!xam_state->IsUserSignedIn(i)) {
+        continue;
+      }
+
+      is_user_signed_in = true;
+
+      if (!xam_state->GetUserProfile(i)->IsSignedInToLive()) {
+        continue;
+      }
+
+      is_user_signed_in_to_live = true;
+
+      const X_RESULT result = CheckUserPrivilege(i, privilege_type, is_granted);
+
+      if (!is_granted) {
+        return result;
+      }
+    }
+
+    if (is_user_signed_in_to_live) {
+      return X_ERROR_SUCCESS;
+    }
+
+    return is_user_signed_in ? X_ERROR_NOT_LOGGED_ON : X_ERROR_NO_SUCH_USER;
+  }
+
+  if (user_index >= XUserMaxUserCount) {
+    return X_ERROR_INVALID_PARAMETER;
+  }
+
+  if (!xam_state->IsUserSignedIn(user_index)) {
+    return X_ERROR_NO_SUCH_USER;
+  }
+
+  if (!xam_state->GetUserProfile(user_index)->IsSignedInToLive()) {
+    return X_ERROR_NOT_LOGGED_ON;
+  }
+
+  is_granted = privilege_type >= XPRIVILEGE_SESSIONS &&
+               privilege_type <= XPRIVILEGE_ADD_FRIEND;
+
+  return X_ERROR_SUCCESS;
+}
+
 void UserTracker::UpdateContext(uint64_t xuid, uint32_t id, uint32_t value) {
   if (!IsUserTracked(xuid)) {
     return;
@@ -1190,16 +1250,18 @@ void UserTracker::UpdateContext(uint64_t xuid, uint32_t id, uint32_t value) {
     return;
   }
 
-  const auto& context_data = spa_data_->GetContext(id);
-  if (!context_data) {
+  if (!spa_data_->GetPropertyBag()->contexts.contains(id)) {
     return;
   }
 
-  if (value > context_data->max_value) {
+  const auto& context_data = spa_data_->GetContext(id);
+  if (value > (context_data ? context_data->max_value.get() : 0u)) {
     return;
   }
 
   std::lock_guard prop_lock(user->prop_mutex);
+
+  user->default_contexts_.erase(id);
 
   const auto entry = std::ranges::find_if(
       user->properties_, [id](const Property& property_data) {
@@ -1226,8 +1288,7 @@ std::optional<uint32_t> UserTracker::GetUserContext(uint64_t xuid,
     return std::nullopt;
   }
 
-  const auto& context_data = spa_data_->GetContext(id);
-  if (!context_data) {
+  if (!spa_data_->GetPropertyBag()->contexts.contains(id)) {
     return std::nullopt;
   }
 
@@ -1244,6 +1305,17 @@ std::optional<uint32_t> UserTracker::GetUserContext(uint64_t xuid,
   }
 
   return entry->get_data()->data.u32;
+}
+
+bool UserTracker::IsDefaultContext(uint64_t xuid, uint32_t id) const {
+  auto user = kernel_state()->xam_state()->GetUserProfile(xuid);
+  if (!user) {
+    return false;
+  }
+
+  std::lock_guard prop_lock(user->prop_mutex);
+
+  return user->default_contexts_.contains(id);
 }
 
 uint32_t UserTracker::GetContextValue(uint64_t xuid, uint32_t id) const {
@@ -2090,11 +2162,6 @@ void UserTracker::SetupDefaultProfileSettings(uint64_t xuid) {
     return;
   }
 
-  // TODO:
-  // We should properly set the flags for:
-  // XPROFILE_PERMISSIONS
-  // XPROFILE_USER_PREFERENCES
-
   const int32_t controller_vibration = 3;
   const int32_t gamercard_region = user->GetCountry();
   const int32_t voice_volume = 100;
@@ -2162,7 +2229,7 @@ void UserTracker::SetupDefaultProfileSettings(uint64_t xuid) {
   UserSetting Subscription_Payment_Type(
       UserSettingId::XPROFILE_SUBSCRIPTION_PAYMENT_TYPE, int32_t(0));
   UserSetting User_Preferences(UserSettingId::XPROFILE_USER_PREFERENCES,
-                               int32_t(0));
+                               int32_t(3));
   UserSetting Xbox_One_Gamerscore(UserSettingId::XPROFILE_XBOXONE_GAMERSCORE,
                                   int32_t(0));
   UserSetting Email_Format(UserSettingId::WEB_EMAIL_FORMAT,

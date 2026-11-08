@@ -84,6 +84,7 @@ class UserTracker {
   // Context
   void UpdateContext(uint64_t xuid, uint32_t id, uint32_t value);
   std::optional<uint32_t> GetUserContext(uint64_t xuid, uint32_t id) const;
+  bool IsDefaultContext(uint64_t xuid, uint32_t id) const;
   uint32_t GetContextValue(const uint64_t xuid, const uint32_t id) const;
   uint32_t GetGameModeValue(const uint64_t xuid) const;
   uint32_t GetGameTypeValue(const uint64_t xuid) const;
@@ -100,6 +101,7 @@ class UserTracker {
   const Property* GetProperty(const uint64_t xuid, const uint32_t id) const;
   std::vector<AttributeKey> GetUserPropertyIds(uint64_t xuid) const;
   std::u16string GetPropertyDescription(uint32_t id) const;
+  void ClearProperties();
   void AddDefaultProperties();
 
   // Settings
@@ -117,6 +119,9 @@ class UserTracker {
                       uint32_t& extended_data_address) const;
   std::pair<uint32_t, uint32_t> GetUserSubscriptionData(
       UserProfile* user) const;
+
+  X_RESULT CheckUserPrivilege(uint32_t user_index, uint32_t privilege_type,
+                              bool& is_granted) const;
 
   // Titles
   void AddTitleToPlayedList();

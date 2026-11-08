@@ -55,6 +55,10 @@ inline bool IsXboxLiveSession(const SessionFlags flags) {
   return !IsOfflineSession(flags) && flags & SessionFlags::LIVE_FEATURES;
 }
 
+inline bool RequiresLiveLogon(const SessionFlags flags) {
+  return (flags & (PRESENCE | STATS | MATCHMAKING)) != 0;
+}
+
 inline bool IsSystemlinkSession(const SessionFlags flags) {
   return !IsOfflineSession(flags) && !IsXboxLiveSession(flags) &&
          flags & SessionFlags::SYSTEMLINK_FEATURES;
@@ -411,6 +415,10 @@ class XSession : public XObject {
                             SessionFlags checked_flag) const {
     return (flags & checked_flag) == checked_flag;
   };
+
+  bool IsJoinInProgressBlocked() const;
+
+  void UpdateGameMode();
 
   static void FillSessionSearchResult(const SessionObjectJSON session_info,
                                       XSESSION_SEARCHRESULT* result);
