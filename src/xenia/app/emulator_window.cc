@@ -3707,9 +3707,11 @@ void EmulatorWindow::InstallXnaPackage() {
   const auto library = GetXnaLibraryPath();
   std::filesystem::create_directories(library, ec);
   const auto destination = library / source.filename();
+  kernel::xam::BeginContentChange(kernel::kXN_2002);
   std::filesystem::copy_file(source, destination,
                              std::filesystem::copy_options::overwrite_existing,
                              ec);
+  kernel::xam::EndContentChange(kernel::kXN_2002, "XNA title installed");
   if (ec) {
     XELOGE("Could not install XNA package: {}", ec.message());
     new xe::ui::HostNotificationWindow(imgui_drawer(), "Install failed",
@@ -4545,6 +4547,16 @@ std::string EmulatorWindow::GetRecentMediaId(
   }
 
   return "";
+}
+
+void EmulatorWindow::RemoveRecentTitle(uint32_t title_id,
+                                       const std::filesystem::path& path) {
+  kernel::xam::BeginContentChange(title_id);
+  emulator()->played_db()->RemoveTitle(title_id, path);
+  kernel::xam::RemoveLaunchShortcut(title_id);
+  kernel::xam::EndContentChange(title_id, "title removed");
+  kernel::xam::AnnounceGameLibraryChanged("title removed");
+  LoadRecentlyLaunchedTitles();
 }
 
 void EmulatorWindow::LoadRecentlyLaunchedTitles() {

@@ -27,6 +27,9 @@ X_STATUS StartBootAnimation();
 // nothing has to guess how long the animation runs.
 X_STATUS BlockOnBootAnimation();
 X_STATUS TerminateBootAnimation();
+// Physical memory allocated while the animation loads or plays is its own and
+// is released when it stops.
+void NoteBootAnimationAllocation(uint32_t address);
 
 }  // namespace xboxkrnl
 }  // namespace kernel

@@ -118,10 +118,7 @@ class VulkanImmediateDrawer : public ImmediateDrawer {
 
   // Combined image sampler pools for textures.
   VkDescriptorSetLayout texture_descriptor_set_layout_;
-  // Textures are created and destroyed on any thread (the gamerpic browser
-  // loads its icons on workers), but uploaded and drawn on the UI thread:
-  // guards the descriptor pools, textures_, texture_uploads_pending_ and
-  // textures_deleted_.
+  // Guards the descriptor pools and the texture lists.
   std::mutex textures_mutex_;
 
   std::vector<TextureDescriptorPool*> texture_descriptor_pools_;

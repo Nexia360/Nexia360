@@ -30,6 +30,7 @@ namespace xam {
 constexpr uint32_t kVoiceObjectSize = 0x2000;
 
 static void ResetVoiceCodecs();
+static size_t DropPendingCapture(uint32_t voice);
 
 dword_result_t XamVoiceIsActiveProcess_entry() { return 1; }
 DECLARE_XAM_EXPORT1(XamVoiceIsActiveProcess, kNone, kImplemented);
@@ -50,6 +51,8 @@ dword_result_t XamVoiceCreate_entry(dword_t user_index,
   std::memset(kernel_state()->memory()->TranslateVirtual<uint8_t*>(voice_ptr),
               0, kVoiceObjectSize);
   *out_voice_ptr = voice_ptr;
+  XELOGW("[voice] XamVoiceCreate user {} -> {:08X}", user_index.value(),
+         voice_ptr);
   ResetVoiceCodecs();
   apu::sdl::VoiceChat::Get().AddRef();
   return X_ERROR_SUCCESS;
@@ -58,6 +61,9 @@ DECLARE_XAM_EXPORT1(XamVoiceCreate, kNone, kImplemented);
 
 dword_result_t XamVoiceClose_entry(lpunknown_t voice_ptr) {
   if (voice_ptr) {
+    const size_t dropped = DropPendingCapture(voice_ptr.guest_address());
+    XELOGW("[voice] XamVoiceClose {:08X}, {} pending capture packet(s) dropped",
+           voice_ptr.guest_address(), dropped);
     kernel_state()->memory()->SystemHeapFree(voice_ptr.guest_address());
     apu::sdl::VoiceChat::Get().Release();
   }
@@ -367,8 +373,33 @@ static G726Codec g_capture_codec;
 static std::mutex g_codec_mutex;
 
 constexpr uint64_t kCaptureRateHz = 16000;
-static std::deque<uint32_t> g_pending_capture;
+struct PendingCapture {
+  uint32_t voice;
+  uint32_t packet;
+  uint32_t buffer;
+  uint32_t length;
+  uint32_t format;
+  // The guest buffer's size: XHV quarters it to ask for format 2 (8A496D60).
+  uint32_t capacity;
+  bool expand;
+};
+static std::mutex g_capture_mutex;
+static std::deque<PendingCapture> g_pending_capture;
 static std::chrono::steady_clock::time_point g_capture_due{};
+
+static size_t DropPendingCapture(uint32_t voice) {
+  std::lock_guard<std::mutex> lk(g_capture_mutex);
+  return std::erase_if(g_pending_capture,
+                       [voice](const PendingCapture& pending) {
+                         return pending.voice == voice;
+                       });
+}
+
+void ResetVoiceCapture() {
+  std::lock_guard<std::mutex> lk(g_capture_mutex);
+  g_pending_capture.clear();
+  g_capture_due = {};
+}
 
 static void ResetVoiceCodecs() {
   std::lock_guard<std::mutex> lk(g_codec_mutex);
@@ -396,6 +427,41 @@ static void WriteField(Memory* memory, uint32_t packet, uint32_t off,
                        uint32_t value) {
   xe::store_and_swap<uint32_t>(memory->TranslateVirtual<uint8_t*>(packet + off),
                                value);
+}
+
+static bool IsWritableGuestRange(Memory* memory, uint32_t address,
+                                 uint32_t size) {
+  auto* heap = memory->LookupHeap(address);
+  return heap && size &&
+         heap->QueryRangeAccess(address, address + size - 1) ==
+             xe::memory::PageAccess::kReadWrite;
+}
+
+// XHV cancels (0xC0000001) and frees packets itself, so check before filling.
+static bool StillPending(Memory* memory, const PendingCapture& pending) {
+  const uint32_t packet = pending.packet;
+  if (!IsWritableGuestRange(memory, packet, kPacketFormat + 4)) {
+    XELOGW("[voice] capture packet {:08X} (voice {:08X}) is gone", packet,
+           pending.voice);
+    return false;
+  }
+  const uint32_t status = ReadField(memory, packet, kPacketStatus);
+  const uint32_t buffer = ReadField(memory, packet, kPacketBuffer);
+  const uint32_t length = ReadField(memory, packet, kPacketLength);
+  const uint32_t format = ReadField(memory, packet, kPacketFormat);
+  if (status != 0x103 || buffer != pending.buffer || length != pending.length ||
+      format != pending.format ||
+      (pending.capacity &&
+       !IsWritableGuestRange(memory, buffer, pending.capacity))) {
+    XELOGW(
+        "[voice] capture packet {:08X} (voice {:08X}) taken back before it "
+        "was filled: status {:08X} buffer {:08X}->{:08X} length {}->{} "
+        "format {}->{}",
+        packet, pending.voice, status, pending.buffer, buffer, pending.length,
+        length, pending.format, format);
+    return false;
+  }
+  return true;
 }
 
 static void PlaybackPacket(Memory* memory, uint32_t packet) {
@@ -427,16 +493,16 @@ static void PlaybackPacket(Memory* memory, uint32_t packet) {
   apu::sdl::VoiceChat::Get().PlayPcm(up.data(), up.size());
 }
 
-static void CapturePacket(Memory* memory, uint32_t packet) {
-  const uint32_t format = ReadField(memory, packet, kPacketFormat);
-  uint32_t length = ReadField(memory, packet, kPacketLength);
-  const uint32_t buffer = ReadField(memory, packet, kPacketBuffer);
-  if (!buffer || !length || length > kMaxPacketBytes) {
+static void CapturePacket(Memory* memory, const PendingCapture& pending) {
+  const uint32_t packet = pending.packet;
+  const uint32_t capacity = pending.capacity;
+  if (!pending.buffer || !capacity || capacity > kMaxPacketBytes) {
     return;
   }
-  auto* out = memory->TranslateVirtual<uint8_t*>(buffer);
+  auto* out = memory->TranslateVirtual<uint8_t*>(pending.buffer);
 
-  if (format == 1) {
+  if (pending.format == 1) {
+    const uint32_t length = std::min(pending.length, capacity);
     const size_t samples = static_cast<size_t>(length) * 2;
     std::vector<int16_t> pcm(samples, 0);
     apu::sdl::VoiceChat::Get().ReadCapturePcm(pcm.data(), samples);
@@ -450,26 +516,25 @@ static void CapturePacket(Memory* memory, uint32_t packet) {
     return;
   }
 
-  if (ReadField(memory, packet, kPacketDone) == 0 && format == 2) {
+  if (pending.expand) {
     WriteField(memory, packet, kPacketFormat, 0);
     WriteField(memory, packet, kPacketDevice, kHeadsetDeviceClass);
-    length <<= 2;
-    WriteField(memory, packet, kPacketLength, length);
-    if (length > kMaxPacketBytes) {
-      return;
-    }
+    WriteField(memory, packet, kPacketLength, capacity);
   }
-  const size_t samples = length / 2;
+  const uint32_t bytes =
+      (pending.expand ? capacity : std::min(pending.length, capacity)) & ~1u;
+  const size_t samples = bytes / 2;
   std::vector<int16_t> pcm(samples, 0);
   apu::sdl::VoiceChat::Get().ReadCapturePcm(pcm.data(), samples);
   for (size_t i = 0; i < samples; ++i) {
     out[i * 2 + 0] = static_cast<uint8_t>(pcm[i] >> 8);
     out[i * 2 + 1] = static_cast<uint8_t>(pcm[i] & 0xFF);
   }
-  WriteField(memory, packet, kPacketDone, length);
+  WriteField(memory, packet, kPacketDone, bytes);
 }
 
 static void ServicePendingCapture(Memory* memory) {
+  std::lock_guard<std::mutex> lk(g_capture_mutex);
   const auto now = std::chrono::steady_clock::now();
   while (!g_pending_capture.empty()) {
     if (g_pending_capture.size() < 64 &&
@@ -477,12 +542,16 @@ static void ServicePendingCapture(Memory* memory) {
         now < g_capture_due) {
       break;
     }
-    const uint32_t packet = g_pending_capture.front();
-    const uint32_t len = ReadField(memory, packet, kPacketLength);
-    const uint32_t fmt = ReadField(memory, packet, kPacketFormat);
-    const uint32_t frame_samples = (fmt == 1) ? len * 2 : len / 2;
+    const PendingCapture pending = g_pending_capture.front();
     g_pending_capture.pop_front();
-    CapturePacket(memory, packet);
+    if (!StillPending(memory, pending)) {
+      continue;
+    }
+    const uint32_t packet = pending.packet;
+    const uint32_t len = pending.length;
+    const uint32_t fmt = pending.format;
+    const uint32_t frame_samples = (fmt == 1) ? len * 2 : len / 2;
+    CapturePacket(memory, pending);
     WriteField(memory, packet, kPacketStatus, X_ERROR_SUCCESS);
     const auto span = std::chrono::microseconds(
         frame_samples ? (frame_samples * 1000000ull / kCaptureRateHz) : 0);
@@ -512,7 +581,17 @@ dword_result_t XamVoiceSubmitPacket_entry(lpunknown_t voice_ptr,
     WriteField(memory, packet, kPacketStatus, X_ERROR_SUCCESS);
   } else {
     WriteField(memory, packet, kPacketStatus, 0x103);
-    g_pending_capture.push_back(packet);
+    {
+      const uint32_t length = ReadField(memory, packet, kPacketLength);
+      const uint32_t format = ReadField(memory, packet, kPacketFormat);
+      const bool expand =
+          format == 2 && ReadField(memory, packet, kPacketDone) == 0;
+      std::lock_guard<std::mutex> lk(g_capture_mutex);
+      g_pending_capture.push_back({voice_ptr.guest_address(), packet,
+                                   ReadField(memory, packet, kPacketBuffer),
+                                   length, format,
+                                   expand ? length << 2 : length, expand});
+    }
     ServicePendingCapture(memory);
   }
   return X_ERROR_SUCCESS;

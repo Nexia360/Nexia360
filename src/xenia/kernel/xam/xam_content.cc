@@ -36,6 +36,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <mutex>
 #include <set>
@@ -112,19 +113,7 @@ dword_result_t XamContentGetLicenseMask_entry(lpdword_t mask_ptr,
 }
 DECLARE_XAM_EXPORT2(XamContentGetLicenseMask, kContent, kStub, kHighFrequency);
 
-// The guest path of a hard drive package, for a title that opens or writes the
-// package file itself (XContentOpenPackage / XContentCreatePackage, which
-// NtOpenFile / NtCreateFile what XamContentResolve hands back). Battlefield
-// Hardline installs its HD content that way, copying each package off the disc
-// 512 KB at a time.
-//
-// It used to answer \Device\Harddisk0\Partition1\Content\..., which nothing
-// answers while a disc is running, and which is not where the content tree is
-// anyway: add-ons and saves follow the active title update. So the create
-// failed, the copy gave up, and the title asked to install again. Each folder
-// ResolvePackagePath picks is mounted writable as a device of its own, and
-// the path handed back lands exactly where enumeration and XamContentCreate
-// look for the package.
+// Guest path of a hard drive package for titles that open the package file.
 static std::string ResolveHddPackageForRawAccess(
     uint64_t xuid, const XCONTENT_DATA_INTERNAL& content_data) {
   const std::filesystem::path package_path =
@@ -138,8 +127,6 @@ static std::string ResolveHddPackageForRawAccess(
   std::filesystem::create_directories(folder, ec);
 
   static std::mutex mount_mutex;
-  // Devices registered here before. Only those are looked up first: a lookup
-  // of one never mounted logs a failed ResolvePath.
   static std::set<std::string> mounted;
   std::lock_guard<std::mutex> lock(mount_mutex);
 
@@ -165,8 +152,6 @@ static std::string ResolveHddPackageForRawAccess(
     }
     mounted.insert(device_path);
   }
-  // The device lists its folder once; a package that arrived since is not in
-  // its tree. None there yet is fine: the title is about to create it.
   device->AddRootFile(file_name);
   return fmt::format("{}\\{}", device_path, file_name);
 }
@@ -952,7 +937,15 @@ dword_result_t xeXamContentDelete(dword_t user_index, lpvoid_t content_data_ptr,
     xuid = user->xuid();
   }
 
+  const uint32_t owner = content_data.title_id;
+  const bool tell_dashboard = owner != kDashboardID && owner != 0xFFFE07DF;
+  if (tell_dashboard) {
+    BeginContentChange(owner);
+  }
   result = kernel_state()->content_manager()->DeleteContent(xuid, content_data);
+  if (tell_dashboard) {
+    EndContentChange(owner, "content deleted");
+  }
 
   if (overlapped_ptr) {
     kernel_state()->CompleteOverlappedImmediate(overlapped_ptr, result);
@@ -1007,27 +1000,52 @@ dword_result_t XamSwapDisc_entry(
     }
   };
 
-  if (info->disc_number == disc_number) {
+  static std::mutex swapped_mutex;
+  static uint32_t swapped_title_id = 0;
+  static uint32_t swapped_disc_number = 0;
+  uint32_t current_disc = info->disc_number;
+  {
+    std::lock_guard<std::mutex> lock(swapped_mutex);
+    if (swapped_title_id == info->title_id && swapped_disc_number) {
+      current_disc = swapped_disc_number;
+    }
+  }
+  if (current_disc == disc_number) {
     completion_event();
     return X_ERROR_SUCCESS;
   }
 
   auto filesystem = kernel_state()->file_system();
   auto mount_path = "\\Device\\LauncherData";
+  auto emulator = kernel_state()->emulator();
 
-  if (filesystem->ResolvePath(mount_path) != NULL) {
-    filesystem->UnregisterDevice(mount_path);
-  }
+  filesystem->UnregisterDevice(mount_path);
 
   std::u16string text_message = xe::load_and_swap<std::u16string>(
       kernel_state()->memory()->TranslateVirtual(error_message->stringTextPtr));
 
-  const std::filesystem::path new_disc_path =
-      kernel_state()->emulator()->GetNewDiscPath(xe::to_utf8(text_message));
-  XELOGI("GetNewDiscPath returned path {}.", new_disc_path.string().c_str());
+  std::filesystem::path new_disc_path =
+      emulator->FindSwapDisc(info->title_id, disc_number);
+  if (new_disc_path.empty()) {
+    new_disc_path = emulator->GetNewDiscPath(xe::to_utf8(text_message));
+  }
+  while (!new_disc_path.empty() &&
+         XFAILED(emulator->MountPath(new_disc_path, mount_path))) {
+    new_disc_path = emulator->GetNewDiscPath(xe::to_utf8(text_message));
+  }
+  if (new_disc_path.empty()) {
+    XELOGE("XamSwapDisc: no image for disc {} of {:08X} was mounted",
+           uint32_t(disc_number), uint32_t(info->title_id));
+    return X_ERROR_CANCELLED;
+  }
 
-  // TODO(Gliniak): Implement checking if inserted file is requested one
-  kernel_state()->emulator()->MountPath(new_disc_path, mount_path);
+  XELOGI("XamSwapDisc: disc {} is {}", uint32_t(disc_number),
+         xe::path_to_utf8(new_disc_path));
+  {
+    std::lock_guard<std::mutex> lock(swapped_mutex);
+    swapped_title_id = info->title_id;
+    swapped_disc_number = disc_number;
+  }
   completion_event();
 
   return X_ERROR_SUCCESS;
@@ -1154,6 +1172,18 @@ dword_result_t xeXamContentLaunchImage(dword_t user_index,
     // one. An extracted package is a directory, so point at the executable
     // inside it. An XNA/XBLIG package is the exception: it has no default.xex,
     // and the launcher mounts the package itself.
+    // A Nexia shortcut (xam_user.cc) names the disc image or folder to run.
+    if (std::filesystem::is_directory(host_path)) {
+      std::ifstream link(host_path / "nexia_shortcut.txt", std::ios::binary);
+      const std::string target((std::istreambuf_iterator<char>(link)),
+                               std::istreambuf_iterator<char>());
+      std::error_code ec;
+      if (!target.empty() && std::filesystem::exists(xe::to_path(target), ec)) {
+        XELOGE("XamContentLaunchImage: shortcut {} -> {}",
+               xe::path_to_utf8(host_path), target);
+        host_path = xe::to_path(target);
+      }
+    }
     xna::XnaPackageInfo xna_info;
     if (std::filesystem::is_directory(host_path) &&
         !xna::IsXnaPackage(host_path, &xna_info)) {
@@ -1333,38 +1363,56 @@ DECLARE_XAM_EXPORT1(XamContentGetDeviceVolumePath, kContent, kStub);
 // icon. A package's own metadata is copied as it is; a record with no
 // package behind it (an XNA library title, a profile made before profiles
 // carried a header) gets one built from the record itself.
+static std::filesystem::path BoxArtTilePath(uint32_t title_id);
+
 // The title's box art as a metadata thumbnail: a PNG small enough for the
 // header's thumbnail field. Only for a game's own record - a save or DLC keeps
 // its picture - and never for 584E07D2, the Indie Player every XNA game shares.
 // Empty when there is no box art, and the caller keeps what it had.
 static std::vector<uint8_t> BoxArtThumbnail(const XCONTENT_DATA_INTERNAL& data,
-                                            size_t max_size) {
-  switch (data.content_type.get()) {
-    case XContentType::kArcadeTitle:
-    case XContentType::kXbox360Title:
-    case XContentType::kInstalledGame:
-    case XContentType::kXboxTitle:
-    case XContentType::kGameDemo:
-      break;
-    default:
-      return {};
-  }
+                                            size_t max_size,
+                                            const std::string& header_name) {
   const uint32_t title_id = data.title_id;
-  if (!title_id || title_id == kXN_2002 || title_id == kDashboardID) {
-    return {};
+  const bool indie = title_id == kXN_2002 &&
+                     data.content_type == XContentType::kMarketplaceContent;
+  if (!indie) {
+    switch (data.content_type.get()) {
+      case XContentType::kArcadeTitle:
+      case XContentType::kXbox360Title:
+      case XContentType::kInstalledGame:
+      case XContentType::kXboxTitle:
+      case XContentType::kGameDemo:
+        break;
+      default:
+        return {};
+    }
+    if (!title_id || title_id == kXN_2002 || title_id == kDashboardID) {
+      return {};
+    }
   }
 
+  const std::string cache_key =
+      indie ? "xblig:" + data.file_name() : fmt::format("{:08X}", title_id);
   static std::mutex cache_mutex;
-  static std::map<uint32_t, std::vector<uint8_t>> cache;
+  static std::map<std::string, std::vector<uint8_t>> cache;
   {
     std::lock_guard<std::mutex> lock(cache_mutex);
-    if (const auto found = cache.find(title_id); found != cache.end()) {
+    if (const auto found = cache.find(cache_key); found != cache.end()) {
       return found->second;
     }
   }
 
   std::vector<uint8_t> png;
-  const std::vector<uint8_t> art = FetchTitleBoxArt(title_id);
+  std::vector<uint8_t> art;
+  if (indie) {
+    art = FetchIndieBoxArt(
+        {header_name, xe::to_utf8(data.display_name()), data.file_name()});
+  } else if (const std::filesystem::path tile = BoxArtTilePath(title_id);
+             !tile.empty()) {
+    std::ifstream file(tile, std::ios::binary);
+    art.assign(std::istreambuf_iterator<char>(file),
+               std::istreambuf_iterator<char>());
+  }
   int width = 0;
   int height = 0;
   int channels = 0;
@@ -1373,8 +1421,50 @@ static std::vector<uint8_t> BoxArtThumbnail(const XCONTENT_DATA_INTERNAL& data,
                                       art.data(), static_cast<int>(art.size()),
                                       &width, &height, &channels, 3);
   if (pixels) {
-    // Box art is 219x300; a photo does not compress far as a PNG, so the
-    // picture shrinks until it fits the field.
+    // JPEG at the tile's 720p size fits the field; the dash decodes by content.
+    for (int target_height = 320; target_height >= 160 && png.empty();
+         target_height -= 20) {
+      const int target_width =
+          std::max(1, width * target_height / std::max(1, height));
+      std::vector<uint8_t> scaled(size_t(target_width) * target_height * 3);
+      for (int y = 0; y < target_height; ++y) {
+        const int y0 = y * height / target_height;
+        const int y1 = std::max(y0 + 1, (y + 1) * height / target_height);
+        for (int x = 0; x < target_width; ++x) {
+          const int x0 = x * width / target_width;
+          const int x1 = std::max(x0 + 1, (x + 1) * width / target_width);
+          uint32_t sum[3] = {};
+          for (int sy = y0; sy < y1; ++sy) {
+            for (int sx = x0; sx < x1; ++sx) {
+              const uint8_t* p = pixels + (size_t(sy) * width + sx) * 3;
+              sum[0] += p[0];
+              sum[1] += p[1];
+              sum[2] += p[2];
+            }
+          }
+          const uint32_t count = uint32_t((y1 - y0) * (x1 - x0));
+          uint8_t* q = scaled.data() + (size_t(y) * target_width + x) * 3;
+          q[0] = uint8_t(sum[0] / count);
+          q[1] = uint8_t(sum[1] / count);
+          q[2] = uint8_t(sum[2] / count);
+        }
+      }
+      for (int quality = 90; quality >= 50 && png.empty(); quality -= 5) {
+        std::vector<uint8_t> encoded;
+        stbi_write_jpg_to_func(
+            [](void* context, void* bytes, int size) {
+              auto* out = static_cast<std::vector<uint8_t>*>(context);
+              const auto* begin = static_cast<const uint8_t*>(bytes);
+              out->insert(out->end(), begin, begin + size);
+            },
+            &encoded, target_width, target_height, 3, scaled.data(), quality);
+        if (!encoded.empty() && encoded.size() <= max_size) {
+          png = std::move(encoded);
+          XELOGI("Thumbnail: box art for {:08X} as {}x{} JPEG q{} ({} bytes)",
+                 title_id, target_width, target_height, quality, png.size());
+        }
+      }
+    }
     for (int target_height = 128; target_height >= 48 && png.empty();
          target_height -= 8) {
       const int target_width =
@@ -1419,16 +1509,11 @@ static std::vector<uint8_t> BoxArtThumbnail(const XCONTENT_DATA_INTERNAL& data,
   }
 
   std::lock_guard<std::mutex> lock(cache_mutex);
-  cache[title_id] = png;
+  cache[cache_key] = png;
   return png;
 }
 
-// The title's cover as a PNG on the host, written once into the art cache. My
-// Games draws the title image the dashboard loads (see
-// PatchDashboardLibraryArt), so this is what a tile shows. The front of
-// XboxUnity's official retail cover comes first - 427x600, twice the detail of
-// the marketplace art - then the Xbox image server's boxartlg.jpg (219x300).
-// Empty when neither has the title.
+// My Games tile art as a PNG: XboxUnity's 427x600 retail front, then x360db.
 static std::filesystem::path BoxArtTilePath(uint32_t title_id) {
   static std::mutex tile_mutex;
   std::lock_guard<std::mutex> lock(tile_mutex);
@@ -1444,8 +1529,6 @@ static std::filesystem::path BoxArtTilePath(uint32_t title_id) {
   int height = 0;
   int channels = 0;
   uint8_t* pixels = nullptr;
-  // A 360 case insert is 273mm across: back, a 14mm spine, and a 129.5mm
-  // front on the right - the front is the right 129.5/273 of the jacket.
   int left = 0;
   int crop_width = 0;
   const std::vector<uint8_t> jacket = FetchTitleCoverJacket(title_id);
@@ -1453,13 +1536,9 @@ static std::filesystem::path BoxArtTilePath(uint32_t title_id) {
     pixels =
         stbi_load_from_memory(jacket.data(), static_cast<int>(jacket.size()),
                               &width, &height, &channels, 3);
-    if (pixels && width > height) {
-      crop_width = width * 1295 / 2730;
-      left = width - crop_width;
-    } else if (pixels) {
-      // Not a jacket after all; take it whole.
-      crop_width = width;
-    }
+    // A 360 case insert is 273mm across; the 129.5mm front is on the right.
+    crop_width = pixels && width > height ? width * 1295 / 2730 : width;
+    left = width - crop_width;
   }
   if (!pixels) {
     const std::vector<uint8_t> art = FetchTitleBoxArt(title_id);
@@ -1471,6 +1550,7 @@ static std::filesystem::path BoxArtTilePath(uint32_t title_id) {
     if (!pixels) {
       return {};
     }
+    left = 0;
     crop_width = width;
   }
   std::vector<uint8_t> png;
@@ -1656,8 +1736,9 @@ dword_result_t XamContentGetMetaDataInternal_entry(
   // it; otherwise the thumbnail above stands. (My Games' big tiles are drawn
   // from the title image instead - see DashboardTitleImageRedirect.)
   auto* out_metadata = reinterpret_cast<XContentMetadata*>(out);
-  const std::vector<uint8_t> box_art =
-      BoxArtThumbnail(data, sizeof(out_metadata->thumbnail));
+  const std::vector<uint8_t> box_art = BoxArtThumbnail(
+      data, sizeof(out_metadata->thumbnail),
+      xe::to_utf8(out_metadata->display_name(XLanguage::kEnglish)));
   if (!box_art.empty()) {
     std::memset(out_metadata->thumbnail, 0, sizeof(out_metadata->thumbnail));
     std::memcpy(out_metadata->thumbnail, box_art.data(), box_art.size());

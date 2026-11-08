@@ -377,6 +377,7 @@ class Emulator {
 
   // The game can request another title to be loaded.
   const std::filesystem::path GetNewDiscPath(std::string window_message = "");
+  std::filesystem::path FindSwapDisc(uint32_t title_id, uint32_t disc_number);
   // Builds and runs the picker itself. UI thread only.
   const std::filesystem::path ShowDiscPicker(std::string window_message);
 

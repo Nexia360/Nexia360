@@ -973,6 +973,14 @@ X_RESULT KernelState::ApplyTitleUpdate(
     std::filesystem::path lib_path =
         emulator_->title_update_manager()->GetActiveLibraryPath(
             title_module->title_id());
+    if (!lib_path.empty() && title_module->is_multi_disc_title()) {
+      const std::filesystem::path disc_path =
+          lib_path / fmt::format("disc{:03}", title_module->disc_number());
+      std::error_code disc_ec;
+      if (std::filesystem::is_directory(disc_path, disc_ec)) {
+        lib_path = disc_path;
+      }
+    }
     std::string mount_path;
     if (!lib_path.empty() &&
         file_system()->FindSymbolicLink("game:", mount_path) &&
@@ -1014,11 +1022,21 @@ X_RESULT KernelState::ApplyTitleUpdate(
           // update: - so layer the same folder over the game mount. Lookups
           // miss straight through to the disc for anything the update does
           // not carry.
-          auto overlay =
-              std::make_unique<vfs::HostPathDevice>(mount_path, lib_path, true);
-          if (overlay->Initialize()) {
-            file_system()->RegisterOverlayDevice(mount_path,
-                                                 std::move(overlay));
+          std::error_code layout_ec;
+          const bool engine_merges_update = std::filesystem::is_regular_file(
+              lib_path / "Data" / "layout.toc", layout_ec);
+          if (engine_merges_update) {
+            XELOGI(
+                "Title update {} carries Data/layout.toc; mounted as update: "
+                "only",
+                xe::path_to_utf8(lib_path));
+          } else {
+            auto overlay = std::make_unique<vfs::HostPathDevice>(
+                mount_path, lib_path, true);
+            if (overlay->Initialize()) {
+              file_system()->RegisterOverlayDevice(mount_path,
+                                                   std::move(overlay));
+            }
           }
         }
       }
@@ -1537,6 +1555,8 @@ void KernelState::ReleaseTitleMemory() {
   }
   const uint32_t released = memory()->ReleaseTitleAllocations(keep);
   XELOGI("KernelState::ReleaseTitleMemory released {} allocations", released);
+  const uint64_t zeroed = memory()->ZeroTitleFreedMemory(keep);
+  XELOGW("TerminateTitle: zeroed {} KB the title had freed", zeroed / 1024);
 }
 
 void KernelState::MarkSystemThreads() {

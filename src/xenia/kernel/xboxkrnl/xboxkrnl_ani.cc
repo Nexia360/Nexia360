@@ -9,7 +9,9 @@
 
 #include "xenia/kernel/xboxkrnl/xboxkrnl_ani.h"
 
+#include <atomic>
 #include <mutex>
+#include <vector>
 
 #include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
@@ -124,7 +126,49 @@ bool EnsureFlashMounted() {
   return true;
 }
 
+// Physical memory bootanim allocates, given back when it stops. Kept, it sat
+// at the top of physical memory (FE7C0000, 0x398000 bytes) and was frozen as
+// system memory before the dash ran, so a title that expects the top of
+// physical memory (Rise of the Tomb Raider, from 1E7C0000) never got it.
+std::atomic<bool> collecting_allocations{false};
+std::mutex allocations_mutex;
+std::vector<uint32_t> allocations;
+
+void ReleaseBootAnimationMemory() {
+  collecting_allocations.store(false);
+  std::vector<uint32_t> owned;
+  {
+    std::lock_guard lock(allocations_mutex);
+    owned.swap(allocations);
+  }
+  for (uint32_t address : owned) {
+    BaseHeap* heap = kernel_memory()->LookupHeap(address);
+    HeapAllocationInfo info;
+    if (heap && heap->QueryRegionInfo(address, &info) && info.state &&
+        info.allocation_base == address) {
+      // Cleared as a title switch clears what it releases: the next title
+      // gets this memory and its old pixels showed up in the game's buffers.
+      uint32_t size = 0;
+      if (heap->QuerySize(address, &size) && size) {
+        kernel_memory()->Zero(address, size);
+      }
+      heap->Release(address);
+      XELOGE("AniStop: released bootanim's physical memory at {:08X}", address);
+    }
+  }
+}
+
 }  // namespace
+
+void NoteBootAnimationAllocation(uint32_t address) {
+  // A title opened while the animation still plays owns what it allocates.
+  Emulator* emulator = kernel_state() ? kernel_state()->emulator() : nullptr;
+  if (address && collecting_allocations.load() && emulator &&
+      !emulator->is_title_open()) {
+    std::lock_guard lock(allocations_mutex);
+    allocations.push_back(address);
+  }
+}
 
 X_STATUS StartBootAnimation() {
   BootAnimation& animation = Animation();
@@ -138,6 +182,16 @@ X_STATUS StartBootAnimation() {
   if (!EnsureFlashMounted()) {
     return X_STATUS_UNSUCCESSFUL;
   }
+  collecting_allocations.store(true);
+  // An animation that never started gives back what loading it took.
+  struct GiveBackIfNotRunning {
+    BootAnimation& animation;
+    ~GiveBackIfNotRunning() {
+      if (!animation.running) {
+        ReleaseBootAnimationMemory();
+      }
+    }
+  } give_back{animation};
 
   auto module = kernel_state()->LoadUserModule(kBootAnimationPath);
   if (!module) {
@@ -273,6 +327,8 @@ X_STATUS AniStop(bool terminate) {
     uint64_t timeout = uint64_t(-int64_t(5000) * 10000);
     thread->Wait(0, 0, 0, &timeout);
   }
+  // Before the dash launches and its launch freezes what is still allocated.
+  ReleaseBootAnimationMemory();
   lock.lock();
   animation.thread.reset();
   animation.hmodule = 0;

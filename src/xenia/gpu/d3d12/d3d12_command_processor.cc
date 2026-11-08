@@ -10,6 +10,7 @@
 #include "xenia/gpu/d3d12/d3d12_command_processor.h"
 #include <bit>
 #include <cstring>
+#include <unordered_map>
 #include "xenia/apu/audio_system.h"
 #include "xenia/base/assert.h"
 #include "xenia/base/byte_order.h"
@@ -65,6 +66,18 @@ namespace shaders {
 #include "xenia/gpu/shaders/bytecode/d3d12_5_1/fxaa_extreme_cs.h"
 #include "xenia/gpu/shaders/bytecode/d3d12_5_1/resolve_downscale_cs.h"
 }  // namespace shaders
+
+namespace {
+struct MemExportProbeRange {
+  uint32_t start;
+  uint32_t end;
+  uint64_t shader;
+  uint32_t format;
+  uint32_t endian;
+};
+std::vector<MemExportProbeRange> memexport_probe_ranges;
+std::unordered_map<uint64_t, uint32_t> vfetch_probe_counts;
+}  // namespace
 
 D3D12CommandProcessor::D3D12CommandProcessor(
     D3D12GraphicsSystem* graphics_system, kernel::KernelState* kernel_state)
@@ -3217,6 +3230,47 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
         vfetch_addresses[vfetch_current_queued] =
             vfetch_constant.address & 0x07FFFFFF;
         vfetch_sizes[vfetch_current_queued++] = vfetch_constant.size;
+        {
+          uint32_t vb_start = (vfetch_constant.address & 0x07FFFFFF) << 2;
+          uint32_t vb_end = vb_start + (vfetch_constant.size << 2);
+          for (const MemExportProbeRange& exported : memexport_probe_ranges) {
+            if (exported.start >= vb_end || vb_start >= exported.end) {
+              continue;
+            }
+            uint64_t vkey = vertex_shader->ucode_data_hash() ^
+                            (uint64_t(vb_start) << 7) ^ vfetch_index;
+            uint32_t vseen = vfetch_probe_counts[vkey]++;
+            if (vseen >= 2) {
+              break;
+            }
+            std::string attribute_text;
+            for (const Shader::VertexBinding& binding :
+                 vertex_shader->vertex_bindings()) {
+              if (binding.fetch_constant != vfetch_index) {
+                continue;
+              }
+              attribute_text +=
+                  fmt::format("stride {} :", binding.stride_words);
+              for (const Shader::VertexBinding::Attribute& attribute :
+                   binding.attributes) {
+                const auto& a = attribute.fetch_instr.attributes;
+                attribute_text += fmt::format(
+                    " [fmt {} off {} signed {} int {} exp {}]",
+                    uint32_t(a.data_format), a.offset, uint32_t(a.is_signed),
+                    uint32_t(a.is_integer), a.exp_adjust);
+              }
+            }
+            XELOGE(
+                "[vfetch-probe] vs {:016X} vf{} {:08X}+{} endian {} reads "
+                "export {:08X}-{:08X} by {:016X} {} endian {}; {}",
+                vertex_shader->ucode_data_hash(), vfetch_index, vb_start,
+                vfetch_constant.size << 2, uint32_t(vfetch_constant.endian),
+                exported.start, exported.end, exported.shader,
+                FormatInfo::GetName(xenos::TextureFormat(exported.format)),
+                exported.endian, attribute_text);
+            break;
+          }
+        }
       }
     }
 
@@ -3582,6 +3636,161 @@ bool D3D12CommandProcessor::IssueDraw(xenos::PrimitiveType primitive_type,
             }
             D3D12_RANGE readback_write_range = {};
             readback_buffer->Unmap(0, &readback_write_range);
+          }
+        }
+      }
+    }
+    if (!memexport_snapshot_taken) {
+      static std::unordered_map<uint64_t, uint32_t> memexport_probe_counts;
+      for (uint32_t stage = 0; stage < 2; ++stage) {
+        const Shader* shader =
+            stage ? (memexport_used_pixel ? pixel_shader : nullptr)
+                  : (memexport_used_vertex ? vertex_shader : nullptr);
+        if (!shader || !shader->memexport_eM_written()) {
+          continue;
+        }
+        uint32_t const_base = stage ? regs.Get<reg::SQ_PS_CONST>().base
+                                    : regs.Get<reg::SQ_VS_CONST>().base;
+        for (uint32_t constant_index : shader->memexport_stream_constants()) {
+          xenos::xe_gpu_memexport_stream_t stream =
+              regs.GetMemExportStream(const_base + constant_index);
+          if (stream.const_0x1 != 0x1 || stream.const_0x4b0 != 0x4B0 ||
+              stream.const_0x96 != 0x96 || !stream.index_count) {
+            continue;
+          }
+          const FormatInfo& format_info =
+              *FormatInfo::Get(xenos::TextureFormat(stream.format));
+          uint32_t offset = stream.base_address << 2;
+          uint32_t size =
+              stream.index_count * (format_info.bits_per_pixel >> 3);
+          if (!size || offset >= SharedMemory::kBufferSize) {
+            continue;
+          }
+          size = std::min(size, SharedMemory::kBufferSize - offset);
+          uint64_t key =
+              shader->ucode_data_hash() ^ (uint64_t(offset) << 1) ^ stage;
+          uint32_t seen = memexport_probe_counts[key]++;
+          if (!seen && memexport_probe_ranges.size() < 512) {
+            memexport_probe_ranges.push_back(
+                {offset, offset + size, shader->ucode_data_hash(),
+                 uint32_t(format_info.format), uint32_t(stream.endianness)});
+          }
+          if (seen >= 3 && (seen % 2000) != 0) {
+            continue;
+          }
+          ID3D12Resource* probe_buffer = RequestReadbackBuffer(size);
+          if (!probe_buffer) {
+            continue;
+          }
+          shared_memory_->UseAsCopySource();
+          SubmitBarriers();
+          deferred_command_list_.D3DCopyBufferRegion(
+              probe_buffer, 0, shared_memory_->GetBuffer(), offset, size);
+          if (!AwaitAllQueueOperationsCompletion()) {
+            continue;
+          }
+          D3D12_RANGE probe_range = {0, size};
+          void* probe_mapping;
+          if (FAILED(probe_buffer->Map(0, &probe_range, &probe_mapping))) {
+            continue;
+          }
+          const uint8_t* gpu_bytes =
+              reinterpret_cast<const uint8_t*>(probe_mapping);
+          const uint8_t* guest_bytes = memory_->TranslatePhysical(offset);
+          xenos::Endian128 endian = stream.endianness;
+          auto swap32 = [endian](uint32_t v) {
+            switch (endian) {
+              case xenos::Endian128::k8in16:
+                return ((v & 0x00FF00FFu) << 8) | ((v >> 8) & 0x00FF00FFu);
+              case xenos::Endian128::k16in32:
+                return (v << 16) | (v >> 16);
+              case xenos::Endian128::k8in32:
+              case xenos::Endian128::k8in64:
+              case xenos::Endian128::k8in128:
+                return xe::byte_swap(v);
+              default:
+                return v;
+            }
+          };
+          bool is_float =
+              stream.num_format == xenos::SurfaceNumberFormat::kFloat;
+          uint32_t component_bits = format_info.bits_per_pixel;
+          if (format_info.format == xenos::TextureFormat::k_32_32_FLOAT ||
+              format_info.format == xenos::TextureFormat::k_32_32_32_32_FLOAT) {
+            component_bits = 32;
+          } else if (format_info.format ==
+                         xenos::TextureFormat::k_16_16_FLOAT ||
+                     format_info.format ==
+                         xenos::TextureFormat::k_16_16_16_16_FLOAT) {
+            component_bits = 16;
+          }
+          uint32_t differ = 0, nans = 0, infs = 0, huge = 0, dwords = size >> 2;
+          uint32_t guest_nans = 0;
+          for (uint32_t i = 0; i < size; ++i) {
+            differ += gpu_bytes[i] != guest_bytes[i];
+          }
+          uint32_t first[4] = {}, guest_first[4] = {};
+          for (uint32_t i = 0; i < dwords; ++i) {
+            uint32_t v, g;
+            std::memcpy(&v, gpu_bytes + i * 4, 4);
+            std::memcpy(&g, guest_bytes + i * 4, 4);
+            v = swap32(v);
+            g = swap32(g);
+            if (i < 4) {
+              first[i] = v;
+              guest_first[i] = g;
+            }
+            if (!is_float) {
+              continue;
+            }
+            if (component_bits == 16) {
+              for (uint32_t h : {v & 0xFFFFu, v >> 16}) {
+                if ((h & 0x7C00u) == 0x7C00u) {
+                  ((h & 0x3FFu) ? nans : infs)++;
+                }
+              }
+            } else {
+              if ((v & 0x7F800000u) == 0x7F800000u) {
+                ((v & 0x7FFFFFu) ? nans : infs)++;
+              } else if ((v & 0x7F800000u) >= 0x49800000u) {
+                ++huge;
+              }
+              if ((g & 0x7F800000u) == 0x7F800000u && (g & 0x7FFFFFu)) {
+                ++guest_nans;
+              }
+            }
+          }
+          D3D12_RANGE probe_write_range = {};
+          probe_buffer->Unmap(0, &probe_write_range);
+          XELOGE(
+              "[memexport-probe] {} {:016X} c{} base {:08X} size {} {} num {} "
+              "endian {} draw #{}: {} bytes differ from guest, NaN {} Inf {} "
+              ">=2^20 {} of {} dwords, guest NaN {}; gpu {:08X} {:08X} {:08X} "
+              "{:08X} guest {:08X} {:08X} {:08X} {:08X}",
+              stage ? "ps" : "vs", shader->ucode_data_hash(), constant_index,
+              offset, size, FormatInfo::GetName(format_info.format),
+              uint32_t(stream.num_format), uint32_t(endian), seen, differ, nans,
+              infs, huge, dwords, guest_nans, first[0], first[1], first[2],
+              first[3], guest_first[0], guest_first[1], guest_first[2],
+              guest_first[3]);
+          for (uint32_t fetch_index = 16; fetch_index <= 18; ++fetch_index) {
+            xenos::xe_gpu_texture_fetch_t fetch =
+                regs.GetTextureFetch(fetch_index);
+            uint32_t tex_base = fetch.base_address << 12;
+            const uint32_t* tex_guest = reinterpret_cast<const uint32_t*>(
+                memory_->TranslatePhysical(tex_base));
+            XELOGE(
+                "[memexport-probe]   tf{} type {} base {:08X} {} {}x{} tiled "
+                "{} "
+                "pitch {} endian {} signs {}{}{}{} guest {:08X} {:08X} {:08X} "
+                "{:08X}",
+                fetch_index, uint32_t(fetch.type), tex_base,
+                FormatInfo::GetName(fetch.format), fetch.size_2d.width + 1,
+                fetch.size_2d.height + 1, uint32_t(fetch.tiled),
+                uint32_t(fetch.pitch) << 5, uint32_t(fetch.endianness),
+                uint32_t(fetch.sign_x), uint32_t(fetch.sign_y),
+                uint32_t(fetch.sign_z), uint32_t(fetch.sign_w), tex_guest[0],
+                tex_guest[1], tex_guest[2], tex_guest[3]);
           }
         }
       }

@@ -401,6 +401,8 @@ class PipelineCache {
   // Xenos pixel shader provided, and for keeping RTV draws that write nothing
   // rasterized for occlusion queries.
   std::vector<uint8_t> depth_only_pixel_shader_;
+  std::vector<uint8_t> depth_only_float24_truncate_pixel_shader_;
+  std::vector<uint8_t> depth_only_float24_round_pixel_shader_;
 
   std::vector<uint8_t> zpd_total_depth_only_pixel_shader_;
   std::vector<uint8_t> zpd_total_float24_truncate_pixel_shader_;

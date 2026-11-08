@@ -238,8 +238,17 @@ class BaseHeap {
   uint32_t ReleaseUnmarked(
       const std::vector<std::pair<uint32_t, uint32_t>>& keep);
 
+  // Zeroes the pages given back since the last call that nobody holds now.
+  uint64_t ZeroFreedPages(
+      const std::vector<std::pair<uint32_t, uint32_t>>& keep);
+  void ForgetFreedPages();
+  virtual void ForgetFreedRange(uint32_t address, uint32_t size);
+
  protected:
   BaseHeap();
+
+  bool IsFreedPage(uint32_t page) const;
+  void NoteFreedPages(uint32_t first_page, uint32_t last_page);
 
   void Initialize(Memory* memory, uint8_t* membase, HeapType heap_type,
                   uint32_t heap_base, uint32_t heap_size, uint32_t page_size,
@@ -265,6 +274,8 @@ class BaseHeap {
   uint32_t unreserved_page_count_;
   xe::global_critical_region global_critical_region_;
   std::vector<PageEntry> page_table_;
+  // One bit per page whose committed contents were given back.
+  std::vector<uint64_t> freed_pages_;
 
   // Auxiliary free block tracker: maps start_page -> count of contiguous free
   // pages. Kept in sync with page_table_ mutations. Not serialized.
@@ -315,6 +326,7 @@ class PhysicalHeap : public BaseHeap {
                uint32_t* out_region_size = nullptr) override;
   bool Protect(uint32_t address, uint32_t size, uint32_t protect,
                uint32_t* old_protect = nullptr) override;
+  void ForgetFreedRange(uint32_t address, uint32_t size) override;
   // Also false where another view of the physical memory has it allocated.
   bool IsRangeUnallocated(uint32_t address, uint32_t size) override;
 
@@ -450,6 +462,9 @@ class Memory {
   // no idea who owns what.
   void PinSystemHeapBlock(uint32_t address);
   uint32_t ReleaseTitleAllocations(
+      const std::vector<std::pair<uint32_t, uint32_t>>& keep);
+  // Zeroes what the title freed while it ran, so the next one starts clean.
+  uint64_t ZeroTitleFreedMemory(
       const std::vector<std::pair<uint32_t, uint32_t>>& keep);
 
   // Full file name and path of the memory-mapped file backing all memory.

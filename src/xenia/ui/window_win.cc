@@ -930,6 +930,17 @@ bool Win32Window::HandleKeyboard(
     case WM_KEYUP:
       OnKeyUp(e, destruction_receiver);
       break;
+    // F10 arrives as a system key.
+    case WM_SYSKEYDOWN:
+      if (wParam == VK_F10 && !e.is_alt_pressed()) {
+        OnKeyDown(e, destruction_receiver);
+      }
+      break;
+    case WM_SYSKEYUP:
+      if (wParam == VK_F10 && !e.is_alt_pressed()) {
+        OnKeyUp(e, destruction_receiver);
+      }
+      break;
     case WM_CHAR: {
       // Guarantee input driver receives the unicode corresponding to its
       // virtual key.

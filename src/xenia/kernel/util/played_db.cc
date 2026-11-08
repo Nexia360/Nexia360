@@ -187,6 +187,13 @@ bool PlayedDB::ApplySchema() {
   exec(
       "CREATE INDEX IF NOT EXISTS idx_mounts_title"
       " ON mounts(title_rowid);");
+
+  // Removed from the lists by the user; the profile's own played titles are
+  // filtered by it too. Launching the title again clears it.
+  exec(
+      "CREATE TABLE IF NOT EXISTS hidden_titles ("
+      "  title_id INTEGER PRIMARY KEY"
+      ");");
   return true;
 }
 
@@ -267,6 +274,13 @@ int64_t PlayedDB::BeginSession(const PlayedTitle& title) {
     if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
       XELOGE("PlayedDB: could not record launch: {}", sqlite3_errmsg(db_));
       return 0;
+    }
+  }
+  if (title.title_id) {
+    Stmt unhide(db_, "DELETE FROM hidden_titles WHERE title_id = ?1;");
+    if (unhide) {
+      sqlite3_bind_int64(unhide.get(), 1, title.title_id);
+      sqlite3_step(unhide.get());
     }
   }
 
@@ -467,6 +481,62 @@ bool PlayedDB::Remove(int64_t row) {
   }
   sqlite3_bind_int64(stmt.get(), 1, row);
   return sqlite3_step(stmt.get()) == SQLITE_DONE;
+}
+
+bool PlayedDB::RemoveTitle(uint32_t title_id,
+                           const std::filesystem::path& path) {
+  std::lock_guard lock(mutex_);
+  if (!db_ || (!title_id && path.empty())) {
+    return false;
+  }
+  // Every copy of the title, or the older one would take its place.
+  const char* where = title_id ? "title_id = ?1" : "path = ?1";
+  const std::string path_text = xe::path_to_utf8(path);
+  const auto bind = [&](sqlite3_stmt* stmt) {
+    if (title_id) {
+      sqlite3_bind_int64(stmt, 1, title_id);
+    } else {
+      sqlite3_bind_text(stmt, 1, path_text.c_str(), -1, SQLITE_TRANSIENT);
+    }
+  };
+  {
+    Stmt stmt(db_, fmt::format("DELETE FROM mounts WHERE title_rowid IN"
+                               " (SELECT rowid FROM titles WHERE {});",
+                               where)
+                       .c_str());
+    if (stmt) {
+      bind(stmt.get());
+      sqlite3_step(stmt.get());
+    }
+  }
+  Stmt stmt(db_, fmt::format("DELETE FROM titles WHERE {};", where).c_str());
+  if (!stmt) {
+    return false;
+  }
+  bind(stmt.get());
+  const bool removed = sqlite3_step(stmt.get()) == SQLITE_DONE;
+  if (title_id) {
+    Stmt hide(db_,
+              "INSERT OR IGNORE INTO hidden_titles (title_id) VALUES (?1);");
+    if (hide) {
+      sqlite3_bind_int64(hide.get(), 1, title_id);
+      sqlite3_step(hide.get());
+    }
+  }
+  return removed;
+}
+
+std::unordered_set<uint32_t> PlayedDB::GetHiddenTitles() const {
+  std::lock_guard lock(mutex_);
+  std::unordered_set<uint32_t> hidden;
+  if (!db_) {
+    return hidden;
+  }
+  Stmt stmt(db_, "SELECT title_id FROM hidden_titles;");
+  while (stmt && sqlite3_step(stmt.get()) == SQLITE_ROW) {
+    hidden.insert(uint32_t(sqlite3_column_int64(stmt.get(), 0)));
+  }
+  return hidden;
 }
 
 bool PlayedDB::ImportRecentToml(const std::filesystem::path& toml_path) {

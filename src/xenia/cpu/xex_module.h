@@ -177,6 +177,8 @@ class XexModule : public xe::cpu::Module {
   }
 
   const uint32_t base_address() const { return base_address_; }
+  uint32_t low_address() const { return low_address_; }
+  uint32_t high_address() const { return high_address_; }
   const bool is_dev_kit() const { return is_dev_kit_; }
 
   // Gets an optional header. Returns NULL if not found.

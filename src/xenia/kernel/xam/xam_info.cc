@@ -1777,11 +1777,11 @@ dword_result_t XdfLoadXex_entry(lpstring_t name, lpdword_t unk2, dword_t unk3,
            loaded);
     return X_E_FAIL;
   }
-  // Ownership goes with the handle; XexUnloadImage releases the last one.
-  auto* raw = module.release();
-  *hmodule_ptr = raw->hmodule_ptr();
+  // In the loader list, as XexLoadImage does, so teardown can drop it.
+  kernel_state()->RetainLoaderModule(module);
+  *hmodule_ptr = module->hmodule_ptr();
   XELOGE("XdfLoadXex('{}') -> {}, {:08X}", module_name, resolved,
-         raw->hmodule_ptr());
+         module->hmodule_ptr());
   return X_E_SUCCESS;
 }
 DECLARE_XAM_EXPORT1(XdfLoadXex, kNone, kSketchy);

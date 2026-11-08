@@ -7,7 +7,12 @@
  ******************************************************************************
  */
 
+#include <mutex>
+#include <set>
+
 #include "xenia/kernel/kernel_state.h"
+#include "xenia/kernel/smc.h"
+#include "xenia/kernel/title_id_utils.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xam/xam_private.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_threading.h"
@@ -53,10 +58,38 @@ dword_result_t XamNotifyCreateListenerInternal_entry(qword_t mask,
 }
 DECLARE_XAM_EXPORT1(XamNotifyCreateListenerInternal, kNone, kImplemented);
 
+// The 17559 game library asks for 0x8000000D by id and rebuilds on it; the
+// disc monitor polls for anything, so only the askers are nudged.
+static std::mutex library_listeners_mutex;
+static std::set<uint32_t> library_listeners;
+
+void RequestGameLibraryRebuild() {
+  auto* state = kernel_state();
+  if (!state || state->title_id() != kDashboardID) {
+    return;
+  }
+  const uint32_t tray = static_cast<uint8_t>(state->smc()->GetTrayState());
+  std::lock_guard<std::mutex> lock(library_listeners_mutex);
+  for (auto it = library_listeners.begin(); it != library_listeners.end();) {
+    auto listener = state->object_table()->LookupObject<XNotifyListener>(*it);
+    if (!listener) {
+      it = library_listeners.erase(it);
+      continue;
+    }
+    listener->EnqueueNotification(kXNotificationSystemTrayStateChanged, tray);
+    XELOGW("[mygames] game library listener {:08X} asked to rebuild", *it);
+    ++it;
+  }
+}
+
 dword_result_t XNotifyGetNext_entry(dword_t handle, dword_t match_id,
                                     lpdword_t id_ptr, lpdword_t param_ptr) {
   if (param_ptr) {
     *param_ptr = 0;
+  }
+  if (match_id == kXNotificationSystemTrayStateChanged) {
+    std::lock_guard<std::mutex> lock(library_listeners_mutex);
+    library_listeners.insert(handle);
   }
 
   if (!id_ptr) {
@@ -83,6 +116,10 @@ dword_result_t XNotifyGetNext_entry(dword_t handle, dword_t match_id,
     dequeued = listener->DequeueNotification(&id, &param);
   }
 
+  if (dequeued && id == kXNotificationLiveContentInstalled) {
+    XELOGW("[mygames] listener {:08X} took content-installed (match {:08X})",
+           uint32_t(handle), uint32_t(match_id));
+  }
   *id_ptr = dequeued ? id : 0;
   // param_ptr may be null - 555307F0 Demo explicitly passes nullptr in the
   // code.

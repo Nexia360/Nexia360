@@ -7,7 +7,13 @@
  ******************************************************************************
  */
 
+#include <algorithm>
+#include <chrono>
+#include <cstring>
 #include <filesystem>
+#include <functional>
+#include <map>
+#include <mutex>
 #include <set>
 #include <string>
 #include <tuple>
@@ -18,6 +24,7 @@
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
 #include "xenia/base/string_util.h"
+#include "xenia/base/threading.h"
 #include "xenia/emulator.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/title_id_utils.h"
@@ -29,6 +36,7 @@
 #include "xenia/kernel/xam/xam_state.h"
 #include "xenia/kernel/xenumerator.h"
 #include "xenia/kernel/xna/xna_launcher.h"
+#include "xenia/kernel/xthread.h"
 #include "xenia/vfs/file.h"
 #include "xenia/xbox.h"
 
@@ -97,7 +105,11 @@ void AddODDContentTest(object_ref<XStaticEnumerator<XCONTENT_DATA_AGGREGATE>> e,
 // the title-id sweep above never reaches one: the dashboard asks with xuid 0,
 // and a profile is not stored there. The profile manager already knows them
 // all, which is where Settings > Storage gets its list.
-static void AppendProfileItems(ContentEnumerator* e) {
+using ItemSink = std::function<void(const XCONTENT_DATA_INTERNAL&)>;
+using SeenItems =
+    std::set<std::tuple<uint64_t, uint32_t, uint32_t, std::string>>;
+
+static void AppendProfileItems(const ItemSink& add) {
   auto* profile_manager = kernel_state()->xam_state()->profile_manager();
   if (!profile_manager) {
     return;
@@ -135,7 +147,7 @@ static void AppendProfileItems(ContentEnumerator* e) {
     item.content_size = bytes;
 
     XELOGD("  profile item xuid {:016X} '{}' {} bytes", xuid, gamertag, bytes);
-    e->AppendItem(item);
+    add(item);
   }
 }
 
@@ -150,9 +162,7 @@ static void AppendProfileItems(ContentEnumerator* e) {
 // Launcher", which is the player itself (sub_922C79C0 sets bit 4 at
 // record+0x25F4). Reported as kArcadeTitle it took the arcade branch, keyed by
 // title id, and My Games said "No games found" with Arcadecraft installed.
-static void AppendXnaLibraryItems(
-    ContentEnumerator* e,
-    std::set<std::tuple<uint64_t, uint32_t, uint32_t, std::string>>* seen) {
+static void AppendXnaLibraryItems(const ItemSink& add, SeenItems* seen) {
   const auto library =
       kernel_state()->emulator()->storage_root() / "xna_library";
   std::error_code ec;
@@ -200,11 +210,197 @@ static void AppendXnaLibraryItems(
     item.set_title_name(u"Indie Games");
     item.content_size = ContentManager::PackageSizeOnDisk(entry.path());
 
-    XELOGE("  xna item title {:08X} '{}' file '{}' {} bytes",
+    XELOGD("  xna item title {:08X} '{}' file '{}' {} bytes",
            item.title_id.get(), name, item.file_name(),
            item.content_size.get());
-    e->AppendItem(item);
+    add(item);
   }
+}
+
+// One title's HDD records, exactly as the aggregate enumerator reports them.
+static void AppendTitleItems(uint64_t xuid, uint32_t title_id,
+                             XContentType content_type_enum,
+                             bool append_profiles, SeenItems* seen,
+                             const ItemSink& add) {
+  auto* content_manager = kernel_state()->content_manager();
+  const auto content_datas = content_manager->ListContent(
+      static_cast<uint32_t>(DummyDeviceId::HDD), xuid, title_id,
+      content_type_enum, XContentFlag::kNone);
+  for (const auto& content_data : content_datas) {
+    if (append_profiles &&
+        content_data.content_type == XContentType::kProfile) {
+      continue;
+    }
+    if (!seen->emplace(content_data.xuid.get(), content_data.title_id.get(),
+                       uint32_t(content_data.content_type.get()),
+                       content_data.file_name())
+             .second) {
+      continue;
+    }
+
+    // The package's own record: name, size and title name come from its
+    // header (or from the folder, for content that has none).
+    XCONTENT_DATA_INTERNAL item = content_data;
+    item.padding[0] = 0;
+    item.padding[1] = 0;
+
+    const uint32_t license_cvar = static_cast<uint32_t>(cvars::license_mask);
+    item.license_mask = item.license_mask.get() | license_cvar;
+    if (license_cvar == 0xFFFFFFFF || license_cvar == 1) {
+      // Bit 0 is the purchased bit - see ContentManager::OpenContent.
+      item.license_mask = item.license_mask.get() | 1;
+    }
+
+    // The dashboard classifies on category as well as content type, and
+    // the record ListContent builds does not carry it.
+    const auto package_path =
+        content_manager->FindPackagePath(xuid, content_data);
+    if (auto package = content_manager->OpenPackage(package_path);
+        package && package->IsValidPackage()) {
+      const auto* metadata = package->GetContainerMetadata();
+      item.category = metadata->category;
+      if (!item.content_size) {
+        item.content_size = metadata->content_size;
+      }
+    }
+    // Still nothing - a directory Nexia extracted or wrote has no size in
+    // its header - so Storage is told what it takes on disk.
+    if (!item.content_size) {
+      item.content_size = ContentManager::PackageSizeOnDisk(package_path);
+    }
+
+    // An XBLIG ships as kMarketplaceContent owned by the XNA Indie Player
+    // (0x584E07D2) and stays that: it is the pair the dashboard's library
+    // files a community game under - see AppendXnaLibraryItems.
+
+    // Temporary: one line per item, so the exact record the dashboard is
+    // handed is visible. Retire once My Games is settled.
+    XELOGD(
+        "  item title {:08X} type {:08X} device {:08X} license {:08X} "
+        "cat {:08X} '{}' file '{}' {} bytes",
+        item.title_id.get(), uint32_t(item.content_type.get()),
+        item.device_id.get(), item.license_mask.get(), item.category.get(),
+        xe::to_utf8(item.display_name()), item.file_name(),
+        item.content_size.get());
+
+    add(item);
+  }
+}
+
+// What the dashboard's all-titles HDD query reports for one title.
+static std::vector<XCONTENT_DATA_INTERNAL> DashboardTitleItems(
+    uint32_t title_id) {
+  std::vector<XCONTENT_DATA_INTERNAL> items;
+  SeenItems seen;
+  const ItemSink add = [&items](const XCONTENT_DATA_INTERNAL& item) {
+    items.push_back(item);
+  };
+  AppendTitleItems(0, title_id, XContentType::kAll, true, &seen, add);
+  if (title_id == kXN_2002) {
+    AppendXnaLibraryItems(add, &seen);
+  }
+  return items;
+}
+
+static bool DashboardWantsContentChanges() {
+  KernelState* state = kernel_state();
+  return state && state->title_id() == kDashboardID &&
+         state->xam_state()->content_register_callback;
+}
+
+static std::mutex content_snapshot_mutex;
+static std::map<uint32_t, std::vector<XCONTENT_DATA_INTERNAL>>
+    content_snapshots;
+
+void BeginContentChange(uint32_t title_id) {
+  if (!DashboardWantsContentChanges()) {
+    return;
+  }
+  auto items = DashboardTitleItems(title_id);
+  std::lock_guard<std::mutex> lock(content_snapshot_mutex);
+  content_snapshots[title_id] = std::move(items);
+}
+
+// Hands each change to the callback the dashboard registered with
+// XamContentRegisterChangeCallback (0 added, 1 removed), as xam does when
+// content is created or deleted, then has the game library rebuild.
+void EndContentChange(uint32_t title_id, std::string_view why) {
+  std::vector<XCONTENT_DATA_INTERNAL> before;
+  {
+    std::lock_guard<std::mutex> lock(content_snapshot_mutex);
+    if (auto it = content_snapshots.find(title_id);
+        it != content_snapshots.end()) {
+      before = std::move(it->second);
+      content_snapshots.erase(it);
+    }
+  }
+  if (!DashboardWantsContentChanges()) {
+    return;
+  }
+  const auto after = DashboardTitleItems(title_id);
+  auto key = [](const XCONTENT_DATA_INTERNAL& item) {
+    return std::make_tuple(item.xuid.get(), item.title_id.get(),
+                           uint32_t(item.content_type.get()), item.file_name());
+  };
+  auto contains = [&](const std::vector<XCONTENT_DATA_INTERNAL>& items,
+                      const XCONTENT_DATA_INTERNAL& item) {
+    return std::ranges::any_of(
+        items, [&](const auto& other) { return key(other) == key(item); });
+  };
+  std::vector<std::pair<uint32_t, XCONTENT_DATA_INTERNAL>> changes;
+  for (const auto& item : after) {
+    if (!contains(before, item)) {
+      changes.emplace_back(0, item);
+    }
+  }
+  for (const auto& item : before) {
+    if (!contains(after, item)) {
+      changes.emplace_back(1, item);
+    }
+  }
+  XELOGW("[mygames] {:08X} {}: {} content change(s) for the dashboard",
+         title_id, why, changes.size());
+  if (changes.empty()) {
+    return;
+  }
+
+  KernelState* state = kernel_state();
+  const uint32_t callback = state->xam_state()->content_register_callback;
+  auto thread = object_ref<XHostThread>(new XHostThread(
+      state, 64 * 1024, 0,
+      [state, callback, changes]() {
+        const uint32_t guest =
+            state->memory()->SystemHeapAlloc(sizeof(XCONTENT_DATA_INTERNAL));
+        if (!guest) {
+          return 0;
+        }
+        for (const auto& [change, item] : changes) {
+          if (state->title_id() != kDashboardID ||
+              state->xam_state()->content_register_callback != callback) {
+            break;
+          }
+          std::memcpy(state->memory()->TranslateVirtual(guest), &item,
+                      sizeof(item));
+          uint64_t args[] = {change, guest};
+          state->processor()->Execute(
+              XThread::GetCurrentThread()->thread_state(), callback, args,
+              xe::countof(args));
+          XELOGW("[mygames] dashboard told: {} '{}' ({:08X} type {:08X})",
+                 change ? "removed" : "added", item.file_name(),
+                 item.title_id.get(), uint32_t(item.content_type.get()));
+        }
+        state->memory()->SystemHeapFree(guest);
+        xe::threading::Sleep(std::chrono::milliseconds(250));
+        if (state->title_id() == kDashboardID) {
+          state->BroadcastNotification(kXNotificationLiveContentInstalled, 0);
+          RequestGameLibraryRebuild();
+        }
+        return 0;
+      },
+      state->GetTitleProcess()));
+  thread->set_can_debugger_suspend(true);
+  thread->set_name("Content Change Callback");
+  thread->Create();
 }
 
 // Alias XContentCreateCrossTitleEnumerator
@@ -279,75 +475,14 @@ dword_result_t XamContentAggregateCreateEnumerator_entry(qword_t xuid,
     // One record per package. A title can reach the same package more than
     // once - the dashboard's own id widens to every common title, and a title
     // update's content root is walked as well as the global tree.
-    std::set<std::tuple<uint64_t, uint32_t, uint32_t, std::string>> seen;
+    SeenItems seen;
+    const ItemSink add = [&e](const XCONTENT_DATA_INTERNAL& item) {
+      e->AppendItem(item);
+    };
 
     for (const auto& title_id : title_ids) {
-      // Get all content data.
-      auto content_datas = kernel_state()->content_manager()->ListContent(
-          static_cast<uint32_t>(DummyDeviceId::HDD),
-          xuid == -1 ? 0 : static_cast<uint64_t>(xuid), title_id,
-          content_type_enum, XContentFlag::kNone);
-      for (const auto& content_data : content_datas) {
-        if (append_profiles &&
-            content_data.content_type == XContentType::kProfile) {
-          continue;
-        }
-        if (!seen.emplace(content_data.xuid.get(), content_data.title_id.get(),
-                          uint32_t(content_data.content_type.get()),
-                          content_data.file_name())
-                 .second) {
-          continue;
-        }
-
-        // The package's own record: name, size and title name come from its
-        // header (or from the folder, for content that has none).
-        XCONTENT_DATA_INTERNAL item = content_data;
-        item.padding[0] = 0;
-        item.padding[1] = 0;
-
-        const uint32_t license_cvar =
-            static_cast<uint32_t>(cvars::license_mask);
-        item.license_mask = item.license_mask.get() | license_cvar;
-        if (license_cvar == 0xFFFFFFFF || license_cvar == 1) {
-          // Bit 0 is the purchased bit - see ContentManager::OpenContent.
-          item.license_mask = item.license_mask.get() | 1;
-        }
-
-        // The dashboard classifies on category as well as content type, and
-        // the record ListContent builds does not carry it.
-        auto* content_manager = kernel_state()->content_manager();
-        const auto package_path = content_manager->FindPackagePath(
-            xuid == -1 ? 0 : uint64_t(xuid), content_data);
-        if (auto package = content_manager->OpenPackage(package_path);
-            package && package->IsValidPackage()) {
-          const auto* metadata = package->GetContainerMetadata();
-          item.category = metadata->category;
-          if (!item.content_size) {
-            item.content_size = metadata->content_size;
-          }
-        }
-        // Still nothing - a directory Nexia extracted or wrote has no size in
-        // its header - so Storage is told what it takes on disk.
-        if (!item.content_size) {
-          item.content_size = ContentManager::PackageSizeOnDisk(package_path);
-        }
-
-        // An XBLIG ships as kMarketplaceContent owned by the XNA Indie Player
-        // (0x584E07D2) and stays that: it is the pair the dashboard's library
-        // files a community game under - see AppendXnaLibraryItems.
-
-        // Temporary: one line per item, so the exact record the dashboard is
-        // handed is visible. Retire once My Games is settled.
-        XELOGE(
-            "  item title {:08X} type {:08X} device {:08X} license {:08X} "
-            "cat {:08X} '{}' file '{}' {} bytes",
-            item.title_id.get(), uint32_t(item.content_type.get()),
-            item.device_id.get(), item.license_mask.get(), item.category.get(),
-            xe::to_utf8(item.display_name()), item.file_name(),
-            item.content_size.get());
-
-        e->AppendItem(item);
-      }
+      AppendTitleItems(xuid == -1 ? 0 : static_cast<uint64_t>(xuid), title_id,
+                       content_type_enum, append_profiles, &seen, add);
     }
 
     // XNA titles live in their own library, not the content tree, so nothing
@@ -357,13 +492,13 @@ dword_result_t XamContentAggregateCreateEnumerator_entry(qword_t xuid,
         (content_type_enum == XContentType::kInvalid ||
          content_type_enum == XContentType::kMarketplaceContent ||
          content_type.value() == 0xFFFFFFFF)) {
-      AppendXnaLibraryItems(e.get(), &seen);
+      AppendXnaLibraryItems(add, &seen);
     }
 
     if (content_type_enum == XContentType::kProfile ||
         content_type_enum == XContentType::kInvalid ||
         content_type.value() == 0xFFFFFFFF) {
-      AppendProfileItems(e.get());
+      AppendProfileItems(add);
     }
   }
 

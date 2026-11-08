@@ -658,6 +658,10 @@ void DxbcShaderTranslator::ReduceFloatPrecision(const dxbc::Dest& dest,
   // actual midpoint behavior, this is the one 4E4D07D1 needs. Signed zero stays
   // signed. Denormals still follow the host float controls.
   assert_true(mantissa_bits > 0 && mantissa_bits < 23);
+  if (!cvars::gpu_scalar_approx_rounding) {
+    a_.OpMov(dest, value);
+    return;
+  }
 
   uint32_t truncate_bits = 23 - mantissa_bits;
   uint32_t discarded_mask = (uint32_t(1) << truncate_bits) - 1;

@@ -306,6 +306,22 @@ class CodeCacheBase : public CodeCache {
     self().OnMarkReserved();
   }
 
+  void ResetIndirections(uint32_t guest_low, uint32_t guest_high) override {
+    if (!indirection_table_base_) {
+      return;
+    }
+    auto global_lock = global_critical_region_.Acquire();
+    for (const auto& range : committed_ranges_) {
+      const uint32_t low = std::max(range.first, guest_low & ~3u);
+      const uint32_t high = std::min(range.second, guest_high);
+      for (uint32_t address = low; address < high; address += 4) {
+        *reinterpret_cast<uint32_t*>(indirection_table_base_ +
+                                     (address - kIndirectionTableBase)) =
+            indirection_default_value_;
+      }
+    }
+  }
+
   size_t Flush() override {
     auto global_lock = global_critical_region_.Acquire();
     if (!reserved_marked_) {

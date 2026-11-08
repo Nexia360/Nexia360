@@ -12,6 +12,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -22,6 +23,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 
@@ -296,71 +298,205 @@ std::string BuildUrl(XHttpHandle* request) {
   return url;
 }
 
-// The title's box art from Live's marketplace image server, which still serves
-// it, kept on disk once fetched. Empty when it cannot be had - offline, or a
-// title the marketplace never listed.
+// One GET, body and status. Empty body on any failure.
+std::vector<uint8_t> HttpGet(const std::string& url, long* status,
+                             long timeout_ms = 10000) {
+  std::vector<uint8_t> body;
+  *status = 0;
+  CURL* curl = curl_easy_init();
+  if (!curl) {
+    return body;
+  }
+  curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+  curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+  curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+  curl_easy_setopt(curl, CURLOPT_SSL_OPTIONS,
+                   static_cast<long>(CURLSSLOPT_REVOKE_BEST_EFFORT));
+  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 3000L);
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, timeout_ms);
+  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteBody);
+  curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
+  const CURLcode result = curl_easy_perform(curl);
+  curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, status);
+  curl_easy_cleanup(curl);
+  if (result != CURLE_OK || *status != 200) {
+    body.clear();
+  }
+  return body;
+}
+
+std::vector<uint8_t> ReadWholeFile(const std::filesystem::path& path) {
+  std::ifstream file(path, std::ios::binary);
+  return std::vector<uint8_t>(std::istreambuf_iterator<char>(file),
+                              std::istreambuf_iterator<char>());
+}
+
+void WriteWholeFile(const std::filesystem::path& path,
+                    const std::vector<uint8_t>& bytes) {
+  std::error_code ec;
+  std::filesystem::create_directories(path.parent_path(), ec);
+  std::ofstream file(path, std::ios::binary);
+  file.write(reinterpret_cast<const char*>(bytes.data()),
+             static_cast<std::streamsize>(bytes.size()));
+}
+
+uint32_t ParseHexTitleId(const char* text) {
+  char* end = nullptr;
+  const unsigned long id = std::strtoul(text, &end, 16);
+  return end != text && *end == '\0' ? static_cast<uint32_t>(id) : 0;
+}
+
+constexpr std::string_view kX360dbBases[] = {
+    "https://xenia-manager.github.io/x360db/",
+    "https://raw.githubusercontent.com/xenia-manager/x360db/main/"};
+
+struct X360dbTitle {
+  uint32_t primary_id = 0;
+  std::string boxart;
+};
+
+// x360db files art under a game's primary id; games.json maps its other ids.
+const X360dbTitle* LookupX360dbTitle(uint32_t title_id) {
+  static std::mutex mutex;
+  static bool loaded = false;
+  static std::deque<X360dbTitle> titles;
+  static std::unordered_map<uint32_t, const X360dbTitle*> by_id;
+  std::lock_guard<std::mutex> lock(mutex);
+  if (!loaded) {
+    loaded = true;
+    const std::filesystem::path path =
+        kernel_state()->emulator()->cache_root() / "x360db" / "games.json";
+    std::error_code ec;
+    const bool cached = std::filesystem::is_regular_file(path, ec);
+    const bool stale =
+        !cached || std::filesystem::last_write_time(path, ec) +
+                           std::chrono::hours(24 * 7) <
+                       std::filesystem::file_time_type::clock::now();
+    std::vector<uint8_t> json;
+    if (stale) {
+      long status = 0;
+      for (std::string_view base : kX360dbBases) {
+        json = HttpGet(std::string(base) + "games.json", &status, 30000);
+        if (!json.empty()) {
+          break;
+        }
+      }
+      if (!json.empty()) {
+        WriteWholeFile(path, json);
+      } else {
+        XELOGI("x360db: games.json unavailable (HTTP {})", status);
+      }
+    }
+    if (json.empty() && cached) {
+      json = ReadWholeFile(path);
+    }
+    rapidjson::Document document;
+    if (!json.empty()) {
+      document.Parse(reinterpret_cast<const char*>(json.data()), json.size());
+    }
+    if (!json.empty() && !document.HasParseError() && document.IsArray()) {
+      std::vector<std::pair<uint32_t, const X360dbTitle*>> alternatives;
+      for (const auto& entry : document.GetArray()) {
+        if (!entry.IsObject() || !entry.HasMember("id") ||
+            !entry["id"].IsString()) {
+          continue;
+        }
+        const uint32_t id = ParseHexTitleId(entry["id"].GetString());
+        if (!id) {
+          continue;
+        }
+        X360dbTitle& title = titles.emplace_back();
+        title.primary_id = id;
+        if (entry.HasMember("boxart") && entry["boxart"].IsString()) {
+          title.boxart = entry["boxart"].GetString();
+        }
+        by_id.emplace(id, &title);
+        if (entry.HasMember("alternative_id") &&
+            entry["alternative_id"].IsArray()) {
+          for (const auto& alt : entry["alternative_id"].GetArray()) {
+            const uint32_t alt_id =
+                alt.IsString() ? ParseHexTitleId(alt.GetString()) : 0;
+            if (alt_id) {
+              alternatives.emplace_back(alt_id, &title);
+            }
+          }
+        }
+      }
+      for (const auto& [id, title] : alternatives) {
+        by_id.emplace(id, title);
+      }
+      XELOGI("x360db: {} titles, {} ids", titles.size(), by_id.size());
+    }
+  }
+  auto it = by_id.find(title_id);
+  return it == by_id.end() ? nullptr : it->second;
+}
+
+// Box art from x360db as Edge takes it, then the marketplace URL it mirrors.
 std::vector<uint8_t> FetchDiscBoxArt(uint32_t title_id) {
-  Emulator* emulator = kernel_state()->emulator();
+  const X360dbTitle* title = LookupX360dbTitle(title_id);
+  const uint32_t primary_id = title ? title->primary_id : title_id;
   const std::filesystem::path cache =
-      emulator->cache_root() / "disc_art" / fmt::format("{:08X}.jpg", title_id);
-  std::vector<uint8_t> art;
+      kernel_state()->emulator()->cache_root() / "x360db" / "titles" /
+      fmt::format("{:08X}", primary_id) / "artwork" / "boxart.jpg";
   std::error_code ec;
   if (std::filesystem::is_regular_file(cache, ec)) {
-    std::ifstream file(cache, std::ios::binary);
-    art.assign(std::istreambuf_iterator<char>(file),
-               std::istreambuf_iterator<char>());
-    return art;
+    return ReadWholeFile(cache);
   }
 
-  // A title with no art, or no network, is tried once per session: the
-  // dashboard asks for metadata on every listing, and each miss would
-  // otherwise wait out the timeout again.
   static std::mutex missing_mutex;
   static std::set<uint32_t> missing;
   {
     std::lock_guard<std::mutex> lock(missing_mutex);
-    if (missing.contains(title_id)) {
+    if (missing.contains(primary_id)) {
       return {};
     }
   }
 
-  CURL* curl = curl_easy_init();
-  if (!curl) {
-    return {};
+  std::vector<std::string> urls;
+  for (std::string_view base : kX360dbBases) {
+    urls.push_back(
+        fmt::format("{}titles/{:08X}/artwork/boxart.jpg", base, primary_id));
   }
-  const std::string url = fmt::format(
+  if (title && !title->boxart.empty()) {
+    urls.push_back(title->boxart);
+  }
+  const std::string marketplace = fmt::format(
       "http://download.xbox.com/content/images/"
       "66acd000-77fe-1000-9115-d802{:08x}/1033/boxartlg.jpg",
       title_id);
-  curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-  curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-  curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 3000L);
-  curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 8000L);
-  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteBody);
-  curl_easy_setopt(curl, CURLOPT_WRITEDATA, &art);
-  const CURLcode result = curl_easy_perform(curl);
-  long status = 0;
-  curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
-  curl_easy_cleanup(curl);
-
-  int width = 0;
-  int height = 0;
-  int channels = 0;
-  if (result != CURLE_OK || status != 200 ||
-      !stbi_info_from_memory(art.data(), static_cast<int>(art.size()), &width,
-                             &height, &channels)) {
-    XELOGI("XHttp: no box art for {:08X} ({} / HTTP {})", title_id,
-           curl_easy_strerror(result), status);
-    std::lock_guard<std::mutex> lock(missing_mutex);
-    missing.insert(title_id);
-    return {};
+  if (std::find(urls.begin(), urls.end(), marketplace) == urls.end()) {
+    urls.push_back(marketplace);
   }
-  std::filesystem::create_directories(cache.parent_path(), ec);
-  std::ofstream file(cache, std::ios::binary);
-  file.write(reinterpret_cast<const char*>(art.data()),
-             static_cast<std::streamsize>(art.size()));
-  return art;
+  for (const std::string& url : urls) {
+    long status = 0;
+    std::vector<uint8_t> art = HttpGet(url, &status, 8000);
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    if (!art.empty() &&
+        stbi_info_from_memory(art.data(), static_cast<int>(art.size()), &width,
+                              &height, &channels)) {
+      WriteWholeFile(cache, art);
+      XELOGI("x360db: box art for {:08X} from {} ({}x{})", title_id, url, width,
+             height);
+      return art;
+    }
+  }
+  XELOGI("x360db: no box art for {:08X}", title_id);
+  std::lock_guard<std::mutex> lock(missing_mutex);
+  missing.insert(primary_id);
+  return {};
+}
+
+// Guest URLs can hold invalid UTF-8; utf8::lower_ascii reads past the end on
+// it.
+std::string LowerBytes(std::string_view text) {
+  std::string out(text);
+  for (char& c : out) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  return out;
 }
 
 // The disc in the tray's art. The moment a disc goes in, the dashboard asks
@@ -375,7 +511,7 @@ bool AnswerDiscInTray(XHttpHandle* request, const std::string& verb,
   if (verb != "GET") {
     return false;
   }
-  std::string lowered = xe::utf8::lower_ascii(url);
+  std::string lowered = LowerBytes(url);
   lowered = lowered.substr(0, lowered.find('?'));
   constexpr std::string_view kImages = "/images/";
   constexpr std::string_view kName = "/discintray.jpg";
@@ -470,7 +606,7 @@ void AnswerWith(XHttpHandle* request, uint32_t status, const char* status_text,
 // one would wipe the hub's.
 bool AnswerFriendPrivacy(XHttpHandle* request, const std::string& verb,
                          const std::string& url) {
-  std::string path = xe::utf8::lower_ascii(url);
+  std::string path = LowerBytes(url);
   path = path.substr(0, path.find('?'));
   constexpr std::string_view kRoute = "/players/friendprivacy";
   const size_t route = path.find(kRoute);
@@ -1209,7 +1345,7 @@ bool AnswerHubAccountApps(XHttpHandle* request, const std::string& route,
 
 bool AnswerNexiaHub(XHttpHandle* request, const std::string& verb,
                     const std::string& url) {
-  const std::string lowered = xe::utf8::lower_ascii(url);
+  const std::string lowered = LowerBytes(url);
   const std::string path = lowered.substr(0, lowered.find('?'));
   constexpr std::string_view kRoot = "/nexia/";
   const size_t root = path.find(kRoot);
@@ -1517,7 +1653,7 @@ std::string UrlHost(const std::string& url) {
   const size_t scheme = url.find("://");
   const size_t start = scheme == std::string::npos ? 0 : scheme + 3;
   const size_t end = url.find_first_of(":/?", start);
-  return xe::utf8::lower_ascii(url.substr(
+  return LowerBytes(url.substr(
       start, end == std::string::npos ? std::string::npos : end - start));
 }
 
@@ -1583,7 +1719,22 @@ bool Perform(XHttpHandle* request) {
 
   curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
   curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, verb.c_str());
-  curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+  const auto disable = request->options.find(XHTTP_OPTION_DISABLE_FEATURE);
+  const auto max_redirects = request->options.find(89);
+  const bool no_redirects =
+      (disable != request->options.end() && (disable->second & 0x2)) ||
+      (max_redirects != request->options.end() && max_redirects->second == 0);
+  XELOGI("XHttp: redirects {} (disable_feature {:X}, max_redirects {})",
+         no_redirects ? "off" : "on",
+         disable != request->options.end() ? disable->second : 0,
+         max_redirects != request->options.end()
+             ? static_cast<int64_t>(max_redirects->second)
+             : -1);
+  curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, no_redirects ? 0L : 1L);
+  if (!no_redirects && max_redirects != request->options.end()) {
+    curl_easy_setopt(curl, CURLOPT_MAXREDIRS,
+                     static_cast<long>(max_redirects->second));
+  }
   curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
   if (headers) {
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
@@ -1651,7 +1802,7 @@ bool Perform(XHttpHandle* request) {
     request->auth_schemes = 0;
     const std::string authenticate = HeaderValue(request, "WWW-Authenticate");
     if (!authenticate.empty()) {
-      const std::string lowered = xe::utf8::lower_ascii(authenticate);
+      const std::string lowered = LowerBytes(authenticate);
       if (lowered.find("basic") != std::string::npos) {
         request->auth_schemes |= XHTTP_AUTH_SCHEME_BASIC;
       }
@@ -1743,31 +1894,180 @@ std::vector<uint8_t> FetchTitleBoxArt(uint32_t title_id) {
 
 namespace {
 
-// One GET, body and status. Empty body on any failure.
-std::vector<uint8_t> HttpGet(const std::string& url, long* status) {
-  std::vector<uint8_t> body;
-  *status = 0;
-  CURL* curl = curl_easy_init();
-  if (!curl) {
-    return body;
+constexpr std::string_view kIndieCoverArchive =
+    "https://archive.org/download/xbox-360-indie-games-rom/Cover/";
+
+std::string IndieKey(std::string_view name) {
+  std::string key;
+  for (const unsigned char c : name) {
+    if (std::isalnum(c)) {
+      key.push_back(char(std::tolower(c)));
+    }
   }
-  curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-  curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-  curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 3000L);
-  curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 10000L);
-  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteBody);
-  curl_easy_setopt(curl, CURLOPT_WRITEDATA, &body);
-  const CURLcode result = curl_easy_perform(curl);
-  curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, status);
-  curl_easy_cleanup(curl);
-  if (result != CURLE_OK || *status != 200) {
-    body.clear();
+  return key;
+}
+
+std::string PercentEncode(std::string_view text) {
+  std::string out;
+  for (const unsigned char c : text) {
+    if (std::isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
+      out.push_back(char(c));
+    } else {
+      out += fmt::format("%{:02X}", c);
+    }
   }
-  return body;
+  return out;
+}
+
+std::string HtmlUnescape(std::string text) {
+  static constexpr std::pair<std::string_view, std::string_view> kEntities[] = {
+      {"&amp;", "&"},   {"&lt;", "<"},  {"&gt;", ">"},
+      {"&quot;", "\""}, {"&#39;", "'"}, {"&#039;", "'"}};
+  for (const auto& [entity, plain] : kEntities) {
+    for (size_t at = text.find(entity); at != std::string::npos;
+         at = text.find(entity, at + plain.size())) {
+      text.replace(at, entity.size(), plain);
+    }
+  }
+  return text;
+}
+
+std::string ArchiveCoverNames(const std::string& html) {
+  std::string names;
+  constexpr std::string_view kOpen = "<a href=\"";
+  for (size_t at = html.find(kOpen); at != std::string::npos;
+       at = html.find(kOpen, at + 1)) {
+    const size_t text = html.find("\">", at);
+    const size_t close =
+        text == std::string::npos ? std::string::npos : html.find("</a>", text);
+    if (close == std::string::npos) {
+      break;
+    }
+    std::string name = HtmlUnescape(html.substr(text + 2, close - text - 2));
+    if (name.size() > 4 && LowerBytes(name.substr(name.size() - 4)) == ".jpg") {
+      names += name;
+      names += '\n';
+    }
+  }
+  return names;
+}
+
+// Cover file names by IndieKey: the hub's list, else the archive's listing.
+const std::unordered_map<std::string, std::string>& IndieCoverIndex() {
+  static std::mutex mutex;
+  static bool loaded = false;
+  static std::unordered_map<std::string, std::string> index;
+  std::lock_guard<std::mutex> lock(mutex);
+  if (loaded) {
+    return index;
+  }
+  loaded = true;
+  const std::filesystem::path path =
+      kernel_state()->emulator()->cache_root() / "xblig" / "covers.txt";
+  std::error_code ec;
+  const bool cached = std::filesystem::is_regular_file(path, ec);
+  const bool stale =
+      !cached ||
+      std::filesystem::last_write_time(path, ec) + std::chrono::hours(24 * 7) <
+          std::filesystem::file_time_type::clock::now();
+  std::string names;
+  if (stale) {
+    long status = 0;
+    const auto hub = HttpGet(
+        XLiveAPI::GetApiAddress() + "xblig/covers/index.txt", &status, 15000);
+    if (!hub.empty() && hub.front() != '<') {
+      names.assign(hub.begin(), hub.end());
+    } else {
+      const auto listing =
+          HttpGet(std::string(kIndieCoverArchive), &status, 60000);
+      names = ArchiveCoverNames(std::string(listing.begin(), listing.end()));
+    }
+    if (!names.empty()) {
+      WriteWholeFile(path, std::vector<uint8_t>(names.begin(), names.end()));
+    } else {
+      XELOGI("XBLIG: cover index unavailable (HTTP {})", status);
+    }
+  }
+  if (names.empty() && cached) {
+    const auto bytes = ReadWholeFile(path);
+    names.assign(bytes.begin(), bytes.end());
+  }
+  size_t start = 0;
+  while (start < names.size()) {
+    size_t end = names.find('\n', start);
+    if (end == std::string::npos) {
+      end = names.size();
+    }
+    std::string name = names.substr(start, end - start);
+    while (!name.empty() && (name.back() == '\r' || name.back() == ' ')) {
+      name.pop_back();
+    }
+    if (name.size() > 4) {
+      index.emplace(IndieKey(name.substr(0, name.size() - 4)), name);
+    }
+    start = end + 1;
+  }
+  XELOGI("XBLIG: {} covers indexed", index.size());
+  return index;
 }
 
 }  // namespace
+
+std::vector<uint8_t> FetchIndieBoxArt(const std::vector<std::string>& names) {
+  const auto& index = IndieCoverIndex();
+  std::string file;
+  for (const auto& name : names) {
+    const std::string key = IndieKey(name);
+    if (key.empty()) {
+      continue;
+    }
+    if (const auto it = index.find(key); it != index.end()) {
+      file = it->second;
+      break;
+    }
+  }
+  if (file.empty()) {
+    XELOGI("XBLIG: no cover for '{}'", names.empty() ? "" : names.front());
+    return {};
+  }
+  const std::string key = IndieKey(file.substr(0, file.size() - 4));
+  const std::filesystem::path cache = kernel_state()->emulator()->cache_root() /
+                                      "xblig" / "covers" / (key + ".jpg");
+  std::error_code ec;
+  if (std::filesystem::is_regular_file(cache, ec)) {
+    return ReadWholeFile(cache);
+  }
+
+  static std::mutex missing_mutex;
+  static std::set<std::string> missing;
+  {
+    std::lock_guard<std::mutex> lock(missing_mutex);
+    if (missing.contains(key)) {
+      return {};
+    }
+  }
+  const std::string urls[] = {
+      XLiveAPI::GetApiAddress() + "xblig/covers/" + PercentEncode(file),
+      std::string(kIndieCoverArchive) + PercentEncode(file)};
+  for (const std::string& url : urls) {
+    long status = 0;
+    std::vector<uint8_t> art = HttpGet(url, &status, 15000);
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    if (!art.empty() &&
+        stbi_info_from_memory(art.data(), static_cast<int>(art.size()), &width,
+                              &height, &channels)) {
+      WriteWholeFile(cache, art);
+      XELOGI("XBLIG: cover '{}' from {} ({}x{})", file, url, width, height);
+      return art;
+    }
+  }
+  XELOGI("XBLIG: cover '{}' could not be fetched", file);
+  std::lock_guard<std::mutex> lock(missing_mutex);
+  missing.insert(key);
+  return {};
+}
 
 // The title's official retail cover from XboxUnity: the whole 900x600 case
 // jacket, back, spine and front. Kept on disk once fetched; a title with no

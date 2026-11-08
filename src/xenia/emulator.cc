@@ -7,6 +7,7 @@
  ******************************************************************************
  */
 
+#include <cctype>
 #include <chrono>
 #include <ranges>
 
@@ -51,6 +52,7 @@
 #include "xenia/kernel/xam/achievement_manager.h"
 #include "xenia/kernel/xam/xam_content_device.h"
 #include "xenia/kernel/xam/xam_module.h"
+#include "xenia/kernel/xam/xam_private.h"
 #include "xenia/kernel/xam/xdbf/spa_info.h"
 #include "xenia/kernel/xbdm/xbdm_module.h"
 #include "xenia/kernel/xboxkrnl/xboxkrnl_module.h"
@@ -467,6 +469,7 @@ X_STATUS Emulator::TerminateTitle(bool clear_handles) {
   processor()->PauseBackgroundTranslation();
   // A hosted title's RuntimeHost goes with the user modules below.
   kernel::xna::XnaConsoleNatives::Instance().Reset();
+  kernel::xam::ResetVoiceCapture();
   XELOGI("TerminateTitle: audio clients");
   if (audio_system()) {
     audio_system()->UnregisterAllClients();
@@ -493,6 +496,8 @@ X_STATUS Emulator::TerminateTitle(bool clear_handles) {
   }
 
   XELOGI("TerminateTitle: memory");
+  // The next title's table can sit at the same address, so drop the old views.
+  memory()->SetUserPageTable(0);
   // Before the sweep, not after: every thread still running owns guest blocks
   // the sweep would otherwise hand to the next title.
   kernel_state_->PinLiveThreadBlocks();
@@ -678,9 +683,8 @@ X_STATUS Emulator::MountPath(const std::filesystem::path& path,
                              const std::string_view mount_path) {
   auto device = CreateVfsDevice(path, mount_path);
   if (!device || !device->Initialize()) {
-    XELOGE(
-        "Unable to mount the selected file, it is an unsupported format or "
-        "corrupted.");
+    XELOGE("Unable to mount '{}', it is an unsupported format or corrupted.",
+           xe::path_to_utf8(path));
     return X_STATUS_NO_SUCH_FILE;
   }
 
@@ -1356,6 +1360,7 @@ X_STATUS Emulator::InstallContentPackage(
       const auto library = storage_root() / "xna_library";
       std::filesystem::create_directories(library, ec);
       const auto destination = library / path.filename();
+      kernel::xam::BeginContentChange(kernel::kXN_2002);
       std::filesystem::copy_file(
           path, destination, std::filesystem::copy_options::overwrite_existing,
           ec);
@@ -1369,6 +1374,7 @@ X_STATUS Emulator::InstallContentPackage(
       }
       XELOGI("Installed XNA title {} to {}", xna_info.display_name,
              xe::path_to_utf8(destination));
+      kernel::xam::EndContentChange(kernel::kXN_2002, "XNA title installed");
       installation_info.installation_state_ = InstallState::installed;
       installation_info.installation_result_ = X_STATUS_SUCCESS;
       return X_STATUS_SUCCESS;
@@ -1491,6 +1497,7 @@ X_STATUS Emulator::InstallContentPackage(
   const bool extract_title_update =
       installation_info.content_type_ == XContentType::kInstaller;
 
+  kernel::xam::BeginContentChange(installation_info.title_id_);
   X_STATUS error_code = kernel_state_->content_manager()->InstallContentPackage(
       package, installation_dir / installation_info.filename_, header_path,
       installation_info.currently_installed_size_, extract_title_update);
@@ -1516,6 +1523,8 @@ X_STATUS Emulator::InstallContentPackage(
 
   kernel_state_->content_manager()->CloseContentByDeviceName(
       package->GetDevicePath());
+  kernel::xam::EndContentChange(installation_info.title_id_,
+                                "content installed");
 
   if (installation_info.content_type_ == XContentType::kProfile) {
     kernel_state_->xam_state()->profile_manager()->ReloadProfiles();
@@ -1932,7 +1941,11 @@ const std::filesystem::path Emulator::ShowDiscPicker(
 static constexpr std::string_view kDiscDevicePath = "\\Device\\Cdrom0";
 
 // The title id in the disc's default.xex header, 0 when it has none.
-static uint32_t ReadDiscTitleId(vfs::Device* device) {
+static uint32_t ReadDiscTitleId(vfs::Device* device,
+                                uint32_t* disc_number = nullptr) {
+  if (disc_number) {
+    *disc_number = 0;
+  }
   vfs::Entry* entry = device->ResolvePath("default.xex");
   if (!entry) {
     return 0;
@@ -1960,6 +1973,9 @@ static uint32_t ReadDiscTitleId(vfs::Device* device) {
                 XEX_HEADER_EXECUTION_INFO, &exec) &&
             exec) {
           title_id = exec->title_id;
+          if (disc_number) {
+            *disc_number = exec->disc_number;
+          }
         }
       }
     }
@@ -2130,6 +2146,65 @@ bool Emulator::GetInsertedDisc(std::filesystem::path* path,
     *title_id = inserted_disc_title_id_;
   }
   return true;
+}
+
+static bool NameSaysDisc(const std::filesystem::path& path,
+                         uint32_t disc_number) {
+  const std::string name = xe::utf8::lower_ascii(xe::path_to_utf8(path.stem()));
+  for (size_t at = name.find("disc"); at != std::string::npos;
+       at = name.find("disc", at + 4)) {
+    size_t digits = at + 4;
+    while (
+        digits < name.size() &&
+        (name[digits] == ' ' || name[digits] == '_' || name[digits] == '-')) {
+      ++digits;
+    }
+    uint32_t value = 0;
+    size_t end = digits;
+    while (end < name.size() && std::isdigit(uint8_t(name[end]))) {
+      value = value * 10 + uint32_t(name[end] - '0');
+      ++end;
+    }
+    if (end != digits && value == disc_number) {
+      return true;
+    }
+  }
+  return false;
+}
+
+std::filesystem::path Emulator::FindSwapDisc(uint32_t title_id,
+                                             uint32_t disc_number) {
+  std::filesystem::path current;
+  if (vfs::Entry* root = file_system_->ResolvePath("game:\\")) {
+    if (auto* disc = dynamic_cast<vfs::DiscImageDevice*>(root->device())) {
+      current = disc->host_path();
+    }
+  }
+  if (current.empty()) {
+    GetInsertedDisc(&current, nullptr);
+  }
+  if (current.empty() || !current.has_parent_path()) {
+    return {};
+  }
+
+  std::error_code ec;
+  for (const auto& item :
+       std::filesystem::directory_iterator(current.parent_path(), ec)) {
+    if (!item.is_regular_file(ec) || item.path() == current ||
+        !NameSaysDisc(item.path(), disc_number)) {
+      continue;
+    }
+    auto device = std::make_unique<vfs::DiscImageDevice>("", item.path());
+    if (!device->Initialize()) {
+      continue;
+    }
+    uint32_t found_disc = 0;
+    if (ReadDiscTitleId(device.get(), &found_disc) == title_id &&
+        found_disc == disc_number) {
+      return item.path();
+    }
+  }
+  return {};
 }
 
 #if XE_PLATFORM_WIN32 == 1

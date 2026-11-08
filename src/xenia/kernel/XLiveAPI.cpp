@@ -3804,6 +3804,15 @@ std::vector<X_TITLE_SERVER> XLiveAPI::GetServers() {
   return xlsp_servers_;
 }
 
+bool XLiveAPI::IsTitleServerAddress(uint32_t address) const {
+  for (const auto& server : xlsp_servers_) {
+    if (server.server_address.s_addr == address) {
+      return true;
+    }
+  }
+  return false;
+}
+
 std::unique_ptr<ServicesObjectJSON> XLiveAPI::GetServices() {
   std::string endpoint = BuildEndpoint(
       fmt::format("title/{:08X}/services", kernel_state()->title_id()));

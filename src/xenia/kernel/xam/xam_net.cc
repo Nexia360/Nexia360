@@ -7,6 +7,7 @@
  ******************************************************************************
  */
 
+#include <cctype>
 #include <cstring>
 #include <mutex>
 #include <random>
@@ -344,20 +345,27 @@ dword_result_t NetDll_XnpLogonGetStatus_entry(
 DECLARE_XAM_EXPORT1(NetDll_XnpLogonGetStatus, kNetworking, kStub);
 
 // Alias XAuthGetToken
-dword_result_t XamGetToken_entry(dword_t user_index, lpstring_t url_ptr,
+dword_result_t XamGetToken_entry(dword_t user_index, dword_t url_ptr,
                                  dword_t url_size, lpdword_t token_out_ptr,
                                  pointer_t<XAM_OVERLAPPED> overlapped_ptr) {
   if (user_index >= XUserMaxUserCount) {
     return X_ERROR_INVALID_PARAMETER;
   }
 
+  std::string url;
+  if (url_ptr.value() && url_size.value()) {
+    const char* url_chars =
+        kernel_memory()->TranslateVirtual<const char*>(url_ptr.value());
+    url.assign(url_chars, strnlen(url_chars, url_size.value()));
+  }
+
   auto run = [=](uint32_t& extended_error, uint32_t& length) {
     extended_error = X_ERROR_SUCCESS;
     length = 0;
 
-    const std::string url(url_ptr, url_size);
-
     XELOGI("XamGetToken: URL - {}", url);
+    // PROBE: Hardline online.
+    XELOGW("[net-probe] XamGetToken {}", url);
 
     const uint32_t token_address =
         kernel_memory()->SystemHeapAlloc(sizeof(XAM_RELYING_PARTY_TOKEN));
@@ -368,7 +376,20 @@ dword_result_t XamGetToken_entry(dword_t user_index, lpstring_t url_ptr,
 
     *token_out_ptr = token_address;
 
-    const std::string mock_token = "MOCK_XBOX_STS_TOKEN";
+    std::string mock_token = "MOCK_XBOX_STS_TOKEN";
+    if (const auto user =
+            kernel_state()->xam_state()->GetUserProfile(user_index.value())) {
+      std::string gamertag;
+      for (const unsigned char c : user->name()) {
+        if (std::isalnum(c)) {
+          gamertag += static_cast<char>(c);
+        } else {
+          gamertag += fmt::format("%{:02X}", c);
+        }
+      }
+      mock_token = fmt::format("XBL3.0 x={:016X};gtg={}", user->GetOnlineXUID(),
+                               gamertag);
+    }
     const uint32_t mock_token_len = static_cast<uint32_t>(mock_token.size());
 
     const uint32_t token_data_addrress =
@@ -863,6 +884,8 @@ DECLARE_XAM_EXPORT1(NetDll_XNetUnregisterInAddr, kNetworking, kStub);
 
 dword_result_t NetDll_XNetConnect_entry(dword_t caller, dword_t addr) {
   XELOGD("XNetConnect({:08X})", cvars::log_mask_ips ? 0 : addr.value());
+  // PROBE: Hardline online.
+  XELOGW("[net-probe] XNetConnect {:08X}", addr.value());
 
   // Connection requested: mark the peer pending. XNetGetConnectStatus reports
   // CONNECTED once we actually receive traffic from it.
@@ -916,6 +939,9 @@ dword_result_t NetDll_XNetServerToInAddr_entry(dword_t caller,
   pina->s_addr = htonl(server_addr);
 
   XELOGI("Server IP: {}", ip_to_string(*pina));
+
+  // A title server has no key exchange to wait for.
+  XNetUpdateConnectStatus(server_addr.value(), STATUS_CONNECTED);
 
   return X_ERROR_SUCCESS;
 }
@@ -1271,6 +1297,8 @@ dword_result_t NetDll_XNetDnsLookup_entry(dword_t caller, lpstring_t host,
 
     if (status) {
       XELOGI("DNS Lookup: Failed");
+      // PROBE: Hardline online.
+      XELOGW("[net-probe] DNS {} failed ({})", host_name, status);
       dns->cina = 0;
       dns->status = XSocket::GetLastWSAErrorStatic();
       xboxkrnl::xeNtSetEvent(event_handle, nullptr);
@@ -1303,6 +1331,9 @@ dword_result_t NetDll_XNetDnsLookup_entry(dword_t caller, lpstring_t host,
 
     XELOGI("DNS Lookup: {} resolved to {} address(es)", host_name,
            address_index);
+    // PROBE: Hardline online.
+    XELOGW("[net-probe] DNS {} -> {} address(es), first {:08X}", host_name,
+           address_index, address_index ? ntohl(dns->aina[0].s_addr) : 0);
 
     xboxkrnl::xeNtSetEvent(event_handle, nullptr);
   };
@@ -2030,6 +2061,10 @@ dword_result_t NetDll_connect_entry(dword_t caller, dword_t socket_handle,
   }
 
   X_STATUS status = socket->Connect(name, namelen);
+  // PROBE: Hardline online.
+  XELOGW("[net-probe] connect {:08X}:{} -> {:08X} wsa {}",
+         ntohl(name->address_ip.s_addr), uint16_t(name->address_port), status,
+         XFAILED(status) ? socket->GetLastWSAError() : 0);
   if (XFAILED(status)) {
     XThread::SetLastError(socket->GetLastWSAError());
     return -1;

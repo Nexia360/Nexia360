@@ -493,6 +493,21 @@ uint32_t Memory::ReleaseTitleAllocations(
   return released;
 }
 
+uint64_t Memory::ZeroTitleFreedMemory(
+    const std::vector<std::pair<uint32_t, uint32_t>>& keep) {
+  // Physical memory is wiped once, through the heap that owns the frames.
+  uint64_t zeroed = heaps_.v00000000.ZeroFreedPages(keep);
+  zeroed += heaps_.v40000000.ZeroFreedPages(keep);
+  zeroed += heaps_.physical.ZeroFreedPages({});
+  heaps_.v80000000.ForgetFreedPages();
+  heaps_.v90000000.ForgetFreedPages();
+  heaps_.v7F000000.ForgetFreedPages();
+  heaps_.vA0000000.ForgetFreedPages();
+  heaps_.vC0000000.ForgetFreedPages();
+  heaps_.vE0000000.ForgetFreedPages();
+  return zeroed;
+}
+
 uint64_t Memory::UserViewFileOffset(uint32_t user_address) const {
   // The alias replaces the raw physical view, which user mode cannot reach.
   if (user_address - kUserAliasBase < kUserAliasSize) {
@@ -2424,6 +2439,7 @@ void BaseHeap::Initialize(Memory* memory, uint8_t* membase, HeapType heap_type,
   host_address_offset_ = host_address_offset;
   page_table_.resize(heap_size / page_size);
   unreserved_page_count_ = uint32_t(page_table_.size());
+  freed_pages_.assign((page_table_.size() + 63) / 64, 0);
 
   // Initialize free block tracker with a single block covering the entire heap.
   free_blocks_.clear();
@@ -2696,7 +2712,7 @@ void BaseHeap::MarkAllocationsSystem() {
 
 uint32_t BaseHeap::ReleaseUnmarked(
     const std::vector<std::pair<uint32_t, uint32_t>>& keep) {
-  std::vector<uint32_t> regions;
+  std::vector<std::pair<uint32_t, uint32_t>> regions;
   {
     auto global_lock = global_critical_region_.Acquire();
     const uint32_t total = uint32_t(page_table_.size());
@@ -2731,22 +2747,109 @@ uint32_t BaseHeap::ReleaseUnmarked(
       }
       if (release) {
         for (uint32_t i = page; i < page + region_pages; ++i) {
-          if (page_table_[i].state & kMemoryAllocationCommit) {
+          if ((page_table_[i].state & kMemoryAllocationCommit) ||
+              IsFreedPage(i)) {
             uint8_t* host = TranslateRelative(size_t(i) * page_size_);
             xe::memory::Protect(host, page_size_,
                                 xe::memory::PageAccess::kReadWrite, nullptr);
             std::memset(host, 0, page_size_);
           }
         }
-        regions.push_back(uint32_t(low));
+        regions.emplace_back(uint32_t(low), uint32_t(high - low));
       }
       page += region_pages;
     }
   }
-  for (uint32_t base : regions) {
+  for (const auto& [base, size] : regions) {
     Release(base);
+    ForgetFreedRange(base, size);
   }
   return uint32_t(regions.size());
+}
+
+bool BaseHeap::IsFreedPage(uint32_t page) const {
+  return (freed_pages_[page >> 6] >> (page & 63)) & 1;
+}
+
+void BaseHeap::NoteFreedPages(uint32_t first_page, uint32_t last_page) {
+  for (uint32_t page = first_page; page <= last_page; ++page) {
+    if (page_table_[page].state & kMemoryAllocationCommit) {
+      freed_pages_[page >> 6] |= uint64_t(1) << (page & 63);
+    }
+  }
+}
+
+void BaseHeap::ForgetFreedRange(uint32_t address, uint32_t size) {
+  if (!size || address < heap_base_) {
+    return;
+  }
+  auto global_lock = global_critical_region_.Acquire();
+  const uint32_t total = uint32_t(page_table_.size());
+  const uint32_t first = (address - heap_base_) >> page_size_shift_;
+  const uint32_t last = std::min(
+      total,
+      uint32_t((uint64_t(address - heap_base_) + size + page_size_ - 1) >>
+               page_size_shift_));
+  for (uint32_t page = first; page < last; ++page) {
+    freed_pages_[page >> 6] &= ~(uint64_t(1) << (page & 63));
+  }
+}
+
+void BaseHeap::ForgetFreedPages() {
+  auto global_lock = global_critical_region_.Acquire();
+  std::fill(freed_pages_.begin(), freed_pages_.end(), 0);
+}
+
+uint64_t BaseHeap::ZeroFreedPages(
+    const std::vector<std::pair<uint32_t, uint32_t>>& keep) {
+  auto global_lock = global_critical_region_.Acquire();
+  const uint32_t total = uint32_t(page_table_.size());
+  // Freed during the title, not committed again, and kept by nobody.
+  auto take = [&](uint32_t page) {
+    if (!IsFreedPage(page)) {
+      return false;
+    }
+    freed_pages_[page >> 6] &= ~(uint64_t(1) << (page & 63));
+    if (page_table_[page].state & kMemoryAllocationCommit) {
+      return false;
+    }
+    const uint64_t low = uint64_t(heap_base_) + uint64_t(page) * page_size_;
+    const uint64_t high = low + page_size_;
+    for (const auto& range : keep) {
+      if (low < range.second && range.first < high) {
+        return false;
+      }
+    }
+    return true;
+  };
+  uint64_t zeroed = 0;
+  uint32_t page = 0;
+  while (page < total) {
+    if (!(page & 63) && !freed_pages_[page >> 6]) {
+      page += 64;
+      continue;
+    }
+    if (!take(page)) {
+      ++page;
+      continue;
+    }
+    uint32_t end = page + 1;
+    while (end < total && take(end)) {
+      ++end;
+    }
+    uint8_t* host = TranslateRelative(size_t(page) * page_size_);
+    const size_t length = size_t(end - page) * page_size_;
+    xe::memory::Protect(host, length, xe::memory::PageAccess::kReadWrite,
+                        nullptr);
+    std::memset(host, 0, length);
+    if (cvars::protect_on_release) {
+      xe::memory::Protect(host, length, xe::memory::PageAccess::kNoAccess,
+                          nullptr);
+    }
+    zeroed += length;
+    page = end;
+  }
+  return zeroed;
 }
 
 void BaseHeap::Reset() {
@@ -2754,6 +2857,7 @@ void BaseHeap::Reset() {
   // TODO(DrChat): protect pages.
   std::memset(page_table_.data(), 0, sizeof(PageEntry) * page_table_.size());
   unreserved_page_count_ = uint32_t(page_table_.size());
+  std::fill(freed_pages_.begin(), freed_pages_.end(), 0);
   // TODO(Triang3l): Remove access callbacks from pages if this is a physical
   // memory heap.
 
@@ -3107,6 +3211,7 @@ bool BaseHeap::Decommit(uint32_t address, uint32_t size) {
   }*/
 
   // Perform table change.
+  NoteFreedPages(start_page_number, end_page_number);
   for (uint32_t page_number = start_page_number; page_number <= end_page_number;
        ++page_number) {
     auto& page_entry = page_table_[page_number];
@@ -3187,6 +3292,7 @@ bool BaseHeap::Release(uint32_t base_address, uint32_t* out_region_size) {
   // Perform table change.
   uint32_t end_page_number =
       base_page_number + base_page_entry.region_page_count - 1;
+  NoteFreedPages(base_page_number, end_page_number);
   for (uint32_t page_number = base_page_number; page_number <= end_page_number;
        ++page_number) {
     auto& page_entry = page_table_[page_number];
@@ -4250,6 +4356,13 @@ bool PhysicalHeap::TriggerCallbacks(
   }
 
   return true;
+}
+
+void PhysicalHeap::ForgetFreedRange(uint32_t address, uint32_t size) {
+  BaseHeap::ForgetFreedRange(address, size);
+  if (size && address >= heap_base_ && address - heap_base_ < heap_size_) {
+    parent_heap_->ForgetFreedRange(GetPhysicalAddress(address), size);
+  }
 }
 
 uint32_t PhysicalHeap::GetPhysicalAddress(uint32_t address) const {

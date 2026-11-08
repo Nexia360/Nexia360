@@ -127,9 +127,7 @@ class D3D12ImmediateDrawer final : public ImmediateDrawer {
   D3D12_CPU_DESCRIPTOR_HANDLE sampler_heap_cpu_start_;
   D3D12_GPU_DESCRIPTOR_HANDLE sampler_heap_gpu_start_;
 
-  // Textures are created and destroyed on any thread (the gamerpic browser
-  // loads its icons on workers), but uploaded and drawn on the UI thread:
-  // guards textures_, texture_uploads_pending_ and textures_deleted_.
+  // Guards textures_, texture_uploads_pending_ and textures_deleted_.
   std::mutex textures_mutex_;
 
   // Only with non-null resources.

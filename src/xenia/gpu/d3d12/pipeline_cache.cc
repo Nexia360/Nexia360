@@ -108,6 +108,17 @@ PipelineCache::PipelineCache(D3D12CommandProcessor& command_processor,
 
   depth_only_pixel_shader_ =
       std::move(shader_translator_->CreateDepthOnlyPixelShader());
+  if (!edram_rov_used &&
+      render_target_cache_.depth_float24_convert_in_pixel_shader()) {
+    using DepthStencilMode =
+        DxbcShaderTranslator::Modification::DepthStencilMode;
+    depth_only_float24_truncate_pixel_shader_ =
+        std::move(shader_translator_->CreateDepthOnlyPixelShader(
+            false, DepthStencilMode::kFloat24Truncating));
+    depth_only_float24_round_pixel_shader_ =
+        std::move(shader_translator_->CreateDepthOnlyPixelShader(
+            false, DepthStencilMode::kFloat24Rounding));
+  }
   if (edram_rov_used) {
     using DepthStencilMode =
         DxbcShaderTranslator::Modification::DepthStencilMode;
@@ -3066,13 +3077,12 @@ ID3D12PipelineState* PipelineCache::CreateD3D12Pipeline(
         (description.depth_func != xenos::CompareFunction::kAlways ||
          description.depth_write) &&
         description.depth_format == xenos::DepthRenderTargetFormat::kD24FS8) {
-      if (render_target_cache_.depth_float24_round()) {
-        state_desc.PS.pShaderBytecode = shaders::float24_round_ps;
-        state_desc.PS.BytecodeLength = sizeof(shaders::float24_round_ps);
-      } else {
-        state_desc.PS.pShaderBytecode = shaders::float24_truncate_ps;
-        state_desc.PS.BytecodeLength = sizeof(shaders::float24_truncate_ps);
-      }
+      const std::vector<uint8_t>& float24_pixel_shader =
+          render_target_cache_.depth_float24_round()
+              ? depth_only_float24_round_pixel_shader_
+              : depth_only_float24_truncate_pixel_shader_;
+      state_desc.PS.pShaderBytecode = float24_pixel_shader.data();
+      state_desc.PS.BytecodeLength = float24_pixel_shader.size();
     } else if (!description.depth_write && !description.stencil_write_mask) {
       // Bind an empty PS to force rasterization.
       // D3D drops PS-less draws without depth/stencil writes, breaking

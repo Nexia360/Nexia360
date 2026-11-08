@@ -130,6 +130,8 @@ class EmulatorWindow {
   const std::vector<RecentTitleEntry>& recently_launched_titles() const {
     return recently_launched_titles_;
   }
+  // X in Open Recent: off both recent lists and My Games until played again.
+  void RemoveRecentTitle(uint32_t title_id, const std::filesystem::path& path);
   // The recent entry for a title id, or null. The title update selector uses
   // it for the name and icon it shows beside the id.
   const RecentTitleEntry* FindRecentTitle(uint32_t title_id) const;

@@ -11,8 +11,10 @@
 #define XENIA_KERNEL_UTIL_SHIM_UTILS_H_
 
 #include <cstring>
+#include <exception>
 #include <string>
 #include <type_traits>
+#include <typeinfo>
 
 #include "xenia/base/byte_order.h"
 #include "xenia/base/logging.h"
@@ -581,6 +583,17 @@ XE_FORCEINLINE static auto KernelTrampoline(F&& f, Tuple&& t,
   return std::forward<F>(f)(std::get<I>(std::forward<Tuple>(t))...);
 }
 
+// A host exception escaping an export ends the process; the guest gets a
+// failure instead and the log names the export.
+inline void ExportThrew(PPCContext* ppc_context,
+                        const cpu::Export* export_entry,
+                        const std::exception& e, bool has_result) {
+  XELOGE("{} threw {}: {}", export_entry->name, typeid(e).name(), e.what());
+  if (has_result) {
+    ppc_context->r[3] = 0xC0000001u;
+  }
+}
+
 template <KernelModuleId MODULE, uint16_t ORDINAL, typename R, typename... Ps>
 struct ExportRegistrerHelper {
   template <R (*fn)(Ps&...), xe::cpu::ExportTag::type tags>
@@ -620,18 +633,22 @@ struct ExportRegistrerHelper {
             PrintKernelCall(export_entry, params);
           }
         }
-        if constexpr (std::is_void<R>::value) {
-          KernelTrampoline(fn, std::forward<std::tuple<Ps...>>(params),
-                           std::make_index_sequence<sizeof...(Ps)>());
-        } else {
-          auto result =
-              KernelTrampoline(fn, std::forward<std::tuple<Ps...>>(params),
-                               std::make_index_sequence<sizeof...(Ps)>());
-          result.Store(ppc_context);
-          if (TAGS &
-              (xe::cpu::ExportTag::kLog | xe::cpu::ExportTag::kLogResult)) {
-            // TODO(benvanik): log result.
+        try {
+          if constexpr (std::is_void<R>::value) {
+            KernelTrampoline(fn, std::forward<std::tuple<Ps...>>(params),
+                             std::make_index_sequence<sizeof...(Ps)>());
+          } else {
+            auto result =
+                KernelTrampoline(fn, std::forward<std::tuple<Ps...>>(params),
+                                 std::make_index_sequence<sizeof...(Ps)>());
+            result.Store(ppc_context);
+            if (TAGS &
+                (xe::cpu::ExportTag::kLog | xe::cpu::ExportTag::kLogResult)) {
+              // TODO(benvanik): log result.
+            }
           }
+        } catch (const std::exception& e) {
+          ExportThrew(ppc_context, export_entry, e, !std::is_void<R>::value);
         }
       }
     };
@@ -645,14 +662,18 @@ struct ExportRegistrerHelper {
             0,
         };
         std::tuple<Ps...> params = {Ps(init)...};
-        if constexpr (std::is_void<R>::value) {
-          KernelTrampoline(fn, std::forward<std::tuple<Ps...>>(params),
-                           std::make_index_sequence<sizeof...(Ps)>());
-        } else {
-          auto result =
-              KernelTrampoline(fn, std::forward<std::tuple<Ps...>>(params),
-                               std::make_index_sequence<sizeof...(Ps)>());
-          result.Store(ppc_context);
+        try {
+          if constexpr (std::is_void<R>::value) {
+            KernelTrampoline(fn, std::forward<std::tuple<Ps...>>(params),
+                             std::make_index_sequence<sizeof...(Ps)>());
+          } else {
+            auto result =
+                KernelTrampoline(fn, std::forward<std::tuple<Ps...>>(params),
+                                 std::make_index_sequence<sizeof...(Ps)>());
+            result.Store(ppc_context);
+          }
+        } catch (const std::exception& e) {
+          ExportThrew(ppc_context, export_entry, e, !std::is_void<R>::value);
         }
       }
     };

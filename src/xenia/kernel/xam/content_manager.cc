@@ -222,8 +222,6 @@ std::string ContentManager::DiscPackageGuestPath(
       data.title_id == kCurrentlyRunningTitleId || data.title_id == 0
           ? kernel_state_->title_id()
           : data.title_id.get();
-  // ListContentODD lists the disc's shared folder only, so that is the folder
-  // an item it handed out names.
   const uint64_t used_xuid =
       (data.xuid != -1 && data.xuid != 0) ? data.xuid.get() : xuid;
   return fmt::format("{}\\content\\{:016X}\\{:08X}\\{:08X}\\{}",
@@ -248,8 +246,6 @@ std::unique_ptr<ContentPackage> ContentManager::OpenDiscPackage(
   if (!entry) {
     return nullptr;
   }
-  // A disc image hands back a slice of its own mapping; an extracted disc
-  // folder maps the host file. Either way the package is read where it lies.
   std::unique_ptr<MappedMemory> mapping =
       entry->OpenMapped(MappedMemory::Mode::kRead);
   const std::string guest_path = DiscPackageGuestPath(xuid, data);
@@ -911,8 +907,6 @@ X_RESULT ContentManager::CreateContent(const std::string_view root_name,
   }
 
   if (data.device_id == static_cast<uint32_t>(DummyDeviceId::ODD)) {
-    // Nothing is written to a disc. Falling through would file it on the
-    // hard drive under a device the title did not ask for.
     return X_ERROR_ACCESS_DENIED;
   }
 
@@ -960,8 +954,6 @@ X_RESULT ContentManager::OpenContent(const std::string_view root_name,
   ContentPackage* package = nullptr;
   std::filesystem::path package_path;
   if (data.device_id == static_cast<uint32_t>(DummyDeviceId::ODD)) {
-    // Content shipped on the disc - Battlefield Hardline's two HD packages
-    // are opened from Disc 1 as DLC00000001: and DLC00000002:.
     package_path = xe::to_path(DiscPackageGuestPath(xuid, data));
     auto disc_package = OpenDiscPackage(xuid, data);
     if (!disc_package) {

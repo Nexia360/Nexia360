@@ -51,7 +51,7 @@ bool XModule::Matches(const std::string_view name) const {
 void XModule::OnLoad() { kernel_state_->RegisterModule(this); }
 
 void XModule::OnUnload() {
-  kernel_state_->processor()->RemoveModule(this->name());
+  kernel_state_->processor()->RemoveModule(this->name(), processor_module_);
   kernel_state_->UnregisterModule(this);
 }
 

@@ -94,8 +94,12 @@ ContentPackageContainer::~ContentPackageContainer() {
 
 bool ContentPackageContainer::LoadPackage(
     const std::filesystem::path& package_path, MappedMemory::Mode open_mode) {
-  if (std::filesystem::file_size(package_path) <
-      sizeof(XContentHeader) + sizeof(XContentMetadata)) {
+  std::error_code ec;
+  if (!std::filesystem::is_regular_file(package_path, ec)) {
+    return false;
+  }
+  const auto file_size = std::filesystem::file_size(package_path, ec);
+  if (ec || file_size < sizeof(XContentHeader) + sizeof(XContentMetadata)) {
     return false;
   }
 
@@ -251,21 +255,30 @@ size_t ContentPackageContainer::GetPackageSize() const {
     return package_ ? package_->size() : 0;
   }
 
+  auto size_of = [](const std::filesystem::path& path) -> size_t {
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(path, ec)) {
+      return 0;
+    }
+    const auto size = std::filesystem::file_size(path, ec);
+    return ec ? 0 : size_t(size);
+  };
+
   // Search for .data directory.
   if (header_.content_metadata.volume_type == XContentVolumeType::kSvod) {
-    size_t size = std::filesystem::file_size(GetPackageHostPath());
+    size_t size = size_of(GetPackageHostPath());
 
     std::filesystem::path src_package_path = GetPackageHostPath();
     src_package_path += ".data";
 
     const auto files = xe::filesystem::ListFiles(src_package_path);
     for (const auto& file : files) {
-      size += std::filesystem::file_size(file.path / file.name);
+      size += size_of(file.path / file.name);
     }
     return size;
   }
 
-  return std::filesystem::file_size(GetPackageHostPath());
+  return size_of(GetPackageHostPath());
 }
 
 }  // namespace xam

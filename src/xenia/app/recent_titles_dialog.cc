@@ -495,6 +495,9 @@ void RecentTitlesDialog::OnDraw(ImGuiIO& io) {
     legend.push_back({skin::kButtonA, "A",
                       mode_ == Mode::kLaunch ? "Play" : "Choose Update", 0});
   }
+  if (count) {
+    legend.push_back({skin::kButtonX, "X", "Remove", 4});
+  }
   if (count > 1) {
     legend.push_back({skin::kButtonY, "Y", "Sort", 3});
   }
@@ -570,6 +573,19 @@ void RecentTitlesDialog::OnDraw(ImGuiIO& io) {
     sort_ = static_cast<Sort>((static_cast<int>(sort_) + 1) % 4);
     last_sort = static_cast<int>(sort_);
     ApplySort();
+  }
+
+  // X removes the selected title from both recent lists and My Games; the
+  // cursor stays on the row, which is now the next title.
+  if (count && selected_ < count &&
+      (input.x_released || legend_pressed == 4 ||
+       ImGui::IsKeyPressed(ImGuiKey_Delete, false))) {
+    const size_t row = selected_;
+    const RecentTitleEntry removed = entries_[row];
+    emulator_window_->RemoveRecentTitle(removed.title_id, removed.path_to_file);
+    ApplySort();
+    selected_ = entries_.empty() ? 0 : std::min(row, entries_.size() - 1);
+    return;
   }
 
   if (picked) {

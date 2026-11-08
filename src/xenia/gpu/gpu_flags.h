@@ -56,6 +56,8 @@ DECLARE_bool(xenos_sample_positions);
 
 DECLARE_bool(texture_point_snap);
 
+DECLARE_bool(gpu_scalar_approx_rounding);
+
 #define XE_GPU_FINE_GRAINED_DRAW_SCOPES 1
 
 #endif  // XENIA_GPU_GPU_FLAGS_H_

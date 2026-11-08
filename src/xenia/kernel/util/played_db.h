@@ -16,6 +16,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 struct sqlite3;
@@ -119,6 +120,10 @@ class PlayedDB {
       size_t limit, PlayedSort sort = PlayedSort::kMostRecentlyPlayed) const;
   std::optional<PlayedTitle> Get(int64_t row) const;
   bool Remove(int64_t row);
+  // Every copy of a title (by path when it has no id), hidden from My Games
+  // until it is launched again.
+  bool RemoveTitle(uint32_t title_id, const std::filesystem::path& path);
+  std::unordered_set<uint32_t> GetHiddenTitles() const;
 
   // One-time migration off recent.toml. Does nothing when the database
   // already holds anything.

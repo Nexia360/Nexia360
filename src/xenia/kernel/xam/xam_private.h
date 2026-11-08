@@ -12,6 +12,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -27,6 +28,22 @@ xe::cpu::Export* RegisterExport_xam(xe::cpu::Export* export_entry);
 void RecordLaunchOrigin();
 void ReloadForLaunch();
 void CloseOpenedContentFiles();
+// Deletes the My Games launch shortcut xam_user.cc made for a title.
+void RemoveLaunchShortcut(uint32_t title_id);
+
+// Makes a running dashboard rebuild My Games.
+void AnnounceGameLibraryChanged(std::string_view why);
+
+// Nudges only the listeners that ask for 0x8000000D by id: the game library.
+void RequestGameLibraryRebuild();
+
+// Drops queued voice capture packets; they belong to the title being torn down.
+void ResetVoiceCapture();
+
+// Around a change to a title's content: the running dashboard is told which
+// records came and went, through its XamContentRegisterChangeCallback.
+void BeginContentChange(uint32_t title_id);
+void EndContentChange(uint32_t title_id, std::string_view why);
 
 // Builds the 0x10C launch blob the Avatar Editor expects, in the exact shape
 // the real XamLaunchAvatarEditor produces: 'EPIX' then the item string at
@@ -35,10 +52,11 @@ std::vector<uint8_t> BuildAvatarEditorLaunchData(const std::u16string& item);
 
 void RegisterIssuedToken(uint32_t token_ptr, uint32_t size);
 
-// The title's boxartlg.jpg from the Xbox image server, cached on disk once
-// fetched. Empty when there is none, which callers fall through on. Defined in
-// xam_xhttp.cc beside the disc tray's use of it.
+// The title's 219x300 box art from x360db, cached; empty when it has none.
 std::vector<uint8_t> FetchTitleBoxArt(uint32_t title_id);
+
+// An indie game's cover, matched by the first of |names| the cover index knows.
+std::vector<uint8_t> FetchIndieBoxArt(const std::vector<std::string>& names);
 
 // The title's official retail cover from XboxUnity - the whole 900x600 case
 // jacket, front on the right - cached on disk. Empty when there is none.

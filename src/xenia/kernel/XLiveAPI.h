@@ -487,6 +487,8 @@ class XLiveAPI {
 
   std::vector<X_TITLE_SERVER> GetServers();
 
+  bool IsTitleServerAddress(uint32_t address) const;
+
   std::unique_ptr<ServicesObjectJSON> GetServices();
 
   bool Heartbeat() const;
@@ -667,13 +669,28 @@ class XLiveAPI {
 
   // Handle <-> XUID lives in util/xuid_handles.h; see there for why every XUID
   // we learn has to be registered.
+  static constexpr uint64_t kTitleServerXuidTag = 0x4E585300;
+
+  static uint64_t TitleServerXuid(uint32_t address) {
+    return (kTitleServerXuidTag << 32) | xe::byte_swap(address);
+  }
+
+  static bool IsTitleServerXuid(uint64_t xuid) {
+    return (xuid >> 32) == kTitleServerXuidTag;
+  }
+
   static uint32_t SyntheticOnlineIP(uint64_t xuid) {
+    if (IsTitleServerXuid(xuid)) {
+      return xe::byte_swap(static_cast<uint32_t>(xuid));
+    }
     return XuidToHandle(xuid);
   }
 
   static uint32_t RegisterXuidHandle(uint64_t xuid) {
-    xe::kernel::RegisterXuidHandle(xuid);
-    return XuidToHandle(xuid);
+    if (!IsTitleServerXuid(xuid)) {
+      xe::kernel::RegisterXuidHandle(xuid);
+    }
+    return SyntheticOnlineIP(xuid);
   }
 
   static uint64_t XuidForHandle(uint32_t handle) {

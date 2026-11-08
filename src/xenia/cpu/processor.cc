@@ -338,21 +338,38 @@ bool Processor::AddModule(std::unique_ptr<Module> module) {
   return true;
 }
 
-void Processor::RemoveModule(const std::string_view name) {
+void Processor::RemoveModule(const std::string_view name, Module* exact) {
   auto global_lock = global_critical_region_.Acquire();
 
   auto itr = std::ranges::find_if(
       std::as_const(modules_),
-      [name](std::unique_ptr<xe::cpu::Module> const& module) {
-        return module->name() == name;
+      [name, exact](std::unique_ptr<xe::cpu::Module> const& module) {
+        return exact ? module.get() == exact : module->name() == name;
       });
 
   if (itr != modules_.cend()) {
     const std::vector<uint32_t> addressed_functions =
         (*itr)->GetAddressedFunctions();
 
-    XELOGI("Processor::RemoveModule('{}'), {} function(s), {} module(s) left",
-           name, addressed_functions.size(), modules_.size() - 1);
+    uint32_t code_low = 0;
+    uint32_t code_high = 0;
+    if (auto* xex = dynamic_cast<XexModule*>(itr->get())) {
+      code_low = xex->low_address();
+      code_high = xex->high_address();
+    }
+    size_t translated = 0;
+    if (code_high > code_low) {
+      translated = entry_table_.DeleteRange(code_low, code_high - 1).size();
+      if (backend_) {
+        backend_->code_cache()->ResetIndirections(code_low, code_high);
+        backend_->InvalidateDynamicCalls(code_low, code_high - 1);
+      }
+    }
+    XELOGI(
+        "Processor::RemoveModule('{}'), {} function(s), {} translated in "
+        "{:08X}-{:08X} dropped, {} module(s) left",
+        name, addressed_functions.size(), translated, code_low, code_high,
+        modules_.size() - 1);
     modules_.erase(itr);
 
     for (const uint32_t entry : addressed_functions) {

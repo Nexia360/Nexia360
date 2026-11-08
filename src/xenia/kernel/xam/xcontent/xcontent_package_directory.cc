@@ -107,8 +107,15 @@ X_RESULT ContentPackageDirectory::SetThumbnail(
 X_RESULT ContentPackageDirectory::GetThumbnail(std::vector<uint8_t>& buffer) {
   auto thumb_path = host_path_ / kThumbnailFileName;
 
-  if (auto file = xe::filesystem::OpenFile(thumb_path, "rb"); file) {
-    size_t file_len = std::filesystem::file_size(thumb_path);
+  std::error_code ec;
+  const auto thumb_size = std::filesystem::is_regular_file(thumb_path, ec)
+                              ? std::filesystem::file_size(thumb_path, ec)
+                              : 0;
+  const bool thumb_usable = !ec && thumb_size && thumb_size <= 0x100000;
+  if (auto file =
+          thumb_usable ? xe::filesystem::OpenFile(thumb_path, "rb") : nullptr;
+      file) {
+    size_t file_len = size_t(thumb_size);
 
     buffer.resize(file_len);
     const size_t read_bytes =
@@ -133,12 +140,12 @@ X_RESULT ContentPackageDirectory::GetThumbnail(std::vector<uint8_t>& buffer) {
     return X_ERROR_SUCCESS;
   }
 
-  if (header_.content_metadata.thumbnail_size > 0) {
-    buffer.resize(header_.content_metadata.thumbnail_size);
-    std::copy(header_.content_metadata.thumbnail,
-              header_.content_metadata.thumbnail +
-                  header_.content_metadata.thumbnail_size,
-              buffer.begin());
+  const size_t header_thumbnail_size =
+      std::min<size_t>(header_.content_metadata.thumbnail_size,
+                       sizeof(header_.content_metadata.thumbnail));
+  if (header_thumbnail_size > 0) {
+    buffer.assign(header_.content_metadata.thumbnail,
+                  header_.content_metadata.thumbnail + header_thumbnail_size);
     return X_ERROR_SUCCESS;
   }
   return X_ERROR_FILE_NOT_FOUND;
@@ -154,8 +161,9 @@ X_RESULT ContentPackageDirectory::ReadContentHeaderFile() {
     return X_ERROR_FILE_NOT_FOUND;
   }
 
-  auto file_size = std::filesystem::file_size(header_path_);
-  if (file_size < sizeof(XCONTENT_DATA_AGGREGATE)) {
+  std::error_code ec;
+  auto file_size = std::filesystem::file_size(header_path_, ec);
+  if (ec || file_size < sizeof(XCONTENT_DATA_AGGREGATE)) {
     fclose(file);
     return X_STATUS_END_OF_FILE;
   }

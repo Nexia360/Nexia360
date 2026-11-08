@@ -40,9 +40,7 @@ class ContentPackageContainer final : public ContentPackage {
                           const XCONTENT_DATA_INTERNAL& metadata,
                           const xex2_opt_execution_info* execution_info,
                           const SpaInfo* spa_info);
-  // Ctor for a package that is not a host file of its own - one shipped in a
-  // disc's Content folder - read in place through the disc's mapping.
-  // package_path only names it.
+  // A package read in place from a disc image.
   ContentPackageContainer(vfs::VirtualFileSystem* file_system,
                           const std::string_view device_path,
                           const std::filesystem::path& package_path,
@@ -75,8 +73,6 @@ class ContentPackageContainer final : public ContentPackage {
   bool LoadAndVerifyHeader(const std::filesystem::path& package_path);
 
   std::unique_ptr<MappedMemory> package_;
-  // package_ is a view of a disc, not a host file: there is no host path to
-  // measure, and no .data folder beside it for an SVOD volume.
   bool in_place_ = false;
 };
 

@@ -34,6 +34,10 @@ DEFINE_bool(
     "Break to the host debugger (or crash if no debugger attached) if an "
     "unimplemented PowerPC instruction is encountered.",
     "CPU");
+DEFINE_bool(ppc_single_range_qnan, true,
+            "Single-precision add, multiply and multiply-add answer QNaN for "
+            "an operand outside the single range, as the console does.",
+            "CPU");
 
 namespace xe {
 namespace cpu {
@@ -794,6 +798,9 @@ void PPCHIRBuilder::UpdateFPSCRForMultiplyAdd(Value* result, Value* a, Value* c,
 // at least one of them out of range.
 Value* PPCHIRBuilder::SingleOutOfRangeOperand(
     std::initializer_list<Value*> operands) {
+  if (!cvars::ppc_single_range_qnan) {
+    return LoadZeroInt8();
+  }
   Value* any_out_of_range = nullptr;
   Value* any_nonfinite = nullptr;
   for (Value* operand : operands) {

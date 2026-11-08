@@ -146,6 +146,11 @@ DEFINE_bool(xenos_sample_positions, false,
             "in-shader.",
             "GPU");
 
+DEFINE_bool(gpu_scalar_approx_rounding, true,
+            "Round the results of rcp, rsq, exp, log and sqrt to 21 mantissa "
+            "bits, as the Xenos approximations are believed to.",
+            "GPU");
+
 DEFINE_bool(texture_point_snap, false,
             "Snap normalized point sampled 2D texture coordinates to texel "
             "centers. Fixes texture seams in titles that use virtual textures, "

@@ -230,6 +230,11 @@ void XSocket::CleanupCompletedTasks(std::vector<std::future<int>>& tasks) {
 }
 
 uint64_t XSocket::ResolveTransportDestination(uint32_t handle) const {
+  auto* api = kernel_state()->GetXboxLiveAPI();
+  if (api && api->IsTitleServerAddress(handle)) {
+    return XLiveAPI::TitleServerXuid(handle);
+  }
+
   if (const uint64_t xuid = XLiveAPI::XuidForHandle(handle)) {
     return xuid;
   }
@@ -1934,6 +1939,14 @@ X_STATUS XSocket::GetPeerName(XSOCKADDR_IN* name, int* name_len) {
 }
 
 X_STATUS XSocket::GetSockName(XSOCKADDR_IN* name, int* name_len) {
+  if (IsTransportEligible() && bound_port_) {
+    std::memset(name, 0, sizeof(XSOCKADDR_IN));
+    name->address_family = AF_INET;
+    name->address_port = bound_port_.get();
+    *name_len = sizeof(XSOCKADDR_IN);
+    return X_STATUS_SUCCESS;
+  }
+
   sockaddr addr = name->to_host();
 
   int ret = getsockname(native_handle_, &addr, name_len);

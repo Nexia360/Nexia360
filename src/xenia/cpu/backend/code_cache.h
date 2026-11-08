@@ -38,6 +38,7 @@ class CodeCache {
 
   virtual void MarkReserved() {}
   virtual size_t Flush() { return 0; }
+  virtual void ResetIndirections(uint32_t, uint32_t) {}
 };
 
 }  // namespace backend
