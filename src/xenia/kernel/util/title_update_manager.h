@@ -44,6 +44,8 @@ class TitleUpdateManager {
 
   std::vector<TitleUpdateEntry> List(uint32_t title_id) const;
   std::string GetActive(uint32_t title_id) const;
+  // Whether the entry's update folder exists, as GetActiveLibraryPath requires.
+  bool IsInstalled(uint32_t title_id, const std::string& id) const;
 
   // Host path of the active update's folder in the library, or empty if none.
   // The loader reads the patch directly from here - no content-tree link/copy.

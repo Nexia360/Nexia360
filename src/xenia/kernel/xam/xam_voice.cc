@@ -51,8 +51,6 @@ dword_result_t XamVoiceCreate_entry(dword_t user_index,
   std::memset(kernel_state()->memory()->TranslateVirtual<uint8_t*>(voice_ptr),
               0, kVoiceObjectSize);
   *out_voice_ptr = voice_ptr;
-  XELOGW("[voice] XamVoiceCreate user {} -> {:08X}", user_index.value(),
-         voice_ptr);
   ResetVoiceCodecs();
   apu::sdl::VoiceChat::Get().AddRef();
   return X_ERROR_SUCCESS;
@@ -61,9 +59,7 @@ DECLARE_XAM_EXPORT1(XamVoiceCreate, kNone, kImplemented);
 
 dword_result_t XamVoiceClose_entry(lpunknown_t voice_ptr) {
   if (voice_ptr) {
-    const size_t dropped = DropPendingCapture(voice_ptr.guest_address());
-    XELOGW("[voice] XamVoiceClose {:08X}, {} pending capture packet(s) dropped",
-           voice_ptr.guest_address(), dropped);
+    DropPendingCapture(voice_ptr.guest_address());
     kernel_state()->memory()->SystemHeapFree(voice_ptr.guest_address());
     apu::sdl::VoiceChat::Get().Release();
   }

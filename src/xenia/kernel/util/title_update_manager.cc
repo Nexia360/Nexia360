@@ -610,6 +610,13 @@ std::vector<TitleUpdateEntry> TitleUpdateManager::List(
   return entries;
 }
 
+bool TitleUpdateManager::IsInstalled(uint32_t title_id,
+                                     const std::string& id) const {
+  std::error_code ec;
+  return !id.empty() &&
+         std::filesystem::is_directory(update_dir(title_id, id), ec);
+}
+
 std::string TitleUpdateManager::GetActive(uint32_t title_id) const {
   std::string active;
   std::vector<TitleUpdateEntry> entries;

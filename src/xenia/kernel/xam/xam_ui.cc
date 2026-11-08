@@ -2901,6 +2901,9 @@ HubJoinTarget FindHubJoinTarget(uint32_t title_id, const std::string& update,
   const std::string wanted = UpdateKey(update);
   if (updates) {
     for (const auto& entry : updates->List(title_id)) {
+      if (!updates->IsInstalled(title_id, entry.id)) {
+        continue;
+      }
       const bool same =
           !wanted_hash.empty() && !entry.hash.empty()
               ? xe::utf8::lower_ascii(entry.hash) == wanted_hash
