@@ -485,6 +485,9 @@ class Emulator {
   // its time can be added when it stops.
   int64_t played_row_ = 0;
   int64_t played_started_utc_ = 0;
+  // The XBLIG package Xna_TitleLauncher.xex was pointed at, so the played list
+  // records the game rather than the shim running it.
+  std::filesystem::path xna_guest_package_;
   std::unique_ptr<kernel::NetworkAdapterManager> network_adapter_manager_;
   std::unique_ptr<kernel::UPnP> upnp_;
   std::unique_ptr<kernel::util::TitleUpdateManager> title_update_manager_;

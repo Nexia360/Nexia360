@@ -399,9 +399,25 @@ std::vector<PlayedTitle> PlayedDB::GetRecent(size_t limit,
   // as whichever copy was played last. Rows arrive newest first, so the first
   // one wins. Id zero is "unknown", which is not an identity - those stay.
   std::set<uint32_t> seen;
+  // Every XBLIG is content under the Indie Player, so 584E07D2 is the title id
+  // of all of them and cannot tell two games apart - deduping on it left only
+  // whichever indie game was played last. They dedupe on the game's own name
+  // instead, so two copies of one still collapse to the most recent, the same
+  // as a title id does for everything else. The path stands in for a package
+  // that names nothing.
+  std::set<std::string> seen_xna;
   while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
     PlayedTitle title = ReadRow(stmt.get());
-    if (title.title_id && !seen.insert(title.title_id).second) {
+    if (title.is_xna) {
+      std::string key = title.title_name.empty() ? xe::path_to_utf8(title.path)
+                                                 : title.title_name;
+      for (char& c : key) {
+        c = c >= 'A' && c <= 'Z' ? char(c + 32) : c;
+      }
+      if (!key.empty() && !seen_xna.insert(key).second) {
+        continue;
+      }
+    } else if (title.title_id && !seen.insert(title.title_id).second) {
       continue;
     }
     titles.push_back(std::move(title));

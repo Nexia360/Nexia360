@@ -225,6 +225,11 @@ using namespace xe::gpu;
 
 constexpr std::string_view kBaseTitle = "Nexia360";
 
+// .github/VERSION, written into version.h by xenia-build.py.
+#ifndef XE_BUILD_VERSION
+#define XE_BUILD_VERSION "0"
+#endif
+
 EmulatorWindow::EmulatorWindow(Emulator* emulator,
                                ui::WindowedAppContext& app_context,
                                uint32_t width, uint32_t height)
@@ -244,6 +249,7 @@ EmulatorWindow::EmulatorWindow(Emulator* emulator,
                 " CHECKED"
 #endif
 #endif
+                " Version " XE_BUILD_VERSION
                 " ("
 #ifdef XE_BUILD_IS_PR
                 "PR#" XE_BUILD_PR_NUMBER " - "

@@ -582,14 +582,24 @@ uint64_t Emulator::GetPersistentEmulatorFlags() {
   return EmulatorFlagDisclaimerAcknowledged;
 #endif
 }
-void Emulator::RecordTitleLaunch(const std::filesystem::path& path) {
-  if (!title_id_.has_value() || path.empty()) {
+void Emulator::RecordTitleLaunch(const std::filesystem::path& launched_path) {
+  if (!title_id_.has_value() || launched_path.empty()) {
     return;
   }
   // The dashboard is not a game and never belongs in a played list - the My
   // Games tile would otherwise offer to launch the thing drawing it.
   if (title_id_.value() == kernel::kDashboardID) {
     return;
+  }
+
+  // An XBLIG runs inside Xna_TitleLauncher.xex, so the running title is
+  // 584E07D2 "Indie Game" and the path is the shim's. Record the package it
+  // was pointed at instead - the list wants the game, and launching the row
+  // again has to start that game, not the launcher.
+  std::filesystem::path path = launched_path;
+  if (title_id_.value() == kernel::kXN_2002 && !xna_guest_package_.empty()) {
+    path = xna_guest_package_;
+    xna_guest_package_.clear();
   }
 
   kernel::PlayedTitle title;
@@ -611,6 +621,36 @@ void Emulator::RecordTitleLaunch(const std::filesystem::path& path) {
     title.category = header->content_metadata.category;
   }
 
+  // Launching an XBLIG title through Xna_TitleLauncher.xex records the shim,
+  // not the game: 584E07D2 "Indie Game", whichever one was started. Like the
+  // dashboard, the launcher is not a game and never belongs in a played list.
+  // A hosted XNA package arrives here as the package itself and goes on as
+  // the game it holds, below.
+  if (title.title_id == kernel::kXN_2002 && !title.is_xna) {
+    return;
+  }
+
+  // Every XBLIG title runs inside the Indie Player, so the running module is
+  // 584E07D2 called "Indie Game" for all of them - which would put one row in
+  // the played list no matter which game was launched. The package states who
+  // it really is.
+  if (title.is_xna) {
+    if (xna_info.title_id) {
+      title.title_id = xna_info.title_id;
+    }
+    std::string package_name;
+    if (header && header->content_header.is_magic_valid()) {
+      package_name = xe::to_utf8(
+          header->content_metadata.display_name(XLanguage::kEnglish));
+    }
+    if (package_name.empty()) {
+      package_name = xna_info.display_name;
+    }
+    if (!package_name.empty()) {
+      title.title_name = package_name;
+    }
+  }
+
   played_row_ = played_db()->BeginSession(title);
   played_started_utc_ = std::chrono::duration_cast<std::chrono::seconds>(
                             std::chrono::system_clock::now().time_since_epoch())
@@ -619,11 +659,39 @@ void Emulator::RecordTitleLaunch(const std::filesystem::path& path) {
     return;
   }
 
-  if (game_info_database_) {
-    const std::vector<uint8_t> icon = game_info_database_->GetIcon();
-    if (!icon.empty()) {
-      played_db()->SetIcon(played_row_, icon);
+  // An XBLIG's picture has to come off its own package: the running title is
+  // the launcher, so game_info_database_ holds the Indie Player's blob for
+  // every one of them. Its cover stands in when the package carries none.
+  std::vector<uint8_t> icon;
+  if (title.is_xna) {
+    if (header && header->content_header.is_magic_valid()) {
+      // The PACKAGE thumbnail is the game's own art. title_thumbnail belongs
+      // to the title the content sits under, and every XBLIG sits under the
+      // Indie Player - so taking that one gave each of them its ghost.
+      const auto& metadata = header->content_metadata;
+      const uint32_t package_size = std::min<uint32_t>(
+          metadata.thumbnail_size, uint32_t(sizeof(metadata.thumbnail)));
+      const uint32_t title_size =
+          std::min<uint32_t>(metadata.title_thumbnail_size,
+                             uint32_t(sizeof(metadata.title_thumbnail)));
+      if (package_size) {
+        icon.assign(metadata.thumbnail, metadata.thumbnail + package_size);
+      } else if (title_size) {
+        icon.assign(metadata.title_thumbnail,
+                    metadata.title_thumbnail + title_size);
+      }
     }
+    if (icon.empty()) {
+      icon = kernel::xam::FetchIndieBoxArt({title.title_name,
+                                            xna_info.display_name,
+                                            xe::path_to_utf8(path.filename())});
+    }
+  }
+  if (icon.empty() && game_info_database_) {
+    icon = game_info_database_->GetIcon();
+  }
+  if (!icon.empty()) {
+    played_db()->SetIcon(played_row_, icon);
   }
 
   std::vector<kernel::PlayedMount> mounts;
@@ -915,6 +983,10 @@ X_STATUS Emulator::LaunchXexFile(const std::filesystem::path& path) {
 }
 
 X_STATUS Emulator::LaunchXnaGuestTitle(const std::filesystem::path& path) {
+  // The launcher boots as the running title, so this is the only place that
+  // still knows which game it was asked for.
+  xna_guest_package_ = path;
+
   // What this does, and why it is not the same job as the host CLR path.
   //
   // An XBLIG was never a title of its own. It was a managed exe the

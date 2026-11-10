@@ -1152,6 +1152,12 @@ dword_result_t XamUserCreateTitlesPlayedEnumerator_entry(
             title.title_id == 0x5848085B) {
           continue;
         }
+        // Xna_TitleLauncher.xex, recorded as "Indie Game" before the launcher
+        // was kept out of the played list. A hosted XNA package names the game
+        // it holds and stays.
+        if (title.title_id == kXN_2002 && !title.is_xna) {
+          continue;
+        }
         std::error_code ec;
         std::filesystem::path path = title.path;
         if (!path.empty() && !std::filesystem::exists(path, ec) &&
