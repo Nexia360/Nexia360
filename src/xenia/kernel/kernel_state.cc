@@ -909,9 +909,9 @@ void PatchDashboardLibraryArt(Memory* memory, cpu::XexModule* xex) {
   const uint32_t write_start = base + uint32_t(hit);
   auto* heap = memory->LookupHeap(write_start);
   uint32_t old_protect = 0;
-  if (!heap || !heap->Protect(write_start, sizeof(new_be),
-                              kMemoryProtectRead | kMemoryProtectWrite,
-                              &old_protect)) {
+  if (!heap ||
+      !heap->Protect(write_start, sizeof(new_be),
+                     kMemoryProtectRead | kMemoryProtectWrite, &old_protect)) {
     XELOGW("Dashboard: could not make the GameLibrary chunk writable");
     return;
   }
@@ -947,7 +947,8 @@ void PatchDashboardLibraryLoader(Memory* memory, cpu::XexModule* xex) {
   const std::string_view haystack(reinterpret_cast<const char*>(image), size);
   const size_t source_at = haystack.find(source);
   if (source_at == std::string_view::npos || source_at < 16) {
-    XELOGW("Dashboard: no AsyncMetadataLoader chunk; first-build art unpatched");
+    XELOGW(
+        "Dashboard: no AsyncMetadataLoader chunk; first-build art unpatched");
     return;
   }
   const size_t start = source_at - 16;
@@ -1000,10 +1001,10 @@ void PatchDashboardLibraryLoader(Memory* memory, cpu::XexModule* xex) {
   }
   static constexpr uint8_t kKeyOld[] = {4,   0,   0,   0,   10,  't', 'h', 'u',
                                         'm', 'b', 'n', 'a', 'i', 'l', 0};
-  static constexpr uint8_t kKeyNew[] = {4,   0,   0,   0,   10,  'I', 'm',
-                                        'a', 'g', 'e', 'P', 'a', 't', 'h', 0};
+  static constexpr uint8_t kKeyNew[] = {4,   0,   0,   0,   10,  'I', 'm', 'a',
+                                        'g', 'e', 'P', 'a', 't', 'h', 0};
   static constexpr uint8_t kValOld[] = {4, 0, 0, 0, 5, 'P', 'a', 't', 'h', 0};
-  static constexpr uint8_t kValNew[] = {4,   0,   0,   0,   7, 'b',
+  static constexpr uint8_t kValNew[] = {4,   0,   0,   0,   7,   'b',
                                         'o', 'x', 'a', 'r', 't', 0};
   static_assert(sizeof(kValNew) - sizeof(kValOld) == kShrink,
                 "the new constants must cost exactly what the source gives");
