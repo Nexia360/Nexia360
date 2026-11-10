@@ -829,15 +829,114 @@ size_t SkipLuaFunction(const uint8_t* data, size_t size, size_t at,
 // My Games draws a game's tile from dataItem.boxart - the scene binds
 // MarketplaceSlotImage {img_0=boxart;img_1=thumbnailLargeMediaType} - but the
 // 17559 scripts only ever fill boxart from a Quick Play URL, so every other
-// game showed the controller icon. The picture the dashboard does load for the
-// tile, titleInfo:GetImageInfo().Path, is written by
-// Marketplace.AsyncMetadataLoader to dataItem.thumbnail, which that scene never
-// reads. Renaming that one constant to "boxart" puts the loaded picture on the
-// tile; the loader already fires ItemChangedEvent right after the write.
+// game showed the controller icon.
 //
-// The constant is 3 bytes shorter, so the rest of the chunk moves down and the
-// freed tail is zeroed: undump reads exactly what it parses and nothing after.
+// Marketplace.GameLibrary.ConvertToLibraryItem already reads the title's own
+// picture: `item.thumbnail = titleInfo.ImagePath`, a path the image control
+// opens for itself, which DashboardTitleImageRedirect turns into the box art.
+// That one SETTABLE is pointed at "boxart" instead, so the tile holds a path
+// that resolves again on every build.
+//
+// The loader is deliberately left alone. Writing
+// titleInfo:GetImageInfo().Path over boxart worked once and then wedged:
+// .Path is "memory://<buffer>,<size>", the buffer dies with the scene, and
+// GetImageInfo keeps answering from titleinfo+0x42D, so coming back from Game
+// Details left every tile blank until My Games was entered afresh.
 void PatchDashboardLibraryArt(Memory* memory, cpu::XexModule* xex) {
+  const uint32_t base = xex->base_address();
+  const uint32_t size = xex->image_size();
+  if (!base || !size) {
+    return;
+  }
+  uint8_t* image = memory->TranslateVirtual<uint8_t*>(base);
+  const std::string_view source = "@Marketplace.GameLibrary.lua";
+  const std::string_view haystack(reinterpret_cast<const char*>(image), size);
+  const size_t source_at = haystack.find(source);
+  // header (12) and the source string's size_t (4) come before its characters
+  if (source_at == std::string_view::npos || source_at < 16) {
+    XELOGW("Dashboard: no GameLibrary chunk; My Games art unpatched");
+    return;
+  }
+  const size_t start = source_at - 16;
+  static constexpr uint8_t kHeader[] = {0x1B, 'L', 'u', 'a', 0x51, 0,
+                                        0,    4,   4,   4,   8,    0};
+  if (std::memcmp(image + start, kHeader, sizeof(kHeader)) != 0) {
+    XELOGW("Dashboard: GameLibrary chunk has an unexpected header");
+    return;
+  }
+  const size_t end = SkipLuaFunction(image, size, start + sizeof(kHeader));
+  if (!end) {
+    XELOGW("Dashboard: GameLibrary chunk does not parse; unpatched");
+    return;
+  }
+
+  // SETTABLE A B C: op 9, A at 6, C at 14, B at 23. RK(B) 290 and 287 are
+  // constants 34 ("thumbnail") and 31 ("boxart") of ConvertToLibraryItem.
+  const auto settable = [](uint32_t a, uint32_t b, uint32_t c) {
+    return 9u | (a << 6) | (c << 14) | (b << 23);
+  };
+  const uint32_t old_ins = settable(17, 290, 18);
+  const uint32_t new_ins = settable(17, 287, 18);
+  uint8_t old_be[4] = {uint8_t(old_ins >> 24), uint8_t(old_ins >> 16),
+                       uint8_t(old_ins >> 8), uint8_t(old_ins)};
+  uint8_t new_be[4] = {uint8_t(new_ins >> 24), uint8_t(new_ins >> 16),
+                       uint8_t(new_ins >> 8), uint8_t(new_ins)};
+
+  size_t hit = 0;
+  uint32_t hits = 0;
+  for (size_t at = start; at + sizeof(old_be) <= end; ++at) {
+    if (std::memcmp(image + at, old_be, sizeof(old_be)) == 0) {
+      hit = at;
+      ++hits;
+    }
+  }
+  if (hits != 1) {
+    XELOGW(
+        "Dashboard: GameLibrary has {} thumbnail=ImagePath store(s), expected "
+        "1; unpatched",
+        hits);
+    return;
+  }
+
+  // The key stays ImagePath. SlotImage (titleinfo+0x218) has no 42D gate, so
+  // it would also answer on the first build, but it is marketplace slot
+  // artwork and is empty for an offline library - which is what the
+  // dashboard's own LocalContentInfo guards with IsStringNilOrEmpty, and what
+  // left every tile blank when it was tried.
+  //
+  // The loader leaves the image's data pages read-only; open the stretch being
+  // rewritten for the length of the write and put the protection back.
+  const uint32_t write_start = base + uint32_t(hit);
+  auto* heap = memory->LookupHeap(write_start);
+  uint32_t old_protect = 0;
+  if (!heap || !heap->Protect(write_start, sizeof(new_be),
+                              kMemoryProtectRead | kMemoryProtectWrite,
+                              &old_protect)) {
+    XELOGW("Dashboard: could not make the GameLibrary chunk writable");
+    return;
+  }
+  std::memcpy(image + hit, new_be, sizeof(new_be));
+  heap->Protect(write_start, sizeof(new_be), old_protect);
+  XELOGW(
+      "Dashboard: My Games tiles take titleInfo.ImagePath (dataItem.boxart at "
+      "{:08X}, chunk {:08X}..{:08X})",
+      write_start, base + uint32_t(start), base + uint32_t(end));
+}
+
+// ConvertToLibraryItem reads ImagePath before anything has loaded the picture,
+// and ImagePath is gated on titleinfo+0x42D - which GetImageInfo, called from
+// Marketplace.AsyncMetadataLoader afterwards, is what sets. So the very first
+// build of My Games put nil on every tile and only later ones were right.
+//
+// The loader is therefore pointed at the same place, where the gate is open by
+// the time it runs: `dataItem.boxart = titleInfo.ImagePath`, in place of
+// `dataItem.thumbnail = info.Path`.
+//
+// The two constants it needs are two bytes longer than the two it replaces, so
+// the chunk's own source name gives those two bytes back and the span between
+// it and the constant table shifts down to meet them. The chunk's total size
+// is unchanged and nothing past the constants moves at all.
+void PatchDashboardLibraryLoader(Memory* memory, cpu::XexModule* xex) {
   const uint32_t base = xex->base_address();
   const uint32_t size = xex->image_size();
   if (!base || !size) {
@@ -847,9 +946,8 @@ void PatchDashboardLibraryArt(Memory* memory, cpu::XexModule* xex) {
   const std::string_view source = "@Marketplace.AsyncMetadataLoader.lua";
   const std::string_view haystack(reinterpret_cast<const char*>(image), size);
   const size_t source_at = haystack.find(source);
-  // header (12) and the source string's size_t (4) come before its characters
   if (source_at == std::string_view::npos || source_at < 16) {
-    XELOGW("Dashboard: no AsyncMetadataLoader chunk; My Games art unpatched");
+    XELOGW("Dashboard: no AsyncMetadataLoader chunk; first-build art unpatched");
     return;
   }
   const size_t start = source_at - 16;
@@ -865,29 +963,85 @@ void PatchDashboardLibraryArt(Memory* memory, cpu::XexModule* xex) {
     return;
   }
 
-  static constexpr uint8_t kOld[] = {4,   0,   0,   0,   10,  't', 'h', 'u',
-                                     'm', 'b', 'n', 'a', 'i', 'l', 0};
-  static constexpr uint8_t kNew[] = {4,   0,   0,   0,   7,   'b',
-                                     'o', 'x', 'a', 'r', 't', 0};
-  size_t hit = 0;
-  uint32_t hits = 0;
-  for (size_t at = start; at + sizeof(kOld) <= end; ++at) {
-    if (std::memcmp(image + at, kOld, sizeof(kOld)) == 0) {
-      hit = at;
-      ++hits;
-    }
-  }
-  if (hits != 1) {
-    XELOGW(
-        "Dashboard: AsyncMetadataLoader has {} 'thumbnail' constant(s), "
-        "expected 1; unpatched",
-        hits);
+  // The source string's own length field, which has to say what we expect
+  // before anything is moved on the strength of it.
+  const size_t source_size_at = start + sizeof(kHeader);
+  const size_t stored = (size_t(image[source_size_at]) << 24) |
+                        (size_t(image[source_size_at + 1]) << 16) |
+                        (size_t(image[source_size_at + 2]) << 8) |
+                        size_t(image[source_size_at + 3]);
+  if (stored != source.size() + 1) {
+    XELOGW("Dashboard: AsyncMetadataLoader source is {} bytes, expected {}",
+           stored, source.size() + 1);
     return;
   }
-  // The loader leaves the image's data pages read-only; open the stretch being
-  // rewritten for the length of the write and put the protection back.
-  const uint32_t write_start = base + uint32_t(hit);
-  const uint32_t write_size = uint32_t(end - hit);
+  static constexpr char kShortSource[] = "@Marketplace.AsyncMetadataLoad.lua";
+  constexpr size_t kShrink = 2;
+  static_assert(sizeof(kShortSource) + kShrink ==
+                    sizeof("@Marketplace.AsyncMetadataLoader.lua"),
+                "the shortened source must give back exactly two bytes");
+  const size_t source_end = source_at + source.size() + 1;
+
+  // GETTABLE A B C: op 6. R6 = R5['Path'] becomes R6 = R4['ImagePath'], where
+  // R4 is the entry's TitleInfo and K[8] is about to hold that name.
+  const auto gettable = [](uint32_t a, uint32_t b, uint32_t c) {
+    return 6u | (a << 6) | (c << 14) | (b << 23);
+  };
+  const auto settable = [](uint32_t a, uint32_t b, uint32_t c) {
+    return 9u | (a << 6) | (c << 14) | (b << 23);
+  };
+  const uint32_t words[4] = {gettable(6, 5, 265), gettable(6, 4, 264),
+                             settable(3, 264, 6), settable(3, 265, 6)};
+  uint8_t be[4][4];
+  for (int i = 0; i < 4; ++i) {
+    for (int b = 0; b < 4; ++b) {
+      be[i][b] = uint8_t(words[i] >> (24 - 8 * b));
+    }
+  }
+  static constexpr uint8_t kKeyOld[] = {4,   0,   0,   0,   10,  't', 'h', 'u',
+                                        'm', 'b', 'n', 'a', 'i', 'l', 0};
+  static constexpr uint8_t kKeyNew[] = {4,   0,   0,   0,   10,  'I', 'm',
+                                        'a', 'g', 'e', 'P', 'a', 't', 'h', 0};
+  static constexpr uint8_t kValOld[] = {4, 0, 0, 0, 5, 'P', 'a', 't', 'h', 0};
+  static constexpr uint8_t kValNew[] = {4,   0,   0,   0,   7, 'b',
+                                        'o', 'x', 'a', 'r', 't', 0};
+  static_assert(sizeof(kValNew) - sizeof(kValOld) == kShrink,
+                "the new constants must cost exactly what the source gives");
+
+  const auto find_one = [&](const uint8_t* pattern, size_t len,
+                            const char* what, size_t& out) {
+    uint32_t hits = 0;
+    for (size_t at = start; at + len <= end; ++at) {
+      if (std::memcmp(image + at, pattern, len) == 0) {
+        out = at;
+        ++hits;
+      }
+    }
+    if (hits != 1) {
+      XELOGW("Dashboard: AsyncMetadataLoader has {} {}, expected 1; unpatched",
+             hits, what);
+    }
+    return hits == 1;
+  };
+
+  size_t read_at = 0, write_at = 0, key_at = 0, val_at = 0;
+  if (!find_one(be[0], 4, "info.Path reads", read_at) ||
+      !find_one(be[2], 4, "thumbnail stores", write_at) ||
+      !find_one(kKeyOld, sizeof(kKeyOld), "'thumbnail' constants", key_at) ||
+      !find_one(kValOld, sizeof(kValOld), "'Path' constants", val_at)) {
+    return;
+  }
+  // Everything shifts down into the source string, so the constants must come
+  // after it and the value constant must come last.
+  if (!(source_end < read_at && read_at < write_at && write_at < key_at &&
+        key_at < val_at && val_at + sizeof(kValOld) <= end)) {
+    XELOGW("Dashboard: AsyncMetadataLoader is not laid out as expected");
+    return;
+  }
+
+  const uint32_t write_start = base + uint32_t(source_size_at);
+  const uint32_t write_size =
+      uint32_t(val_at + sizeof(kValOld) - source_size_at);
   auto* heap = memory->LookupHeap(write_start);
   uint32_t old_protect = 0;
   if (!heap ||
@@ -896,15 +1050,22 @@ void PatchDashboardLibraryArt(Memory* memory, cpu::XexModule* xex) {
     XELOGW("Dashboard: could not make the AsyncMetadataLoader chunk writable");
     return;
   }
-  constexpr size_t kShrink = sizeof(kOld) - sizeof(kNew);
-  std::memcpy(image + hit, kNew, sizeof(kNew));
-  std::memmove(image + hit + sizeof(kNew), image + hit + sizeof(kOld),
-               end - (hit + sizeof(kOld)));
-  std::memset(image + end - kShrink, 0, kShrink);
+  std::memmove(image + source_end - kShrink, image + source_end,
+               val_at - source_end);
+  const size_t shorter = sizeof(kShortSource);  // chars + nul
+  image[source_size_at] = uint8_t(shorter >> 24);
+  image[source_size_at + 1] = uint8_t(shorter >> 16);
+  image[source_size_at + 2] = uint8_t(shorter >> 8);
+  image[source_size_at + 3] = uint8_t(shorter);
+  std::memcpy(image + source_at, kShortSource, shorter);
+  std::memcpy(image + read_at - kShrink, be[1], 4);
+  std::memcpy(image + write_at - kShrink, be[3], 4);
+  std::memcpy(image + key_at - kShrink, kKeyNew, sizeof(kKeyNew));
+  std::memcpy(image + val_at - kShrink, kValNew, sizeof(kValNew));
   heap->Protect(write_start, write_size, old_protect);
-  XELOGI(
-      "Dashboard: My Games tiles take the loaded picture (dataItem.boxart, "
-      "chunk {:08X}..{:08X})",
+  XELOGW(
+      "Dashboard: AsyncMetadataLoader fills dataItem.boxart from "
+      "titleInfo.ImagePath (chunk {:08X}..{:08X})",
       base + uint32_t(start), base + uint32_t(end));
 }
 
@@ -922,6 +1083,7 @@ X_RESULT KernelState::FinishLoadingUserModule(
                                              module->hash());
   if (module->title_id() == kDashboardID && module->xex_module()) {
     PatchDashboardLibraryArt(memory_, module->xex_module());
+    PatchDashboardLibraryLoader(memory_, module->xex_module());
   }
   emulator_->on_patch_apply();
   if (module->xex_module()) {

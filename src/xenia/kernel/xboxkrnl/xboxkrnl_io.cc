@@ -93,6 +93,10 @@ dword_result_t NtCreateFile_entry(lpdword_t handle_out, dword_t desired_access,
     if (!channel.empty()) {
       target_path = channel;
     }
+  } else if (root_entry &&
+             xe::utf8::lower_ascii(target_path).ends_with(".png")) {
+    XELOGW("[boxart] '{}' opened under a directory handle - not redirected",
+           target_path);
   }
 
   // Attempt open (or create).

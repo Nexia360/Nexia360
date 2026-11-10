@@ -1010,9 +1010,9 @@ void AnnounceGameLibraryChanged(std::string_view why) {
   RequestGameLibraryRebuild();
 }
 
-void RemoveLaunchShortcut(uint32_t title_id) {
+static std::filesystem::path LaunchShortcutPackage(uint32_t title_id) {
   if (!title_id || !kernel_state() || !kernel_state()->content_manager()) {
-    return;
+    return {};
   }
   const std::filesystem::path package =
       kernel_state()->content_manager()->FindPackagePath(
@@ -1021,8 +1021,32 @@ void RemoveLaunchShortcut(uint32_t title_id) {
   // Only ever a folder holding the link file, never a real install.
   if (package.empty() ||
       !std::filesystem::exists(package / "nexia_shortcut.txt", ec)) {
+    return {};
+  }
+  return package;
+}
+
+static bool HasInstalledPackage(uint32_t title_id) {
+  auto* content_manager = kernel_state()->content_manager();
+  for (const XContentType type :
+       {XContentType::kXbox360Title, XContentType::kArcadeTitle}) {
+    for (const auto& data :
+         content_manager->ListContent(static_cast<uint32_t>(DummyDeviceId::HDD),
+                                      0, title_id, type, XContentFlag::kNone)) {
+      if (data.file_name() != "NexiaShortcut") {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+void RemoveLaunchShortcut(uint32_t title_id) {
+  const std::filesystem::path package = LaunchShortcutPackage(title_id);
+  if (package.empty()) {
     return;
   }
+  std::error_code ec;
   std::filesystem::remove(package / "nexia_shortcut.txt", ec);
   std::filesystem::remove(package, ec);
   std::filesystem::remove(ComputeHeaderPath(package), ec);
@@ -1059,6 +1083,7 @@ static bool EnsureLaunchShortcut(Emulator* emulator, const PlayedTitle& title,
       return false;
     }
   }
+  BeginContentChange(title.title_id);
   std::filesystem::create_directories(package, ec);
   {
     std::ofstream out(link, std::ios::binary | std::ios::trunc);
@@ -1118,7 +1143,7 @@ dword_result_t XamUserCreateTitlesPlayedEnumerator_entry(
   // launched here (Open Recent) is added, deduplicated and alphabetised.
   if (requester_xuid == user->xuid()) {
     const size_t profile_count = user_titles.size();
-    std::vector<uint32_t> shortcut_titles;
+    std::vector<std::pair<PlayedTitle, std::filesystem::path>> runnable;
     Emulator* emulator = kernel_state()->emulator();
     PlayedDB* played = emulator ? emulator->played_db() : nullptr;
     if (played && played->is_open()) {
@@ -1137,11 +1162,7 @@ dword_result_t XamUserCreateTitlesPlayedEnumerator_entry(
         if (path.empty() || !std::filesystem::exists(path, ec)) {
           continue;
         }
-        static std::unordered_set<uint32_t> announced;
-        if (EnsureLaunchShortcut(emulator, title, path) &&
-            announced.insert(title.title_id).second) {
-          shortcut_titles.push_back(title.title_id);
-        }
+        runnable.emplace_back(title, path);
         auto known =
             std::ranges::find(user_titles, title.title_id, &TitleInfo::id);
         if (known != user_titles.end()) {
@@ -1162,12 +1183,49 @@ dword_result_t XamUserCreateTitlesPlayedEnumerator_entry(
     const std::unordered_set<uint32_t> hidden =
         played && played->is_open() ? played->GetHiddenTitles()
                                     : std::unordered_set<uint32_t>();
+    auto is_runnable = [&runnable](uint32_t id) {
+      return std::ranges::any_of(runnable, [id](const auto& entry) {
+        return entry.first.title_id == id;
+      });
+    };
     std::vector<TitleInfo> unique_titles;
+    std::unordered_map<std::string, size_t> unique_names;
     for (auto& title : user_titles) {
-      if (!hidden.contains(title.id) &&
-          std::ranges::find(unique_titles, title.id, &TitleInfo::id) ==
+      if (hidden.contains(title.id) ||
+          std::ranges::find(unique_titles, title.id, &TitleInfo::id) !=
               unique_titles.end()) {
-        unique_titles.push_back(std::move(title));
+        continue;
+      }
+      const std::string name =
+          xe::utf8::lower_ascii(xe::to_utf8(title.title_name));
+      if (!name.empty()) {
+        const auto [it, inserted] =
+            unique_names.emplace(name, unique_titles.size());
+        if (!inserted) {
+          TitleInfo& kept = unique_titles[it->second];
+          if (!is_runnable(kept.id) && is_runnable(title.id)) {
+            kept = std::move(title);
+          }
+          continue;
+        }
+      }
+      unique_titles.push_back(std::move(title));
+    }
+    std::vector<uint32_t> shortcut_titles;
+    size_t shortcuts_removed = 0;
+    for (const auto& [title, path] : runnable) {
+      const bool listed =
+          std::ranges::find(unique_titles, title.title_id, &TitleInfo::id) !=
+          unique_titles.end();
+      if (listed && !HasInstalledPackage(title.title_id)) {
+        if (EnsureLaunchShortcut(emulator, title, path)) {
+          shortcut_titles.push_back(title.title_id);
+        }
+      } else if (!LaunchShortcutPackage(title.title_id).empty()) {
+        BeginContentChange(title.title_id);
+        RemoveLaunchShortcut(title.title_id);
+        EndContentChange(title.title_id, "duplicate launch shortcut removed");
+        ++shortcuts_removed;
       }
     }
     std::ranges::stable_sort(
@@ -1180,8 +1238,9 @@ dword_result_t XamUserCreateTitlesPlayedEnumerator_entry(
         });
     XELOGW(
         "[mygames] titles played: {} from the profile, {} listed, {} new "
-        "launch shortcut(s)",
-        profile_count, unique_titles.size(), shortcut_titles.size());
+        "launch shortcut(s), {} removed",
+        profile_count, unique_titles.size(), shortcut_titles.size(),
+        shortcuts_removed);
     user_titles = std::move(unique_titles);
     for (const uint32_t shortcut_title : shortcut_titles) {
       EndContentChange(shortcut_title, "new launch shortcut");

@@ -357,8 +357,26 @@ void Processor::RemoveModule(const std::string_view name, Module* exact) {
       code_low = xex->low_address();
       code_high = xex->high_address();
     }
-    size_t translated = 0;
+    // A title update registers the patch XEX as a second module over the base
+    // module's address range, so dropping one module's code range would throw
+    // away the other's live translations. Only drop what no remaining module
+    // still covers.
+    bool range_shared = false;
     if (code_high > code_low) {
+      for (const auto& other : modules_) {
+        if (other.get() == itr->get()) {
+          continue;
+        }
+        auto* other_xex = dynamic_cast<XexModule*>(other.get());
+        if (other_xex && other_xex->low_address() < code_high &&
+            code_low < other_xex->high_address()) {
+          range_shared = true;
+          break;
+        }
+      }
+    }
+    size_t translated = 0;
+    if (code_high > code_low && !range_shared) {
       translated = entry_table_.DeleteRange(code_low, code_high - 1).size();
       if (backend_) {
         backend_->code_cache()->ResetIndirections(code_low, code_high);
@@ -367,13 +385,16 @@ void Processor::RemoveModule(const std::string_view name, Module* exact) {
     }
     XELOGI(
         "Processor::RemoveModule('{}'), {} function(s), {} translated in "
-        "{:08X}-{:08X} dropped, {} module(s) left",
+        "{:08X}-{:08X} dropped{}, {} module(s) left",
         name, addressed_functions.size(), translated, code_low, code_high,
+        range_shared ? " (range kept, shared with a live module)" : "",
         modules_.size() - 1);
     modules_.erase(itr);
 
-    for (const uint32_t entry : addressed_functions) {
-      RemoveFunctionByAddress(entry);
+    if (!range_shared) {
+      for (const uint32_t entry : addressed_functions) {
+        RemoveFunctionByAddress(entry);
+      }
     }
   }
 }

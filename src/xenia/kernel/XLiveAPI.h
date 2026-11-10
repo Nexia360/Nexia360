@@ -683,7 +683,7 @@ class XLiveAPI {
     if (IsTitleServerXuid(xuid)) {
       return xe::byte_swap(static_cast<uint32_t>(xuid));
     }
-    return XuidToHandle(xuid);
+    return xe::kernel::HandleForXuid(xuid);
   }
 
   static uint32_t RegisterXuidHandle(uint64_t xuid) {

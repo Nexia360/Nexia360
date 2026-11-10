@@ -1414,7 +1414,7 @@ static bool FetchSmallText(const std::string& url, std::string* out) {
   }
   out->clear();
   curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-  curl_easy_setopt(curl, CURLOPT_USERAGENT, "nexia360");
+  curl_easy_setopt(curl, CURLOPT_USERAGENT, NexiaUserAgent());
   curl_slist* session_headers = NexiaSessionHeaders();
   if (session_headers) {
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, session_headers);
@@ -1555,7 +1555,7 @@ static bool FetchDashModule(const std::string& module_name,
     return false;
   }
   curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-  curl_easy_setopt(curl, CURLOPT_USERAGENT, "nexia360");
+  curl_easy_setopt(curl, CURLOPT_USERAGENT, NexiaUserAgent());
   curl_slist* session_headers = NexiaSessionHeaders();
   if (session_headers) {
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, session_headers);

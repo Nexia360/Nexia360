@@ -1605,19 +1605,22 @@ std::string DashboardTitleImageRedirect(const std::string& guest_path) {
   }
   const std::string name = guest_path.substr(colon + 2);
   if (name.empty() || name.find('\\') != std::string::npos ||
-      !xe::utf8::lower_ascii(name).ends_with(".png")) {
+      !(xe::utf8::lower_ascii(name).ends_with(".png") ||
+        xe::utf8::lower_ascii(name) == "nxeart")) {
     return {};
   }
 
   vfs::Entry* info_entry = kernel_state()->file_system()->ResolvePath(
       guest_path.substr(0, colon + 1) + "\\ArcadeInfo.xml");
   if (!info_entry) {
+    XELOGW("[boxart] {}: no ArcadeInfo.xml on that mount", guest_path);
     return {};
   }
   vfs::File* file = nullptr;
   if (info_entry->Open(vfs::FileAccess::kGenericRead, &file) !=
           X_STATUS_SUCCESS ||
       !file) {
+    XELOGW("[boxart] {}: ArcadeInfo.xml would not open", guest_path);
     return {};
   }
   std::vector<uint8_t> bytes(static_cast<size_t>(info_entry->size()));
@@ -1646,17 +1649,31 @@ std::string DashboardTitleImageRedirect(const std::string& guest_path) {
 
   const std::string image = ArcadeInfoAttribute(xml, "<TitleInfo", "ImagePath");
   const std::string id = ArcadeInfoAttribute(xml, "<TitleInfo", "ID");
-  if (image.empty() || id.empty() ||
-      xe::utf8::lower_ascii(image) != xe::utf8::lower_ascii(name)) {
+  // A package can ship a tile under a name its ArcadeInfo does not give, and
+  // VirtualFileSystem::OpenFile falls back across the set - so accept any of
+  // them here too, or the fallback open misses the redirect.
+  static constexpr std::string_view kTileNames[] = {
+      "game.png", "gametile.png", "game_tile.png", "nxetile.png", "nxeart"};
+  const std::string lowered_name = xe::utf8::lower_ascii(name);
+  const bool tile_name =
+      lowered_name == xe::utf8::lower_ascii(image) ||
+      std::ranges::any_of(kTileNames, [&lowered_name](std::string_view known) {
+        return lowered_name == known;
+      });
+  if (image.empty() || id.empty() || !tile_name) {
+    XELOGW("[boxart] {}: ArcadeInfo names '{}' id '{}'", guest_path, image, id);
     return {};
   }
   const uint32_t title_id =
       static_cast<uint32_t>(std::strtoul(id.c_str(), nullptr, 10));
   if (!title_id || title_id == kXN_2002) {
+    XELOGW("[boxart] {}: title id {:08X} is not one we art", guest_path,
+           title_id);
     return {};
   }
   const std::filesystem::path tile = BoxArtTilePath(title_id);
   if (tile.empty()) {
+    XELOGW("[boxart] {:08X}: no tile on disk and none fetched", title_id);
     return {};
   }
 
@@ -1672,19 +1689,25 @@ std::string DashboardTitleImageRedirect(const std::string& guest_path) {
     auto created = std::make_unique<vfs::HostPathDevice>(
         kDevice, tile.parent_path(), true);
     if (!created->Initialize()) {
+      XELOGW("[boxart] {:08X}: box art device would not initialize", title_id);
       return {};
     }
     device = created.get();
     if (!file_system->RegisterDevice(std::move(created))) {
+      XELOGW("[boxart] {:08X}: box art device would not register", title_id);
       return {};
     }
+    XELOGW("[boxart] box art device mounted on {}",
+           xe::path_to_utf8(tile.parent_path()));
   }
   // A tile made after the device listed its folder is not in its tree; this
   // title's may be one of them.
   if (!device->AddRootFile(xe::path_to_utf8(tile.filename()))) {
+    XELOGW("[boxart] {:08X}: {} is not on the box art device", title_id,
+           xe::path_to_utf8(tile.filename()));
     return {};
   }
-  XELOGI("Dashboard: {} -> box art for {:08X}", guest_path, title_id);
+  XELOGW("[boxart] {} -> {:08X}", guest_path, title_id);
   return fmt::format("{}\\{}", kDevice, xe::path_to_utf8(tile.filename()));
 }
 

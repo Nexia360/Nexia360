@@ -84,6 +84,8 @@ std::optional<in_addr> GetBoundInterfaceAddress();
 
 MacAddress GenerateMacAddress();
 
+const char* NexiaUserAgent();
+
 }  // namespace kernel
 }  // namespace xe
 

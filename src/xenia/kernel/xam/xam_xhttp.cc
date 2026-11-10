@@ -1740,7 +1740,7 @@ bool Perform(XHttpHandle* request) {
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
   }
   if (hub_url) {
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "nexia360");
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, NexiaUserAgent());
   } else if (session && !session->agent.empty()) {
     curl_easy_setopt(curl, CURLOPT_USERAGENT, session->agent.c_str());
   } else {

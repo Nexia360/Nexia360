@@ -27,6 +27,7 @@
 #include "xenia/base/logging.h"
 #include "xenia/base/string_util.h"
 #include "xenia/base/utf8.h"
+#include "xenia/kernel/util/net_utils.h"
 #include "xenia/kernel/util/xex2_info.h"
 
 namespace xe {
@@ -234,7 +235,7 @@ std::vector<RemoteTitleUpdate> TitleUpdateDownloader::List(
   std::string response;
 
   curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-  curl_easy_setopt(curl, CURLOPT_USERAGENT, "nexia360");
+  curl_easy_setopt(curl, CURLOPT_USERAGENT, NexiaUserAgent());
   curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
   curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteToStringCallback);
@@ -389,7 +390,7 @@ bool TitleUpdateDownloader::DownloadUrl(
   }
 
   curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-  curl_easy_setopt(curl, CURLOPT_USERAGENT, "nexia360");
+  curl_easy_setopt(curl, CURLOPT_USERAGENT, NexiaUserAgent());
   curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteToFileCallback);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &state);

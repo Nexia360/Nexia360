@@ -758,6 +758,9 @@ bool XLiveAPI::StartTransport() {
   // sign-in step.
   const uint64_t xuid = profile->GetOnlineXUID();
 
+  // Ours first, so our own handle is never one a peer has already taken.
+  RegisterXuidHandle(xuid);
+
   // No address is registered: every envelope carries its own flow, so the
   // transport can come up before the title has bound anything, and a title
   // that binds several ports multiplexes over this one socket.
@@ -902,7 +905,7 @@ std::unique_ptr<HTTPResponseObjectJSON> XLiveAPI::Get(std::string endpoint,
   curl_easy_setopt(curl_handle, CURLOPT_URL, endpoint.c_str());
   curl_easy_setopt(curl_handle, CURLOPT_CUSTOMREQUEST, "GET");
   curl_easy_setopt(curl_handle, CURLOPT_HTTPHEADER, headers);
-  curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, "xenia");
+  curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, NexiaUserAgent());
   curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, callback);
   curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, (void*)&chunk);
 
@@ -955,7 +958,7 @@ std::unique_ptr<HTTPResponseObjectJSON> XLiveAPI::Post(std::string endpoint,
 
   curl_easy_setopt(curl_handle, CURLOPT_URL, endpoint.c_str());
   curl_easy_setopt(curl_handle, CURLOPT_CUSTOMREQUEST, "POST");
-  curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, "xenia");
+  curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, NexiaUserAgent());
   curl_easy_setopt(curl_handle, CURLOPT_POSTFIELDS, data);
 
   if (data_size > 0) {
@@ -1028,7 +1031,7 @@ std::unique_ptr<HTTPResponseObjectJSON> XLiveAPI::Delete(std::string endpoint) {
 
   curl_easy_setopt(curl_handle, CURLOPT_CUSTOMREQUEST, "DELETE");
   curl_easy_setopt(curl_handle, CURLOPT_HTTPHEADER, headers);
-  curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, "xenia");
+  curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, NexiaUserAgent());
 
   result = curl_easy_perform(curl_handle);
 
@@ -1090,7 +1093,7 @@ std::vector<HTTPResponseObjectJSON> XLiveAPI::GetMulti(
     curl_easy_setopt(curl_handle, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl_handle, CURLOPT_CUSTOMREQUEST, "GET");
     curl_easy_setopt(curl_handle, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, "xenia");
+    curl_easy_setopt(curl_handle, CURLOPT_USERAGENT, NexiaUserAgent());
     curl_easy_setopt(curl_handle, CURLOPT_WRITEFUNCTION, callback);
     curl_easy_setopt(curl_handle, CURLOPT_WRITEDATA, task.get());
 
@@ -4354,7 +4357,10 @@ PresenceObjectJSON XLiveAPI::BuildRichPresenceRequest(
           std::string hash;
           for (const auto& entry : updates->List(title_id)) {
             if (entry.id == active) {
-              label = !entry.name.empty() ? entry.name : entry.version;
+              // The .xexp's version, not the library name: the name is
+              // editable and differs per machine ("Title Update 4" here,
+              // "TU4" there), so Join Game never matched on it.
+              label = !entry.version.empty() ? entry.version : entry.name;
               hash = entry.hash;
               break;
             }

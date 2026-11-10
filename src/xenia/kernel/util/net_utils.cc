@@ -9,6 +9,7 @@
 
 #include <random>
 
+#include "version.h"
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
 #include "xenia/emulator.h"
@@ -190,6 +191,12 @@ MacAddress GenerateMacAddress() {
 
   return MacAddress(mac_address);
 }
+
+#ifndef XE_BUILD_VERSION
+#define XE_BUILD_VERSION "0"
+#endif
+
+const char* NexiaUserAgent() { return "nexia360/" XE_BUILD_VERSION; }
 
 }  // namespace kernel
 }  // namespace xe

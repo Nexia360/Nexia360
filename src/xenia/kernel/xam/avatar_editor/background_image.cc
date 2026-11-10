@@ -28,6 +28,7 @@
 #include "xenia/base/logging.h"
 #include "xenia/base/string.h"
 #include "xenia/base/threading.h"
+#include "xenia/kernel/util/net_utils.h"
 #include "xenia/kernel/xam/avatar_editor/image_constants.h"
 #include "xenia/kernel/xam/avatar_editor/scene.h"
 
@@ -190,7 +191,7 @@ bool DownloadToFile(const std::string& url,
     return false;
   }
   curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-  curl_easy_setopt(curl, CURLOPT_USERAGENT, "nexia360");
+  curl_easy_setopt(curl, CURLOPT_USERAGENT, NexiaUserAgent());
   curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
   curl_easy_setopt(curl, CURLOPT_TIMEOUT, kDownloadTimeoutSeconds);
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, AppendToFile);

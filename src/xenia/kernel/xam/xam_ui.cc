@@ -2894,9 +2894,9 @@ HubJoinTarget FindHubJoinTarget(uint32_t title_id, const std::string& update,
     return target;
   }
   // By content hash where both sides have one: the same file hashes the same
-  // everywhere, while ids and versions are often just the file it was
-  // installed from ("nexia_tu_584111F7_22459.bin" here, "TU_1C424FN_..."
-  // there, for one TU 4). By the label otherwise ("TU-4" = "TU4").
+  // everywhere. Otherwise by what presence carries, which is the .xexp's
+  // version - matched against this library's versions first, since the
+  // editable name differs per machine ("Title Update 4" here, "TU4" there).
   const std::string wanted_hash = xe::utf8::lower_ascii(hash);
   const std::string wanted = UpdateKey(update);
   if (updates) {
@@ -2907,7 +2907,8 @@ HubJoinTarget FindHubJoinTarget(uint32_t title_id, const std::string& update,
       const bool same =
           !wanted_hash.empty() && !entry.hash.empty()
               ? xe::utf8::lower_ascii(entry.hash) == wanted_hash
-              : !wanted.empty() && (UpdateKey(entry.name) == wanted ||
+              : !wanted.empty() && (UpdateKey(entry.version) == wanted ||
+                                    UpdateKey(entry.name) == wanted ||
                                     UpdateKey(entry.id) == wanted);
       if (same) {
         target.update_id = entry.id;

@@ -31,8 +31,14 @@ namespace kernel {
 // include cycle.
 
 // 10.x.y.z from the XUID's low three bytes, avoiding .0 and .255. Network
-// order.
+// order. What a handle is derived as, which is not always what it is: see
+// HandleForXuid.
 uint32_t XuidToHandle(uint64_t xuid);
+
+// The handle this XUID owns, taking one if it has none. Never a handle another
+// XUID already took - two players sharing one address is one player to the
+// title.
+uint32_t HandleForXuid(uint64_t xuid);
 
 void RegisterXuidHandle(uint64_t xuid);
 
