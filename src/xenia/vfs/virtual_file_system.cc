@@ -349,15 +349,25 @@ X_STATUS VirtualFileSystem::OpenFile(Entry* root_entry,
   // A title update shadows the disc for reads. Writes are never sent to the
   // overlay - it is read-only, and a title writing a file that happens to
   // share a name with update content must still write to the real device.
+  //
+  // A FILE shadows; a DIRECTORY must not, exactly as in ResolvePath. Handing
+  // back the update's copy of a folder hides every disc file in it: Orange
+  // Box's TU carries hl2\bin, and opening that as game:\hl2 lost
+  // hl2\zip0.360.zip - the whole content pack - so the material system never
+  // connected and vguimatsurface crashed on a null g_pShaderAPI. Only stand in
+  // for a folder the real device does not have.
+  Entry* overlay_directory = nullptr;
   if (!root_entry && !(desired_access & FileAccess::kFileWriteData) &&
       creation_disposition != FileDisposition::kCreate &&
       creation_disposition != FileDisposition::kOverwrite &&
       creation_disposition != FileDisposition::kSuperscede) {
     if (Entry* overlay_entry = ResolveOverlayPath(path)) {
-      if (!(overlay_entry->attributes() & kFileAttributeDirectory) ||
-          !is_non_directory) {
+      if (!(overlay_entry->attributes() & kFileAttributeDirectory)) {
         *out_action = FileAction::kOpened;
         return overlay_entry->Open(desired_access, out_file);
+      }
+      if (!is_non_directory) {
+        overlay_directory = overlay_entry;
       }
     }
   }
@@ -367,14 +377,16 @@ X_STATUS VirtualFileSystem::OpenFile(Entry* root_entry,
     parent_entry = !root_entry ? ResolvePath(base_path)
                                : root_entry->ResolvePath(base_path);
     if (!parent_entry) {
-      *out_action = FileAction::kDoesNotExist;
-      return X_STATUS_OBJECT_PATH_NOT_FOUND;
-    }
-
-    auto file_name = xe::utf8::find_name_from_guest_path(path);
-    entry = parent_entry->GetChild(file_name);
-    if (!entry) {
-      entry = ResolveTileImageAlias(parent_entry, file_name);
+      if (!overlay_directory) {
+        *out_action = FileAction::kDoesNotExist;
+        return X_STATUS_OBJECT_PATH_NOT_FOUND;
+      }
+    } else {
+      auto file_name = xe::utf8::find_name_from_guest_path(path);
+      entry = parent_entry->GetChild(file_name);
+      if (!entry) {
+        entry = ResolveTileImageAlias(parent_entry, file_name);
+      }
     }
   } else {
     entry = !root_entry ? ResolvePath(path) : root_entry->GetChild(path);
@@ -403,6 +415,11 @@ X_STATUS VirtualFileSystem::OpenFile(Entry* root_entry,
         }
       }
     }
+  }
+
+  // A folder the update adds that the real device doesn't have.
+  if (!entry && overlay_directory) {
+    entry = overlay_directory;
   }
 
   // Check if exists (if we need it to), or that it doesn't (if it shouldn't).

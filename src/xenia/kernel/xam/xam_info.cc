@@ -759,6 +759,27 @@ dword_result_t XamLoaderSetLaunchData_entry(lpvoid_t data, dword_t size,
          copy_size >= 4 ? xe::load_and_swap<uint32_t>(bytes) : 0,
          copy_size >= 8 ? xe::load_and_swap<uint32_t>(bytes + 4) : 0,
          copy_size >= 12 ? xe::load_and_swap<uint32_t>(bytes + 8) : 0);
+  // A title that relaunches to report a failure writes the reason in here as
+  // plain text, and the dwords above cut it off after three characters.
+  {
+    std::string text;
+    size_t run = 0;
+    for (uint32_t i = 0; i <= copy_size; ++i) {
+      const uint8_t c = i < copy_size ? bytes[i] : 0;
+      if (c >= 0x20 && c < 0x7F) {
+        ++run;
+        continue;
+      }
+      if (run >= 6) {
+        text += text.empty() ? "" : " | ";
+        text.append(reinterpret_cast<const char*>(bytes + i - run), run);
+      }
+      run = 0;
+    }
+    if (!text.empty()) {
+      XELOGW("XamLoaderSetLaunchData: text: {}", text);
+    }
+  }
   // Who decided: the guest call chain, from the frames' back chain. A callee
   // saves its LR at 8 bytes below its caller's stack pointer, so each frame's
   // back chain names the next LR. The XNA launcher's exit code comes from

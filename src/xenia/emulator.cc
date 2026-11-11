@@ -21,6 +21,7 @@
 #include "third_party/zarchive/src/sha_256.h"
 #include "xenia/apu/audio_system.h"
 #include "xenia/apu/sdl/voice_chat.h"
+#include "xenia/apu/xma_decoder.h"
 #include "xenia/base/assert.h"
 #include "xenia/base/byte_stream.h"
 #include "xenia/base/clock.h"
@@ -470,9 +471,20 @@ X_STATUS Emulator::TerminateTitle(bool clear_handles) {
   // A hosted title's RuntimeHost goes with the user modules below.
   kernel::xna::XnaConsoleNatives::Instance().Reset();
   kernel::xam::ResetVoiceCapture();
+  kernel::xam::ResetXnetState();
   XELOGI("TerminateTitle: audio clients");
   if (audio_system()) {
     audio_system()->UnregisterAllClients();
+    if (audio_system()->xma_decoder()) {
+      const size_t reclaimed =
+          audio_system()->xma_decoder()->ReleaseAllContexts();
+      if (reclaimed) {
+        XELOGW(
+            "TerminateTitle: reclaimed {} XMA context(s) the title left "
+            "allocated",
+            reclaimed);
+      }
+    }
   }
   XELOGI("TerminateTitle: interrupt callback");
   if (graphics_system()) {

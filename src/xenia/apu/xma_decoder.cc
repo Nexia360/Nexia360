@@ -263,7 +263,7 @@ int XmaDecoder::GetContextId(uint32_t guest_ptr) {
 uint32_t XmaDecoder::AllocateContext() {
   size_t index = context_bitmap_.Acquire();
   if (index == -1) {
-    // Out of contexts.
+    XELOGE("XmaDecoder: out of XMA contexts, all {} are in use", kContextCount);
     return 0;
   }
 
@@ -283,6 +283,20 @@ void XmaDecoder::ReleaseContext(uint32_t guest_ptr) {
   assert_true(context.is_allocated());
   context.Release();
   context_bitmap_.Release(context_id);
+}
+
+size_t XmaDecoder::ReleaseAllContexts() {
+  size_t reclaimed = 0;
+  for (uint32_t i = 0; i < kContextCount; ++i) {
+    XmaContext& context = *contexts_[i];
+    if (!context.is_allocated()) {
+      continue;
+    }
+    context.Release();
+    context_bitmap_.Release(i);
+    ++reclaimed;
+  }
+  return reclaimed;
 }
 
 bool XmaDecoder::BlockOnContext(uint32_t guest_ptr, bool poll) {

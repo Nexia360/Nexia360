@@ -28,6 +28,13 @@
 #include "xenia/kernel/xam/xui_font.h"
 #include "xenia/kernel/xam/xui_runtime.h"
 
+// Defined in xex_module.cc, which is where the Rijndael tables are compiled
+// in - including them here as well would define them twice. CBC with a zero
+// IV, which is what both of this file's uses want.
+void aes_decrypt_buffer(const uint8_t* session_key, const uint8_t* input_buffer,
+                        const size_t input_size, uint8_t* output_buffer,
+                        const size_t output_size);
+
 namespace xe {
 namespace kernel {
 namespace xam {
@@ -36,7 +43,6 @@ namespace xui {
 namespace {
 
 constexpr size_t kPageSize = 0x200;
-constexpr size_t kSparePage = 0x210;
 constexpr size_t kClusterSize = 0x1000;
 
 constexpr uint32_t kOptFileFormatInfo = 0x000003FF;
@@ -44,6 +50,13 @@ constexpr uint32_t kOptResourceInfo = 0x000002FF;
 constexpr uint32_t kOptExecutionInfo = 0x00040006;
 constexpr uint32_t kOptOriginalPeName = 0x000183FF;
 constexpr uint32_t kSecurityLoadAddress = 0x110;
+constexpr uint32_t kSecurityAesKey = 0x150;
+
+// The XEX2 retail key, as xex_module.cc has it. A flash module's own key sits
+// wrapped in its security info and this is what unwraps it.
+constexpr uint8_t kXex2RetailKey[16] = {0x20, 0xB1, 0x85, 0xA5, 0x9D, 0x28,
+                                        0xFD, 0xC3, 0x40, 0x58, 0x3F, 0xBB,
+                                        0x08, 0x96, 0xBF, 0x91};
 
 constexpr size_t kMiB = 1024 * 1024;
 constexpr size_t kCapacities[] = {16 * kMiB, 64 * kMiB, 256 * kMiB, 512 * kMiB};
@@ -70,12 +83,36 @@ enum class ImageKind {
   kUnknown,
 };
 
-// Detection is by size, never by spare content: the spare layout and the ECC
-// polynomial differ between small- and big-block parts, and that is exactly
-// the per-revision knowledge this path exists to avoid.
+// How much of a page a raw dump of a part this big spends on data and how
+// much on the out-of-band bytes. The 16 MB parts are small block, 16 spare
+// per 512; everything above is big block, 64 per 2048. Those two are the same
+// ratio, so a raw dump's SIZE cannot say which it is - the capacity has to,
+// and reading the spare to find out would be exactly the per-revision
+// knowledge this path exists to avoid.
+struct SpareGeometry {
+  size_t page;
+  size_t spare;
+};
+
+SpareGeometry GeometryFor(size_t capacity) {
+  return capacity <= 16 * kMiB ? SpareGeometry{0x200, 0x10}
+                               : SpareGeometry{0x800, 0x40};
+}
+
+// The capacity a raw dump of this size holds, or 0 if no part matches.
+size_t RawCapacity(size_t size) {
+  for (size_t capacity : kCapacities) {
+    const SpareGeometry geometry = GeometryFor(capacity);
+    if (size == capacity / geometry.page * (geometry.page + geometry.spare)) {
+      return capacity;
+    }
+  }
+  return 0;
+}
+
+// Detection is by size, never by spare content.
 ImageKind ClassifyImage(size_t size) {
-  if (size % kSparePage == 0 &&
-      IsKnownCapacity(size / kSparePage * kPageSize)) {
+  if (RawCapacity(size)) {
     return ImageKind::kRaw;
   }
   if (IsKnownCapacity(size)) {
@@ -85,12 +122,18 @@ ImageKind ClassifyImage(size_t size) {
 }
 
 void StripSpare(std::vector<uint8_t>* data) {
-  const size_t pages = data->size() / kSparePage;
-  for (size_t page = 0; page < pages; ++page) {
-    std::memmove(data->data() + page * kPageSize,
-                 data->data() + page * kSparePage, kPageSize);
+  const size_t capacity = RawCapacity(data->size());
+  if (!capacity) {
+    return;
   }
-  data->resize(pages * kPageSize);
+  const SpareGeometry geometry = GeometryFor(capacity);
+  const size_t stride = geometry.page + geometry.spare;
+  const size_t pages = data->size() / stride;
+  for (size_t page = 0; page < pages; ++page) {
+    std::memmove(data->data() + page * geometry.page,
+                 data->data() + page * stride, geometry.page);
+  }
+  data->resize(pages * geometry.page);
 }
 
 bool ReadWholeFile(const std::filesystem::path& path,
@@ -196,7 +239,30 @@ bool ParseXexHeader(const uint8_t* data, size_t size, XexHeader* out) {
   return !out->resources.empty();
 }
 
-// Turn a non-encrypted XEX2 into its loaded image.
+// A module's PE data in the clear. A retail console's NAND holds its modules
+// plainly, but an image built for one carries them encrypted with the retail
+// key, and until that is undone nothing in them - the SHA-1 block chain, the
+// LZX windows - reads as anything.
+bool DecryptPeData(const uint8_t* data, size_t size, uint32_t security_offset,
+                   uint32_t pe_offset, std::vector<uint8_t>* out) {
+  if (size_t(security_offset) + kSecurityAesKey + 16 > size ||
+      pe_offset >= size) {
+    return false;
+  }
+  uint8_t session_key[16];
+  aes_decrypt_buffer(kXex2RetailKey, data + security_offset + kSecurityAesKey,
+                     sizeof(session_key), session_key, sizeof(session_key));
+  // Whole blocks only: a trailing partial one is padding either way.
+  const size_t body = (size - pe_offset) & ~size_t(0xF);
+  if (!body) {
+    return false;
+  }
+  out->resize(body);
+  aes_decrypt_buffer(session_key, data + pe_offset, body, out->data(), body);
+  return true;
+}
+
+// Turn a XEX2 into its loaded image.
 bool FlattenXex(const uint8_t* data, size_t size, const XexHeader& header,
                 std::vector<uint8_t>* out) {
   const auto format = header.optional.find(kOptFileFormatInfo);
@@ -207,14 +273,20 @@ bool FlattenXex(const uint8_t* data, size_t size, const XexHeader& header,
   const uint32_t info_size = Read32(info);
   const uint16_t encryption = Read16(info + 4);
   const uint16_t compression = Read16(info + 6);
-  if (encryption != 0) {
-    return false;
-  }
   if (header.pe_offset >= size || !header.image_size) {
     return false;
   }
   const uint8_t* pe = data + header.pe_offset;
-  const size_t pe_size = size - header.pe_offset;
+  size_t pe_size = size - header.pe_offset;
+  std::vector<uint8_t> plain;
+  if (encryption != 0) {
+    if (!DecryptPeData(data, size, header.security_offset, header.pe_offset,
+                       &plain)) {
+      return false;
+    }
+    pe = plain.data();
+    pe_size = plain.size();
+  }
 
   if (compression == 0) {
     out->assign(header.image_size, 0);
@@ -596,33 +668,75 @@ bool XexChainVerifies(const std::vector<uint8_t>& data) {
       Read16(data.data() + info + 6) != 2) {
     return false;
   }
-  size_t pos = Read32(data.data() + 0x08);
+  const uint32_t pe_offset = Read32(data.data() + 0x08);
+  if (pe_offset >= data.size()) {
+    return false;
+  }
+  const uint8_t* body = data.data() + pe_offset;
+  size_t body_size = data.size() - pe_offset;
+  std::vector<uint8_t> plain;
+  if (Read16(data.data() + info + 4) != 0) {
+    if (!DecryptPeData(data.data(), data.size(), Read32(data.data() + 0x10),
+                       pe_offset, &plain)) {
+      return false;
+    }
+    body = plain.data();
+    body_size = plain.size();
+  }
+  size_t pos = 0;
   uint32_t size = Read32(data.data() + info + 0xC);
   uint8_t digest[20];
   std::memcpy(digest, data.data() + info + 0x10, sizeof(digest));
   while (size) {
-    if (size < 24 || pos + size > data.size()) {
+    if (size < 24 || pos + size > body_size) {
       return false;
     }
     uint8_t actual[20];
-    Sha1(data.data() + pos, size, actual);
+    Sha1(body + pos, size, actual);
     if (std::memcmp(actual, digest, sizeof(digest)) != 0) {
       return false;
     }
-    std::memcpy(digest, data.data() + pos + 4, sizeof(digest));
-    const uint32_t next = Read32(data.data() + pos);
+    std::memcpy(digest, body + pos + 4, sizeof(digest));
+    const uint32_t next = Read32(body + pos);
     pos += size;
     size = next;
   }
   return true;
 }
 
-// The live root, or SIZE_MAX when no block reads as one with a verifiable
-// module under it.
+// A file that came out of the map beginning with something the chip's own
+// directory holds. Weaker than the block chain, and the only thing left on an
+// image whose modules have been patched: a patched module keeps its name and
+// its place while its chain no longer closes.
+bool FlashFileReadsBack(const std::vector<uint8_t>& data) {
+  if (data.size() < 4) {
+    return false;
+  }
+  if (!std::memcmp(data.data(), "XEX2", 4)) {
+    if (data.size() < 0x18) {
+      return false;
+    }
+    const uint32_t count = Read32(data.data() + 0x14);
+    return count && count <= 256 &&
+           size_t(0x18) + size_t(count) * 8 <= data.size() &&
+           Read32(data.data() + 0x08) < data.size() &&
+           Read32(data.data() + 0x10) < data.size();
+  }
+  for (const char* magic : {"xttf", "CRLP", "DAEP", "PIRS", "LIVE", "CON "}) {
+    if (!std::memcmp(data.data(), magic, 4)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// The live root, or SIZE_MAX when no block reads as one. A stale generation
+// reads blocks that have since been rewritten, so it is ranked below one
+// whose modules verify, and below one whose files at least read back.
 size_t FindFlashRoot(const std::vector<uint8_t>& image,
                      std::vector<FlashFile>* out_files) {
   size_t best_root = SIZE_MAX;
-  size_t best_score = 0;
+  std::tuple<size_t, size_t, size_t> best_rank{0, 0, 0};
   std::vector<FlashFile> files;
   std::vector<uint8_t> data;
   for (size_t block = 0; block < FlashBlockCount(image); ++block) {
@@ -630,17 +744,25 @@ size_t FindFlashRoot(const std::vector<uint8_t>& image,
     if (!ReadFlashDirectory(image, root, &files)) {
       continue;
     }
-    size_t score = 0;
+    size_t verified = 0;
+    size_t reads_back = 0;
     for (const FlashFile& file : files) {
+      if (!ReadFlashFile(image, root, file, &data)) {
+        continue;
+      }
+      if (FlashFileReadsBack(data)) {
+        ++reads_back;
+      }
       if (file.name.size() > 4 &&
           file.name.compare(file.name.size() - 4, 4, ".xex") == 0 &&
-          ReadFlashFile(image, root, file, &data) && XexChainVerifies(data)) {
-        ++score;
+          XexChainVerifies(data)) {
+        ++verified;
       }
     }
-    if (score > best_score ||
-        (score && score == best_score && files.size() > out_files->size())) {
-      best_score = score;
+    const std::tuple<size_t, size_t, size_t> rank{verified, reads_back,
+                                                  files.size()};
+    if ((verified || reads_back) && rank > best_rank) {
+      best_rank = rank;
       best_root = root;
       *out_files = files;
     }
@@ -1030,13 +1152,39 @@ bool ExtractFlashModule(const std::filesystem::path& image_path,
            xe::path_to_utf8(out_file), module.size());
     return true;
   }
+
+  // A chip whose modules carry no original-PE-name header cannot be searched
+  // by PE name at all - a 1888-era image is one, where only launch.xex has
+  // the header. Its own directory names them the way the caller asks for
+  // them, so take it from there instead.
+  std::vector<FlashFile> files;
+  const size_t root = FindFlashRoot(image, &files);
+  if (root == SIZE_MAX) {
+    return false;
+  }
+  const std::string wanted =
+      xe::utf8::lower_ascii(xe::path_to_utf8(out_file.filename()));
+  for (const FlashFile& file : files) {
+    std::vector<uint8_t> data;
+    if (xe::utf8::lower_ascii(file.name) != wanted ||
+        !ReadFlashFile(image, root, file, &data)) {
+      continue;
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(out_file.parent_path(), ec);
+    if (!WriteWholeFile(out_file, data.data(), data.size())) {
+      XELOGW("xui assets: could not write {}", xe::path_to_utf8(out_file));
+      return false;
+    }
+    XELOGI("xui assets: {} from the chip's directory -> {} ({} bytes)",
+           file.name, xe::path_to_utf8(out_file), data.size());
+    return true;
+  }
   return false;
 }
 
-AssetInstallReport ExtractFlashFiles(
-    const std::filesystem::path& image_path,
-    const std::filesystem::path& out_dir,
-    const std::vector<std::string>& skip_extensions) {
+AssetInstallReport ExtractFlashFiles(const std::filesystem::path& image_path,
+                                     const std::filesystem::path& out_dir) {
   AssetInstallReport report;
   std::vector<uint8_t> image;
   if (!ReadWholeFile(image_path, &image)) {
@@ -1060,44 +1208,33 @@ AssetInstallReport ExtractFlashFiles(
   std::string written;
   std::vector<uint8_t> data;
   for (const FlashFile& file : files) {
-    const auto extension = xe::utf8::lower_ascii(
-        xe::path_to_utf8(std::filesystem::path(file.name).extension()));
-    if (std::find(skip_extensions.begin(), skip_extensions.end(), extension) !=
-        skip_extensions.end()) {
-      continue;
-    }
     if (!ReadFlashFile(image, root, file, &data)) {
       report.missing.push_back(file.name);
       continue;
     }
-    // An older chip must not take a module back past the system update: the
-    // update's copy sits here under the same name or as $flash_<name>, and
-    // the loader takes the plain name first.
+    // An older chip must not take a module back past the system update, so
+    // where the copy already here is newer the chip's goes in as $flash_<name>
+    // - where the loader looks after the plain name - rather than over it.
+    // EVERY file comes off the chip either way: which name it lands under is
+    // the only thing the version decides, never whether it is written.
+    std::string name = file.name;
     const uint32_t version = XexVersionOf(data);
-    bool newer_here = false;
     if (version) {
-      for (const auto& existing :
-           {out_dir / file.name, out_dir / ("$flash_" + file.name)}) {
-        std::vector<uint8_t> current;
-        if (ReadWholeFile(existing, &current) &&
-            XexVersionOf(current) > version) {
-          newer_here = true;
-          report.text += "Flash: kept the newer " +
-                         xe::path_to_utf8(existing.filename()) + " over " +
-                         file.name + " from the flash\n";
-          break;
-        }
+      std::vector<uint8_t> current;
+      if (ReadWholeFile(out_dir / file.name, &current) &&
+          XexVersionOf(current) > version) {
+        name = "$flash_" + file.name;
+        report.text += "Flash: the " + file.name +
+                       " already here is newer, so the chip's went in as " +
+                       name + "\n";
       }
     }
-    if (newer_here) {
-      continue;
-    }
-    if (!WriteWholeFile(out_dir / file.name, data.data(), data.size())) {
-      report.missing.push_back(file.name);
+    if (!WriteWholeFile(out_dir / name, data.data(), data.size())) {
+      report.missing.push_back(name);
       continue;
     }
     ++report.package_count;
-    written += (written.empty() ? "" : ", ") + file.name;
+    written += (written.empty() ? "" : ", ") + name;
   }
   XELOGI("xui assets: flash root at {:X}, {} of {} file(s) written: {}", root,
          report.package_count, files.size(), written);
@@ -1222,6 +1359,7 @@ AssetInstallReport InstallFromFlashImage(
   }
 
   std::vector<std::pair<size_t, size_t>> fonts;
+  std::set<std::string> placed_fonts;
   ScanFonts(image, claimed, &fonts);
   for (size_t i = 0; i < fonts.size(); ++i) {
     const uint8_t* data = image.data() + fonts[i].first;
@@ -1245,10 +1383,43 @@ AssetInstallReport InstallFromFlashImage(
       continue;
     }
     ++report.font_count;
+    placed_fonts.insert(name + ".xtt");
     manifest += fmt::format(
         "    {{ \"font\": \"{}.xtt\", \"size\": {}, \"source\": \"{:08X}\" "
         "}},\n",
         name, size, fonts[i].first);
+  }
+
+  // A FACE THE CHIP'S OWN DIRECTORY NAMES IS ALREADY UNDER THE NAME THE
+  // CONSOLE ASKS FOR. The scan above has to guess, because the full faces
+  // call themselves "Xbox TC" and "Xbox JK" and a chip that carries both the
+  // full face and the Latin subset can only be told apart by what is inside
+  // them - which is why the full one is left under its own name. A chip that
+  // carries ONE face per family has no subset for it to lose to, and names it
+  // xenonclatin.xtt in its directory, so the directory is taken at its word
+  // for whatever the scan did not already name. Second, so the identities win.
+  std::vector<FlashFile> font_files;
+  const size_t font_root = FindFlashRoot(image, &font_files);
+  if (font_root != SIZE_MAX) {
+    std::vector<uint8_t> data;
+    for (const FlashFile& file : font_files) {
+      if (file.name.size() < 5 ||
+          xe::utf8::lower_ascii(file.name.substr(file.name.size() - 4)) !=
+              ".xtt" ||
+          placed_fonts.count(file.name) ||
+          !ReadFlashFile(image, font_root, file, &data)) {
+        continue;
+      }
+      if (!WriteWholeFile(out_dir / file.name, data.data(), data.size())) {
+        continue;
+      }
+      ++report.font_count;
+      placed_fonts.insert(file.name);
+      manifest += fmt::format(
+          "    {{ \"font\": \"{}\", \"size\": {}, \"source\": \"{:08X}\" "
+          "}},\n",
+          file.name, data.size(), file.start_block * kFlashBlockSize);
+    }
   }
 
   if (!manifest.empty()) {

@@ -40,6 +40,11 @@ void RequestGameLibraryRebuild();
 // Drops queued voice capture packets; they belong to the title being torn down.
 void ResetVoiceCapture();
 
+// Forgets that a title brought XNet up. XNetStartup returns early once it has
+// been called, BEFORE it reads the parameters, so without this the first title
+// to start networking configures it for every title after it.
+void ResetXnetState();
+
 // Around a change to a title's content: the running dashboard is told which
 // records came and went, through its XamContentRegisterChangeCallback.
 void BeginContentChange(uint32_t title_id);

@@ -42,6 +42,11 @@ class XmaDecoder {
 
   uint32_t AllocateContext();
   void ReleaseContext(uint32_t guest_ptr);
+  // Every context still allocated, back to the pool. The pool is per-process
+  // and a title killed mid-run never balances its XMACreateContext calls, so
+  // without this each title leaves fewer contexts for the next one. Returns
+  // how many it took back.
+  size_t ReleaseAllContexts();
   bool BlockOnContext(uint32_t guest_ptr, bool poll);
 
   uint32_t ReadRegister(uint32_t addr);

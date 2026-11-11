@@ -2817,6 +2817,17 @@ void CleanupUPnPActions() {
   upnp_actions_.erase(completed_actions, upnp_actions_.end());
 }
 
+void ResetXnetState() {
+  // Not winsock_reference_count_: that is the host's own Winsock, which stays
+  // up for the hub between titles.
+  initialized_xnet_ = false;
+  xnet_startup_params = {};
+  {
+    std::lock_guard<std::mutex> lock(xnet_connect_status_mutex_);
+    xnet_connect_status_.clear();
+  }
+}
+
 }  // namespace xam
 }  // namespace kernel
 }  // namespace xe

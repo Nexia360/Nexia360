@@ -1915,11 +1915,13 @@ EmulatorWindow::InstallContentPackages(
         // into the Dashboard folder as well - whichever order the two installs
         // happen in, the flash faces are the ones left standing.
         archive_report += ReplaceDashboardFontsFromFlash(dashboard);
-        // Everything on the chip, by the names its own directory gives - the
-        // Dashboard folder IS \Device\Flash. The typefaces are left to the
-        // line above, which names them for XamGetLanguageTypeface.
+        // EVERYTHING on the chip, by the names its own directory gives - the
+        // Dashboard folder IS \Device\Flash. The typefaces come through here
+        // too: the chip names them the way XamGetLanguageTypeface asks for
+        // them, so this runs after the line above and the chip's own names
+        // are the ones left standing.
         const auto flash_files =
-            kernel::xam::xui::ExtractFlashFiles(path, dashboard, {".xtt"});
+            kernel::xam::xui::ExtractFlashFiles(path, dashboard);
         archive_report += flash_files.text;
         if (!flash_files.ok) {
           // The boot animation is a whole module, and NAND is the only place
@@ -3818,6 +3820,7 @@ std::string ReplaceDashboardFontsFromFlash(
   // image is often first - so the folder the faces go into may not exist yet.
   std::filesystem::create_directories(dashboard, ec);
   ec.clear();
+  std::vector<std::filesystem::path> faces;
   for (const auto& file : std::filesystem::directory_iterator(
            ui, std::filesystem::directory_options::skip_permission_denied,
            ec)) {
@@ -3827,22 +3830,43 @@ std::string ReplaceDashboardFontsFromFlash(
     if (!file.is_regular_file(ec) || file.path().extension() != ".xtt") {
       continue;
     }
-    ++seen;
-    const std::string name =
-        kernel::xam::xui::DashboardTypefaceFor(file.path());
-    if (name.empty() || placed.count(name)) {
-      continue;
+    faces.push_back(file.path());
+  }
+  seen = faces.size();
+  // Two passes, identities first. A chip carrying one face per family names it
+  // xenonclatin.xtt in its own directory and the extractor keeps that name,
+  // but the face inside it still calls itself "Xbox TC" and covers the CJK
+  // ideographs - which on a chip that carries the Latin subset as well is the
+  // one face that must NOT take the name. So the name on the file is only
+  // worth anything once nothing has claimed it by what is inside it.
+  for (int pass = 0; pass < 2; ++pass) {
+    for (const auto& path : faces) {
+      std::string name;
+      if (pass == 0) {
+        name = kernel::xam::xui::DashboardTypefaceFor(path);
+      } else {
+        const std::string own = xe::path_to_utf8(path.filename());
+        for (const char* face : kDashboardTypefaces) {
+          if (own == face) {
+            name = own;
+            break;
+          }
+        }
+      }
+      if (name.empty() || placed.count(name)) {
+        continue;
+      }
+      std::filesystem::copy_file(
+          path, dashboard / name,
+          std::filesystem::copy_options::overwrite_existing, ec);
+      if (ec) {
+        ec.clear();
+        continue;
+      }
+      placed.insert(name);
+      report += fmt::format("Dashboard: {} taken from the flash image ({})\n",
+                            name, xe::path_to_utf8(path.filename()));
     }
-    std::filesystem::copy_file(
-        file.path(), dashboard / name,
-        std::filesystem::copy_options::overwrite_existing, ec);
-    if (ec) {
-      ec.clear();
-      continue;
-    }
-    placed.insert(name);
-    report += fmt::format("Dashboard: {} taken from the flash image ({})\n",
-                          name, xe::path_to_utf8(file.path().filename()));
   }
   // Only worth saying once there ARE flash assets to have missed it in. A user
   // who has installed the system update and not a NAND dump yet gets the
