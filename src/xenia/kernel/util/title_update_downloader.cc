@@ -13,6 +13,8 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <map>
+#include <mutex>
 
 // clang-format off
 // We want to include platform.h first to define NOMINMAX to prevent window.h
@@ -23,12 +25,15 @@
 
 #include "third_party/rapidjson/include/rapidjson/document.h"
 
+#include "xenia/base/cvar.h"
 #include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/string_util.h"
 #include "xenia/base/utf8.h"
 #include "xenia/kernel/util/net_utils.h"
 #include "xenia/kernel/util/xex2_info.h"
+
+DECLARE_string(api_address);
 
 namespace xe {
 namespace kernel {
@@ -37,6 +42,12 @@ namespace util {
 // The catalogue this pulls from. Kept here rather than in the UI: the user is
 // offered "Download Title Updates", not a particular site.
 static constexpr const char* kCatalogueHost = "https://xboxunity.net";
+
+// The hub publishes, per title id, {title version -> TU name}. The catalogue
+// knows neither: its "version" is the build number alone, and for Minecraft
+// build 80 is TU75. This list is the only place the TU number comes from.
+static constexpr const char* kHubVersionList = "versions.json";
+static constexpr long kHubVersionTimeoutSeconds = 10;
 
 // Media ids and hashes come back in whatever case the catalogue stored them.
 static bool EqualsNoCase(const std::string& a, const std::string& b) {
@@ -216,6 +227,133 @@ std::string TitleUpdateDownloader::BuildDownloadUrl(uint32_t update_id) {
                      update_id);
 }
 
+// title id (upper hex) -> {title version -> TU name}, fetched from the hub
+// once per run. Missing or unreachable leaves it empty and every update keeps
+// its catalogue name.
+static const std::map<std::string, std::map<std::string, std::string>>&
+HubVersionNames() {
+  static std::map<std::string, std::map<std::string, std::string>> names;
+  static std::once_flag once;
+
+  std::call_once(once, []() {
+    std::string base = cvars::api_address;
+
+    if (base.empty()) {
+      return;
+    }
+
+    if (base.back() != '/') {
+      base.push_back('/');
+    }
+
+    CURL* curl = curl_easy_init();
+
+    if (!curl) {
+      return;
+    }
+
+    const std::string url = base + kHubVersionList;
+    std::string response;
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, NexiaUserAgent());
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, kHubVersionTimeoutSeconds);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteToStringCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+
+    const CURLcode result = curl_easy_perform(curl);
+
+    long status = 0;
+    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+    curl_easy_cleanup(curl);
+
+    if (result != CURLE_OK || status != 200) {
+      XELOGW("Hub title update names unavailable: curl {} http {}",
+             static_cast<int>(result), status);
+      return;
+    }
+
+    rapidjson::Document doc;
+    doc.Parse(response.c_str());
+
+    if (doc.HasParseError() || !doc.IsObject()) {
+      XELOGW("Hub title update names are not an object");
+      return;
+    }
+
+    for (auto title = doc.MemberBegin(); title != doc.MemberEnd(); ++title) {
+      if (!title->name.IsString() || !title->value.IsObject()) {
+        continue;
+      }
+
+      std::string id = title->name.GetString();
+
+      for (char& c : id) {
+        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+      }
+
+      auto& by_version = names[id];
+
+      for (auto entry = title->value.MemberBegin();
+           entry != title->value.MemberEnd(); ++entry) {
+        if (entry->name.IsString() && entry->value.IsString()) {
+          by_version[entry->name.GetString()] = entry->value.GetString();
+        }
+      }
+    }
+
+    XELOGI("Hub lists title update names for {} titles", names.size());
+  });
+
+  return names;
+}
+
+// The build number out of a version string. An Xbox version is
+// major.minor.BUILD.qfe, and the catalogue publishes the build on its own, so
+// that component is what lines the two lists up.
+static std::string BuildComponent(const std::string& version) {
+  const size_t second = version.find('.', version.find('.') + 1);
+
+  if (second == std::string::npos) {
+    return "";
+  }
+
+  const size_t third = version.find('.', second + 1);
+
+  return version.substr(second + 1, third == std::string::npos
+                                        ? std::string::npos
+                                        : third - second - 1);
+}
+
+static void NameFromHub(uint32_t title_id, RemoteTitleUpdate* update) {
+  const auto& all = HubVersionNames();
+  const auto title = all.find(fmt::format("{:08X}", title_id));
+
+  if (title == all.cend() || update->version.empty()) {
+    return;
+  }
+
+  const auto& by_version = title->second;
+
+  // A catalogue that lists the full version needs no translation.
+  const auto exact = by_version.find(update->version);
+
+  if (exact != by_version.cend()) {
+    update->title_version = exact->first;
+    update->tu_name = exact->second;
+    return;
+  }
+
+  for (const auto& [version, name] : by_version) {
+    if (BuildComponent(version) == update->version) {
+      update->title_version = version;
+      update->tu_name = name;
+      return;
+    }
+  }
+}
+
 std::vector<RemoteTitleUpdate> TitleUpdateDownloader::List(
     uint32_t title_id, const std::string& media_id) {
   std::vector<RemoteTitleUpdate> updates;
@@ -331,6 +469,10 @@ std::vector<RemoteTitleUpdate> TitleUpdateDownloader::List(
               return string_util::from_string<uint32_t>(a.version) >
                      string_util::from_string<uint32_t>(b.version);
             });
+
+  for (RemoteTitleUpdate& update : updates) {
+    NameFromHub(title_id, &update);
+  }
 
   return updates;
 }

@@ -411,8 +411,16 @@ void TitleUpdateDialog::StartDownload(
 // and as the name it is installed under. The catalogue's "Name" field is the
 // game's title, identical for every update of a title, so it is no use for
 // telling them apart - the update number is.
+//
+// The catalogue's own version is the build number, which is NOT the TU number
+// anyone uses (Minecraft build 80 is TU75), so when the hub lists this title
+// both are shown.
 std::string TitleUpdateDialog::CatalogueTitle(
     const kernel::util::RemoteTitleUpdate& update) {
+  if (!update.tu_name.empty()) {
+    return fmt::format("{} - {}", update.tu_name, update.title_version);
+  }
+
   return fmt::format("TU-{}", update.version);
 }
 
@@ -501,21 +509,40 @@ void TitleUpdateDialog::DrawDownloadSection() {
 
   ImGui::BeginChild("##tu_download_list", ImVec2(480.0f, 140.0f), true);
 
-  for (const auto& update : catalogue_) {
-    ImGui::PushID(static_cast<int>(update.id));
+  // Fixed columns: the name now carries the TU number and the full version,
+  // which is wide enough to push Download off the right edge of a SameLine.
+  if (ImGui::BeginTable(
+          "##tu_download_table", 4,
+          ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_NoHostExtendX)) {
+    ImGui::TableSetupColumn("##name", ImGuiTableColumnFlags_WidthFixed, 170.0f);
+    ImGui::TableSetupColumn("##size", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+    ImGui::TableSetupColumn("##date", ImGuiTableColumnFlags_WidthFixed, 90.0f);
+    ImGui::TableSetupColumn("##get", ImGuiTableColumnFlags_WidthFixed, 80.0f);
 
-    // Size is published in KiB.
-    ImGui::Text("%s      %.1f MiB      %s", CatalogueTitle(update).c_str(),
-                update.listed_size / 1024.0,
-                update.upload_date.substr(0, 10).c_str());
+    for (const auto& update : catalogue_) {
+      ImGui::PushID(static_cast<int>(update.id));
 
-    ImGui::SameLine(360.0f);
+      ImGui::TableNextRow();
 
-    if (ImGui::Button("Download")) {
-      StartDownload(update);
+      ImGui::TableSetColumnIndex(0);
+      ImGui::TextUnformatted(CatalogueTitle(update).c_str());
+
+      // Size is published in KiB.
+      ImGui::TableSetColumnIndex(1);
+      ImGui::Text("%.1f MiB", update.listed_size / 1024.0);
+
+      ImGui::TableSetColumnIndex(2);
+      ImGui::TextUnformatted(update.upload_date.substr(0, 10).c_str());
+
+      ImGui::TableSetColumnIndex(3);
+      if (ImGui::Button("Download")) {
+        StartDownload(update);
+      }
+
+      ImGui::PopID();
     }
 
-    ImGui::PopID();
+    ImGui::EndTable();
   }
 
   ImGui::EndChild();

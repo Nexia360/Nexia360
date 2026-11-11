@@ -37,6 +37,13 @@ struct RemoteTitleUpdate {
   // reports bytes, so treat it as a display hint and trust Content-Length for
   // the transfer itself.
   uint64_t listed_size = 0;
+  // What this update is called where it is talked about, from the hub's
+  // per-title version list: the TU number ("TU75") and the full title version
+  // ("0.0.80.1"). The catalogue publishes neither - its `version` is the build
+  // number on its own, which is not the TU number. Both empty when the hub
+  // does not list this title.
+  std::string tu_name;
+  std::string title_version;
 };
 
 // Fetches title updates for a title from the online catalogue.
