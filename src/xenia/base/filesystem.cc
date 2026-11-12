@@ -11,10 +11,23 @@
 
 #include <utility>
 
+#include "xenia/base/cvar.h"
 #include "xenia/base/string_util.h"
+
+DEFINE_string(dashboard_root, "",
+              "Folder holding the installed dashboard. Empty uses a Dashboard "
+              "folder beside the executable.",
+              "Storage");
 
 namespace xe {
 namespace filesystem {
+
+std::filesystem::path GetDashboardFolder() {
+  if (!cvars::dashboard_root.empty()) {
+    return xe::to_path(cvars::dashboard_root);
+  }
+  return GetExecutableFolder() / "Dashboard";
+}
 
 bool CreateParentFolder(const std::filesystem::path& path) {
   if (path.has_parent_path()) {

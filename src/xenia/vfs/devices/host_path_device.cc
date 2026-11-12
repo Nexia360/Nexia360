@@ -12,6 +12,8 @@
 #include "xenia/base/filesystem.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
+#include "xenia/base/platform.h"
+#include "xenia/base/utf8.h"
 #include "xenia/kernel/xfile.h"
 #include "xenia/vfs/devices/host_path_entry.h"
 
@@ -77,8 +79,24 @@ Entry* HostPathDevice::AddRootFile(const std::string_view name) {
   if (Entry* existing = root->GetChild(name)) {
     return existing;
   }
-  const std::filesystem::path host_file = host_path_ / xe::to_path(name);
-  const auto info = xe::filesystem::GetInfo(host_file);
+  std::filesystem::path host_file = host_path_ / xe::to_path(name);
+  auto info = xe::filesystem::GetInfo(host_file);
+#if !XE_PLATFORM_WIN32
+  if (!info) {
+    std::error_code ec;
+    std::filesystem::directory_iterator it(host_path_, ec);
+    if (!ec) {
+      for (const auto& candidate : it) {
+        if (xe::utf8::equal_case(xe::path_to_utf8(candidate.path().filename()),
+                                 name)) {
+          host_file = candidate.path();
+          info = xe::filesystem::GetInfo(host_file);
+          break;
+        }
+      }
+    }
+  }
+#endif
   if (!info || info->type != xe::filesystem::FileInfo::Type::kFile) {
     return nullptr;
   }

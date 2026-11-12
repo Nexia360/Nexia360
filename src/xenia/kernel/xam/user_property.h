@@ -10,6 +10,7 @@
 #ifndef XENIA_KERNEL_XAM_USER_PROPERTY_H_
 #define XENIA_KERNEL_XAM_USER_PROPERTY_H_
 
+#include <optional>
 #include <variant>
 
 #include "xenia/kernel/xam/user_data.h"

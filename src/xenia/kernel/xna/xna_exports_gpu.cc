@@ -45,8 +45,11 @@
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
 #include "xenia/base/memory.h"
+#include "xenia/base/platform.h"
 #include "xenia/emulator.h"
+#if XE_PLATFORM_WIN32
 #include "xenia/gpu/d3d12/d3d12_command_processor.h"
+#endif
 #include "xenia/gpu/graphics_system.h"
 #include "xenia/gpu/texture_address.h"
 #include "xenia/kernel/kernel_state.h"
@@ -63,6 +66,34 @@
 #include "xenia/memory.h"
 
 #include <cmath>
+
+#if XE_PLATFORM_WIN32
+using HostedProcessor = xe::gpu::d3d12::D3D12CommandProcessor;
+#else
+// The hosted shader and resolve entry points are D3D12CommandProcessor's, and
+// that is not built here. Every user below already handles a null processor by
+// going through XnaDirect* instead, which off Windows is the Vulkan path.
+class HostedProcessor {
+ public:
+  enum class ResolveCount { kCounted, kNotReady, kNoContract };
+  ResolveCount CountResolvedPixels(uint32_t physical_base, uint32_t length,
+                                   uint32_t* coloured, uint32_t* non_zero,
+                                   uint32_t* first) {
+    return ResolveCount::kNoContract;
+  }
+  uint64_t GetCurrentSubmission() const { return 0; }
+  xe::gpu::Shader* HostedLoadShader(xe::gpu::xenos::ShaderType shader_type,
+                                    const uint32_t* microcode,
+                                    uint32_t dword_count,
+                                    std::endian source_endian) {
+    return nullptr;
+  }
+  void HostedSetActiveShaders(xe::gpu::Shader* vertex_shader,
+                              xe::gpu::Shader* pixel_shader) {}
+  xe::gpu::Shader* active_vertex_shader() const { return nullptr; }
+  xe::gpu::Shader* active_pixel_shader() const { return nullptr; }
+};
+#endif  // XE_PLATFORM_WIN32
 
 // What feeds a draw - texture binds and how each sampler was paired - is debug
 // detail on an ordinary frame and the whole answer on a captured one.
@@ -1755,7 +1786,7 @@ bool xe::kernel::xna::XnaLookupTextureFace(uint32_t handle, uint32_t face,
 // code and hands the whole block over at once, which is why the console
 // graphics interface is a few dozen entry points rather than one per draw call.
 
-static xe::gpu::d3d12::D3D12CommandProcessor* HostedCommandProcessor();
+static HostedProcessor* HostedCommandProcessor();
 
 namespace {
 
@@ -3462,13 +3493,11 @@ class DeviceSink final : public xe::kernel::xna::HlcbSink {
       const auto counted = processor->CountResolvedPixels(
           memory->GetPhysicalAddress(entry.address), entry.bytes, &coloured,
           &non_zero, &first);
-      if (counted ==
-          xe::gpu::d3d12::D3D12CommandProcessor::ResolveCount::kNotReady) {
+      if (counted == HostedProcessor::ResolveCount::kNotReady) {
         return;
       }
       pending_resolves_.pop_front();
-      if (counted ==
-          xe::gpu::d3d12::D3D12CommandProcessor::ResolveCount::kNoContract) {
+      if (counted == HostedProcessor::ResolveCount::kNoContract) {
         XELOGD("[xna]    settled {:08X}: no resolve contract covers it",
                entry.address);
         continue;
@@ -3540,21 +3569,24 @@ DeviceSink device_sink;
 
 }  // namespace
 
-static xe::gpu::d3d12::D3D12CommandProcessor* HostedCommandProcessor() {
+static HostedProcessor* HostedCommandProcessor() {
+#if XE_PLATFORM_WIN32
   auto* state = xe::kernel::kernel_state();
   auto* emulator = state ? state->emulator() : nullptr;
   auto* graphics = emulator ? emulator->graphics_system() : nullptr;
   if (!graphics) {
     return nullptr;
   }
-  return dynamic_cast<xe::gpu::d3d12::D3D12CommandProcessor*>(
-      graphics->command_processor());
+  return dynamic_cast<HostedProcessor*>(graphics->command_processor());
+#else
+  return nullptr;
+#endif
 }
 
-static xe::gpu::Shader* LoadHostedShader(
-    xe::gpu::d3d12::D3D12CommandProcessor* processor,
-    xe::gpu::xenos::ShaderType type, const uint32_t* ucode,
-    uint32_t dword_count) {
+static xe::gpu::Shader* LoadHostedShader(HostedProcessor* processor,
+                                         xe::gpu::xenos::ShaderType type,
+                                         const uint32_t* ucode,
+                                         uint32_t dword_count) {
   if (processor) {
     // Native: the effect image was byte-swapped from console order when it was
     // loaded, so its microcode is already in the order the translator reads.
@@ -3565,9 +3597,9 @@ static xe::gpu::Shader* LoadHostedShader(
   return xe::kernel::xna::XnaDirectLoadShader(type, ucode, dword_count);
 }
 
-static void SetActiveHostedShaders(
-    xe::gpu::d3d12::D3D12CommandProcessor* processor,
-    xe::gpu::Shader* vertex_shader, xe::gpu::Shader* pixel_shader) {
+static void SetActiveHostedShaders(HostedProcessor* processor,
+                                   xe::gpu::Shader* vertex_shader,
+                                   xe::gpu::Shader* pixel_shader) {
   if (processor) {
     processor->HostedSetActiveShaders(vertex_shader, pixel_shader);
     return;
@@ -3575,8 +3607,8 @@ static void SetActiveHostedShaders(
   xe::kernel::xna::XnaDirectSetActiveShaders(vertex_shader, pixel_shader);
 }
 
-static xe::gpu::Shader* ActiveHostedShader(
-    xe::gpu::d3d12::D3D12CommandProcessor* processor, bool vertex) {
+static xe::gpu::Shader* ActiveHostedShader(HostedProcessor* processor,
+                                           bool vertex) {
   if (processor) {
     return vertex ? processor->active_vertex_shader()
                   : processor->active_pixel_shader();

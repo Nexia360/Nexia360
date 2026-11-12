@@ -1019,8 +1019,8 @@ X_STATUS Emulator::LaunchXnaGuestTitle(const std::filesystem::path& path) {
   // exactly how far it got, which is the one thing
   // worth learning from a run. --xna_direct=false chooses the old path
   // deliberately.
-  const auto launcher = xe::filesystem::GetExecutableFolder() / "Dashboard" /
-                        "Xna_TitleLauncher.xex";
+  const auto launcher =
+      xe::filesystem::GetDashboardFolder() / "Xna_TitleLauncher.xex";
   std::error_code ec;
   if (!std::filesystem::exists(launcher, ec)) {
     XELOGE(

@@ -27,14 +27,13 @@
 #include "xenia/memory.h"
 #include "xenia/xbox.h"
 
-#if XE_PLATFORM_WIN32
-#include "xenia/base/platform_win.h"
-#endif
+#include "xenia/base/fiber.h"
 
 // THE KERNEL'S USER MODE, ON HOST FIBERS.
 //
 // Behaviour follows xenia-edge's xboxkrnl_usermode.cc, which runs XNA titles;
-// the fibers are raw Win32 ones rather than edge's boost.context fibers.
+// the fibers are the host's own (Win32 fibers, ucontext elsewhere - see
+// base/fiber.h) rather than edge's boost.context fibers.
 //
 // The .NET Compact Framework in XNA titles runs managed code in user mode: a
 // second address space (Memory::EnableUserModeViews), entered with
@@ -97,8 +96,6 @@ constexpr uint32_t kMsrUserMode = 0x4000;
 
 }  // namespace
 
-#if XE_PLATFORM_WIN32
-
 namespace {
 
 // The exception record a fault hands the trap handler.
@@ -112,8 +109,8 @@ constexpr uint32_t kReturnSentinel = 0xBCBCBCBC;
 // Keeps the handler clear of the frame that called KeEnterUserMode.
 constexpr uint64_t kHandlerStackGap = 0x100;
 
-constexpr SIZE_T kFiberCommitBytes = 256 * 1024;
-constexpr SIZE_T kFiberReserveBytes = 16 * 1024 * 1024;
+constexpr size_t kFiberCommitBytes = 256 * 1024;
+constexpr size_t kFiberReserveBytes = 16 * 1024 * 1024;
 
 // Where a fiber's procedure began, captured as it first ran. Restoring it
 // starts the fiber over on the stack it already has: the frames above are
@@ -122,7 +119,7 @@ constexpr SIZE_T kFiberReserveBytes = 16 * 1024 * 1024;
 // frames, and remaking it - a 16 MB stack freed and reserved again - was most
 // of what each one cost.
 struct FiberStart {
-  CONTEXT context;
+  xe::fiber::Context context;
   bool captured = false;
   // Restore |context| the next time the fiber is switched to.
   bool restart = false;
@@ -310,11 +307,11 @@ void PopStackpointState(UserModeState* state) {
   state->swapped_stackpoint_states.pop_back();
 }
 
-void* NewFiber(LPFIBER_START_ROUTINE proc, void* param) {
-  void* fiber = CreateFiberEx(kFiberCommitBytes, kFiberReserveBytes,
-                              FIBER_FLAG_FLOAT_SWITCH, proc, param);
+void* NewFiber(xe::fiber::StartRoutine proc, void* param) {
+  void* fiber =
+      xe::fiber::Create(kFiberCommitBytes, kFiberReserveBytes, proc, param);
   if (!fiber) {
-    XELOGE("User mode: CreateFiberEx failed ({})", GetLastError());
+    XELOGE("User mode: could not create a fiber");
   }
   return fiber;
 }
@@ -322,7 +319,7 @@ void* NewFiber(LPFIBER_START_ROUTINE proc, void* param) {
 // Back on a fiber that switched away: one renewed since starts over. Every
 // switch goes through SwitchTo, so this is where an abandoned fiber resumes.
 void RestartIfRenewed(UserModeState* state) {
-  void* fiber = GetCurrentFiber();
+  void* fiber = xe::fiber::Current();
   FiberStart* start = nullptr;
   if (fiber == state->handler_fiber) {
     start = &state->handler_start;
@@ -337,13 +334,13 @@ void RestartIfRenewed(UserModeState* state) {
   if (start && start->restart) {
     start->restart = false;
     // No exception record: a plain jump, nothing unwound.
-    RtlRestoreContext(&start->context, nullptr);
+    XE_FIBER_RESTORE(start->context);
   }
 }
 
 void SwitchTo(UserModeState* state, void* fiber) {
   state->current_fiber = fiber;
-  SwitchToFiber(fiber);
+  xe::fiber::SwitchTo(fiber);
   RestartIfRenewed(state);
 }
 
@@ -391,11 +388,11 @@ void LeaveUserMode(UserModeState* state, uint32_t value, bool abandon) {
   // straight back to its loop.
 }
 
-VOID WINAPI UserFiberProc(void* param) {
+void UserFiberProc(void* param) {
   auto user_fiber = static_cast<UserFiber*>(param);
   // A restart resumes here. Captured in this frame and not a helper's: a
   // helper's return address lies below, where later frames overwrite it.
-  RtlCaptureContext(&user_fiber->start.context);
+  XE_FIBER_CAPTURE(user_fiber->start.context);
   user_fiber->start.captured = true;
   for (;;) {
     UserModeState* state = tl_user_mode.get();
@@ -406,10 +403,10 @@ VOID WINAPI UserFiberProc(void* param) {
   }
 }
 
-VOID WINAPI HandlerFiberProc(void* param) {
+void HandlerFiberProc(void* param) {
   auto state = static_cast<UserModeState*>(param);
   // A restart resumes here, as in UserFiberProc.
-  RtlCaptureContext(&state->handler_start.context);
+  XE_FIBER_CAPTURE(state->handler_start.context);
   state->handler_start.captured = true;
   for (;;) {
     RunGuest(state, state->handler_function, state->handler);
@@ -431,7 +428,7 @@ bool RenewUserFiber(UserFiber* user_fiber) {
     return true;
   }
   if (user_fiber->fiber) {
-    DeleteFiber(user_fiber->fiber);
+    xe::fiber::Delete(user_fiber->fiber);
   }
   user_fiber->start.captured = false;
   user_fiber->start.restart = false;
@@ -449,7 +446,7 @@ bool RenewHandlerFiber(UserModeState* state) {
     return true;
   }
   if (state->handler_fiber) {
-    DeleteFiber(state->handler_fiber);
+    xe::fiber::Delete(state->handler_fiber);
   }
   state->handler_start.captured = false;
   state->handler_start.restart = false;
@@ -460,11 +457,11 @@ bool RenewHandlerFiber(UserModeState* state) {
 UserModeState::~UserModeState() {
   for (auto& user_fiber : fibers) {
     if (user_fiber->fiber && user_fiber->fiber != current_fiber) {
-      DeleteFiber(user_fiber->fiber);
+      xe::fiber::Delete(user_fiber->fiber);
     }
   }
   if (handler_fiber && handler_fiber != current_fiber) {
-    DeleteFiber(handler_fiber);
+    xe::fiber::Delete(handler_fiber);
   }
   // A state still swapped into a context belongs to it now; the backend frees
   // whichever records the context holds.
@@ -727,16 +724,14 @@ dword_result_t KeEnterUserMode_entry(lpvoid_t user_context, dword_t handler,
     state = CreateUserMode(thread);
   }
 
-  if (!IsThreadAFiber()) {
-    state->kernel_fiber =
-        ConvertThreadToFiberEx(nullptr, FIBER_FLAG_FLOAT_SWITCH);
+  if (!xe::fiber::IsThreadAFiber()) {
+    state->kernel_fiber = xe::fiber::ConvertThreadToFiber();
     if (!state->kernel_fiber) {
-      XELOGE("KeEnterUserMode: ConvertThreadToFiberEx failed ({})",
-             GetLastError());
+      XELOGE("KeEnterUserMode: could not make this thread a fiber");
       return 0;
     }
   } else {
-    state->kernel_fiber = GetCurrentFiber();
+    state->kernel_fiber = xe::fiber::Current();
   }
   state->current_fiber = state->kernel_fiber;
 
@@ -871,8 +866,6 @@ void KeLeaveUserMode_entry(dword_t value) {
 }
 DECLARE_XBOXKRNL_EXPORT3(KeLeaveUserMode, kThreading, kImplemented,
                          kHighFrequency, kSketchy);
-
-#endif  // XE_PLATFORM_WIN32
 
 void KeContextFromKframes_entry(lpvoid_t kframes, lpvoid_t context) {
   auto k = kframes.as<const uint8_t*>();

@@ -8,13 +8,49 @@
  */
 
 #include "xenia/kernel/util/network_adapter_manager.h"
+
+#include <algorithm>
+#include <cstring>
+#include <unordered_map>
+
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
+#include "xenia/base/string.h"
+#include "xenia/base/string_util.h"
+
+#ifdef XE_PLATFORM_WIN32
+#include <Iphlpapi.h>
+#else
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <netinet/in.h>
+#include <netpacket/packet.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
 
 DEFINE_string(network_guid, "", "Network Interface GUID", "Live");
 
 namespace xe {
 namespace kernel {
+
+namespace {
+
+// Same shape as nexia_transport.cc: the Winsock spellings only exist on
+// Windows, so name them once here rather than guarding every call.
+#ifdef XE_PLATFORM_WIN32
+using native_socket = SOCKET;
+constexpr native_socket kInvalidSocket = INVALID_SOCKET;
+inline int CloseSocket(native_socket socket) { return closesocket(socket); }
+#else
+using native_socket = int;
+constexpr native_socket kInvalidSocket = -1;
+inline int CloseSocket(native_socket socket) { return ::close(socket); }
+#endif
+
+constexpr int kSocketError = -1;
+
+}  // namespace
 
 NetworkAdapterManager::NetworkAdapterManager() {}
 
@@ -28,7 +64,7 @@ void NetworkAdapterManager::Initialize() {
 
     // If we cannot find a best interface then default to first interface.
     if (best_interface_IfIndex_ == -1) {
-      AutoSelectNetworkAdapter(adapter_addresses_.front().IfIndex);
+      AutoSelectNetworkAdapter(adapter_addresses_.front().if_index);
     } else {
       AutoSelectNetworkAdapter(best_interface_IfIndex_);
     }
@@ -62,15 +98,13 @@ std::string NetworkAdapterManager::GetSelectedAdapterDesciption() const {
                      is_WAN_routing_ ? "(WAN Routing)" : "(Non-WAN Routing)");
 }
 
-std::optional<IP_ADAPTER_ADDRESSES> NetworkAdapterManager::GetAdapterFromGUID(
+std::optional<NetworkAdapter> NetworkAdapterManager::GetAdapterFromGUID(
     std::string guid) const {
-  const auto found_adapter =
-      std::find_if(adapter_addresses_.cbegin(), adapter_addresses_.cend(),
-                   [guid](const IP_ADAPTER_ADDRESSES& adapter) {
-                     return guid == adapter.AdapterName;
-                   });
+  const auto found_adapter = std::find_if(
+      adapter_addresses_.cbegin(), adapter_addresses_.cend(),
+      [guid](const NetworkAdapter& adapter) { return guid == adapter.guid; });
 
-  std::optional<IP_ADAPTER_ADDRESSES> adapter = std::nullopt;
+  std::optional<NetworkAdapter> adapter = std::nullopt;
 
   if (found_adapter != adapter_addresses_.cend()) {
     adapter = *found_adapter;
@@ -79,13 +113,15 @@ std::optional<IP_ADAPTER_ADDRESSES> NetworkAdapterManager::GetAdapterFromGUID(
   return adapter;
 }
 
-std::optional<IP_ADAPTER_ADDRESSES>
-NetworkAdapterManager::GetAdapterFromIfIndex(const int32_t IfIndex) const {
-  const auto found_adapter = std::find_if(
-      adapter_addresses_.cbegin(), adapter_addresses_.cend(),
-      [IfIndex](auto adapter) { return adapter.IfIndex == IfIndex; });
+std::optional<NetworkAdapter> NetworkAdapterManager::GetAdapterFromIfIndex(
+    const int32_t IfIndex) const {
+  const auto found_adapter =
+      std::find_if(adapter_addresses_.cbegin(), adapter_addresses_.cend(),
+                   [IfIndex](const NetworkAdapter& adapter) {
+                     return static_cast<int32_t>(adapter.if_index) == IfIndex;
+                   });
 
-  std::optional<IP_ADAPTER_ADDRESSES> adapter = std::nullopt;
+  std::optional<NetworkAdapter> adapter = std::nullopt;
 
   if (found_adapter != adapter_addresses_.cend()) {
     adapter = *found_adapter;
@@ -95,11 +131,8 @@ NetworkAdapterManager::GetAdapterFromIfIndex(const int32_t IfIndex) const {
 }
 
 std::string NetworkAdapterManager::GetAdapterFriendlyName(
-    IP_ADAPTER_ADDRESSES adapter) const {
-  const std::string interface_name =
-      xe::to_utf8(reinterpret_cast<char16_t*>(adapter.FriendlyName));
-
-  return interface_name;
+    const NetworkAdapter& adapter) const {
+  return adapter.friendly_name;
 }
 
 std::vector<std::string> NetworkAdapterManager::GetAdaptersNames() const {
@@ -117,18 +150,15 @@ MacAddress NetworkAdapterManager::GetAdapterMacAddressFromGUID(
   const auto adapter = GetAdapterFromGUID(guid);
 
   if (adapter.has_value() &&
-      adapter->PhysicalAddressLength == MacAddress::MacAddressSize) {
-    uint8_t mac_address[MacAddress::MacAddressSize];
-    memcpy(mac_address, adapter->PhysicalAddress, MacAddress::MacAddressSize);
-
-    return mac_address;
+      adapter->physical_address_length == MacAddress::MacAddressSize) {
+    return adapter->physical_address;
   } else {
     // If there are no adapters generate a mac address.
     return GenerateMacAddress();
   }
 }
 
-std::optional<IP_ADAPTER_ADDRESSES> NetworkAdapterManager::GetSelectedAdapter()
+std::optional<NetworkAdapter> NetworkAdapterManager::GetSelectedAdapter()
     const {
   return GetAdapterFromGUID(cvars::network_guid);
 }
@@ -152,18 +182,15 @@ void NetworkAdapterManager::ResetSelectedAdapter() {
   OVERRIDE_string(network_guid, "");
 }
 
-std::vector<IP_ADAPTER_ADDRESSES>
-NetworkAdapterManager::DiscoverNetworkAdapters() {
+#ifdef XE_PLATFORM_WIN32
+
+std::vector<NetworkAdapter> NetworkAdapterManager::DiscoverNetworkAdapters() {
   XELOGI("Discovering network interfaces...");
 
   uint32_t ret = 0;
   ULONG buffer_length = 0;
 
-  adapter_addresses_data_.clear();
-
-  std::vector<IP_ADAPTER_ADDRESSES> adapter_addresses = {};
-
-  IP_ADAPTER_ADDRESSES* adapters_ptr = nullptr;
+  std::vector<NetworkAdapter> adapter_addresses = {};
 
   const uint32_t flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST |
                          GAA_FLAG_SKIP_DNS_SERVER;
@@ -174,10 +201,10 @@ NetworkAdapterManager::DiscoverNetworkAdapters() {
     return adapter_addresses;
   }
 
-  adapter_addresses_data_.resize(buffer_length);
+  std::vector<uint8_t> buffer(buffer_length);
 
-  adapters_ptr =
-      reinterpret_cast<IP_ADAPTER_ADDRESSES*>(adapter_addresses_data_.data());
+  IP_ADAPTER_ADDRESSES* adapters_ptr =
+      reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data());
 
   ret = GetAdaptersAddresses(AF_INET, flags, 0, adapters_ptr, &buffer_length);
 
@@ -194,26 +221,32 @@ NetworkAdapterManager::DiscoverNetworkAdapters() {
          adapter_ptr->IfType == IF_TYPE_ETHERNET_CSMACD ||
          adapter_ptr->IfType == IF_TYPE_PROP_VIRTUAL ||
          adapter_ptr->IfType == IF_TYPE_TUNNEL)) {
-      if (adapter_ptr->PhysicalAddress != nullptr) {
-        for (PIP_ADAPTER_UNICAST_ADDRESS_LH adapter_address =
-                 adapter_ptr->FirstUnicastAddress;
-             adapter_address != nullptr;
-             adapter_address = adapter_address->Next) {
-          sockaddr_in addr_ptr = *reinterpret_cast<sockaddr_in*>(
-              adapter_address->Address.lpSockaddr);
+      for (PIP_ADAPTER_UNICAST_ADDRESS_LH adapter_address =
+               adapter_ptr->FirstUnicastAddress;
+           adapter_address != nullptr;
+           adapter_address = adapter_address->Next) {
+        sockaddr_in addr_ptr = *reinterpret_cast<sockaddr_in*>(
+            adapter_address->Address.lpSockaddr);
 
-          if (addr_ptr.sin_family == AF_INET) {
-            std::string friendlyName = GetAdapterFriendlyName(*adapter_ptr);
-            std::string guid = adapter_ptr->AdapterName;
-
-            IP_ADAPTER_ADDRESSES adapter = *adapter_ptr;
-
-            adapter_addresses.push_back(adapter);
-
-            networks += fmt::format("{} {}: {}\n", friendlyName, guid,
-                                    ip_to_string(addr_ptr));
-          }
+        if (addr_ptr.sin_family != AF_INET) {
+          continue;
         }
+
+        NetworkAdapter adapter = {};
+        adapter.if_index = adapter_ptr->IfIndex;
+        adapter.guid = adapter_ptr->AdapterName;
+        adapter.friendly_name =
+            xe::to_utf8(reinterpret_cast<char16_t*>(adapter_ptr->FriendlyName));
+        adapter.physical_address_length = std::min<uint32_t>(
+            adapter_ptr->PhysicalAddressLength, MacAddress::MacAddressSize);
+        std::memcpy(adapter.physical_address, adapter_ptr->PhysicalAddress,
+                    adapter.physical_address_length);
+        adapter.address = addr_ptr;
+
+        networks += fmt::format("{} {}: {}\n", adapter.friendly_name,
+                                adapter.guid, ip_to_string(addr_ptr));
+
+        adapter_addresses.push_back(adapter);
       }
     }
   }
@@ -226,22 +259,6 @@ NetworkAdapterManager::DiscoverNetworkAdapters() {
   }
 
   return adapter_addresses;
-}
-
-bool NetworkAdapterManager::UpdateNetworkInterface(
-    IP_ADAPTER_ADDRESSES adapter) {
-  const std::optional<sockaddr_in> adapter_addr =
-      GetInterfaceIPFromIfIndex(adapter.IfIndex);
-
-  bool updated = adapter_addr.has_value();
-
-  if (updated) {
-    local_ip_ = adapter_addr.value();
-    is_WAN_routing_ = IsInterfaceWANRouting(adapter_addr.value());
-    OVERRIDE_string(network_guid, adapter.AdapterName);
-  }
-
-  return updated;
 }
 
 // Get the index of the best interface to reach that WAN address
@@ -258,23 +275,172 @@ int32_t NetworkAdapterManager::GetBestInterfaceIfIndex() {
   return bestIfIndex;
 }
 
-bool NetworkAdapterManager::IsInterfaceWANRouting(sockaddr_in interface_addr) {
-  SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+#else
 
-  if (sock == INVALID_SOCKET) {
+std::vector<NetworkAdapter> NetworkAdapterManager::DiscoverNetworkAdapters() {
+  XELOGI("Discovering network interfaces...");
+
+  std::vector<NetworkAdapter> adapter_addresses = {};
+
+  ifaddrs* interfaces = nullptr;
+
+  if (getifaddrs(&interfaces) != 0 || !interfaces) {
+    XELOGI("No network interfaces detected!\n");
+    return adapter_addresses;
+  }
+
+  // The hardware address arrives as its own AF_PACKET entry, separate from the
+  // AF_INET one, so collect those first and attach them by interface name.
+  std::unordered_map<std::string, std::vector<uint8_t> > mac_addresses;
+
+  for (ifaddrs* entry = interfaces; entry != nullptr; entry = entry->ifa_next) {
+    if (!entry->ifa_addr || entry->ifa_addr->sa_family != AF_PACKET) {
+      continue;
+    }
+
+    const sockaddr_ll* link =
+        reinterpret_cast<const sockaddr_ll*>(entry->ifa_addr);
+
+    if (link->sll_halen != MacAddress::MacAddressSize) {
+      continue;
+    }
+
+    mac_addresses[entry->ifa_name] =
+        std::vector<uint8_t>(link->sll_addr, link->sll_addr + link->sll_halen);
+  }
+
+  std::string networks = "Network Interfaces:\n";
+
+  for (ifaddrs* entry = interfaces; entry != nullptr; entry = entry->ifa_next) {
+    if (!entry->ifa_addr || entry->ifa_addr->sa_family != AF_INET) {
+      continue;
+    }
+
+    // Windows keeps interfaces that are operationally up and not loopback;
+    // IFF_RUNNING is the carrier, which is what OperStatus reports.
+    if (!(entry->ifa_flags & IFF_UP) || !(entry->ifa_flags & IFF_RUNNING) ||
+        (entry->ifa_flags & IFF_LOOPBACK)) {
+      continue;
+    }
+
+    NetworkAdapter adapter = {};
+    adapter.if_index = if_nametoindex(entry->ifa_name);
+    adapter.guid = entry->ifa_name;
+    adapter.friendly_name = entry->ifa_name;
+    adapter.address = *reinterpret_cast<const sockaddr_in*>(entry->ifa_addr);
+
+    const auto mac = mac_addresses.find(entry->ifa_name);
+    if (mac != mac_addresses.cend()) {
+      adapter.physical_address_length =
+          static_cast<uint32_t>(mac->second.size());
+      std::memcpy(adapter.physical_address, mac->second.data(),
+                  adapter.physical_address_length);
+    }
+
+    networks += fmt::format("{} {}: {}\n", adapter.friendly_name, adapter.guid,
+                            ip_to_string(adapter.address));
+
+    adapter_addresses.push_back(adapter);
+  }
+
+  freeifaddrs(interfaces);
+
+  if (adapter_addresses.empty()) {
+    XELOGI("No network interfaces detected!\n");
+  } else {
+    XELOGI("Found {} network interfaces!\n", adapter_addresses.size());
+    XELOGI("{}", xe::string_util::trim(networks));
+  }
+
+  return adapter_addresses;
+}
+
+// Get the index of the best interface to reach that WAN address. There is no
+// GetBestInterface here, so ask the kernel's routing table the only way a
+// user-space process can: connect a UDP socket, which picks a route without
+// sending anything, and see which local address it chose.
+int32_t NetworkAdapterManager::GetBestInterfaceIfIndex() {
+  native_socket sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+
+  if (sock == kInvalidSocket) {
+    XELOGI("Error finding best interface: no socket");
+    return -1;
+  }
+
+  sockaddr_in remote_addr{};
+  remote_addr.sin_family = AF_INET;
+  remote_addr.sin_port = htons(53);
+  remote_addr.sin_addr = ip_to_in_addr("8.8.8.8");
+
+  int32_t best_if_index = -1;
+
+  if (connect(sock, reinterpret_cast<sockaddr*>(&remote_addr),
+              sizeof(remote_addr)) != kSocketError) {
+    sockaddr_in local_addr{};
+    socklen_t local_addr_length = sizeof(local_addr);
+
+    if (getsockname(sock, reinterpret_cast<sockaddr*>(&local_addr),
+                    &local_addr_length) != kSocketError) {
+      for (const auto& adapter : adapter_addresses_) {
+        if (adapter.address.sin_addr.s_addr == local_addr.sin_addr.s_addr) {
+          best_if_index = static_cast<int32_t>(adapter.if_index);
+          break;
+        }
+      }
+    }
+  }
+
+  CloseSocket(sock);
+
+  if (best_if_index == -1) {
+    XELOGI("Error finding best interface: no route to 8.8.8.8");
+  }
+
+  return best_if_index;
+}
+
+#endif  // XE_PLATFORM_WIN32
+
+bool NetworkAdapterManager::UpdateNetworkInterface(
+    const NetworkAdapter& adapter) {
+  const std::optional<sockaddr_in> adapter_addr =
+      GetInterfaceIPFromIfIndex(adapter.if_index);
+
+  bool updated = adapter_addr.has_value();
+
+  if (updated) {
+    local_ip_ = adapter_addr.value();
+    is_WAN_routing_ = IsInterfaceWANRouting(adapter_addr.value());
+    OVERRIDE_string(network_guid, adapter.guid);
+  }
+
+  return updated;
+}
+
+bool NetworkAdapterManager::IsInterfaceWANRouting(sockaddr_in interface_addr) {
+  native_socket sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+
+  if (sock == kInvalidSocket) {
     return false;
   }
 
   // Force socket to use interface address for connection attempt.
   if (bind(sock, reinterpret_cast<sockaddr*>(&interface_addr),
-           sizeof(sockaddr)) == SOCKET_ERROR) {
-    closesocket(sock);
+           sizeof(sockaddr)) == kSocketError) {
+    CloseSocket(sock);
     return false;
   }
 
+#ifdef XE_PLATFORM_WIN32
   int timeout = 3000;
   setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (const char*)&timeout,
              sizeof(timeout));
+#else
+  // SO_SNDTIMEO is a timeval here, not milliseconds.
+  timeval timeout{};
+  timeout.tv_sec = 3;
+  setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+#endif
 
   sockaddr_in remoteAddr{};
   remoteAddr.sin_family = AF_INET;
@@ -282,9 +448,9 @@ bool NetworkAdapterManager::IsInterfaceWANRouting(sockaddr_in interface_addr) {
   remoteAddr.sin_addr = ip_to_in_addr("8.8.8.8");  // Google DNS
 
   bool success = connect(sock, reinterpret_cast<sockaddr*>(&remoteAddr),
-                         sizeof(remoteAddr)) != SOCKET_ERROR;
+                         sizeof(remoteAddr)) != kSocketError;
 
-  closesocket(sock);
+  CloseSocket(sock);
 
   return success;
 }
@@ -295,33 +461,19 @@ std::optional<sockaddr_in> NetworkAdapterManager::GetInterfaceIPFromIfIndex(
     return std::nullopt;
   }
 
-  std::optional<sockaddr_in> adapter_sockaddr = std::nullopt;
-
   for (const auto& adapter : adapter_addresses_) {
-    if (adapter.IfIndex == IfIndex && !adapter_sockaddr.has_value()) {
-      if (adapter.PhysicalAddress != nullptr) {
-        for (PIP_ADAPTER_UNICAST_ADDRESS_LH adapter_address =
-                 adapter.FirstUnicastAddress;
-             adapter_address != nullptr;
-             adapter_address = adapter_address->Next) {
-          sockaddr_in addr_ptr = *reinterpret_cast<sockaddr_in*>(
-              adapter_address->Address.lpSockaddr);
-
-          if (addr_ptr.sin_family == AF_INET) {
-            adapter_sockaddr = addr_ptr;
-            break;
-          }
-        }
-      }
+    if (static_cast<int32_t>(adapter.if_index) == IfIndex &&
+        adapter.address.sin_family == AF_INET) {
+      return adapter.address;
     }
   }
 
-  return adapter_sockaddr;
+  return std::nullopt;
 }
 
 // Select our saved network GUID if it's available.
 bool NetworkAdapterManager::SelectSavedNetworkAdapter() {
-  const std::optional<IP_ADAPTER_ADDRESSES> adapter = GetSelectedAdapter();
+  const std::optional<NetworkAdapter> adapter = GetSelectedAdapter();
 
   if (adapter.has_value()) {
     return UpdateNetworkInterface(adapter.value());

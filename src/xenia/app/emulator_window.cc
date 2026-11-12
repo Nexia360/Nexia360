@@ -1588,13 +1588,19 @@ void EmulatorWindow::ExportScreenshot(const xe::ui::RawImage& image) {
     return;
   }
 
-  // Find where xenia.exe or xenia_canary.exe is located and create a
-  // screenshots folder
+  // Under the storage root rather than beside the executable: in a portable
+  // install, which is the default on Windows, they are the same folder, and
+  // where they are not the executable may sit on storage nothing can be
+  // written to.
   auto screenshot_path =
-      (xe::filesystem::GetExecutableFolder() / "screenshots" / title_id);
+      (emulator()->storage_root() / "screenshots" / title_id);
 
-  if (!std::filesystem::exists(screenshot_path)) {
-    std::filesystem::create_directories(screenshot_path);
+  std::error_code screenshot_path_error;
+  std::filesystem::create_directories(screenshot_path, screenshot_path_error);
+  if (screenshot_path_error) {
+    XELOGE("Failed to create the screenshot folder {}: {}",
+           xe::path_to_utf8(screenshot_path), screenshot_path_error.message());
+    return;
   }
 
   std::string filename = fmt::format("{} - {}.png", title_id, datetime);
@@ -1699,7 +1705,7 @@ void EmulatorWindow::FileClose() { emulator_->TerminateTitle(); }
 
 std::filesystem::path EmulatorWindow::DashboardFile(
     const std::string& name) const {
-  return xe::filesystem::GetExecutableFolder() / "Dashboard" / name;
+  return xe::filesystem::GetDashboardFolder() / name;
 }
 
 // Starting with nothing to run: play the boot animation, then the dashboard.
@@ -1909,8 +1915,7 @@ EmulatorWindow::InstallContentPackages(
           path, kernel::xam::xui::DefaultAssetDirectory());
       archive_report += report.text;
       if (report.ok) {
-        const auto dashboard =
-            xe::filesystem::GetExecutableFolder() / "Dashboard";
+        const auto dashboard = xe::filesystem::GetDashboardFolder();
         // A system title loads its typefaces off media:, so the flash ones go
         // into the Dashboard folder as well - whichever order the two installs
         // happen in, the flash faces are the ones left standing.
@@ -2673,8 +2678,7 @@ void EmulatorWindow::ToggleTextMessagesDialog() {
 // the update has not been imported, which is the normal case.
 std::filesystem::path EmulatorWindow::AvatarEditorTitlePath() const {
   std::error_code ec;
-  const auto path =
-      xe::filesystem::GetExecutableFolder() / "Dashboard" / "AvatarEditor.xex";
+  const auto path = xe::filesystem::GetDashboardFolder() / "AvatarEditor.xex";
   return std::filesystem::exists(path, ec) ? path : std::filesystem::path();
 }
 
@@ -3953,7 +3957,7 @@ std::string CopyDashboardModules(
     const std::filesystem::path& staging,
     std::vector<std::filesystem::path>* out_packages) {
   std::error_code ec;
-  const auto dashboard = xe::filesystem::GetExecutableFolder() / "Dashboard";
+  const auto dashboard = xe::filesystem::GetDashboardFolder();
   std::filesystem::create_directories(dashboard, ec);
   size_t copied = 0;
   size_t failed = 0;
@@ -4164,7 +4168,7 @@ void RunXnaSetup(std::shared_ptr<XnaSetupState> state, Emulator* emulator) {
   }
 
   std::error_code ec;
-  const auto dashboard = xe::filesystem::GetExecutableFolder() / "Dashboard";
+  const auto dashboard = xe::filesystem::GetDashboardFolder();
   // Unpacked, or kept as the package a fresh install leaves.
   const auto catalog = kernel::xna::avatar::CatalogPath(content_root);
   const bool avatars_installed =

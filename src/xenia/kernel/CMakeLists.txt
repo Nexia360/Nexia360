@@ -174,13 +174,16 @@ if(XE_TARGET_X86_64)
 endif()
 target_link_libraries(xenia-kernel PUBLIC
   aes_128 fmt lua sqlite zlib-ng pugixml libcurl miniupnp xenia-apu xenia-base xenia-cpu xenia-gpu xenia-hid xenia-vfs xenia-app-discord
-  # A hosted XNA title never touches the guest GPU, so its frames are put on the
-  # screen by talking to the presenter directly - see xna/xna_present.cc. That
-  # needs the D3D12 presenter's declarations and the COM GUIDs IID_PPV_ARGS
-  # expands to.
-  xenia-ui-d3d12
   xenia-ui-vulkan
 )
+# A hosted XNA title never touches the guest GPU, so its frames are put on the
+# screen by talking to the presenter directly - see xna/xna_present.cc. That
+# needs the D3D12 presenter's declarations and the COM GUIDs IID_PPV_ARGS
+# expands to. ui/d3d12 is only added on Windows, so naming it anywhere else
+# leaves the linker hunting for a -lxenia-ui-d3d12 that was never built.
+if(WIN32)
+  target_link_libraries(xenia-kernel PUBLIC xenia-ui-d3d12)
+endif()
 xe_target_defaults(xenia-kernel)
 
 if(XENIA_BUILD_TESTS)

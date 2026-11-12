@@ -43,6 +43,13 @@ std::filesystem::path GetExecutableFolder();
 // Get user folder.
 std::filesystem::path GetUserFolder();
 
+// The installed dashboard and its assets. Beside the executable by default,
+// which is where a normal install puts it; the dashboard_root cvar moves it
+// for an install whose executable sits on read-only storage, such as an
+// AppImage, where nothing can be written beside it and the mount it is
+// unpacked into does not survive the run.
+std::filesystem::path GetDashboardFolder();
+
 // Creates the parent folder of the specified path if needed.
 // This can be used to ensure the destination path for a new file exists before
 // attempting to create it.

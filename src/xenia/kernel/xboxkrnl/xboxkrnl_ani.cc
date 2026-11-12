@@ -83,7 +83,7 @@ BootAnimation& Animation() {
 constexpr const char* kBootAnimationPath = "\\Device\\Flash\\bootanim.xex";
 
 std::filesystem::path DashboardDirectory() {
-  return xe::filesystem::GetExecutableFolder() / "Dashboard";
+  return xe::filesystem::GetDashboardFolder();
 }
 
 // Returns false when there is no animation to play. The host file is checked

@@ -1,0 +1,83 @@
+#!/bin/sh
+# Nexia360 AppImage launcher.
+#
+# The image is a read-only squashfs mounted under /tmp for the length of the
+# run and thrown away afterwards. Everything the emulator writes - its config,
+# content, caches - and the dashboard it loads and mounts into the guest have
+# to live outside it, so this picks that folder, creates it, and points the
+# emulator at it.
+
+set -eu
+
+HERE="$(dirname "$(readlink -f "$0")")"
+
+export LD_LIBRARY_PATH="${HERE}/usr/lib:${LD_LIBRARY_PATH:-}"
+export XDG_DATA_DIRS="${HERE}/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+
+# Where everything lives:
+#   $NEXIA360_HOME, if you set it;
+#   a Nexia360 folder beside the image, if you made one - that keeps a whole
+#   install together on an SD card;
+#   otherwise ~/.local/share/Nexia360.
+if [ -n "${NEXIA360_HOME:-}" ]; then
+  DATA_DIR="${NEXIA360_HOME}"
+elif [ -n "${APPIMAGE:-}" ] && [ -d "$(dirname "${APPIMAGE}")/Nexia360" ]; then
+  DATA_DIR="$(dirname "${APPIMAGE}")/Nexia360"
+else
+  DATA_DIR="${XDG_DATA_HOME:-${HOME}/.local/share}/Nexia360"
+fi
+
+# Made up front so they are there to drop files into, rather than appearing
+# only after a first run has created them.
+for folder in content Dashboard cache_host cache cache0 cache1 scratch \
+              xstorage Library patches plugins screenshots Games; do
+  mkdir -p "${DATA_DIR}/${folder}"
+done
+
+if [ ! -f "${DATA_DIR}/README.txt" ]; then
+  printf '%s\n' \
+    'Nexia360 keeps everything here. The AppImage itself is read-only, so' \
+    'this folder is the whole of your installation, and is safe to move or' \
+    'back up.' \
+    '' \
+    '  Dashboard/   dash.xex and its UI assets. Put the dashboard here; the' \
+    '               emulator mounts this folder into the guest.' \
+    '  content/     saves, XCONTENT packages, title updates, installed titles' \
+    '  Games/       yours - ISOs, XEX files, STFS packages. Nothing else' \
+    '               writes here.' \
+    '  Library/     played.db, friends.sqlite, the game library' \
+    '  patches/     patch files' \
+    '  plugins/     plugin trees' \
+    '  screenshots/ screenshots, one folder per title id' \
+    '  cache0/ cache1/ cache/ scratch/ xstorage/' \
+    '               the console volumes, as the guest sees them' \
+    '  cache_host/  the shader and pipeline caches the emulator keeps' \
+    '' \
+    '  nexia360.config.toml   every setting, written on the first run' \
+    '  nexia360.log           the log from the last run' \
+    '' \
+    'To keep an install together on an SD card, put the AppImage somewhere' \
+    'and create a folder called Nexia360 beside it - that one is used instead' \
+    'of this. Setting NEXIA360_HOME overrides both.' \
+    > "${DATA_DIR}/README.txt"
+fi
+
+# The Vulkan surface is built from an X11 window: window_gtk.cc checks
+# GDK_IS_X11_DISPLAY and makes a VK_KHR_xcb_surface from that window's xid, so
+# on a Wayland session GTK has to be pushed onto XWayland or no surface is
+# ever created. Game Mode's gamescope and the Plasma 6 desktop are both
+# Wayland.
+if [ -z "${GDK_BACKEND:-}" ]; then
+  GDK_BACKEND=x11
+  export GDK_BACKEND
+fi
+
+if [ -z "${DISPLAY:-}" ]; then
+  echo "Nexia360: DISPLAY is not set - an X server or XWayland is needed." >&2
+fi
+
+exec "${HERE}/usr/bin/Nexia360" \
+  --storage_root="${DATA_DIR}" \
+  --dashboard_root="${DATA_DIR}/Dashboard" \
+  --log_file="${DATA_DIR}/nexia360.log" \
+  "$@"

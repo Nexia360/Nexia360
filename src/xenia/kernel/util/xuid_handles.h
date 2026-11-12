@@ -10,6 +10,7 @@
 #ifndef XENIA_KERNEL_UTIL_XUID_HANDLES_H_
 #define XENIA_KERNEL_UTIL_XUID_HANDLES_H_
 
+#include <cstddef>
 #include <cstdint>
 
 namespace xe {
@@ -45,7 +46,7 @@ void RegisterXuidHandle(uint64_t xuid);
 // 0 when the handle was never registered.
 uint64_t XuidForHandle(uint32_t handle);
 
-size_t RegisteredHandleCount();
+std::size_t RegisteredHandleCount();
 
 }  // namespace kernel
 }  // namespace xe

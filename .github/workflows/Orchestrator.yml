@@ -100,16 +100,15 @@ jobs:
     if: ${{ !failure() && !cancelled() && needs.gate.outputs.windows == 'true' }}
     uses: ./.github/workflows/Windows_x86.yml
 
-  # Uncomment when platform support is ready:
-  # build-linux:
-  #   name: Linux (x86-64)
-  #   needs: [lint, commit-message]
-  #   if: ${{ !failure() && !cancelled() }}
-  #   uses: ./.github/workflows/Linux_x86.yml
-  #   with:
-  #     runs-on: ${{ needs.lint.outputs.runs-on }}
-  #     llvm_version: ${{ needs.lint.outputs.llvm_version }}
-  #     ubuntu_base: ${{ needs.lint.outputs.ubuntu_base }}
+  build-linux:
+    name: Linux (x86-64)
+    needs: [lint, commit-message, gate]
+    if: ${{ !failure() && !cancelled() && needs.gate.outputs.linux == 'true' }}
+    uses: ./.github/workflows/Linux_x86.yml
+    with:
+      runs-on: ${{ needs.lint.outputs.runs-on }}
+      llvm_version: ${{ needs.lint.outputs.llvm_version }}
+      ubuntu_base: ${{ needs.lint.outputs.ubuntu_base }}
 
   # Uncomment when platform support is ready:
   # build-windows-arm64:
@@ -140,14 +139,17 @@ jobs:
   # rather than 'success' - both are acceptable here, a 'failure' is not.
   release:
     name: Create Release
-    needs: [gate, build-windows]
+    needs: [gate, build-windows, build-linux]
     if: |-
       always() &&
       github.repository == 'Nexia360/Nexia360' &&
       github.event_name == 'push' &&
       github.ref == 'refs/heads/Mousehook' &&
       needs.gate.outputs.release == 'true' &&
-      needs.build-windows.result == 'success'
+      needs.build-windows.result != 'failure' &&
+      needs.build-linux.result != 'failure' &&
+      (needs.build-windows.result == 'success' ||
+       needs.build-linux.result == 'success')
     uses: ./.github/workflows/Create_release.yml
     permissions:
       contents: write

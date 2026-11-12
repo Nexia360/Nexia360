@@ -10,6 +10,7 @@
 #include "src/xenia/kernel/xsocket.h"
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cstring>
 #include <vector>
@@ -178,6 +179,7 @@ XSocket::~XSocket() {
   // Close() stops it on the normal path; this covers a socket that was already
   // closed by other means. The thread must not outlive the socket it sends on.
   StopSendThread();
+  StopEventSelect();
 }
 
 X_STATUS XSocket::Initialize(AddressFamily af, Type type, Protocol proto) {
@@ -354,6 +356,9 @@ int XSocket::Close() {
   // otherwise it would keep sending on a closed socket.
   StopSendThread();
 
+  // Same for the event-select watcher: it polls this descriptor.
+  StopEventSelect();
+
   // Latch the drop before the handle is destroyed, not after. socket_closed_
   // is only set at the end of this function, which would leave a window where
   // a send could still start a fresh worker on an already-closed handle.
@@ -383,7 +388,7 @@ int XSocket::Close() {
   if (ret == X_ERROR_SUCCESS) {
     socket_closed_ = true;
   } else {
-    XELOGE("Socket close failed: {}", WSAGetLastError());
+    XELOGE("Socket close failed: {}", GetLastWSAErrorStatic());
   }
 
   return ret;
@@ -1572,28 +1577,86 @@ int XSocket::PollWSARecvFrom(bool wait, WSARecvFromData receive_async_data) {
         receive_async_data.buffers[i].buf_ptr);
   }
 
+  // Left uninitialized on purpose: the polling failures above jump to
+  // threadexit, and a jump may not cross an initialization in this scope.
+  sockaddr from_address;
+  socklen_t from_address_length;
+  std::memset(&from_address, 0, sizeof(from_address));
+  from_address_length = sizeof(from_address);
+  if (receive_async_data.from) {
+    from_address = receive_async_data.from->to_host();
+  }
+
   msghdr msg;
   std::memset(&msg, 0, sizeof(msg));
-  msg.msg_name = &n_from;
-  msg.msg_namelen = n_from_len;
+  msg.msg_name = &from_address;
+  msg.msg_namelen = from_address_length;
   msg.msg_iov = buffers;
   msg.msg_iovlen = receive_async_data.num_buffers;
 
   {
     std::unique_lock socket_lock(receive_socket_mutex_);
-    ret = recvmsg(native_handle_, &msg, receive_async_data.flags);
-    if (ret < 0) {
-      receive_async_data.overlapped->internal_high = GetLastWSAError();
-    } else {
-      receive_async_data.overlapped->internal = ret;
+
+    auto* turn = kernel_state()->GetXboxLiveAPI()->transport();
+    const bool relay = IsTransportEligible();
+    if (relay) {
+      ClaimTransportPort();
     }
+
+    // Same contract as the Windows branch above: the from-address is
+    // optional, so a title that never asks for the sender must still pop the
+    // relay queue or it grows forever.
+    NexiaTransport::Datagram relayed;
+    if (relay && receive_async_data.num_buffers &&
+        turn->PopDatagram(TransportPort(), &relayed)) {
+      size_t copied = 0;
+      for (uint32_t i = 0; i < receive_async_data.num_buffers &&
+                           copied < relayed.payload_size();
+           i++) {
+        const size_t take = std::min(static_cast<size_t>(buffers[i].iov_len),
+                                     relayed.payload_size() - copied);
+        std::memcpy(buffers[i].iov_base, relayed.payload() + copied, take);
+        copied += take;
+      }
+
+      ret = static_cast<int>(copied);
+      receive_async_data.overlapped->internal = static_cast<uint32_t>(copied);
+      XLiveAPI::RegisterXuidHandle(relayed.xuid);
+
+      auto* rewritten = reinterpret_cast<sockaddr_in*>(&from_address);
+      rewritten->sin_family = AF_INET;
+      rewritten->sin_addr.s_addr = XLiveAPI::SyntheticOnlineIP(relayed.xuid);
+      rewritten->sin_port = relayed.port_be;
+
+      turn->ReturnBuffer(std::move(relayed.data));
+    } else if (relay) {
+      // Relaying with nothing queued: report "would block" rather than
+      // reading this socket, which carries no game traffic in relay mode.
+      ret = -1;
+      SetLastWSAError(X_WSAError::X_WSAEWOULDBLOCK);
+      receive_async_data.overlapped->internal_high =
+          static_cast<uint32_t>(X_WSAError::X_WSAEWOULDBLOCK);
+    } else {
+      ret = recvmsg(native_handle_, &msg, receive_async_data.flags);
+      if (ret < 0) {
+        receive_async_data.overlapped->internal_high = GetLastWSAError();
+      } else {
+        receive_async_data.overlapped->internal = ret;
+      }
+    }
+
+    if (receive_async_data.from && ret >= 0) {
+      receive_async_data.from->to_guest(&from_address);
+    }
+
     socket_lock.unlock();
   }
 
   flags = 0;
-  // MSG_PARTIAL Doesn't exist on linux?
   if (msg.msg_flags & MSG_TRUNC) {
-    flags |= MSG_PARTIAL;
+    // Winsock's MSG_PARTIAL, which is the value the title is looking for.
+    // There is no POSIX spelling of it.
+    flags |= 0x8000;
   }
   if (msg.msg_flags & MSG_OOB) {
     flags |= MSG_OOB;
@@ -1903,11 +1966,116 @@ int XSocket::SendTo(uint8_t* buf, uint32_t buf_len, uint32_t flags,
   return ret;
 }
 
-int XSocket::WSAEventSelect(uint64_t socket_handle, uint64_t event_handle,
-                            uint32_t flags) {
+// The states Winsock can report. The console uses the same bits.
+static constexpr uint32_t kFdRead = 0x01;
+static constexpr uint32_t kFdWrite = 0x02;
+static constexpr uint32_t kFdOob = 0x04;
+static constexpr uint32_t kFdAccept = 0x08;
+static constexpr uint32_t kFdConnect = 0x10;
+static constexpr uint32_t kFdClose = 0x20;
+
+int XSocket::WSAEventSelect(object_ref<XEvent> event, uint32_t flags) {
+#ifdef XE_PLATFORM_WIN32
   const HANDLE hEvent =
-      reinterpret_cast<HANDLE>(static_cast<uintptr_t>(event_handle));
-  return ::WSAEventSelect(socket_handle, hEvent, flags);
+      reinterpret_cast<HANDLE>(static_cast<uintptr_t>(event->native_handle()));
+  return ::WSAEventSelect(static_cast<SOCKET>(native_handle_), hEvent, flags);
+#else
+  // An event here is a condition variable rather than something the kernel
+  // can attach to a descriptor, so the association Winsock makes inside the
+  // stack is made by a thread instead: it polls the socket and sets the event
+  // itself. WSACreateEvent makes a manual-reset event and the title re-arms
+  // with WSAResetEvent, so the watcher is level-triggered - it keeps setting
+  // the event for as long as the state holds.
+  StopEventSelect();
+
+  // Winsock cancels the association for flags of 0, and so does this.
+  if (!flags || !event) {
+    return 0;
+  }
+
+  // WSAEventSelect puts the socket into non-blocking mode. A title that asks
+  // for notifications expects not to block on the recv that follows one.
+  int non_blocking = 1;
+  ioctl(static_cast<int>(native_handle_), FIONBIO, &non_blocking);
+
+  std::lock_guard<std::mutex> lock(event_select_mutex_);
+  event_select_cancel_ = std::promise<void>();
+  event_select_event_ = event;
+  event_select_thread_ =
+      std::thread(&XSocket::EventSelectThreadMain, this,
+                  event_select_cancel_.get_future(), event, flags);
+  return 0;
+#endif
+}
+
+void XSocket::StopEventSelect() {
+  std::lock_guard<std::mutex> lock(event_select_mutex_);
+  if (event_select_thread_.joinable()) {
+    event_select_cancel_.set_value();
+    event_select_thread_.join();
+    event_select_thread_ = std::thread();
+  }
+  event_select_event_.reset();
+}
+
+void XSocket::EventSelectThreadMain(std::future<void> cancelled,
+                                    object_ref<XEvent> event, uint32_t flags) {
+#ifndef XE_PLATFORM_WIN32
+  xe::threading::set_name("XSocket WSAEventSelect");
+
+  short wanted = 0;
+  if (flags & (kFdRead | kFdAccept | kFdClose)) {
+    wanted |= POLLIN;
+  }
+  if (flags & (kFdWrite | kFdConnect)) {
+    wanted |= POLLOUT;
+  }
+  if (flags & kFdOob) {
+    wanted |= POLLPRI;
+  }
+
+  // Short enough that a notification is not perceptibly late, long enough
+  // that an undrained socket does not turn the loop into a spin.
+  constexpr int kPollMs = 20;
+
+  while (cancelled.wait_for(std::chrono::seconds(0)) !=
+         std::future_status::ready) {
+    pollfd fd = {};
+    fd.fd = static_cast<int>(native_handle_);
+    fd.events = wanted;
+
+    const int ready = poll(&fd, 1, kPollMs);
+    if (ready < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      break;
+    }
+    if (!ready) {
+      continue;
+    }
+    if (fd.revents & POLLNVAL) {
+      // The descriptor went away under us; there is nothing left to watch.
+      break;
+    }
+
+    bool matched = (fd.revents & wanted) != 0;
+    if ((flags & kFdClose) && (fd.revents & (POLLHUP | POLLERR))) {
+      matched = true;
+    }
+    if (!matched) {
+      continue;
+    }
+
+    event->Set(0, false);
+
+    // The state holds until the title consumes it and calls WSAResetEvent, so
+    // polling again straight away would return immediately, every time. Wait
+    // out one interval instead - fulfilling the promise cuts it short, which
+    // is what makes a cancel or a close prompt.
+    cancelled.wait_for(std::chrono::milliseconds(kPollMs));
+  }
+#endif
 }
 
 bool XSocket::QueuePacket(uint32_t src_ip, uint16_t src_port,
@@ -1929,7 +2097,13 @@ bool XSocket::QueuePacket(uint32_t src_ip, uint16_t src_port,
 X_STATUS XSocket::GetPeerName(XSOCKADDR_IN* name, int* name_len) {
   sockaddr addr = name->to_host();
 
+#ifdef XE_PLATFORM_WIN32
   int ret = getpeername(native_handle_, &addr, name_len);
+#else
+  socklen_t addr_len = static_cast<socklen_t>(*name_len);
+  int ret = getpeername(native_handle_, &addr, &addr_len);
+  *name_len = static_cast<int>(addr_len);
+#endif
   if (ret < 0) {
     return X_STATUS_UNSUCCESSFUL;
   }
@@ -1949,7 +2123,13 @@ X_STATUS XSocket::GetSockName(XSOCKADDR_IN* name, int* name_len) {
 
   sockaddr addr = name->to_host();
 
+#ifdef XE_PLATFORM_WIN32
   int ret = getsockname(native_handle_, &addr, name_len);
+#else
+  socklen_t addr_len = static_cast<socklen_t>(*name_len);
+  int ret = getsockname(native_handle_, &addr, &addr_len);
+  *name_len = static_cast<int>(addr_len);
+#endif
   if (ret < 0) {
     return X_STATUS_UNSUCCESSFUL;
   }

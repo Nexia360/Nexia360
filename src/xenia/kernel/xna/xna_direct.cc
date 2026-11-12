@@ -30,12 +30,11 @@
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
 #include "xenia/base/memory.h"
+#include "xenia/base/platform.h"
 #include "xenia/base/string_buffer.h"
 #include "xenia/base/xxhash.h"
 #include "xenia/emulator.h"
-#include "xenia/gpu/d3d12/d3d12_command_processor.h"
 #include "xenia/gpu/dxbc_shader.h"
-#include "xenia/gpu/dxbc_shader_translator.h"
 #include "xenia/gpu/graphics_system.h"
 #include "xenia/gpu/registers.h"
 #include "xenia/gpu/xenos.h"
@@ -47,6 +46,13 @@
 #include "xenia/kernel/xna/xna_present.h"
 #include "xenia/kernel/xna/xna_runtimehost.h"
 #include "xenia/memory.h"
+
+// The direct renderer in this file is D3D12. Off Windows the same entry points
+// are served by xna_direct_vulkan.cc, which is what the dispatchers below fall
+// through to on Windows too when the D3D12 path is not up.
+#if XE_PLATFORM_WIN32
+#include "xenia/gpu/d3d12/d3d12_command_processor.h"
+#include "xenia/gpu/dxbc_shader_translator.h"
 #include "xenia/ui/d3d12/d3d12_presenter.h"
 #include "xenia/ui/d3d12/d3d12_provider.h"
 #include "xenia/ui/d3d12/d3d12_util.h"
@@ -55,6 +61,7 @@
 #include "xenia/kernel/xna/shaders/xna_avatar_vs.h"
 #include "xenia/kernel/xna/shaders/xna_sprite_ps.h"
 #include "xenia/kernel/xna/shaders/xna_sprite_vs.h"
+#endif  // XE_PLATFORM_WIN32
 #include "xenia/kernel/xna/xna_avatar.h"
 
 DEFINE_int32(xna_direct_d3d12, 1,
@@ -71,11 +78,14 @@ namespace xna {
 namespace {
 
 using gpu::DxbcShader;
-using gpu::DxbcShaderTranslator;
 using gpu::Shader;
-using Microsoft::WRL::ComPtr;
 namespace xenos = gpu::xenos;
 namespace reg = gpu::reg;
+
+#if XE_PLATFORM_WIN32
+
+using gpu::DxbcShaderTranslator;
+using Microsoft::WRL::ComPtr;
 
 constexpr uint32_t kBackBufferWidth = 1280;
 constexpr uint32_t kBackBufferHeight = 720;
@@ -3330,6 +3340,8 @@ bool Ready() {
   return s.usable;
 }
 
+#endif  // XE_PLATFORM_WIN32
+
 struct ShaderRegistry {
   std::mutex mutex;
   std::unordered_map<uint64_t, std::unique_ptr<DxbcShader>> shaders;
@@ -3343,6 +3355,8 @@ ShaderRegistry& Registry() {
 }
 
 }  // namespace
+
+#if XE_PLATFORM_WIN32
 
 bool XnaDirectActive() {
   {
@@ -3523,6 +3537,49 @@ void XnaDirectClearStencil(const XnaGpuTarget& target, uint32_t value) {
   s.list->ClearDepthStencilView(DsvCpu(host->dsv), D3D12_CLEAR_FLAG_STENCIL,
                                 1.0f, UINT8(value), 0, nullptr);
 }
+
+#else  // XE_PLATFORM_WIN32
+
+// Without the D3D12 renderer there is nothing to prefer over Vulkan, so these
+// go straight to the backend the dispatchers above fall through to.
+bool XnaDirectActive() { return XnaVulkanDirectActive(); }
+
+bool XnaDirectDraw(const XnaGpuDraw& draw, const XnaGpuStream* streams,
+                   uint32_t stream_count) {
+  return XnaVulkanDirectDraw(draw, streams, stream_count);
+}
+
+void XnaDirectClear(const XnaGpuTarget& target, const float* color,
+                    bool clear_color, bool clear_depth, float depth) {
+  XnaVulkanDirectClear(target, color, clear_color, clear_depth, depth);
+}
+
+void XnaDirectPresent() { XnaVulkanDirectPresent(); }
+
+bool XnaDirectReadBackBuffer(uint8_t* out, uint32_t bytes) {
+  return XnaVulkanDirectReadBackBuffer(out, bytes);
+}
+
+// Stencil clears, the avatar pass and the frame capture are written against
+// D3D12 command lists and have no Vulkan counterpart yet.
+void XnaDirectClearStencil(const XnaGpuTarget& target, uint32_t value) {}
+
+bool XnaDirectDrawAvatar(const XnaGpuDraw& target,
+                         const XnaAvatarDrawBatch* batches, uint32_t count) {
+  return false;
+}
+
+bool XnaDirectCapturing() { return false; }
+
+void XnaDirectCaptureNextFrame() {
+  XELOGW("[xna] capture: the frame recorder is part of the D3D12 path");
+}
+
+// Only the D3D12 renderer consults this; the Vulkan path takes the depth
+// buffer from the target it is given.
+void XnaDirectSetTargetHasDepth(uint32_t guest_address, bool has_depth) {}
+
+#endif  // XE_PLATFORM_WIN32
 
 Shader* XnaDirectLoadShader(xenos::ShaderType type, const uint32_t* ucode,
                             uint32_t dword_count) {

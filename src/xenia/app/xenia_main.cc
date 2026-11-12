@@ -25,6 +25,7 @@
 
 #include "xenia/app/discord/discord_presence.h"
 #include "xenia/app/emulator_window.h"
+#include "xenia/app/steam_deck_shortcut.h"
 #include "xenia/base/assert.h"
 #include "xenia/base/cvar.h"
 #include "xenia/base/debugging.h"
@@ -541,6 +542,11 @@ bool EmulatorApp::OnInitialize() {
   XELOGI("Storage root: {}", storage_root);
 
   config::SetupConfig(storage_root);
+
+  // On a Steam Deck, put ourselves in Steam's library so the console can be
+  // started from Game Mode like anything else. Does nothing anywhere else,
+  // and nothing at all once the entry is there.
+  EnsureSteamDeckShortcut(storage_root);
 
 #if XE_ARCH_AMD64 == 1
   amd64::InitFeatureFlags();

@@ -29,8 +29,11 @@
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
+#include "xenia/base/platform.h"
 #include "xenia/emulator.h"
+#if XE_PLATFORM_WIN32
 #include "xenia/gpu/d3d12/d3d12_command_processor.h"
+#endif
 #include "xenia/gpu/draw_util.h"
 #include "xenia/gpu/graphics_system.h"
 #include "xenia/gpu/register_file.h"
@@ -56,6 +59,7 @@ RegisterFile* Registers() {
   return graphics ? graphics->register_file() : nullptr;
 }
 
+#if XE_PLATFORM_WIN32
 xe::gpu::d3d12::D3D12CommandProcessor* Processor() {
   auto* state = kernel_state();
   auto* emulator = state ? state->emulator() : nullptr;
@@ -66,6 +70,31 @@ xe::gpu::d3d12::D3D12CommandProcessor* Processor() {
   return dynamic_cast<xe::gpu::d3d12::D3D12CommandProcessor*>(
       graphics->command_processor());
 }
+#else
+// The hosted register and draw entry points live on the D3D12 command
+// processor, which is not built here, so there is never one to find. Every
+// call site already checks for null and falls back to writing the register
+// file directly; this only gives those calls something to type-check against.
+class HostedCommandProcessor {
+ public:
+  void CallInThread(std::function<void()> fn) {}
+  void HostedWriteRegister(uint32_t index, uint32_t value) {}
+  void HostedTextureFetchWritten(uint32_t slot) {}
+  bool HostedIssueCopy() { return false; }
+  void HostedIssueSwap(uint32_t frontbuffer_ptr, uint32_t width,
+                       uint32_t height) {}
+  void HostedSetActiveShaders(gpu::Shader* vertex_shader,
+                              gpu::Shader* pixel_shader) {}
+  bool HostedIssueDraw(gpu::xenos::PrimitiveType primitive_type,
+                       uint32_t index_count, bool indexed,
+                       uint32_t index_guest_base, bool index_32bit,
+                       uint32_t index_endian, uint32_t index_length) {
+    return false;
+  }
+};
+
+HostedCommandProcessor* Processor() { return nullptr; }
+#endif  // XE_PLATFORM_WIN32
 
 void Set(RegisterFile& regs, uint32_t index, uint32_t value) {
   auto* processor = Processor();

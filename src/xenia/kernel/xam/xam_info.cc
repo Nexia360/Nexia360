@@ -1555,8 +1555,7 @@ static bool FetchDashModule(const std::string& module_name,
   }
   const std::string url = host + "/Dash/modules/" + module_name;
 
-  const std::filesystem::path directory =
-      xe::filesystem::GetExecutableFolder() / "Dashboard";
+  const std::filesystem::path directory = xe::filesystem::GetDashboardFolder();
   std::error_code ec;
   std::filesystem::create_directories(directory, ec);
   const std::filesystem::path destination = directory / module_name;
@@ -1664,7 +1663,7 @@ static std::string EnsureDashModule(const std::string& module_name) {
   const std::string& canonical = entry->second.name;
   const std::string& version = entry->second.version;
   const std::filesystem::path destination =
-      xe::filesystem::GetExecutableFolder() / "Dashboard" / canonical;
+      xe::filesystem::GetDashboardFolder() / canonical;
   const std::string cached = CachedModuleVersion(destination);
   if (cached == version) {
     return canonical;
@@ -1690,7 +1689,7 @@ static std::string ResolveHubModule(vfs::VirtualFileSystem* file_system,
     device = static_cast<vfs::HostPathDevice*>(root->device());
   } else {
     auto created = std::make_unique<vfs::HostPathDevice>(
-        kDevice, xe::filesystem::GetExecutableFolder() / "Dashboard", true);
+        kDevice, xe::filesystem::GetDashboardFolder(), true);
     if (!created->Initialize()) {
       return {};
     }
@@ -1820,7 +1819,7 @@ DECLARE_XAM_EXPORT1(XdfLoadXex, kNone, kSketchy);
 static std::filesystem::path XdfItemPath(const std::string& item_name) {
   const std::string canonical = EnsureDashModule(item_name);
   const std::filesystem::path file =
-      xe::filesystem::GetExecutableFolder() / "Dashboard" /
+      xe::filesystem::GetDashboardFolder() /
       (canonical.empty() ? item_name : canonical);
   std::error_code ec;
   if (!IsSafeModuleName(item_name) ||

@@ -464,7 +464,7 @@ void NetplaySettingsDialog::OnDraw(ImGuiIO& io) {
 
 void NetplaySettingsDialog::UpdateInterfaceGUIDs() {
   for (const auto& adapter : network_adapter_manager_->GetAdapters()) {
-    const std::string guid = adapter.AdapterName;
+    const std::string guid = adapter.guid;
     const std::string interface_name =
         network_adapter_manager_->GetAdapterFriendlyName(adapter);
 

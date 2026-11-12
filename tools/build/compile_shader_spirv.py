@@ -114,7 +114,7 @@ def main():
         result = subprocess.run([
             spirv_opt, "-O", "-O", "--canonicalize-ids",
             glslang_spv, "-o", opt_spv,
-        ], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        ], text=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         if result.returncode != 0:
             print(f"ERROR: spirv-opt failed for {src_name}", file=sys.stderr)
             if result.stderr:
@@ -122,7 +122,7 @@ def main():
             return 1
 
         # Step 3: spirv-dis
-        result = subprocess.run([spirv_dis, "-o", dis_txt, opt_spv],
+        result = subprocess.run([spirv_dis, "-o", dis_txt, opt_spv], text=True,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         if result.returncode != 0:
             print(f"ERROR: spirv-dis failed for {src_name}", file=sys.stderr)

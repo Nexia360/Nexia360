@@ -67,5 +67,29 @@ uint64_t Clock::QueryHostUptimeMillis() {
   return host_tick_count_platform() * 1000 / host_tick_frequency_platform();
 }
 
-uint64_t Clock::QueryHostInterruptTime() { return host_tick_count_platform(); }
+uint64_t Clock::QueryHostInterruptTime() {
+  // The guest reads this straight out of KeTimeStampBundle, and counts it in
+  // 100ns units as NT does - Windows gets that for free from
+  // KUSER_SHARED_DATA.InterruptTime. The host tick count here is in whatever
+  // host_tick_frequency_platform() reports, which is nanoseconds on Linux, so
+  // handing it over unconverted made the guest's interrupt clock run ten
+  // times fast: games timed off it ran away while still drawing at a normal
+  // frame rate.
+  const uint64_t frequency = host_tick_frequency_platform();
+  constexpr uint64_t kHundredNsPerSecond = 10000000ull;
+  if (!frequency) {
+    return 0;
+  }
+  if (frequency >= kHundredNsPerSecond &&
+      frequency % kHundredNsPerSecond == 0) {
+    // The usual case - an exact divide, and no room to overflow.
+    return host_tick_count_platform() / (frequency / kHundredNsPerSecond);
+  }
+  // Anything else goes wide, because ticks * 10^7 does not fit in 64 bits for
+  // a machine that has been up a while.
+  return static_cast<uint64_t>(
+      (static_cast<unsigned __int128>(host_tick_count_platform()) *
+       kHundredNsPerSecond) /
+      frequency);
+}
 }  // namespace xe

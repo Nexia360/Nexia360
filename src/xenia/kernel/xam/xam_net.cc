@@ -44,6 +44,7 @@
 #include <WS2tcpip.h>
 #else
 #include <arpa/inet.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <sys/select.h>
@@ -212,8 +213,10 @@ struct XNQOSLISTENSTATS {
 static_assert_size(XNQOSLISTENSTATS, 0x1C);
 
 struct X_TIMEVAL {
-  xe::be<long> tv_sec;
-  xe::be<long> tv_usec;
+  // The console's timeval is two 32-bit fields. long is 64-bit here, so it
+  // cannot stand in for them.
+  xe::be<int32_t> tv_sec;
+  xe::be<int32_t> tv_usec;
 };
 static_assert_size(X_TIMEVAL, 0x8);
 
@@ -1276,8 +1279,8 @@ dword_result_t NetDll_XNetDnsLookup_entry(dword_t caller, lpstring_t host,
       return;
     }
 
-    ADDRINFOA hints = {.ai_family = AF_INET};
-    PADDRINFOA addr_info = nullptr;
+    addrinfo hints = {.ai_family = AF_INET};
+    addrinfo* addr_info = nullptr;
 
     const int status =
         getaddrinfo(host_name.c_str(), nullptr, &hints, &addr_info);
@@ -2544,8 +2547,7 @@ dword_result_t NetDll_WSAEventSelect_entry(dword_t caller,
     return -1;
   }
 
-  int ret = socket->WSAEventSelect(socket->native_handle(), ev->native_handle(),
-                                   flags);
+  int ret = socket->WSAEventSelect(ev, flags);
 
   if (ret < 0) {
     XThread::SetLastError(socket->GetLastWSAError());

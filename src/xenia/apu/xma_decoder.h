@@ -85,7 +85,7 @@ class XmaDecoder {
 
   XmaRegisterFile register_file_;
 
-  static const uint32_t kContextCount = 320;
+  static constexpr uint32_t kContextCount = 320;
   XmaContext* contexts_[kContextCount];
   BitMap context_bitmap_;
 

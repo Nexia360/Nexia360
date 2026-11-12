@@ -12,6 +12,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <mutex>
 #include <optional>
 
@@ -59,6 +60,11 @@ class SDLInputDriver final : public InputDriver {
     bool whammy_on_trigger;
     // The whammy has moved, so the stick holds the device's value.
     bool whammy_seen;
+    // Back and Start held together stand in for a Guide button the pad does
+    // not have. When the chord began, and whether it is currently standing
+    // in, so the press and release each bump the packet number once.
+    std::chrono::steady_clock::time_point chord_began;
+    bool chord_guide_held;
   };
 
   enum class RepeatState {

@@ -17,16 +17,23 @@
 
 #include "xenia/kernel/util/net_utils.h"
 
-#ifdef XE_PLATFORM_WIN32
-#include <Iphlpapi.h>
-#endif
-
 namespace xe {
 namespace kernel {
 
-// TODO:
-// Forward declaration or abstract type to hide OS details
-class PlatformData;
+// One interface as this emulator cares about it. Windows fills this from
+// IP_ADAPTER_ADDRESSES and Linux from getifaddrs, so nothing above this struct
+// sees an OS type. It owns its strings: the Win32 structure points into a
+// buffer that is thrown away on the next discovery pass.
+struct NetworkAdapter {
+  uint32_t if_index = 0;
+  // The stable name the selection is saved under (cvar network_guid). Windows
+  // uses the adapter GUID, Linux the interface name.
+  std::string guid;
+  std::string friendly_name;
+  uint8_t physical_address[MacAddress::MacAddressSize] = {};
+  uint32_t physical_address_length = 0;
+  sockaddr_in address = {};
+};
 
 class NetworkAdapterManager {
  public:
@@ -42,19 +49,18 @@ class NetworkAdapterManager {
 
   std::string GetSelectedAdapterDesciption() const;
 
-  std::optional<IP_ADAPTER_ADDRESSES> GetAdapterFromGUID(
+  std::optional<NetworkAdapter> GetAdapterFromGUID(
       const std::string guid) const;
 
-  std::optional<IP_ADAPTER_ADDRESSES> GetAdapterFromIfIndex(
-      int32_t IfIndex) const;
+  std::optional<NetworkAdapter> GetAdapterFromIfIndex(int32_t IfIndex) const;
 
-  std::string GetAdapterFriendlyName(const IP_ADAPTER_ADDRESSES adapter) const;
+  std::string GetAdapterFriendlyName(const NetworkAdapter& adapter) const;
 
   std::vector<std::string> GetAdaptersNames() const;
 
   MacAddress GetAdapterMacAddressFromGUID(const std::string guid) const;
 
-  std::optional<IP_ADAPTER_ADDRESSES> GetSelectedAdapter() const;
+  std::optional<NetworkAdapter> GetSelectedAdapter() const;
 
   std::string GetSelectedAdapterName() const;
 
@@ -62,7 +68,7 @@ class NetworkAdapterManager {
 
   std::string GetSelectedAdapterLocalIPString() const;
 
-  const std::vector<IP_ADAPTER_ADDRESSES>& GetAdapters() const {
+  const std::vector<NetworkAdapter>& GetAdapters() const {
     return adapter_addresses_;
   }
 
@@ -73,9 +79,9 @@ class NetworkAdapterManager {
  private:
   void ResetSelectedAdapter();
 
-  std::vector<IP_ADAPTER_ADDRESSES> DiscoverNetworkAdapters();
+  std::vector<NetworkAdapter> DiscoverNetworkAdapters();
 
-  bool UpdateNetworkInterface(const IP_ADAPTER_ADDRESSES adapter);
+  bool UpdateNetworkInterface(const NetworkAdapter& adapter);
 
   int32_t GetBestInterfaceIfIndex();
 
@@ -88,11 +94,7 @@ class NetworkAdapterManager {
 
   void AutoSelectNetworkAdapter(const int32_t best_interface_IfIndex);
 
-  // Adapter addresses buffer
-  std::vector<uint8_t> adapter_addresses_data_;
-
-  // Pointer to adapter_addresses_data_.data()
-  std::vector<IP_ADAPTER_ADDRESSES> adapter_addresses_;
+  std::vector<NetworkAdapter> adapter_addresses_;
 
   int32_t best_interface_IfIndex_ = -1;
 

@@ -1053,7 +1053,7 @@ std::string SafeFileName(const std::string& name) {
 }  // namespace
 
 std::filesystem::path DefaultAssetDirectory() {
-  return xe::filesystem::GetExecutableFolder() / "Dashboard" / "UI";
+  return xe::filesystem::GetDashboardFolder() / "UI";
 }
 
 std::string DashboardTypefaceFor(const std::filesystem::path& path) {

@@ -3,6 +3,9 @@
 *.bat       text eol=crlf
 *.sh        text eol=lf
 
+# No extension to match on, and a CRLF shebang does not run.
+assets/AppRun text eol=lf
+
 *.sln       text eol=crlf -whitespace
 *.csproj    text eol=crlf -whitespace merge=union
 *.vcxproj   text eol=crlf -whitespace merge=union

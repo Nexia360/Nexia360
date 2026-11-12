@@ -29,6 +29,12 @@
 
 #if XE_PLATFORM_WIN32
 #include "xenia/base/platform_win.h"
+#else
+#include <fcntl.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+#include <cerrno>
 #endif  // XE_PLATFORM_WIN32
 
 namespace xe {
@@ -175,8 +181,53 @@ bool RunHidden(const std::wstring& command_line) {
 #endif  // XE_PLATFORM_WIN32
 }
 
+#if !XE_PLATFORM_WIN32
+// Runs a command and waits. Output discarded, no shell.
+bool RunArgv(const std::vector<std::string>& argv,
+             const std::filesystem::path& working_dir = {}) {
+  if (argv.empty()) {
+    return false;
+  }
+  std::vector<char*> raw;
+  raw.reserve(argv.size() + 1);
+  for (const auto& argument : argv) {
+    raw.push_back(const_cast<char*>(argument.c_str()));
+  }
+  raw.push_back(nullptr);
+
+  const pid_t pid = fork();
+  if (pid < 0) {
+    return false;
+  }
+  if (pid == 0) {
+    int null_fd = open("/dev/null", O_RDWR);
+    if (null_fd >= 0) {
+      dup2(null_fd, STDIN_FILENO);
+      dup2(null_fd, STDOUT_FILENO);
+      dup2(null_fd, STDERR_FILENO);
+      if (null_fd > STDERR_FILENO) {
+        close(null_fd);
+      }
+    }
+    if (!working_dir.empty() && chdir(working_dir.c_str()) != 0) {
+      _exit(127);
+    }
+    execvp(raw[0], raw.data());
+    _exit(127);
+  }
+  int status = 0;
+  while (waitpid(pid, &status, 0) < 0) {
+    if (errno != EINTR) {
+      return false;
+    }
+  }
+  return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+#endif  // !XE_PLATFORM_WIN32
+
 bool ExtractArchive(const std::filesystem::path& archive,
                     const std::filesystem::path& destination) {
+#if XE_PLATFORM_WIN32
   // bsdtar ships with Windows 10 1803 and later and reads zip files.
   // Quoted: a user's folder can contain spaces, and tar would see two
   // arguments instead of one.
@@ -193,6 +244,25 @@ bool ExtractArchive(const std::filesystem::path& archive,
       archive.wstring() + L"' -DestinationPath '" + destination.wstring() +
       L"' -Force\"";
   return RunHidden(powershell);
+#else
+  // GNU tar cannot read zip, and there is no PowerShell here.
+  const std::string from = xe::path_to_utf8(archive);
+  const std::string to = xe::path_to_utf8(destination);
+  if (RunArgv({"unzip", "-o", "-q", from, "-d", to})) {
+    return true;
+  }
+  if (RunArgv({"bsdtar", "-xf", from, "-C", to})) {
+    return true;
+  }
+  if (RunArgv({"python3", "-m", "zipfile", "-e", from, to})) {
+    return true;
+  }
+  XELOGE(
+      "XnaDependencies: nothing on this system could read {} - install "
+      "unzip, bsdtar or python3",
+      from);
+  return false;
+#endif  // XE_PLATFORM_WIN32
 }
 
 // The console's own XNA assemblies, from the XNA Indie Player title update
@@ -718,6 +788,7 @@ bool InPreparedFolder(const std::filesystem::path& path) {
 bool CreateZipArchive(const std::filesystem::path& staging,
                       const std::vector<std::string>& top_level,
                       const std::filesystem::path& zip_path) {
+#if XE_PLATFORM_WIN32
   std::wstring tar = L"tar -a -c -f \"" + zip_path.wstring() + L"\" -C \"" +
                      staging.wstring() + L"\"";
   for (const auto& item : top_level) {
@@ -734,6 +805,34 @@ bool CreateZipArchive(const std::filesystem::path& staging,
       (staging / "*").wstring() + L"' -DestinationPath '" + zip_path.wstring() +
       L"' -Force\"";
   return RunHidden(powershell);
+#else
+  // GNU tar cannot write zip either. Run from staging so names stay relative.
+  const std::string out = xe::path_to_utf8(zip_path);
+
+  std::vector<std::string> zip{"zip", "-r", "-q", out};
+  zip.insert(zip.end(), top_level.begin(), top_level.end());
+  if (RunArgv(zip, staging)) {
+    return true;
+  }
+
+  std::vector<std::string> bsdtar{"bsdtar", "-a", "-c", "-f", out};
+  bsdtar.insert(bsdtar.end(), top_level.begin(), top_level.end());
+  if (RunArgv(bsdtar, staging)) {
+    return true;
+  }
+
+  std::vector<std::string> python{"python3", "-m", "zipfile", "-c", out};
+  python.insert(python.end(), top_level.begin(), top_level.end());
+  if (RunArgv(python, staging)) {
+    return true;
+  }
+
+  XELOGE(
+      "XnaDependencies: nothing on this system could write {} - install "
+      "zip, bsdtar or python3",
+      out);
+  return false;
+#endif  // XE_PLATFORM_WIN32
 }
 
 }  // namespace

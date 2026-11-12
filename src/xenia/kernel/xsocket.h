@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "xenia/base/byte_order.h"
+#include "xenia/kernel/xevent.h"
 #include "xenia/kernel/xobject.h"
 
 #ifdef XE_PLATFORM_WIN32
@@ -245,8 +246,9 @@ class XSocket : public XObject {
   int SendTo(uint8_t* buf, uint32_t buf_len, uint32_t flags, XSOCKADDR_IN* to,
              uint32_t to_len);
 
-  int WSAEventSelect(uint64_t socket_handle, uint64_t event_handle,
-                     uint32_t flags);
+  // Signals `event` when the socket reaches one of the states in `flags`.
+  // `flags` of 0 cancels the association, as it does in Winsock.
+  int WSAEventSelect(object_ref<XEvent> event, uint32_t flags);
 
   // Async scatter/gather send. Xenia has no equivalent - titles that use
   // overlapped WSASendTo would otherwise fall back to a blocking send.
@@ -333,6 +335,19 @@ class XSocket : public XObject {
   std::thread send_thread_;
   bool send_thread_started_ = false;
   bool send_thread_stopping_ = false;
+
+  // WSAEventSelect. Winsock has the stack signal the event itself; here a
+  // thread polls the socket and does it. The promise is the only way to reach
+  // that thread: fulfilling it both wakes the poll loop early and tells it to
+  // retire, so a cancel or a close never waits out a poll interval.
+  std::thread event_select_thread_;
+  std::promise<void> event_select_cancel_;
+  object_ref<XEvent> event_select_event_;
+  std::mutex event_select_mutex_;
+
+  void StopEventSelect();
+  void EventSelectThreadMain(std::future<void> cancelled,
+                             object_ref<XEvent> event, uint32_t flags);
 
   // Raised by the send path when the handle underneath it has gone away -
   // closed out from under us, or otherwise invalid. The worker retires itself

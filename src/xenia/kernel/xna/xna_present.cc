@@ -18,18 +18,25 @@
 #include <vector>
 
 #include "xenia/base/logging.h"
+#include "xenia/base/platform.h"
 #include "xenia/emulator.h"
-#include "xenia/gpu/d3d12/d3d12_command_processor.h"
 #include "xenia/gpu/graphics_system.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/kernel/util/shim_utils.h"
 #include "xenia/kernel/xna/xna_exports.h"
+
+// The sprite path draws with D3D12 directly. Off Windows the hosted frame
+// comes from xna_direct_vulkan.cc, which presents itself - but the byte-swap
+// helpers below are shared with it, so this file still compiles there.
+#if XE_PLATFORM_WIN32
+#include "xenia/gpu/d3d12/d3d12_command_processor.h"
 #include "xenia/ui/d3d12/d3d12_presenter.h"
 #include "xenia/ui/d3d12/d3d12_provider.h"
 #include "xenia/ui/d3d12/d3d12_util.h"
 
 #include "xenia/kernel/xna/shaders/xna_sprite_ps.h"
 #include "xenia/kernel/xna/shaders/xna_sprite_vs.h"
+#endif  // XE_PLATFORM_WIN32
 
 namespace xe {
 namespace kernel {
@@ -37,6 +44,7 @@ namespace xna {
 
 namespace {
 
+#if XE_PLATFORM_WIN32
 using Microsoft::WRL::ComPtr;
 
 // The console's own mode, which is what the device reports to the title.
@@ -157,6 +165,8 @@ DXGI_FORMAT ToDxgiFormat(uint32_t surface_format) {
 //
 // The block-compressed formats have the same problem one level down - their
 // colour endpoints and index words are 16-bit values written the same way.
+#endif  // XE_PLATFORM_WIN32
+
 uint32_t SwapUnitForFormat(uint32_t surface_format) {
   switch (surface_format) {
     case 0:   // Color
@@ -204,6 +214,7 @@ void CopySwapped(uint8_t* destination, const uint8_t* source, size_t bytes,
   }
 }
 
+#if XE_PLATFORM_WIN32
 ui::d3d12::D3D12Presenter* GetPresenter() {
   auto* state = kernel_state();
   if (!state) {
@@ -593,6 +604,7 @@ uint32_t EnsureTexture(uint32_t handle) {
   g.texture_slots[handle] = slot;
   return slot;
 }
+#endif  // XE_PLATFORM_WIN32
 
 }  // namespace
 
@@ -604,6 +616,8 @@ void XnaCopyTextureRow(uint8_t* destination, const uint8_t* source,
                        size_t bytes, uint32_t unit) {
   CopySwapped(destination, source, bytes, unit);
 }
+
+#if XE_PLATFORM_WIN32
 
 void XnaSetClearColor(const float rgba[4]) {
   if (!rgba) {
@@ -940,6 +954,25 @@ void XnaShutdownPresent() {
   g.usable = false;
   g.tried = false;
 }
+
+#else  // XE_PLATFORM_WIN32
+
+// The sprite compositor is the D3D12 path. Everywhere else a hosted frame
+// reaches the screen through xna_direct_vulkan.cc, which owns its own
+// presenter, so there is nothing for these to do.
+void XnaSetClearColor(const float rgba[4]) {}
+
+void XnaQueueSprites(uint32_t texture_handle, uint32_t texture_width,
+                     uint32_t texture_height, uint32_t count,
+                     const uint8_t* records, uint32_t bytes) {}
+
+void XnaSetBackgroundFromSwapTexture() {}
+
+void XnaPresentFrame() {}
+
+void XnaShutdownPresent() {}
+
+#endif  // XE_PLATFORM_WIN32
 
 }  // namespace xna
 }  // namespace kernel

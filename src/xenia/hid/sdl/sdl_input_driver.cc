@@ -9,8 +9,10 @@
 
 #include "xenia/hid/sdl/sdl_input_driver.h"
 
+#include <algorithm>
 #include <array>
 #include <charconv>
+#include <chrono>
 #include <limits>
 #include <unordered_map>
 
@@ -265,6 +267,41 @@ X_RESULT SDLInputDriver::GetState(uint32_t user_index,
     controller->is_active = is_active;
   }
   std::memcpy(out_state, &controller->state, sizeof(*out_state));
+
+  // Back and Start together stand in for a Guide button the pad does not
+  // have: a Steam Deck's Steam button is taken by Steam and never arrives,
+  // and under Steam Input the trackpads - which xbutton_lookup already maps
+  // to Guide - are not exposed either. Held briefly so a title that uses the
+  // two separately is unaffected, and the pair is swallowed once it counts so
+  // the guest does not also see Back and Start go down.
+  if (is_active && cvars::guide_button && cvars::guide_button_chord) {
+    constexpr uint16_t kChord = X_INPUT_GAMEPAD_BACK | X_INPUT_GAMEPAD_START;
+    const bool chord_down = (out_state->gamepad.buttons & kChord) == kChord;
+    const auto now = std::chrono::steady_clock::now();
+    const auto hold = std::chrono::milliseconds(
+        std::max(0, cvars::guide_button_chord_hold_ms));
+    if (chord_down) {
+      if (controller->chord_began == std::chrono::steady_clock::time_point{}) {
+        controller->chord_began = now;
+      } else if (!controller->chord_guide_held &&
+                 now - controller->chord_began >= hold) {
+        controller->chord_guide_held = true;
+        controller->state.packet_number++;
+        out_state->packet_number = controller->state.packet_number;
+      }
+    } else {
+      controller->chord_began = {};
+      if (controller->chord_guide_held) {
+        controller->chord_guide_held = false;
+        controller->state.packet_number++;
+        out_state->packet_number = controller->state.packet_number;
+      }
+    }
+    if (controller->chord_guide_held) {
+      out_state->gamepad.buttons =
+          (out_state->gamepad.buttons & ~kChord) | X_INPUT_GAMEPAD_GUIDE;
+    }
+  }
 
   if (!is_active) {
     // Simulate an "untouched" controller. When we become active again the
